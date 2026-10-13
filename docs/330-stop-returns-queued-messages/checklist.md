@@ -11,4 +11,4 @@
 - [x] Tests for each rule, and a mutation check of each
 - [x] The sender check of requirement 3, in `plan.md`
 - [x] Older documents and the wiki say the new behaviour
-- [x] Independent review of the code
+- [x] Independent review of the code, and its findings applied
