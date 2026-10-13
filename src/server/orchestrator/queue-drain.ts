@@ -6,7 +6,7 @@ import type {
 import { queuedMessageToDispatchOptions } from "./prepared-dispatch.js";
 import { automaticTurnHeldForAnswer, turnBlockedByPendingCommit } from "./turn-admission.js";
 import { forgetHeldEntries, holdTurn } from "./held-turns.js";
-import { settleDroppedQueueEntries, settleWhenRunnerLetsGo } from "./turn-settlement.js";
+import { settleDispatchSetupFailure, settleDroppedQueueEntries, settleWhenRunnerLetsGo } from "./turn-settlement.js";
 import { returnQueueSentBeforeStop } from "./queue-return.js";
 
 export { queuedMessageToDispatchOptions };
@@ -83,7 +83,13 @@ export async function startQueuedMessage(
     );
     return runInteractive(next);
   }
-  await runner.runDispatchedTurn(settleWhenRunnerLetsGo(runner, queuedMessageToDispatchOptions(next)));
+  const chained = settleWhenRunnerLetsGo(runner, queuedMessageToDispatchOptions(next));
+  try {
+    await runner.runDispatchedTurn(chained);
+  } catch (err) {
+    settleDispatchSetupFailure(runner, chained, err);
+    throw err;
+  }
 }
 
 /**

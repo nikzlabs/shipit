@@ -299,7 +299,9 @@ backgrounded run finishes and nothing else is going to hand you the result — y
 turn is over and there is no live process to surface it — ShipIt starts a turn
 naming the run id and telling you to read it with `shipit agent result <RUN-ID>`.
 So it is safe to end a turn with a consult still in flight; you do not have to
-hold the turn open, and the user does not have to prod you. You still get the
+hold the turn open, and the user does not have to prod you. If that turn does
+not run — the user pressed Stop while it waited, or it failed to start — your
+next turn's prompt carries the same note instead. You still get the
 output on stdout in the ordinary case, and this changes nothing about a run you
 `--wait` on.
 

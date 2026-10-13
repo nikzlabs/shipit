@@ -7,12 +7,21 @@ import type {
   SessionRunnerRegistry,
   AgentDispatchOptions,
 } from "../session-runner.js";
+import { DISPATCH_SETUP_FAILURE, toQueuedMessage } from "../session-runner.js";
+import type { PreparedDispatch } from "../prepared-dispatch.js";
+import { queueSnapshot } from "../queue-identity.js";
+import { returnQueueOnStop } from "../queue-return.js";
 import type { SubAgentConsultCard } from "../../shared/types.js";
 import {
   TURN_COMPLETED,
+  TURN_STEERED,
   createTurnSettlement,
+  turnDropped,
   turnErrored,
+  turnInterrupted,
+  turnNoResult,
   turnQuotaRefused,
+  turnRefused,
   type TurnAdmission,
   type TurnHandle,
 } from "../turn-settlement.js";
@@ -253,6 +262,57 @@ describe("deliverConsultResultByWake (docs/287)", () => {
     const dispatched = ctx.runners.get("s1")!.dispatched[0];
     dispatched.onTurnComplete!(TURN_COMPLETED);
     expect(storedCard(ctx)?.wakeDelivery?.outcome).toBe("delivered");
+    expect(ctx.sessionManager.get("s1")?.pendingAgentNotice).toBeUndefined();
+  });
+
+  // planning#695 — the stamp blocks a second wake, so the note is the only way the agent hears of it.
+  it("leaves a note for the next turn, and starts none, when a Stop removes the wake from the queue", async () => {
+    const card = terminalCard();
+    persistCard(ctx, card);
+    const runner = ctx.runnerRegistry.getOrCreate("s1", "/ws/s1", "claude") as unknown as FakeRunner;
+    runner.admitAs = "queued";
+    await deliverConsultResultByWake(ctx.deps, { sessionId: "s1", card, originatingTurnEpoch: 7 });
+    const wake = runner.dispatched[0];
+    const queue = [toQueuedMessage(wake as PreparedDispatch)];
+
+    returnQueueOnStop({
+      sessionId: "s1",
+      messageQueue: queue,
+      answerHoldStore: undefined,
+      emitMessage: () => {},
+      getQueueSnapshot: () => queueSnapshot(queue),
+    });
+
+    expect(queue).toEqual([]);
+    expect(ctx.sessionManager.consumePendingAgentNotice("s1")).toBe(`[System] ${wake.text}`);
+    expect(storedCard(ctx)?.wakeDelivery).toMatchObject({
+      outcome: "failed",
+      detail: "stopped by the user; the result rides the session's next turn",
+    });
+    expect(runner.dispatched).toHaveLength(1);
+  });
+
+  // An outcome cannot tell every unread prompt from a read one, so only a turn that ran it or
+  // that the user stopped is taken as read.
+  it.each([
+    ["completed", TURN_COMPLETED, false],
+    ["steered", TURN_STEERED, false],
+    ["interrupted", turnInterrupted("the user stopped it"), false],
+    ["errored", turnErrored("the account was refused before the prompt was submitted"), true],
+    ["errored at setup", turnErrored(`${DISPATCH_SETUP_FAILURE}: no worker`), true],
+    ["no-result", turnNoResult("agent process exited without producing a turn result"), true],
+    ["dropped", turnDropped("runner disposed mid-turn"), true],
+    ["refused", turnRefused("the wake is no longer wanted"), true],
+  ] as const)("after a wake that ended %s, parks a note: %s", async (_name, outcome, parks) => {
+    const card = terminalCard();
+    persistCard(ctx, card);
+    await deliverConsultResultByWake(ctx.deps, { sessionId: "s1", card, originatingTurnEpoch: 7 });
+
+    const dispatched = ctx.runners.get("s1")!.dispatched[0];
+    dispatched.onTurnComplete!(outcome);
+
+    expect(ctx.sessionManager.get("s1")?.pendingAgentNotice).toBe(parks ? `[System] ${dispatched.text}` : undefined);
+    expect(ctx.runners.get("s1")!.dispatched).toHaveLength(1);
   });
 
   it("records a failed settlement instead of claiming delivery", async () => {
@@ -264,8 +324,17 @@ describe("deliverConsultResultByWake (docs/287)", () => {
     dispatched.onTurnComplete!(turnErrored("agent crashed"));
     expect(storedCard(ctx)?.wakeDelivery).toMatchObject({
       outcome: "failed",
-      detail: "agent crashed",
+      detail: "agent crashed; the result rides the session's next turn",
     });
+  });
+
+  it("records a stopped wake turn without a note", async () => {
+    const card = terminalCard();
+    persistCard(ctx, card);
+    await deliverConsultResultByWake(ctx.deps, { sessionId: "s1", card, originatingTurnEpoch: 7 });
+
+    ctx.runners.get("s1")!.dispatched[0].onTurnComplete!(turnInterrupted("the user stopped it"));
+    expect(storedCard(ctx)?.wakeDelivery).toMatchObject({ outcome: "failed", detail: "the user stopped it" });
   });
 
   // docs/306-quota-continuation — the result rides the turn the manager starts at the reset.
@@ -284,7 +353,7 @@ describe("deliverConsultResultByWake (docs/287)", () => {
     expect(storedCard(ctx)?.wakeDelivery?.outcome).toBe("failed");
   });
 
-  it("parks nothing and hands nothing over for a wake that failed for another reason", async () => {
+  it("hands nothing to the quota continuation for a wake that failed for another reason", async () => {
     const recordRefusedWake = vi.fn();
     const deps = { ...ctx.deps, quotaContinuation: { recordRefusedWake } };
     const card = terminalCard();
@@ -293,7 +362,6 @@ describe("deliverConsultResultByWake (docs/287)", () => {
 
     ctx.runners.get("s1")!.dispatched[0].onTurnComplete!(turnErrored("agent crashed"));
 
-    expect(ctx.sessionManager.get("s1")?.pendingAgentNotice).toBeUndefined();
     expect(recordRefusedWake).not.toHaveBeenCalled();
   });
 
@@ -311,6 +379,7 @@ describe("deliverConsultResultByWake (docs/287)", () => {
 
     expect(decision).toMatchObject({ woken: false, reason: "wake-failed" });
     expect(storedCard(ctx)?.wakeDelivery).toMatchObject({ outcome: "failed" });
+    expect(ctx.sessionManager.get("s1")?.pendingAgentNotice).toContain(`shipit agent result ${SPAWN_ID}`);
   });
 
   it("stands down for an archived session rather than resurrecting it", async () => {

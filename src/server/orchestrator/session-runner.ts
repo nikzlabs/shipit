@@ -55,15 +55,14 @@ import { nextSendOrder, queueEntryId, queueSnapshot } from "./queue-identity.js"
 import { returnLateEntry, sentBeforeStop } from "./queue-return.js";
 import {
   forgetHeldEntries,
-  forgetHeldTurn,
   holdTurn,
   withoutHeldEntries,
 } from "./held-turns.js";
 import {
   createTurnSettlement,
+  settleDispatchSetupFailure,
   settleDroppedQueueEntries,
   settleWhenRunnerLetsGo,
-  turnErrored,
   turnRefused,
   TURN_STEERED,
   type TurnEnd,
@@ -79,6 +78,7 @@ export {
   type AgentDispatchInit,
 } from "./prepared-dispatch.js";
 export type { TurnHandle, TurnOutcome, TurnOutcomeStatus } from "./turn-settlement.js";
+export { DISPATCH_SETUP_FAILURE } from "./turn-settlement.js";
 
 export interface ToolResultEntry {
   toolUseId: string;
@@ -285,13 +285,6 @@ export interface DispatchAdmission {
   underHold?: SessionHold;
 }
 
-/**
- * Prefix of the only `errored` outcome that means the prompt never reached the agent. Every
- * other `errored` can describe a turn the agent ran and then failed, so a consumer deciding
- * whether to re-deliver must tell the two apart rather than reading the status alone.
- */
-export const DISPATCH_SETUP_FAILURE = "dispatched turn failed to start";
-
 
 export function dispatchOnRunner(
   runner: SessionRunnerInterface,
@@ -407,22 +400,15 @@ export function dispatchOnRunner(
   if (opts.deliveryId !== undefined) runner.activeDeliveryId = opts.deliveryId;
   const chained = settleWhenRunnerLetsGo(runner, withSettlement(opts, settlement));
   void runner.runDispatchedTurn(chained).catch((err: unknown) => {
-    // Setup can fail before the executor owns settlement or cleanup.
-    const detail = err instanceof Error ? err.message : String(err);
     console.error(
       `[dispatch] dispatched turn for ${runner.sessionId} failed during setup:`,
       err,
     );
     runner.running = false;
-    // Told it errored, the caller owns any retry; a saved copy would run it a second time.
-    forgetHeldTurn(runner.answerHoldStore, opts);
     if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
       runner.activeDeliveryId = undefined;
     }
-    // Notify callback consumers too, but preserve an outcome the executor already settled.
-    if (!settlement.isSettled) {
-      chained.onTurnComplete?.(turnErrored(`${DISPATCH_SETUP_FAILURE}: ${detail}`));
-    }
+    settleDispatchSetupFailure(runner, chained, err);
     if (runner.queueLength > 0) {
       // The shared take, so a held entry at the head cannot strand the user's behind it.
       const next = takeRunnableQueuedTurn(runner);

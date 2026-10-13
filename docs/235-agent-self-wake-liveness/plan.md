@@ -784,7 +784,8 @@ A wake that was admitted can still fail before the agent reads it (no credential
 free at env preparation, the runner is disposed). The prompt is then parked for the next
 turn. This rule is wider than `shouldRepark`, which leaves a plain `errored` alone so
 that work is not repeated: this note only informs, so a repeat costs little and a loss
-leaves the agent waiting.
+leaves the agent waiting. It is `informingWakeMissed` in `turn-settlement.ts`, which the
+finished-consult wake shares (`docs/287-consult-result-delivery`).
 
 **The agent is also told before it makes the mistake.** `dispatched-turn.ts` puts
 `prompts/one-shot-turn-note.md` in the prompt prefix of every turn that ShipIt started

@@ -2,9 +2,11 @@
 
 import type { SubAgentConsultCard } from "../../shared/types.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
-import type { TurnAdmission, TurnHandle, TurnOutcome } from "../turn-settlement.js";
+import { informingWakeMissed, type TurnAdmission, type TurnHandle, type TurnOutcome } from "../turn-settlement.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
 import type { QuotaResumeRecorder } from "./quota-continuation.js";
+
+const NEXT_TURN_DETAIL = "; the result rides the session's next turn";
 
 export interface ConsultDeliveryStore {
   updateSubAgentConsultCard(
@@ -105,17 +107,23 @@ async function decideAndDeliver(
           stampDelivery(deps, sessionId, card.cardId, {
             at: new Date().toISOString(),
             outcome: "failed",
-            detail: "no connected account had quota left; the result rides the session's next turn",
+            detail: `no connected account had quota left${NEXT_TURN_DETAIL}`,
           });
           parkForNextTurn(deps, sessionId, text);
           deps.quotaContinuation?.recordRefusedWake({ sessionId, resetsAt: outcome.quotaRefused.resetsAt });
           return;
         }
+        // planning#695 — the stamp blocks another wake, so a wake the agent may not have read
+        // (a Stop emptied the queue) leaves a note. No turn starts for it.
+        const parked = informingWakeMissed(outcome);
         stampDelivery(deps, sessionId, card.cardId, {
           at: new Date().toISOString(),
           outcome: outcome.status === "completed" ? "delivered" : "failed",
-          ...(outcome.status === "completed" ? {} : { detail: outcome.detail ?? outcome.status }),
+          ...(outcome.status === "completed"
+            ? {}
+            : { detail: `${outcome.detail ?? outcome.status}${parked ? NEXT_TURN_DETAIL : ""}` }),
         });
+        if (parked) parkForNextTurn(deps, sessionId, text);
       },
     });
   } catch (err) {
@@ -123,8 +131,9 @@ async function decideAndDeliver(
     stampDelivery(deps, sessionId, card.cardId, {
       at: new Date().toISOString(),
       outcome: "failed",
-      detail,
+      detail: `${detail}${NEXT_TURN_DETAIL}`,
     });
+    parkForNextTurn(deps, sessionId, text);
     console.error(`[consult-delivery] wake-turn not delivered to ${sessionId}:`, err);
     return { woken: false, reason: "wake-failed", detail };
   }

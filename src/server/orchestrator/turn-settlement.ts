@@ -1,6 +1,7 @@
 import type { QueuedMessage, SessionRunnerInterface } from "./session-runner.js";
 import { isCompactCommand } from "../shared/compact-command.js";
 import type { LastTurnOutcome } from "../shared/types.js";
+import { forgetHeldTurn } from "./held-turns.js";
 
 /** How a turn ended, as `sessions.last_turn_outcome` keeps it (docs/324-scheduled-sessions req 31). */
 export interface TurnEnd {
@@ -68,6 +69,36 @@ export function turnErrored(detail?: string): TurnOutcome {
   return { status: "errored", errored: true, ...(detail ? { detail } : {}) };
 }
 
+/**
+ * Prefix of the only `errored` outcome that means the prompt never reached the agent. Every
+ * other `errored` can describe a turn the agent ran and then failed, so a consumer deciding
+ * whether to re-deliver must tell the two apart rather than reading the status alone.
+ */
+export const DISPATCH_SETUP_FAILURE = "dispatched turn failed to start";
+
+/**
+ * Setup can fail before the executor owns settlement or cleanup, so its sender is told here.
+ * Not when a failed pre-turn compaction had put the dispatch back in the queue: that one has
+ * not failed, and settles when it runs. `chained` is `settleWhenRunnerLetsGo`'s, so a turn
+ * that is already settled is not settled again.
+ */
+export function settleDispatchSetupFailure(
+  runner: Pick<SessionRunnerInterface, "messageQueue" | "answerHoldStore">,
+  chained: Pick<QueuedMessage, "heldId" | "onTurnComplete">,
+  err: unknown,
+): void {
+  const { onTurnComplete, heldId } = chained;
+  // A held turn restored after a restart can have no callback; its saved row names it.
+  const requeued = runner.messageQueue.some((m) =>
+    (onTurnComplete !== undefined && m.onTurnComplete === onTurnComplete)
+    || (heldId !== undefined && m.heldId === heldId));
+  if (requeued) return;
+  // Told it errored, the caller owns any retry; a saved copy would run it a second time.
+  forgetHeldTurn(runner.answerHoldStore, chained);
+  const detail = err instanceof Error ? err.message : String(err);
+  onTurnComplete?.(turnErrored(`${DISPATCH_SETUP_FAILURE}: ${detail}`));
+}
+
 export function turnQuotaRefused(resetsAt: readonly (string | null)[]): TurnOutcome {
   return { status: "errored", errored: true, quotaRefused: { resetsAt } };
 }
@@ -82,6 +113,17 @@ export function turnDropped(detail?: string): TurnOutcome {
 
 export function turnInterrupted(detail?: string): TurnOutcome {
   return { status: "interrupted", errored: false, ...(detail ? { detail } : {}) };
+}
+
+const INFORMED_STATUSES: ReadonlySet<TurnOutcomeStatus> = new Set(["completed", "steered", "interrupted"]);
+
+/**
+ * Whether a wake that only informs the agent is parked for its next turn. Wider than
+ * `shouldRepark`: an outcome cannot tell every unread prompt from a read one, a repeat costs
+ * little, and a loss leaves the agent waiting. A stopped turn is the user's choice.
+ */
+export function informingWakeMissed(outcome: TurnOutcome): boolean {
+  return !INFORMED_STATUSES.has(outcome.status);
 }
 
 /**

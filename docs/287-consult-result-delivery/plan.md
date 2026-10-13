@@ -165,6 +165,42 @@ face deliberately does not render it (requirements, resolved 2026-09-03).
 Nothing in the module throws: result delivery, the card and `shipit agent result`
 keep working when the wake cannot run (req 5).
 
+**A wake that the agent may not have read** (req 7, planning#695). The `failed`
+stamp blocks every later wake, and `runSubAgent` is the only caller, so such a
+wake must leave something behind. It settles `dropped` when a Stop empties the
+queue or the user cancels its row (`docs/330-stop-returns-queued-messages`). The
+same prompt is then parked as the session's pending agent notice, the stamp's
+detail says so, and no turn starts for it. A quota refusal parks it too, and also
+hands the wake to the quota continuation, as before.
+
+The rule is `informingWakeMissed` (`turn-settlement.ts`), shared with the
+stopped-jobs note of docs/235: park unless the turn `completed`, was `steered`
+into a running turn, or was `interrupted`. A thrown `wakeSessionWithTurn` parks
+too. It is wider than the restart note's `shouldRepark` on purpose, because an
+outcome does not always tell an unread prompt from a read one: a credential
+refused before the prompt was submitted ends `errored`, and a runner disposed
+after the agent began work ends `dropped`. So the rule can repeat a note, which
+costs one extra line in a prompt, and does not lose one, which leaves the agent
+waiting. A Stop of the wake turn itself, also during its setup, ends
+`interrupted`: the user stopped that turn, so no note follows it.
+
+The rule is only as good as the settlement, which had two holes, both now
+closed by `settleDispatchSetupFailure` (`turn-settlement.ts`). A wake that a
+drain started and whose setup threw was never settled: the drain's catch only
+logged, so the card stayed `queued` and nothing was parked. And a dispatch that
+a pre-turn compaction put back in the queue was settled as a setup failure when
+that compaction failed to start, and then ran. All three places that start a
+turn's setup — `dispatchOnRunner`, `startQueuedMessage`, and the drain of a
+dispatched turn in `dispatched-turn.ts` — now tell the sender of a setup
+failure, and leave a re-queued dispatch to settle when it runs. A re-queued
+entry is known by its callback, or by its saved row for a held turn restored
+after a restart, which has no callback.
+
+Every sender of a queued turn can now get a setup failure from a drain. The CI
+auto-fix counted every `errored` turn as an attempt, because the agent had the
+logs; a turn that failed to start never gave them, so `autoFixResultForOutcome`
+counts it as no attempt, as it counts a dropped one.
+
 ## What was deliberately not done
 
 **Making system turns streaming.** `systemTurn` controls more than streaming
@@ -210,6 +246,15 @@ change, i.e. the result is not delivered.
    behavior. A session archived between the check and the dispatch, or one whose
    checkout was disk-evicted, ends as a failed wake rather than a delivery.
 
+5. **A Sync or a branch reset can erase the parked note** (req 7; found by the
+   review of 2026-10-13). The note is
+   the session's pending agent notice, and `setPendingAgentNotice` replaces that
+   whole field on purpose: a branch movement supersedes earlier notices. A
+   parked consult note that no turn has read is lost then, as the restart, rebase
+   and stopped-jobs notes are (`docs/235-agent-self-wake-liveness`,
+   `docs/303-post-rebase-followup`). The card and `shipit agent result` keep the
+   result. Changing the replacement would change it for every caller.
+
 **A plain `run_in_background` job is not a consult, and is not covered here.** A build
 or a test run that the agent backgrounded on a one-shot turn is stopped by the CLI at
 turn end and has no result to deliver. `docs/235-agent-self-wake-liveness/plan.md` §9
@@ -236,3 +281,10 @@ module makes from the state it is given.
 - `src/server/orchestrator/ws-handlers/agent-listeners.ts` — the "unreachable"
   comments, corrected.
 - `src/server/shared/types/domain-types/chat.ts` — `wakeDelivery` on the card.
+- `src/server/orchestrator/turn-settlement.ts` — `informingWakeMissed`, the rule
+  that parks the wake's prompt (req 7), and `settleDispatchSetupFailure`.
+- `src/server/orchestrator/session-runner.ts` (`dispatchOnRunner`),
+  `queue-drain.ts` (`startQueuedMessage`) and `dispatched-turn.ts` (its drain) —
+  the three setup catches that use it.
+- `src/server/orchestrator/auto-fix-manager.ts` — `autoFixResultForOutcome`
+  counts a turn that failed to start as no attempt.
