@@ -413,7 +413,7 @@ cross-provider spawns until 2026-10-13: they borrowed the session's subtree for
 that harness, with a ledger of holders so that only the last release wiped it
 (planning#572 records the half that ledger did not fix). Same-harness spawns had
 left it on 2026-08-22, when a borrow replaced the live primary's token. Two
-consults of one harness in one turn are routine — a turn may start three — and
+consults of one harness at one moment are routine, and
 a shared home fails them in two ways, both reproduced with three Codex consults
 started at one moment:
 
