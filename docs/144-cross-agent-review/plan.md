@@ -336,6 +336,42 @@ Flow:
 - **Crash handling.** Subprocess exits non-zero → the orchestrator returns
   an error; the CLI exits non-zero with the message; the primary sees it and
   can react. Credential wipe (§4) fires in `finally` regardless.
+- **A failed run carries its reason.** `runAgentToCompletion` keeps the exit
+  code and a 300-character tail of the harness's stderr (the adapters' `log`
+  events from a `…stderr` source). `describeSubAgentFailure`
+  (`shared/sub-agent-run.ts`) makes one line from the message, the exit code
+  and the tail. That line is in the worker's `worker done` log, in the
+  orchestrator's `finished` log, in the card's `statusDetail` (so
+  `shipit agent result` prints it again), and on the stderr of
+  `shipit agent run`.
+  - **Redaction.** `shared/redacted-tail.ts` keeps the emissions as the adapter
+    gave them, up to 64,000 characters, and redacts all of the kept text with
+    `redactCredentials` one time, when the run ends: the redaction comes before
+    the white space is removed and before the 300-character cut. When the
+    budget cut the text, the rest of a credential that the cut divided is at
+    the start of the kept text, and no pattern knows it. The shown text is then
+    made from the raw text behind the first 8,000 characters only, and it is
+    shown only where it agrees with the redaction of all the kept text (a
+    position in the redacted text is not a guard: a redaction can make text
+    longer). `describeSubAgentFailure` redacts and bounds its
+    input again, because a result can come from a worker. The `error` that the
+    account failover reads stays as the harness gave it; the copies of `error`
+    and `stderrTail` in the answer to the CLI are redacted.
+    **Known limit:** four adapters emit stderr as lines, so the kept text is
+    the text of the process. The Codex adapter emits trimmed pipe chunks. A
+    credential that a chunk boundary divides is not redacted here, and it is
+    not redacted in the primary turn's tail (`agent-stderr-tail.ts`) either.
+  - **`auth_required`.** An adapter that finds no credential emits it inside
+    `run()` and starts no process, so no `done` follows; such a run used to wait
+    for the wall-clock cap. Each caller starts the adapter through
+    `handle.start(() => agent.run(…))`, and an `auth_required` in that call ends
+    the run at once (as `cancelled` if the caller cancelled it before). From a
+    live process the event does **not** end the run:
+    the Codex adapter emits it for any stderr line with "api key" in it, and a
+    result can follow whose error the account failover must read. If the
+    process then exits with no result, the run is an `error` that names the
+    credential, also when the exit code is 0 (the Claude adapter does not pass
+    on the result of an auth failure).
 - **Cancel handling.** *Superseded 2026-08-31 — see §8.* Cancelling the
   primary's turn does **not** cancel the sub-agent running on its behalf, and
   the `POST /agent/cancel` primitive this bullet described is gone. A spawn ends
@@ -452,12 +488,14 @@ the pinned agent's already-present credentials and provisions nothing).
   lands against the fresh budget), and refilling on a *programmatic* steer
   (`trySteerDispatch`, reachable by a parent agent messaging its child).
   Guard: `integration_tests/sub-agent-budget-steering.test.ts`.
-- **Cost / wall-clock cap.** Wall-clock cap on each subprocess (30 min, raised
-  from the initial 5 min because real consults — audits, large-diff reviews,
-  generation — routinely overran it; override via `SHIPIT_SUB_AGENT_TIMEOUT_MS`);
-  output-token cap via the sub-agent CLI's natural settings (initial: 8K).
-  Hitting either truncates, with the result flagged truncated and a note the
-  primary can surface.
+- **Wall-clock and output-size caps. There is no cost cap.** Wall-clock cap on
+  each subprocess (30 min, raised from the initial 5 min because real consults —
+  audits, large-diff reviews, generation — routinely overran it; override via
+  `SHIPIT_SUB_AGENT_TIMEOUT_MS`); output-size cap on the returned text
+  (`DEFAULT_SUB_AGENT_MAX_OUTPUT_CHARS`, 32,000 characters). Hitting either flags
+  the result `truncated`. The result's `outputLimitChars` is present only when
+  the size cap cut the text, so the CLI's note names the cap that applied; a
+  timed-out run has status `timeout`.
 - **Recursion cap.** Depth 1 (§3) — a best-effort guard that stops a
   well-behaved sub-agent from recursing; not forgery-resistant in v0 (the
   per-turn cap above is what bounds an adversarial sub-agent's fan-out).
@@ -654,7 +692,7 @@ a no-op (docs/138). Sub-agent spawning in local mode:
   `removeSubAgentCredentials`) short-circuit, mirroring docs/138.
 - The "spawn sub-agent as subprocess" path mirrors local mode's primary-agent
   flow (in-process spawn rather than container subprocess).
-- Setting gate, per-turn cap, cost cap, recursion cap, and the `shipit agent`
+- Setting gate, per-turn cap, run caps, recursion cap, and the `shipit agent`
   command all behave identically.
 
 ### 9. Re-reading a finished run — `shipit agent result` (planning#247)
@@ -848,7 +886,7 @@ persisted output and `shipit agent result` are unaffected.
     and is instead bounded only by the shared per-turn cap.
   - Per-turn cap: 4th spawn in one primary turn returns error without
     spawning.
-  - Cost cap: synthetic over-limit output truncated, result flagged.
+  - Output-size cap: synthetic over-limit output truncated, result flagged.
   - Crash path: subprocess killed → primary sees error, creds wiped.
   - Spawn lifetime (§8): a primary-turn interrupt or kill leaves an in-flight
     spawn running and its result still reaches the card; only `dispose()` and

@@ -1002,7 +1002,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     const prev = process.env.SHIPIT_AGENT_DEPTH;
     try {
       process.env.SHIPIT_AGENT_DEPTH = String(req.depth + 1);
-      agent.run(buildSubAgentRunParams(runOpts));
+      handle.start(() => { agent.run(buildSubAgentRunParams(runOpts)); });
       if (prev === undefined) Reflect.deleteProperty(process.env, "SHIPIT_AGENT_DEPTH");
       else process.env.SHIPIT_AGENT_DEPTH = prev;
       return await handle.promise;

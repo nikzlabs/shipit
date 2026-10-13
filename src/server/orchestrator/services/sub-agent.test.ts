@@ -1194,6 +1194,177 @@ describe("runSubAgent — durable in-flight consult card", () => {
   });
 });
 
+describe("runSubAgent — a failed run states its reason", () => {
+  // Put together here, so that no secret scan reads a credential in this file.
+  const FAKE_KEY = ["sk", "proj", "k".repeat(28)].join("-");
+
+  afterEach(() => vi.restoreAllMocks());
+
+  function finishedLine(log: { mock: { calls: unknown[][] } }): string {
+    const line = log.mock.calls.map((call) => String(call[0])).find((l) => l.includes("[sub-agent] finished"));
+    expect(line).toBeDefined();
+    return line!;
+  }
+
+  // The originating turn is over when the run ends, so the card goes to its stored row:
+  // that row is what `shipit agent result` reads back.
+  function endsAfterItsTurn(
+    made: ReturnType<typeof makeDeps>,
+    outcome: SubAgentRunResult | Error,
+  ): void {
+    made.runner.spawnSubAgent = vi.fn(async () => {
+      made.runner.running = false;
+      if (outcome instanceof Error) throw outcome;
+      return outcome;
+    }) as never;
+  }
+
+  function storedCard(update: ReturnType<typeof vi.fn>): SubAgentConsultCard {
+    return (update.mock.calls.at(-1) as unknown as [string, string, SubAgentConsultCard])[2];
+  }
+
+  it("puts the reason on the card, in the log and in the answer to the caller", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const made = makeDeps({});
+    const { deps, emitMessage, updateSubAgentConsultCard } = made;
+    endsAfterItsTurn(made, {
+      status: "error",
+      text: "",
+      truncated: false,
+      durationMs: 147,
+      costUsd: 0,
+      error: "The agent process exited before it reported a result.",
+      exitCode: 2,
+      stderrTail: "error: config.toml is not valid",
+    });
+
+    const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    const reason =
+      "The agent process exited before it reported a result. Exit code 2. Last stderr: error: config.toml is not valid";
+    expect(res).toMatchObject({ status: "error", statusDetail: reason });
+    expect(storedCard(updateSubAgentConsultCard)).toMatchObject({ status: "error", statusDetail: reason });
+    const wireCard = emitMessage.mock.calls
+      .map((c) => c[0] as { type: string; card?: SubAgentConsultCard })
+      .find((m) => m.type === "sub_agent_consult_card" && m.card?.status === "error")!.card!;
+    expect(wireCard.statusDetail).toBe(reason);
+    expect(finishedLine(log)).toContain(`reason=${JSON.stringify(reason)}`);
+  });
+
+  it("gives a timed-out run its reason too", async () => {
+    const made = makeDeps({});
+    const { deps, updateSubAgentConsultCard } = made;
+    endsAfterItsTurn(made, {
+      status: "timeout",
+      text: "half a review",
+      truncated: true,
+      durationMs: 1_800_000,
+      costUsd: 0,
+      error: "The run did not finish within its time limit (30 min), and ShipIt stopped it.",
+      stderrTail: "stream error: retrying in 30s",
+    });
+
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    expect(storedCard(updateSubAgentConsultCard)).toMatchObject({
+      status: "timeout",
+      outputMarkdown: "half a review",
+      statusDetail:
+        "The run did not finish within its time limit (30 min), and ShipIt stopped it. "
+        + "Last stderr: stream error: retrying in 30s",
+    });
+  });
+
+  it("names the transport failure when the spawn throws", async () => {
+    const made = makeDeps({});
+    const { deps, updateSubAgentConsultCard } = made;
+    endsAfterItsTurn(made, new Error(`worker unreachable\n(Authorization: Bearer ${FAKE_KEY})`));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
+    ).rejects.toThrow("worker unreachable");
+
+    const card = storedCard(updateSubAgentConsultCard);
+    expect(card.status).toBe("error");
+    expect(card.statusDetail).toContain("worker unreachable");
+    expect(card.statusDetail).not.toContain(FAKE_KEY);
+    const failedLine = warn.mock.calls.map((call) => String(call[0])).find((l) => l.includes("[sub-agent] failed"))!;
+    expect(failedLine).toContain("worker unreachable (Authorization: Bearer [REDACTED]");
+    expect(failedLine).not.toContain(FAKE_KEY);
+    expect(failedLine).not.toContain("\n");
+  });
+
+  it("names the transport backstop on a timeout that the worker never reported", async () => {
+    const made = makeDeps({});
+    const { deps, updateSubAgentConsultCard } = made;
+    endsAfterItsTurn(made, new WorkerTimeoutError("/agent/spawn", SUB_AGENT_TRANSPORT_TIMEOUT_MS));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
+    ).rejects.toBeInstanceOf(WorkerTimeoutError);
+
+    expect(storedCard(updateSubAgentConsultCard)).toMatchObject({
+      status: "timeout",
+      statusDetail: `Worker request timed out after ${SUB_AGENT_TRANSPORT_TIMEOUT_MS}ms: /agent/spawn.`,
+    });
+  });
+
+  it("redacts a credential that a worker sent in the stderr tail", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const made = makeDeps({});
+    const { deps, updateSubAgentConsultCard } = made;
+    endsAfterItsTurn(made, {
+      status: "error",
+      text: "",
+      truncated: false,
+      durationMs: 30,
+      costUsd: 0,
+      error: "crashed",
+      stderrTail: `401 Unauthorized for key ${FAKE_KEY}`,
+    });
+
+    const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    expect(res.statusDetail).toBe("crashed. Last stderr: 401 Unauthorized for key [REDACTED]");
+    expect(JSON.stringify(res)).not.toContain(FAKE_KEY);
+    expect(JSON.stringify(storedCard(updateSubAgentConsultCard))).not.toContain(FAKE_KEY);
+    expect(finishedLine(log)).not.toContain(FAKE_KEY);
+  });
+
+  it("redacts the error in the answer that `shipit agent run --json` prints", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const made = makeDeps({});
+    endsAfterItsTurn(made, {
+      status: "error",
+      text: "",
+      truncated: false,
+      durationMs: 30,
+      costUsd: 0,
+      error: `provider refused the key ${FAKE_KEY}`,
+    });
+
+    const res = await runSubAgent(made.deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    expect(res.error).toBe("provider refused the key [REDACTED]");
+    expect(JSON.stringify(res)).not.toContain(FAKE_KEY);
+  });
+
+  it("adds no reason to a run that succeeded", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const made = makeDeps({});
+    const { deps, updateSubAgentConsultCard } = made;
+    endsAfterItsTurn(made, { status: "success", text: "no findings", truncated: false, durationMs: 10, costUsd: 0 });
+
+    const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    expect(res.statusDetail).toBeUndefined();
+    expect(storedCard(updateSubAgentConsultCard).statusDetail).toBeUndefined();
+    expect(finishedLine(log)).not.toContain("reason=");
+  });
+});
+
 describe("getSubAgentResult (planning#247)", () => {
   const card = (spawnId: string, outputMarkdown: string) => ({
     cardId: `c-${spawnId}`,
@@ -1364,7 +1535,10 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
   const OUTPUT = "## Findings\n\n- `foo.ts:42` — a real bug\n";
   const TURN_ONE_TEXT = "Launching a Codex review in the background…";
 
-  function consultScenario(launch: "mid-turn" | "post-turn" | "foreground") {
+  function consultScenario(
+    launch: "mid-turn" | "post-turn" | "foreground",
+    outcome: Partial<SubAgentRunResult> = {},
+  ) {
     const dbManager = new DatabaseManager(":memory:");
     const chatHistoryManager = new ChatHistoryManager(dbManager);
     const finalizeTurnOne = () => {
@@ -1387,6 +1561,7 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
           truncated: false,
           durationMs: 1_100_000,
           costUsd: 0,
+          ...outcome,
         };
       }),
     };
@@ -1426,6 +1601,29 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
         const byId = getSubAgentResult({ chatHistoryManager }, "s1", res.spawnId);
         expect(byId.outputMarkdown).toBe(OUTPUT);
         expect(getSubAgentResult({ chatHistoryManager }, "s1").spawnId).toBe(res.spawnId);
+        dbManager.close();
+      });
+
+      it("gives the reason of a failed run to `shipit agent result <id>` a turn later", async () => {
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        const { dbManager, chatHistoryManager, runner, deps } = consultScenario(launch, {
+          status: "error",
+          text: "",
+          error: "The agent process exited before it reported a result.",
+          exitCode: 2,
+          stderrTail: "error: config.toml is not valid",
+        });
+        const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+        startTurnTwo(chatHistoryManager, runner as never);
+
+        expect(getSubAgentResult({ chatHistoryManager }, "s1", res.spawnId)).toMatchObject({
+          status: "error",
+          statusDetail:
+            "The agent process exited before it reported a result. Exit code 2. "
+            + "Last stderr: error: config.toml is not valid",
+        });
+        vi.restoreAllMocks();
         dbManager.close();
       });
 

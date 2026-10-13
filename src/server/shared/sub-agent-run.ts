@@ -1,4 +1,6 @@
 import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, AgentRequestUsage, ServiceRouting } from "./types.js";
+import { redactCredentials } from "./credential-redaction.js";
+import { createRedactedTail } from "./redacted-tail.js";
 
 export const DEFAULT_SUB_AGENT_TIMEOUT_MS = parseTimeoutEnv(
   process.env.SHIPIT_SUB_AGENT_TIMEOUT_MS,
@@ -15,6 +17,12 @@ function parseTimeoutEnv(raw: string | undefined, fallback: number): number {
 }
 
 export const DEFAULT_SUB_AGENT_MAX_OUTPUT_CHARS = 32_000;
+
+/** Small enough for a consult card and one log line. */
+export const SUB_AGENT_STDERR_TAIL_MAX_CHARS = 300;
+export const SUB_AGENT_FAILURE_MESSAGE_MAX_CHARS = 300;
+
+const AUTH_REQUIRED_REASON = "The agent CLI reported that its credential is missing or was refused.";
 
 export interface SubAgentRunOptions {
   prompt: string;
@@ -52,6 +60,45 @@ export interface SubAgentRunResult {
     weekly: { usedPct: number | null; resetAt: string } | null;
   };
   error?: string;
+  /** Present when the harness process reported one. */
+  exitCode?: number;
+  /** Redacted, bounded end of the harness's stderr; only on a run that failed or timed out. */
+  stderrTail?: string;
+  /** Present when `text` was cut at this size. A timed-out run is `truncated` also with no cut. */
+  outputLimitChars?: number;
+}
+
+// Redact before a cut: a cut can leave a part of a secret that no pattern knows.
+function redactedLine(text: string): string {
+  return redactCredentials(text).text.replace(/\s+/g, " ").trim();
+}
+
+function endOf(line: string, maxChars: number): string {
+  return line.length > maxChars ? `…${line.slice(-maxChars)}` : line;
+}
+
+function formatTimeLimit(ms: number): string {
+  return ms % 60_000 === 0 ? `${ms / 60_000} min` : `${Math.ceil(ms / 1_000)} s`;
+}
+
+/** One line. It redacts and bounds its input again, because a result can come from a worker. */
+export function describeSubAgentFailure(
+  run: Pick<SubAgentRunResult, "status" | "error" | "exitCode" | "stderrTail">,
+): string | undefined {
+  if (run.status !== "error" && run.status !== "timeout") return undefined;
+  const given = redactedLine(run.error ?? "");
+  const message = given.length > SUB_AGENT_FAILURE_MESSAGE_MAX_CHARS
+    ? `${given.slice(0, SUB_AGENT_FAILURE_MESSAGE_MAX_CHARS)}…`
+    : given;
+  const fallback = run.status === "timeout"
+    ? "The run reached its time limit."
+    : "The agent reported a failure and gave no reason.";
+  const stderr = endOf(redactedLine(run.stderrTail ?? ""), SUB_AGENT_STDERR_TAIL_MAX_CHARS);
+  return [
+    !message ? fallback : /[.!?…]$/.test(message) ? message : `${message}.`,
+    ...(typeof run.exitCode === "number" ? [`Exit code ${run.exitCode}.`] : []),
+    ...(stderr ? [`Last stderr: ${stderr}`] : []),
+  ].join(" ");
 }
 
 export interface SubAgentSpawnRequest {
@@ -72,6 +119,11 @@ export interface SubAgentSpawnRequest {
 export interface SubAgentRunHandle {
   promise: Promise<SubAgentRunResult>;
   cancel: () => void;
+  /**
+   * Call `agent.run()` in this. An adapter that finds no credential emits `auth_required` in
+   * that call and starts no process, so the run must end there: no `done` follows.
+   */
+  start: (run: () => void) => void;
 }
 
 function assistantText(event: Extract<AgentEvent, { type: "agent_assistant" }>): string {
@@ -106,6 +158,11 @@ export function runAgentToCompletion(
   let rateLimits: SubAgentRunResult["rateLimits"] | undefined;
   let resultStatus: "success" | "error" | undefined;
   let resultError: string | undefined;
+  let exitCode: number | undefined;
+  let authRequired = false;
+  const stderr = createRedactedTail();
+
+  let adapterStarting = false;
 
   let settled = false;
   let cancelled = false;
@@ -116,6 +173,14 @@ export function runAgentToCompletion(
       cancelled = true;
       try { agent.kill(); } catch { /* best-effort */ }
     },
+    start: (run) => {
+      adapterStarting = true;
+      try {
+        run();
+      } finally {
+        adapterStarting = false;
+      }
+    },
     promise: new Promise<SubAgentRunResult>((resolve) => {
       const finish = (statusOverride?: SubAgentRunStatus) => {
         if (settled) return;
@@ -124,14 +189,19 @@ export function runAgentToCompletion(
 
         let text = (completedMessages.length > 0 ? completedMessages.join("\n\n") : lastFullText) || "";
         let truncated = false;
+        let outputLimitChars: number | undefined;
         if (text.length > maxOutputChars) {
           text = text.slice(0, maxOutputChars);
           truncated = true;
+          outputLimitChars = maxOutputChars;
         }
         const status: SubAgentRunStatus =
           statusOverride ??
           (timedOut ? "timeout" : cancelled ? "cancelled" : resultStatus === "error" ? "error" : "success");
         if (timedOut) truncated = true;
+        const stderrTail = status === "error" || status === "timeout"
+          ? stderr.read(SUB_AGENT_STDERR_TAIL_MAX_CHARS)
+          : "";
         resolve({
           status,
           text,
@@ -147,11 +217,15 @@ export function runAgentToCompletion(
           ...(requests !== undefined ? { requests } : {}),
           ...(rateLimits !== undefined ? { rateLimits } : {}),
           ...(resultError !== undefined ? { error: resultError } : {}),
+          ...(exitCode !== undefined ? { exitCode } : {}),
+          ...(stderrTail ? { stderrTail } : {}),
+          ...(outputLimitChars !== undefined ? { outputLimitChars } : {}),
         });
       };
 
       const timer = setTimeout(() => {
         timedOut = true;
+        resultError = `The run did not finish within its time limit (${formatTimeLimit(timeoutMs)}), and ShipIt stopped it.`;
         try { agent.kill(); } catch { /* best-effort */ }
         finish("timeout");
       }, timeoutMs);
@@ -191,17 +265,33 @@ export function runAgentToCompletion(
         }
       });
 
-      // A crash without agent_result is a failure even if it emitted some text.
-      agent.on("done", (exitCode?: number | null) => {
+      agent.on("log", (source: string, text: string) => {
+        if (source.endsWith("stderr")) stderr.add(text);
+      });
+
+      // From a live process this does not end the run: the Codex adapter emits it for a stderr
+      // line with "api key" in it, and the account failover reads the result that can follow.
+      agent.on("auth_required", () => {
+        authRequired = true;
+        if (!adapterStarting) return;
+        if (!cancelled) resultError ??= AUTH_REQUIRED_REASON;
+        finish(cancelled ? "cancelled" : "error");
+      });
+
+      // A crash without agent_result is a failure even if it emitted some text. So is an exit
+      // after auth_required: the Claude adapter does not pass on the result of an auth failure.
+      agent.on("done", (code?: number | null) => {
+        if (typeof code === "number") exitCode = code;
         if (
           resultStatus === undefined &&
           !cancelled &&
           !timedOut &&
-          typeof exitCode === "number" &&
-          exitCode !== 0
+          (authRequired || (typeof code === "number" && code !== 0))
         ) {
           resultStatus = "error";
-          resultError ??= `The agent process exited with code ${exitCode} before reporting a result.`;
+          resultError ??= authRequired
+            ? AUTH_REQUIRED_REASON
+            : "The agent process exited before it reported a result.";
           finish("error");
           return;
         }
@@ -210,7 +300,8 @@ export function runAgentToCompletion(
       agent.on("error", (err: Error) => {
         resultStatus = "error";
         resultError = err.message;
-        finish("error");
+        // The Claude and OpenCode adapters emit `done`, with the exit code, directly after this.
+        queueMicrotask(() => finish("error"));
       });
     }),
   };
