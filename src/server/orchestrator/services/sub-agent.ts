@@ -41,7 +41,7 @@ import {
   subAgentSpawnHomeContainerDir,
   subAgentSpawnHomeDir,
 } from "../session-credentials.js";
-import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import { positiveIntEnv, type SubAgentRunResult } from "../../shared/sub-agent-run.js";
 import {
   detectHardExhaustion,
   detectHardExhaustionInTurnText,
@@ -52,7 +52,27 @@ import type { ConsultResultDeliveryRequest } from "./consult-result-delivery.js"
 import type { GitManager } from "../../shared/git.js";
 import { ServiceError } from "./types.js";
 
-export const SUB_AGENT_PER_TURN_CAP = 3;
+// The value of the limit on unfinished child sessions (docs/144-cross-agent-review req 2).
+export const MAX_SUB_AGENT_RUNS_IN_PROGRESS = positiveIntEnv(
+  process.env.SHIPIT_SUB_AGENT_MAX_IN_PROGRESS,
+  16,
+);
+
+// Keyed by runner, so a slot that is never released ends with the runner, not with the process.
+const runsInProgress = new WeakMap<object, number>();
+
+interface RunSlot {
+  release?: () => void;
+}
+
+function takeRunSlot(runner: object): (() => void) | null {
+  const held = runsInProgress.get(runner) ?? 0;
+  if (held >= MAX_SUB_AGENT_RUNS_IN_PROGRESS) return null;
+  runsInProgress.set(runner, held + 1);
+  return () => {
+    runsInProgress.set(runner, (runsInProgress.get(runner) ?? 1) - 1);
+  };
+}
 
 export interface ConsultCardPersister extends InProgressPersister {
   updateSubAgentConsultCard(
@@ -144,6 +164,20 @@ export async function runSubAgent(
   sessionId: string,
   input: RunSubAgentInput,
 ): Promise<RunSubAgentResult> {
+  const slot: RunSlot = {};
+  try {
+    return await runSubAgentInSlot(deps, sessionId, input, slot);
+  } finally {
+    slot.release?.();
+  }
+}
+
+async function runSubAgentInSlot(
+  deps: RunSubAgentDeps,
+  sessionId: string,
+  input: RunSubAgentInput,
+  slot: RunSlot,
+): Promise<RunSubAgentResult> {
   const { target, depth } = input;
   const requested = target.kind === "role" ? `role:${target.role}` : target.harnessId;
   let prompt = input.prompt;
@@ -170,7 +204,7 @@ export async function runSubAgent(
   }
   const implementerHarness = session.agentId;
 
-  // A caller can forge depth; the runner's per-turn cap supplies the hard bound.
+  // A caller can forge depth; the limit on runs in progress supplies the hard bound.
   if (depth !== 0) {
     throw rejectSpawn(sessionId, requested, 403, "recursion_depth",
       "Sub-agents cannot spawn further sub-agents.");
@@ -184,10 +218,13 @@ export async function runSubAgent(
     throw rejectSpawn(sessionId, requested, 409, "session_inactive", "Session is not active.");
   }
 
-  if (runner.subAgentSpawnsThisTurn >= SUB_AGENT_PER_TURN_CAP) {
-    throw rejectSpawn(sessionId, requested, 429, "per_turn_cap",
-      `Sub-agent spawn cap reached for this turn (max ${SUB_AGENT_PER_TURN_CAP}).`);
+  const release = takeRunSlot(runner);
+  if (!release) {
+    throw rejectSpawn(sessionId, requested, 429, "in_progress_cap",
+      `Sub-agent run limit reached: ${MAX_SUB_AGENT_RUNS_IN_PROGRESS} runs are in progress in this session. `
+      + "Wait for one to finish, then run the command again.");
   }
+  slot.release = release;
 
   // Capture once so retries and attribution use the same target.
   const implementer = implementerFor(session, implementerHarness, runner.appliedSpawnIdentity);
@@ -253,8 +290,6 @@ export async function runSubAgent(
     }
   }
 
-  runner.subAgentSpawnsThisTurn += 1;
-
   const selection = resolvedTarget.route
     ? undefined
     : deps.providerAccountManager
@@ -308,7 +343,7 @@ export async function runSubAgent(
     + `target=${requested} depth=${depth} promptBytes=${promptBytes} `
     + `route=${route?.kind ?? "default"}:${accountId ?? "-"} `
     + `model=${subSelection.serviceId}/${subSelection.billingMode}/${spawnModel} `
-    + `effort=${reasoningEffort ?? "default"} spawnsThisTurn=${runner.subAgentSpawnsThisTurn}`,
+    + `effort=${reasoningEffort ?? "default"} inProgress=${runsInProgress.get(runner) ?? 0}`,
   );
 
   // Persist at admission so background runs stay visible and anchored to their call site.

@@ -6,7 +6,7 @@ import type {
   AgentEvent,
   AgentId,
 } from "./agents/agent-process.js";
-import type { PermissionMode, ServiceRouting, WorkerAgentKillBody, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
+import type { PermissionMode, PermissionSubagent, ServiceRouting, WorkerAgentKillBody, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
 import type {
   AgentGoalCommand,
   WorkerAgentGoalBody,
@@ -14,7 +14,7 @@ import type {
   WorkerServiceMcpResult,
 } from "../shared/types/agent-types.js";
 import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
-import { toolResultIds, type PermissionBroker } from "./permission-broker.js";
+import { SubagentCallTracker, toolResultIds, type PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
 import { getErrorMessage } from "../shared/utils.js";
@@ -62,6 +62,9 @@ export interface AgentControllerDeps {
 // there, and one applied after the caller gave up would run twice.
 const MESSAGE_START_WAIT_MS = 5_000;
 
+// Long against a local pipe, short against a card that a person reads.
+const TOOL_CALL_SEEN_WAIT_MS = 250;
+
 export class AgentController {
   private agent: AgentProcess | null = null;
 
@@ -90,6 +93,8 @@ export class AgentController {
   private backgroundTaskCount = 0;
   private selfWakeActive = false;
 
+  private readonly toolCalls = new SubagentCallTracker();
+
   private reclaimInFlight = false;
   private reclaimPending = false;
 
@@ -102,6 +107,11 @@ export class AgentController {
 
   get currentAgentId(): AgentId | undefined {
     return this.agent?.agentId;
+  }
+
+  async subagentCaller(toolUseId: string): Promise<PermissionSubagent | undefined> {
+    await this.toolCalls.whenOpened(toolUseId, TOOL_CALL_SEEN_WAIT_MS);
+    return this.toolCalls.callerOf(toolUseId);
   }
 
   registerRoutes(app: FastifyInstance): void {
@@ -476,6 +486,7 @@ export class AgentController {
     this.pendingDeliveryId = undefined;
     this.endTurn();
     this.backgroundTaskCount = 0;
+    this.toolCalls.clear();
   }
 
   private endTurn(): void {
@@ -569,6 +580,11 @@ export class AgentController {
         for (const id of toolResultIds(event.content)) this.deps.permissionBroker.endToolUse(id);
       }
       if (this.agent !== agent) return;
+      // After the guard: a replaced process's late events must not enter its successor's calls.
+      if (event.type === "agent_assistant") this.toolCalls.opened(event.content, event.parentToolUseId);
+      else if (event.type === "agent_tool_result") {
+        for (const id of toolResultIds(event.content)) this.toolCalls.closed(id);
+      }
       if (event.type === "agent_result") this.endTurn();
       else if (event.type === "agent_background_tasks") this.backgroundTaskCount = event.tasks.length;
       else if (event.type === "agent_self_wake") this.selfWakeActive = true;

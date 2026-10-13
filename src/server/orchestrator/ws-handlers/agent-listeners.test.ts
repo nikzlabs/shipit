@@ -1,11 +1,12 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import { SessionRunner } from "../session-runner.js";
 import { wireAgentListeners, buildTurnMessages, recordSteeredMessage, type AgentListenerDeps } from "./agent-listeners.js";
 import { AGENT_NOT_AUTHENTICATED_MESSAGE } from "./agent-auth-handler.js";
+import { PERMISSION_WAIT_NOTICE_MS } from "../permission-wait-notice.js";
 import type { ChatMessageGroup, RecordedChatCard } from "../session-runner.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
@@ -1780,6 +1781,77 @@ describe("wireAgentListeners — a streamed event names its session", () => {
     expect(streamed).toEqual([expect.objectContaining({ type: "agent_event", sessionId: "session-stream" })]);
     runner.dispose({ force: true });
   });
+});
+
+describe("wireAgentListeners — a subagent's call that waits for approval (docs/193-sensitive-file-permission req 2)", () => {
+  function wireAndRequest(subagent: "background" | "foreground" | undefined) {
+    const agent = new FakeAgent("claude");
+    const runner = new SessionRunner({ sessionId: "session-wait", sessionDir: "/tmp/session-wait", defaultAgentId: "claude" });
+    runner.setAgent(agent as unknown as AgentProcess);
+    runner.running = true;
+    runner.isStreamingActive = true;
+    const d = deps();
+    Object.assign(d.chatHistoryManager, { hasInProgress: () => false, updatePermissionCard: vi.fn() });
+    wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+      capturedSessionId: "session-wait",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+    const dispatch = vi.spyOn(runner, "dispatch");
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    agent.emit("event", {
+      type: "agent_permission_request",
+      requestId: "perm_1",
+      toolName: "Write",
+      summary: "Write /workspace/link/a.txt",
+      ...(subagent ? { subagent } : {}),
+    } satisfies AgentEvent);
+    return { runner, dispatch, agent };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("offers the running turn a line about a background subagent's request", () => {
+    const { runner, dispatch } = wireAndRequest("background");
+
+    vi.advanceTimersByTime(PERMISSION_WAIT_NOTICE_MS);
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    const [prepared, admission] = dispatch.mock.calls[0]!;
+    expect(prepared.text).toContain("Write /workspace/link/a.txt");
+    expect(admission).toEqual({ whenBusy: "steer-or-refuse" });
+    runner.dispose({ force: true });
+  });
+
+  it("offers no line once the request has its answer", () => {
+    const { runner, dispatch, agent } = wireAndRequest("background");
+
+    agent.emit("event", { type: "agent_permission_resolved", requestId: "perm_1", behavior: "allow" } satisfies AgentEvent);
+    vi.advanceTimersByTime(10 * PERMISSION_WAIT_NOTICE_MS);
+
+    expect(dispatch).not.toHaveBeenCalled();
+    runner.dispose({ force: true });
+  });
+
+  // The main agent waits inside these calls, so it reads a line only after the request ended.
+  it.each([["the main agent's own request", undefined], ["a foreground subagent's request", "foreground"]] as const)(
+    "sends no line about %s",
+    (_label, subagent) => {
+      const { runner, dispatch } = wireAndRequest(subagent);
+
+      vi.advanceTimersByTime(10 * PERMISSION_WAIT_NOTICE_MS);
+
+      expect(dispatch).not.toHaveBeenCalled();
+      runner.dispose({ force: true });
+    },
+  );
 });
 
 describe("wireAgentListeners — permission cards no agent can answer (docs/193)", () => {

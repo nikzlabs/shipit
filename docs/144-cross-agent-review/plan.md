@@ -5,6 +5,9 @@ issue: planning#39
 
 # 144 — Sub-agent spawning (cross-agent delegation)
 
+The requirements for the limit on runs are in [`requirements.md`](./requirements.md);
+the rest of the feature predates requirements discipline.
+
 > **Reconnect invariant:** the in-flight `sub_agent_spawn` chip is transient
 > client state. The client clears it whenever the session WebSocket disconnects,
 > then queues any replayed spawn marker until HTTP history has rehydrated. A
@@ -109,7 +112,7 @@ affordance the pinned agent drives.
   subprocess, outside the slot machinery, and exits when done.
 - **Multi-level recursion.** A spawned sub-agent is not meant to spawn
   another sub-agent; depth is capped at 1 by a best-effort guard (§3), with
-  the per-turn cap as the forgery-resistant backstop. Deep agent trees /
+  the limit on runs in progress (§5) as the forgery-resistant backstop. Deep agent trees /
   orchestration graphs are out of scope.
 - **A slash command.** The primary agent recognizes the user saying "review
   with codex" / "ask claude to draft the migration" and runs the `shipit
@@ -293,13 +296,14 @@ Flow:
      POST the localhost worker directly with `{"depth":0}`. The worker can't
      close this in v0 — it's a single long-lived process, so it has no trusted
      view of an arbitrary calling subprocess's env (unlike `SESSION_ID`, which
-     it injects). The actual forgery-resistant bound on total fan-out is the
-     **per-turn cap (§5)**, which the next check enforces: it lives on the
-     runner keyed by the worker-injected `SESSION_ID`, so *every* spawn in the
-     session's turn — including any a sub-agent forges its way into —
-     decrements the same budget. Worktree isolation (Future work) is what
+     it injects). The actual forgery-resistant bound on fan-out is the
+     **limit on runs in progress (§5)**, which the next check enforces: the
+     orchestrator counts it against the runner that the worker-injected
+     `SESSION_ID` resolves to, so *every* run in the session — including any a
+     sub-agent forges its way into — holds a slot of the same limit for as long
+     as it runs. Worktree isolation (Future work) is what
      would let a later version make depth itself enforceable.
-   - Per-turn cap (§5) not yet exceeded.
+   - Runs in progress (§5) below the limit.
 4. **Credential provisioning (§4)** runs synchronously for a cross-provider
    spawn, before the subprocess starts.
 5. **Orchestrator → worker spawn.** `POST /agent/spawn` on the session
@@ -451,48 +455,37 @@ shares it with the session's turns.
 
 ### 5. Caps, cost, attribution
 
-- **Per-turn cap (the real fan-out bound).** The runner tracks
-  `subAgentSpawnsThisTurn`, incremented on each spawn reaching
-  `services/sub-agent.ts`, refilled on each new human instruction. Modest hard cap in v0
-  (**3 per turn**) — enough for "review with both other models" or a couple
-  of delegations, low enough to bound a misbehaving-primary loop. A call past
-  the cap returns an error without spawning. This is the **forgery-resistant**
-  bound (§3): the counter is keyed by the worker-injected `SESSION_ID`, which
-  a sub-agent cannot spoof, so every spawn in the turn — primary's or any a
-  sub-agent forges past the best-effort depth guard — decrements the same
-  budget. Spam across turns is not a separate concern: bounded by normal turn
-  rate and the user's intent.
+- **Runs in progress (the real fan-out bound).** A session may have
+  `MAX_SUB_AGENT_RUNS_IN_PROGRESS` runs in progress at the same time: 16 by
+  default, the value of the limit on unfinished child sessions (req 2,
+  docs/117), and `SHIPIT_SUB_AGENT_MAX_IN_PROGRESS` on the orchestrator changes
+  it. A run holds a slot from admission until `runSubAgent` settles — success,
+  error, time limit or cancellation, through its credential cleanup and its
+  commit step. A call past the limit returns an error (429) without spawning and
+  without a card, and the error tells the caller to wait for a run to finish and
+  then try again.
 
-  **Where the budget refills matters as much as its size.** It was originally
-  refilled in exactly one place, inside `resetRunnerTurnState`, i.e. only when an
-  orchestrator turn *starts*. That covers ordinary, queued, retried and adopted
-  turns (all enter `executeAgentTurn`) and self-woken turns (docs/235 —
-  `agent_self_wake` calls it behind `!runner.running`). It does **not** cover
-  **live steering**: a message the user types while the agent is mid-turn is
-  injected into the running turn on purpose (docs/140), starting no orchestrator
-  turn. On that path the budget had no refill point at all, so in a session where
-  the agent is usually busy — the ordinary shape once it backgrounds consults —
-  every typed message drew on one budget of 3, and `shipit agent run` was then
-  refused with "cap reached for this turn" on a turn the user experiences as
-  brand new.
+  This is the bound that a sub-agent cannot forge its way past (§3). The
+  orchestrator keeps the count (`runsInProgress` in `services/sub-agent.ts`)
+  against the runner that the worker-injected `SESSION_ID` resolves to. A
+  sub-agent that forges its depth and spawns another holds its own slot while
+  it waits for the other, so a chain stops at the limit.
 
-  The budget therefore has its own `resetSubAgentSpawnBudget`
-  (`session-runner.ts`), called from `resetRunnerTurnState` **and** from the WS
-  steer branch in `ws-handlers/send-message.ts`. It never calls
-  `resetRunnerTurnState` on the steer path: that would clear the accumulator
-  mid-turn and destroy the running turn's chat history (docs/237).
+  **It counts the runs the orchestrator is waiting for**, which is not always
+  the processes alive in the container. A run whose connection to the worker
+  failed frees its slot while its process can go on, and so does every run that
+  outlives an orchestrator restart. Both end on their own wall-clock cap. Like
+  the child-session limit, this is a brake on an accident and not admission
+  control.
 
-  The refill trigger is deliberately **a human keystroke** — a WS `send_message`
-  from a browser client, which no agent can emit — so §5's forgery-resistant
-  bound is untouched. Three agent-reachable alternatives were considered and
-  rejected for the same reason: refilling on `agent_self_wake` (any finished
-  `Bash(run_in_background)` job emits the notification it rides on), refilling at
-  CLI turn *end* (`agent_result` is neither once-per-turn — Codex emits two for
-  one turn — nor exhaustive, since `done`-without-result paths exist, and it
-  opens an idle window in which a spawn request scheduled before the boundary
-  lands against the fresh budget), and refilling on a *programmatic* steer
-  (`trySteerDispatch`, reachable by a parent agent messaging its child).
-  Guard: `integration_tests/sub-agent-budget-steering.test.ts`.
+  **There is no count for each turn, on purpose (req 1).** v0 allowed 3 runs for
+  each turn. A refusal for that count does not clear inside the turn, so a turn
+  that nobody interrupts stops there. A refusal for runs in progress clears when
+  a run ends, so the agent waits and continues.
+
+  **The limit does not protect a small container (req 3).** A run is a process
+  in the session's container and shares its memory with the primary agent; a
+  child session has a container of its own.
 - **Cost / wall-clock cap.** Wall-clock cap on each subprocess (30 min, raised
   from the initial 5 min because real consults — audits, large-diff reviews,
   generation — routinely overran it; override via `SHIPIT_SUB_AGENT_TIMEOUT_MS`);
@@ -501,7 +494,8 @@ shares it with the session's turns.
   primary can surface.
 - **Recursion cap.** Depth 1 (§3) — a best-effort guard that stops a
   well-behaved sub-agent from recursing; not forgery-resistant in v0 (the
-  per-turn cap above is what bounds an adversarial sub-agent's fan-out).
+  limit on runs in progress above is what bounds an adversarial sub-agent's
+  fan-out).
 - **Usage attribution.** `UsageManager` records the sub-agent's cost **and full
   token breakdown** (input/output/cache/context) against `subAgentId`, not the
   runner's pinned `agentId`. The token breakdown is carried back from the spawn
@@ -695,8 +689,8 @@ a no-op (docs/138). Sub-agent spawning in local mode:
   docs/138 — except for OpenCode, which always needs its private data home.
 - The "spawn sub-agent as subprocess" path mirrors local mode's primary-agent
   flow (in-process spawn rather than container subprocess).
-- Setting gate, per-turn cap, cost cap, recursion cap, and the `shipit agent`
-  command all behave identically.
+- Setting gate, limit on runs in progress, cost cap, recursion cap, and the
+  `shipit agent` command all behave identically.
 
 ### 9. Re-reading a finished run — `shipit agent result` (planning#247)
 
@@ -814,10 +808,11 @@ persisted output and `shipit agent result` are unaffected.
   id in the path and the forwarded `depth` in the body. Plus (§9)
   `GET /api/sessions/:id/agent/result` → `getSubAgentResult`.
 - **New `services/sub-agent.ts`** — `runSubAgent({ sessionId, subAgentId,
-  prompt })`. Checks the setting + auth + pin + recursion depth + per-turn
-  cap; resolves the sub-agent's provider-account route; provisions the spawn
-  home (§4); calls worker `/agent/spawn`; on completion runs token-sync-back
-  and deletes the home in `finally`; records usage + emits the live
+  prompt })`. Checks the setting + auth + pin + recursion depth + the limit
+  on runs in progress; resolves the sub-agent's provider-account route;
+  provisions the spawn home (§4); calls worker `/agent/spawn`; on completion
+  runs token-sync-back and deletes the home in `finally`; records usage + emits
+  the live
   bill refresh; returns `{ status, text, truncated, durationMs, costUsd,
   inputTokens?, outputTokens?, cacheReadTokens?, cacheCreateTokens?,
   contextTokens? }`. Tracks each in-flight spawn so it can
@@ -855,13 +850,13 @@ persisted output and `shipit agent result` are unaffected.
   the orchestrator's authorization check rejects any non-zero `depth`. This is
   a **best-effort** guard against accidental recursion only — `depth` is
   caller-supplied and a shell-capable sub-agent can spoof it (§3); the
-  forgery-resistant fan-out bound is the per-turn cap, not this env.
+  forgery-resistant fan-out bound is the limit on runs in progress (§5), not
+  this env.
 - **Worker memory headroom** — confirm container sizing tolerates a
   +500MB–1GB peak RSS during a spawn window before shipping. Block-shipping
   concern, not a write-now concern.
-- **`ContainerSessionRunner`** — add `subAgentSpawnsThisTurn: number`
-  (per-turn counter, reset at primary-turn start). No sub-agent slot, queue,
-  or SSE machinery.
+- **`ContainerSessionRunner`** — no sub-agent slot, queue, or SSE machinery,
+  and no run counter: `services/sub-agent.ts` counts the runs in progress (§5).
 - **`UsageManager`** — accept a `subAgentId` parameter distinct from the
   runner's `agentId` when recording sub-agent costs.
 - **Chat surfacing** — the transient in-flight spinner (`sub_agent_spawn` +
@@ -886,9 +881,10 @@ persisted output and `shipit agent result` are unaffected.
   - Recursion cap (best-effort): a spawned sub-agent whose shim forwards a
     non-zero `depth` is rejected. Companion test documents the known v0 gap —
     a sub-agent that spoofs `depth: 0` is *not* rejected by the depth guard
-    and is instead bounded only by the shared per-turn cap.
-  - Per-turn cap: 4th spawn in one primary turn returns error without
-    spawning.
+    and is instead bounded only by the limit on runs in progress.
+  - Runs in progress: a call at the limit returns an error without spawning,
+    and a run that ends — in success, in failure or in a refusal after
+    admission — frees its slot.
   - Cost cap: synthetic over-limit output truncated, result flagged.
   - Crash path: subprocess killed → primary sees error, creds wiped.
   - Spawn lifetime (§8): a primary-turn interrupt or kill leaves an in-flight
@@ -973,11 +969,11 @@ Traceability for the product decisions made during design:
 5. **Recursion capped at depth 1 (best-effort).** A spawned sub-agent is
    blocked from spawning another via a body-carried `depth` guard that stops
    well-behaved recursion; it is not forgery-resistant in v0 (a
-   shell-capable sub-agent can spoof `depth`). The per-turn cap (§5), keyed
-   by the worker-injected session id, is the forgery-resistant bound on total
-   fan-out.
-6. **Per-turn cap = 3 spawns.** Bounds runaway loops; generous enough for
-   "ask both other models" or a couple of delegations.
+   shell-capable sub-agent can spoof `depth`). The limit on runs in progress
+   (§5), counted for the session that the worker-injected session id names, is
+   the forgery-resistant bound on fan-out.
+6. **At most 16 runs in progress for a session, and no count for each turn**
+   (requirements.md req 1–3). This replaced v0's "per-turn cap = 3 spawns".
 7. **Synchronous, not fire-and-forget.** The `shipit agent` command blocks on
    the result; the primary continues its turn with the text in hand. No
    "inject into next turn" mechanism needed. *Amended by planning#247:* the **call**
@@ -1074,7 +1070,7 @@ v0 is implemented end-to-end behind the `enableSubAgents` global setting
   `orchestrator-client.test.ts` (unbounded relay).
 - **Orchestrator route + service** — `api-routes-agent.ts`
   (`POST /api/sessions/:id/agent/spawn`) → `services/sub-agent.ts` (`runSubAgent`
-  with the setting/auth/pin/recursion/per-turn-cap gates, lazy account-correct
+  with the setting/auth/pin/recursion/runs-in-progress gates, lazy account-correct
   spawn-home provisioning, usage attribution, the spawn chip, and token-sync-back
   + home release in `finally`; `sweepSubAgentCredentialsOnSignOut`).
 - **Worker spawn execution** — `session/agent-controller.ts` (`POST /agent/spawn`,
@@ -1083,8 +1079,7 @@ v0 is implemented end-to-end behind the `enableSubAgents` global setting
   adapter-run core with local mode via `shared/sub-agent-run.ts`
   (`runAgentToCompletion`).
 - **Runner wiring** — `session-runner.ts` (interface + in-process
-  `SessionRunner.spawnSubAgent`, `subAgentSpawnsThisTurn` reset in
-  `resetRunnerTurnState`), `container-session-runner.ts`
+  `SessionRunner.spawnSubAgent`), `container-session-runner.ts`
   (`ContainerSessionRunner.spawnSubAgent` → worker).
 - **Credentials** — `session-credentials.ts`
   (`provisionSubAgentSpawnHome` / `releaseSubAgentSpawnHome`, one home for each

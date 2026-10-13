@@ -5,6 +5,9 @@ description: Surface an agent-agnostic approve/deny card when an agent's edit to
 
 # 193 — Sensitive-file permission prompt (planning#114)
 
+Requirements: [requirements.md](requirements.md). They cover the 2026-10-12
+incident only; the first design below is older than the requirements rule.
+
 ## Context
 
 ShipIt runs every agent CLI headless. Each backend has a built-in permission gate
@@ -239,6 +242,175 @@ Key properties:
     target (it falls to close-and-append, which preserves the card via `...m`).
     This protects **every** mid-turn card, not just permission.
 
+## A write outside the workspace, and a call that waits with no answer
+
+On 2026-10-12 an agent moved a scratch directory to `/persist`, left a symlink to
+it in the workspace, and started 8 background subagents. The first write of each
+subagent through the symlink raised a card. No user was connected, the main agent
+got no result and no notice, and the oldest call waited 20.5 minutes.
+
+### What the Claude CLI gates (measured)
+
+Claude Code 2.1.293, started with ShipIt's own flags and
+`/etc/shipit/managed-settings.json`, with a `--permission-prompt-tool` that records
+each request. `link` is a symlink in `/workspace`. The main agent and a background
+`Agent` subagent gave the same result in every row that both ran (the first
+seven; the main agent alone ran the others).
+
+| Call | Target of `link` | Request before the fix | With the fix |
+|---|---|---|---|
+| Write `link/f` | `/persist/d` | yes | no |
+| Edit `link/f` | `/persist/d` | yes | no |
+| Bash `echo x > link/f`, `cat > link/f <<EOF` | `/persist/d` | yes | no |
+| Read `link/f` | `/persist/d` | no | no |
+| Write, Edit `/persist/d/f` (real path) | — | no | no |
+| Bash `echo x > /persist/d/f`, `cp -r`, `mv` to `/persist/d` | — | no | no |
+| Write to an ordinary workspace file | — | no | no |
+| Bash `cp`, `mkdir -p`, `touch`, `sed -i`, `tee`, `mv` to `link/…` | `/persist/d` | yes | no |
+| Bash `python3 -c "open('link/f','w')"`, `cd link && echo z > f` | `/persist/d` | no | no |
+| Write `link/f`, Bash `echo x > link/f` | `/tmp/d` | not run | yes |
+| Write `/tmp/d/f` (real path) | — | not run | no |
+
+So the symlink is the trigger, and `/persist` is not. A file tool, or a shell
+command whose target the CLI reads from the command text, asks when the path goes
+through a workspace symlink to a place outside the CLI's working directory. The
+same write by the real path does not ask, and neither does a command whose target
+the CLI cannot read (the two rows with `python3` and `cd`). This explains the two
+observations of the incident: `mv` and `cp -r` to `/persist` named the real path,
+and the subagent's `cat > file <<EOF` named a path through the symlink. The bare
+`Write`, `Edit` and `Bash` entries of `--allowedTools` cover a real path anywhere;
+they do not cover the target of a symlink, and `Edit(**)` in the managed settings
+is relative to the working directory.
+
+### `/persist` agrees with the gate (req 1)
+
+`docker/agent-hooks/managed-settings.json` allows `Edit`, `Write` and
+`NotebookEdit` on `//persist/**`, the real path. With these three rules no call
+in the table asks for a `/persist` target, and a symlink to `/tmp` still asks, so
+the rules open `/persist` and nothing else. ShipIt recommends `/persist` for
+scratch work, and a link from the workspace to it is the natural way to keep a
+path stable, so the write is allowed and is not documented as one that asks.
+
+Two other ways were measured and not used:
+
+- `--add-dir /persist` also removes the requests, but the CLI then loads skills
+  from `/persist/.claude/skills` (a probe skill there appeared in the CLI's
+  `init` event). `/persist` is written by the agent, never reviewed in a pull
+  request, and kept across container restarts, so it must not become a source of
+  agent instructions.
+- `permissions.additionalDirectories: ["/persist"]` in the settings also removes
+  the requests and did not load the probe skill. It makes `/persist` a working
+  directory, which is more than a write permission and can gain more meaning in a
+  later CLI version. The path rules say exactly what is granted.
+
+The rule that stays — a symlink from the workspace to another outside place asks
+— is in `/shipit-docs/environment.md`, "Writes that wait for the user's
+approval", with the sensitive-file case.
+
+**Other harnesses.** Read from their start settings, not run (a Claude session
+holds no credentials for them): Codex starts with `sandbox_mode="danger-full-access"`
+and `approval_policy="never"`, and only a request with explicit extra-access
+fields reaches the broker; OpenCode runs with `--auto` and has no approval path;
+Grok runs with `--always-approve` by default; Antigravity skips permissions. None
+of them can raise a card for a `/persist` write with these settings. Not known:
+what Grok's `guarded` mode and OpenCode do with a path outside the working
+directory.
+
+### The main agent learns that a subagent's call waits (req 2, req 3)
+
+**What a request carries.** The CLI calls the permission tool with `tool_name`,
+`input` and `tool_use_id` (and `_meta["claudecode/toolUseId"]`, the same id). It
+carries no id of a parent call and no agent id. The event stream does: the
+`assistant` event that holds the gated `tool_use` has `parent_tool_use_id`, the
+id of the `Agent` call that the subagent runs under. So the worker joins the two.
+`SubagentCallTracker` (`permission-broker.ts`) keeps the open tool calls of the
+agent process: the main agent's own, and each subagent call with its `Agent`
+call. `AgentController` feeds it from `agent_assistant` and `agent_tool_result`,
+and the permission endpoint asks it for the request's `toolUseId`. The answer goes
+out on `agent_permission_request` as `subagent`:
+
+- absent: the main agent's own call.
+- `foreground`: the `Agent` call is still open, so the main agent waits inside it.
+- `background`: the `Agent` call returned before the subagent's call. A
+  background `Agent` call returns when it starts its subagent.
+
+**The line.** For a `background` request, `watchPermissionWait`
+(`permission-wait-notice.ts`) starts a timer. After `PERMISSION_WAIT_NOTICE_MS`
+(2 minutes) it steers one `[ShipIt]` line into the running turn, by the dispatch
+that the session inbox uses (`whenBusy: "steer-or-refuse"`, best effort). The
+line lists every background request that still waits and that the agent was not
+told of, says how long the oldest has waited, the time it was written, and
+whether a user has the session open. A request is in one line only.
+`runner.awaitingPermissionIds` is the only record of what still waits, so every
+way a request ends (`settlePermissionCard`) also ends its part in the line.
+
+**The join can lose a race, so the endpoint waits for the stream.** The stream
+showed the gated call 14 to 16 ms before the request reached the permission tool
+(two runs, small input). A call with a large input is written to two pipes at the
+same time, so its request can reach the worker first. `whenOpened` holds the
+endpoint until the stream shows the call, for at most 250 ms; after that the
+request counts as the main agent's and gets no line.
+
+Measured with the CLI: a line written to the CLI's input while a background
+subagent waited was read by the main agent at its next tool boundary, 3 seconds
+later; the main agent stopped the subagent with `TaskStop`, the gated call got an
+error result, and that is the result `endToolUse` turns into a denied card.
+
+**Limits, each on purpose.**
+
+- **A call of the main agent, or of a foreground subagent, gets no line.** The
+  main agent is inside that call and reads nothing until it returns, so the line
+  would arrive after the request ended. Only the bound proposed below can help
+  there.
+- **The orchestrator starts no turn for the line.** A session whose turn ended
+  while its subagents work has no turn to steer. A dispatch there starts a turn,
+  and a new turn can replace the resident process together with the subagents
+  (docs/328-session-message-inbox, "Guards on the started turn"). The timer looks
+  again every `PERMISSION_WAIT_RETRY_MS`, so the next turn that runs gets the
+  line. In the incident the main agent's turn was running. One case is not the
+  orchestrator's to prevent: a line that reaches the worker just after the turn
+  ended is given to the resident CLI, which answers it in a turn of its own on
+  the same process (`/agent/message` in `agent-controller.ts`, the late steer of
+  docs/140-live-steering). The subagents stay; measured with the CLI.
+- **The line needs live steering.** With the setting off no turn takes a steer,
+  and the agent gets no line.
+- **The line is sent at most one time.** When the worker does not take it (it
+  does not answer), the line is dropped and not sent again. It informs; nothing
+  depends on it, so it has no delivery record like the inbox has.
+- **After an orchestrator restart there is no line** for a request from before
+  it: the timers are in memory, and the saved card does not record `subagent`.
+- **A subagent of a subagent** is not followed up to the main agent's call.
+- A user who is present changes nothing: the card stays answerable, and the line
+  only informs the agent (req 4).
+
+### Proposal, not built: a bound for a card that nobody can answer (req 5)
+
+The line gives the agent a choice, but an agent that waits inside the gated
+call, and a session with no running turn, still wait for the harness's own
+timeout (30 minutes for the Claude CLI). A bound would cover both. Proposed: when
+a request has waited **10 minutes** and no viewer was attached to the session at
+any time in those 10 minutes, the orchestrator answers it as denied, with a
+message that says nobody was connected, and the caller gets that message as the
+call's result. 10 minutes is a third of the harness's timeout and far longer than
+a reconnect.
+
+Why it is not in this change:
+
+- **It makes a server decision depend on whether a browser is connected.** The
+  transport rule says that a WebSocket's lifecycle must not drive server
+  behavior. A periodic check that reads viewer presence, as the idle enforcer
+  does for container reclaim (docs/284), is not a lifecycle handler, and 10
+  continuous minutes is not a blip. It is still the first time that viewer
+  presence would change what an agent's call returns, so a human must accept it.
+- The card needs a state of its own ("expired — nobody was connected"). Today a
+  card denied by the harness and one denied by the user read the same, and the
+  CLI's result text says "The user doesn't want to proceed" for a wait that no
+  user ended. That text comes from the CLI; a ShipIt deny can carry its own.
+- req 4 must hold: a user who opens the session before the bound keeps unlimited
+  time.
+
+Whether to build it is a planning decision, recorded on planning#114.
+
 ## Agent-agnostic seam
 
 The canonical core is agent-neutral; each adapter only translates its native
@@ -301,8 +473,9 @@ mid-turn card in that position reproduced it, not just this one.
 ## Key files
 
 **Worker / agent-agnostic core**
-- `src/server/session/permission-broker.ts` — the broker. `openRequest()`/`poll()` (long poll + `toolUseId` idempotency), `request()` (Codex direct-await, withdrawn by its `signal`), `resolve()`, and the abandoned-request deny: `endToolUse()`/`clearPending()`.
-- `src/server/session/agent-controller.ts` — `wireAgentEvents` ends the request for every `tool_result` id, and clears pending requests when the agent exits. `/agent/status` reports the broker's `unansweredIds` as `pendingPermissionIds`.
+- `src/server/session/permission-broker.ts` — the broker. `openRequest()`/`poll()` (long poll + `toolUseId` idempotency), `request()` (Codex direct-await, withdrawn by its `signal`), `resolve()`, and the abandoned-request deny: `endToolUse()`/`clearPending()`. Also `SubagentCallTracker`, which says whose call a `toolUseId` is.
+- `src/server/session/agent-controller.ts` — `wireAgentEvents` ends the request for every `tool_result` id, and clears pending requests when the agent exits. `/agent/status` reports the broker's `unansweredIds` as `pendingPermissionIds`. It feeds `SubagentCallTracker`, and `subagentCaller()` answers the permission endpoint.
+- `docker/agent-hooks/managed-settings.json` — the Claude CLI's permission rules, with the `//persist/**` allow rules.
 - `src/server/session/mcp-permission-bridge.ts` — Claude's `--permission-prompt-tool`. `createPermissionBridgeServer()` factory; open + bounded `/await` poll loop with retry/backoff (Thread B).
 - `src/server/session/session-worker.ts` — broker construction, `/agent-ops/permission/request` (now non-blocking) + `/agent-ops/permission/await` (Thread B) + `/agent/permission/resolve`, `permissionBridgePaths`, Codex requester injection, reject-all on teardown.
 - `src/server/session/agents/claude/{adapter,process}.ts` — register `shipit-permission`; pass `--permission-prompt-tool`.
@@ -313,6 +486,7 @@ mid-turn card in that position reproduced it, not just this one.
 - `src/server/orchestrator/proxy-agent-process.ts` + `container-session-runner.ts` — `resolvePermission` → `/agent/permission/resolve`.
 - `src/server/orchestrator/ws-handlers/agent-listeners.ts` — `agent_permission_request` → emitChatCard + `session_attention` (Thread C); `agent_permission_resolved` → `settlePermissionCard`; an agent `error` denies the cards its process left.
 - `src/server/orchestrator/permission-cards.ts` — `settlePermissionCard` (patch the recorded card mid-turn via `persistCardTransition`, else the DB row; `permission_resolved`; clear attention with the last id) and `denyAbandonedPermissionCards`, called from `turn-executor.ts` (exit), `runner-registry-factory.ts` (`turn_abandoned`) and `startup-tasks.ts` (`handleContainerExited`); `reconcilePermissionCards`, called from `container-session-runner.ts` `reconcileSavedPermissionCards`.
+- `src/server/orchestrator/permission-wait-notice.ts` + `prompts/permission-wait-notice.md` — the `[ShipIt]` line for a background subagent's request that waits; armed by `agent-listeners.ts` on `agent_permission_request`.
 - `src/server/orchestrator/chat-card-persistence.ts` — `updateRecordedCard` (patch a recorded card in place for a transition that lands within its own turn, without re-emitting it); `emitChatCard` advances `lastPersistedBufferIndex` past the buffer after persisting (the switch/reconnect overlap fix that kept a pending card from vanishing).
 - `src/client/hooks/message-handlers/agent-event.ts` — the streaming-assistant merge excludes card-carrying messages (`CARD_MESSAGE_FIELDS`) as merge targets, so a replayed event can't rebuild a card message and drop its card field; `agent_tool_result` routes each result to the message whose `toolUse` holds the id (`indexOfToolUse` / `fallbackResultTarget`), so a card between a call and its result can't orphan the tool row.
 - `src/server/orchestrator/{session-runner,container-session-runner}.ts` — `awaitingPermissionIds` per-runner set (Thread C).
@@ -362,3 +536,6 @@ mid-turn card in that position reproduced it, not just this one.
 - `agent-event.test.ts` — a tool result routes to the message that issued the call: the gated tool pairs with its result **live, with no reload**, when a permission card lands in between; per-caller routing across several open messages; the no-match fallback, which skips a terminal card row.
 - `PermissionRequestCard.test.tsx` — the `details` disclosure is collapsed by default, expands to the full command, and is absent when the broker had nothing beyond the summary.
 - `permission-broker.test.ts` — `describePermissionDetails` (raw command whole, JSON fallback, `PERMISSION_DETAILS_CHARS` bound) and the broadcast carrying `details` alongside the clipped `summary`.
+- `permission-broker.test.ts` — `SubagentCallTracker` (main, foreground, background, a closed call, `whenOpened`), and the request event carrying `subagent`. `agent-controller.test.ts` — the same three callers from the event order the Claude CLI emits, a request that arrives before its stream event, and a replaced process's late events. `session-worker.test.ts` (integration) — the endpoint marks a background subagent's request, also one that arrives before its stream event, and leaves the main agent's unmarked.
+- `permission-wait-notice.test.ts` — the line goes into the running turn after the delay and one time; it lists every request that waits; an answered request is not told; a later request gets a line of its own; no turn is started for an idle session and the next turn gets the line; a turn that cannot take a steer gets nothing queued; a dispatch that throws is tried again; the turn's permission mode stays. `agent-listeners.test.ts` — only a `background` request arms the line, and an answer ends it.
+- `managed-settings.test.ts` — the three `//persist/**` allow rules. The test reads the file; what the CLI does with the rules is the measurement above, which no test repeats.

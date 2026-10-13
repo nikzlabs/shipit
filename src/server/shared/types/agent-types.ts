@@ -322,7 +322,14 @@ export interface AgentPermissionRequestEvent {
   summary?: string;
   details?: string;
   agentId?: AgentId;
+  subagent?: PermissionSubagent;
 }
+
+/**
+ * A subagent made the gated call. `background`: its Agent call had returned, so the main
+ * agent can act while the request waits. `foreground`: the main agent waits inside that call.
+ */
+export type PermissionSubagent = "foreground" | "background";
 
 /** The user's answer, or a deny once the agent stops waiting (its own timeout, Stop, exit). */
 export interface AgentPermissionResolvedEvent {
@@ -346,6 +353,7 @@ export interface PermissionRequestInput {
   agentId?: AgentId;
   /** Broker idempotency key; retries share one pending card. */
   toolUseId?: string;
+  subagent?: PermissionSubagent;
   /** Aborted when the agent withdraws the request; the card then shows denied. */
   signal?: AbortSignal;
 }

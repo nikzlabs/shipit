@@ -10,7 +10,7 @@ import {
   sweepSubAgentCredentialsOnSignOut,
   waitForSubAgentResult,
   teardownConsultDetail,
-  SUB_AGENT_PER_TURN_CAP,
+  MAX_SUB_AGENT_RUNS_IN_PROGRESS,
   HOST_SHUTDOWN_CONSULT_DETAIL,
 } from "./sub-agent.js";
 import { ServiceError } from "./types.js";
@@ -92,7 +92,6 @@ function makeDeps(opts: {
   sessions?: FakeSession[];
   hasRunnableModels?: boolean;
   agentKnown?: boolean;
-  subAgentSpawnsThisTurn?: number;
   spawnResult?: SubAgentRunResult;
   spawnResults?: SubAgentRunResult[];
   runnerPresent?: boolean;
@@ -126,7 +125,6 @@ function makeDeps(opts: {
   const updateSubAgentConsultCard = vi.fn(() => true);
   const append = vi.fn();
   const runner = {
-    subAgentSpawnsThisTurn: opts.subAgentSpawnsThisTurn ?? 0,
     appliedSpawnIdentity: undefined as string | undefined,
     running: true,
     emitMessage,
@@ -242,6 +240,33 @@ function makeDeps(opts: {
   };
 }
 
+async function holdRuns(
+  deps: ReturnType<typeof makeDeps>["deps"],
+  runner: ReturnType<typeof makeDeps>["runner"],
+  count: number,
+  run: typeof runSubAgent = runSubAgent,
+) {
+  const settle: (() => void)[] = [];
+  runner.spawnSubAgent.mockImplementation(
+    () => new Promise<SubAgentRunResult>((resolve) => {
+      settle.push(() => resolve({ status: "success", text: "ok", truncated: false, durationMs: 1, costUsd: 0 }));
+    }),
+  );
+  const runs = Array.from({ length: count }, () =>
+    run(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }));
+  await vi.waitFor(() => expect(settle).toHaveLength(count));
+  return {
+    finishOne: async () => {
+      settle.shift()!();
+      await runs.shift();
+    },
+    finishAll: async () => {
+      for (const done of settle.splice(0)) done();
+      await Promise.all(runs.splice(0));
+    },
+  };
+}
+
 async function expectServiceError(p: Promise<unknown>, status: number): Promise<ServiceError> {
   try {
     await p;
@@ -341,10 +366,54 @@ describe("runSubAgent — authorization gates", () => {
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 
-  it("rejects past the per-turn cap (429) without spawning", async () => {
-    const { deps, runner } = makeDeps({ subAgentSpawnsThisTurn: SUB_AGENT_PER_TURN_CAP });
+  it("refuses a run (429) while the limit is in progress, with no spawn and no card", async () => {
+    const { deps, runner, emitMessage, replaceInProgress, append } = makeDeps({});
+    const held = await holdRuns(deps, runner, MAX_SUB_AGENT_RUNS_IN_PROGRESS);
+    const emitted = emitMessage.mock.calls.length;
+    const persisted = replaceInProgress.mock.calls.length + append.mock.calls.length;
+
+    const err = await expectServiceError(
+      runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
+      429,
+    );
+
+    expect(err.message).toContain("Wait for one to finish");
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(MAX_SUB_AGENT_RUNS_IN_PROGRESS);
+    expect(emitMessage.mock.calls).toHaveLength(emitted);
+    expect(replaceInProgress.mock.calls.length + append.mock.calls.length).toBe(persisted);
+    await held.finishAll();
+  });
+
+  it("admits one run, and only one, when a run in progress finishes", async () => {
+    const { deps, runner } = makeDeps({});
+    const held = await holdRuns(deps, runner, MAX_SUB_AGENT_RUNS_IN_PROGRESS);
     await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 429);
-    expect(runner.spawnSubAgent).not.toHaveBeenCalled();
+
+    await held.finishOne();
+    const next = runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+    await vi.waitFor(() =>
+      expect(runner.spawnSubAgent).toHaveBeenCalledTimes(MAX_SUB_AGENT_RUNS_IN_PROGRESS + 1));
+    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }), 429);
+
+    await held.finishAll();
+    expect((await next).status).toBe("success");
+  });
+
+  it("frees the slot of a run that fails", async () => {
+    const { deps, runner } = makeDeps({});
+    const held = await holdRuns(deps, runner, MAX_SUB_AGENT_RUNS_IN_PROGRESS - 1);
+    runner.spawnSubAgent.mockRejectedValueOnce(new Error("worker unreachable"));
+    await expect(
+      runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
+    ).rejects.toThrow("worker unreachable");
+
+    runner.spawnSubAgent.mockResolvedValueOnce(
+      { status: "success", text: "ok", truncated: false, durationMs: 1, costUsd: 0 },
+    );
+    const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    expect(res.status).toBe("success");
+    await held.finishAll();
   });
 
   it("rejects an empty prompt (400)", async () => {
@@ -370,9 +439,9 @@ describe("runSubAgent — authorization gates", () => {
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 
-  it("does not spend a cap slot on a refused call", async () => {
+  it("holds no slot for a refused call", async () => {
     const { deps, runner } = makeDeps({});
-    for (let i = 0; i < SUB_AGENT_PER_TURN_CAP; i++) {
+    for (let i = 0; i < MAX_SUB_AGENT_RUNS_IN_PROGRESS; i++) {
       await expectServiceError(
         runSubAgent(deps, "s1", {
           target: explicit("claude", { modelId: "gpt-5.6-luna" }),
@@ -382,7 +451,6 @@ describe("runSubAgent — authorization gates", () => {
         400,
       );
     }
-    expect(runner.subAgentSpawnsThisTurn).toBe(0);
     await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
   });
@@ -395,12 +463,15 @@ describe("runSubAgent — authorization gates", () => {
     );
   });
 
-  it("refuses a capped role call for the cap, not for an unresolvable reviewer", async () => {
-    const { deps } = makeDeps({ credentialRoutes: [], subAgentSpawnsThisTurn: SUB_AGENT_PER_TURN_CAP });
-    await expectServiceError(
-      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 }),
-      429,
-    );
+  it("refuses a role call at the limit for the limit, not for an unknown role", async () => {
+    const { deps, runner } = makeDeps({});
+    const unknownRole = () =>
+      runSubAgent(deps, "s1", { target: { kind: "role", role: "nobody", overrides: {} }, prompt: "review", depth: 0 });
+    await expectServiceError(unknownRole(), 400);
+
+    const held = await holdRuns(deps, runner, MAX_SUB_AGENT_RUNS_IN_PROGRESS);
+    await expectServiceError(unknownRole(), 429);
+    await held.finishAll();
   });
 });
 
@@ -600,13 +671,12 @@ describe("runSubAgent — happy path", () => {
     expect(record.mock.calls[0][5]).toMatchObject({ requests });
   });
 
-  it("spawns, returns text, increments the per-turn counter, records usage, emits spinner + persisted consult card", async () => {
+  it("spawns, returns text, records usage, emits spinner + persisted consult card", async () => {
     const { deps, runner, emitMessage, record, replaceInProgress } = makeDeps({});
     const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review this", depth: 0 });
 
     expect(res.text).toBe("2 bugs found");
     expect(res.subAgentId).toBe("codex");
-    expect(runner.subAgentSpawnsThisTurn).toBe(1);
     expect(runner.spawnSubAgent).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "codex", prompt: "review this", depth: 0 }),
     );
@@ -1067,13 +1137,12 @@ describe("runSubAgent — happy path", () => {
     expect(runner.spawnSubAgent).toHaveBeenCalled();
   });
 
-  it("counts the spawn against the budget up to the cap across calls", async () => {
+  it("puts no limit on runs that follow one another", async () => {
     const { deps, runner } = makeDeps({});
-    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "a", depth: 0 });
-    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "b", depth: 0 });
-    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "c", depth: 0 });
-    expect(runner.subAgentSpawnsThisTurn).toBe(3);
-    await expectServiceError(runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "d", depth: 0 }), 429);
+    for (let i = 0; i <= MAX_SUB_AGENT_RUNS_IN_PROGRESS; i++) {
+      await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+    }
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(MAX_SUB_AGENT_RUNS_IN_PROGRESS + 1);
   });
 });
 
@@ -1379,7 +1448,6 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
       runner.running = false;
     };
     const runner = {
-      subAgentSpawnsThisTurn: 0,
       running: launch !== "post-turn",
       emitMessage: vi.fn(),
       chatMessageGroups: [{ text: TURN_ONE_TEXT, toolUse: [] }],
@@ -1484,7 +1552,6 @@ describe("runSubAgent — committing work a consult left after its turn ended (p
   function scenario(opts: { turnEndsDuringConsult: boolean }) {
     const schedulePostTurnPush = vi.fn();
     const runner = {
-      subAgentSpawnsThisTurn: 0,
       sessionId: "s1",
       sessionDir: tmpDir,
       running: true,
@@ -1570,7 +1637,6 @@ describe("runSubAgent — handing a finished consult back to the agent (docs/287
 
   function scenario(opts: { spawnResult?: Partial<SubAgentRunResult>; holdDelivery?: boolean } = {}) {
     const runner = {
-      subAgentSpawnsThisTurn: 0,
       sessionId: "s1",
       sessionDir: tmpDir,
       running: true,
@@ -2016,5 +2082,25 @@ describe("runSubAgent — every provisioned spawn runs from its own home", () =>
       expect.any(String),
       expect.objectContaining({ status: "timeout", truncated: true }),
     );
+  });
+});
+
+describe("limit on runs in progress — env override", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("enforces the number that SHIPIT_SUB_AGENT_MAX_IN_PROGRESS gives", async () => {
+    vi.resetModules();
+    vi.stubEnv("SHIPIT_SUB_AGENT_MAX_IN_PROGRESS", "2");
+    const mod = await import("./sub-agent.js");
+    const { deps, runner } = makeDeps({});
+
+    const held = await holdRuns(deps, runner, 2, mod.runSubAgent);
+    await expect(
+      mod.runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 }),
+    ).rejects.toMatchObject({ statusCode: 429 });
+    await held.finishAll();
   });
 });
