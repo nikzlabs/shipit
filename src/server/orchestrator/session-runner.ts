@@ -52,6 +52,7 @@ import {
 } from "./prepared-dispatch.js";
 import { takeRunnableQueuedTurn } from "./queue-drain.js";
 import { nextSendOrder, queueEntryId, queueSnapshot } from "./queue-identity.js";
+import { returnLateEntry, sentBeforeStop } from "./queue-return.js";
 import {
   forgetHeldEntries,
   forgetHeldTurn,
@@ -305,6 +306,11 @@ export function dispatchOnRunner(
   const opts: PreparedDispatch = accepted.sendOrder === undefined
     ? { ...accepted, sendOrder: nextSendOrder() }
     : accepted;
+  if (sentBeforeStop(runner, opts.sendOrder)) {
+    settlement.noteAdmission("refused");
+    returnLateEntry(runner, toQueuedMessage(withSettlement(opts, settlement)));
+    return settlement;
+  }
 
   // The single exit for every gate below, so a refusing caller cannot be queued by one
   // of them — including a gate added later.

@@ -50,13 +50,22 @@ discards.** (`queue-return.ts`)
 The rule lives at the Stop, so it does not read what kind of turn was stopped
 (`docs/329-user-steers-every-turn` req 1).
 
-### An entry that was sent before the Stop and enters the queue after it
+### A message that was sent before the Stop and arrives after it
 
-Three paths do this: a steer that the agent did not take
-(`requeueUndeliveredSteers`, `agent_steer_rejected`), and a message that a
-compaction is put ahead of when the Stop lands while that message's turn still
-sets up (`runCompactionAhead`, and the same step in `dispatched-turn.ts`). Such
-an entry must not start a turn by itself after the Stop.
+Such a message must not start a turn by itself after the Stop. Four paths
+bring one:
+
+- a steer that the agent did not take is put back in the queue — at the turn's
+  result, at an exit with no result (`requeueUndeliveredSteers`, added there
+  for this feature), or when the agent refuses it, which can come after the
+  stopped turn has ended (`agent_steer_rejected`);
+- a message that a compaction is put ahead of, when the Stop lands while that
+  message's turn still sets up (`runCompactionAhead`, and the same step in
+  `dispatched-turn.ts`);
+- a typed message that was still on its way: it waited at the send gate, for
+  an attachment, or for the commit of the turn before (`decideAndRunSend`).
+
+The mechanism:
 
 - **The Stop records a cutoff**: the send order at the Stop, per runner. Send
   orders only grow, so the cutoff is never cleared.
@@ -64,12 +73,23 @@ an entry must not start a turn by itself after the Stop.
   await: in `handleSendMessage` for a typed message, in `dispatchOnRunner` for
   a dispatch. It travels with the message (`AgentDispatchOptions.sendOrder`,
   kept by `toQueuedMessage` and `queuedMessageToDispatchOptions`, and by a
-  steer).
-- **`returnQueueSentBeforeStop(runner)`** takes out, by the rule above, each
-  queue entry whose send order is lower than the cutoff. It runs where the
-  queue is used: in `takeRunnableQueuedTurn`, the take that every drain shares,
-  and in `deliverWaitingMessages`, which writes waiting messages into a turn.
-  An entry with no send order stays.
+  steer). A held turn and a wake that is put at the head of the queue carry
+  none, so they are never taken for a message sent before the Stop.
+- **`sentBeforeStop(runner, order)`** is checked where a message is accepted:
+  `dispatchOnRunner` returns such a dispatch instead of starting or queuing it,
+  and the typed path does the same before its steer and before it claims the
+  turn (`returnLateEntry`).
+- **`returnQueueSentBeforeStop(runner)`** takes such entries out of the queue
+  where the queue is used: in `takeRunnableQueuedTurn`, the take that every
+  drain shares, in `deliverWaitingMessages`, and after a refused steer is put
+  back (no drain follows the last one of a stopped turn).
+
+### A message sent after the Stop
+
+It runs, as its own turn after the stopped one. A turn that the user stopped
+takes no message (`turnTakesMessages` reads the Stop): its process is ending,
+and a message written into it would be read by nobody. So the message waits in
+the queue, and the drain of the stopped turn starts it.
 
 ### A dispatch that was steered and put back
 
@@ -107,20 +127,27 @@ dropped for those seconds would get an empty queue and no messages.
 ## The input box
 
 - `handleQueueUpdated` hands the list to `returnedToComposer` in the session
-  store, **with its session id**, and removes a predicted queue row of a
-  returned message (an empty snapshot keeps predicted rows).
+  store, **with its session id**. It removes a predicted queue row of a
+  returned message (an empty snapshot keeps predicted rows), and the bubble of
+  one that was still on its way at the Stop (it had no queue row to take it).
 - `MessageInput` takes an offer only when it is the chat composer of that
   session and can take text. Until then the offer stays in the store, and the
   server keeps its copy; a session switch drops the offer, and the next attach
   offers it again.
-- `takeReturnedIntoDraft` (`utils/returned-messages.ts`) writes the text into
-  the saved draft of the session, before the text that is there, and records
-  the ids in local storage beside the draft. The composer then puts the same
-  text before its own, adds the files as file chips (`pendingFiles`; the send
-  path turns a path under `/uploads/` back into an upload), and only then calls
-  `onReturnedTaken`, which sends the acknowledgement.
-- A list that arrives a second time (the acknowledgement was lost, or the page
+- `takeReturnedMessages` (`utils/returned-messages.ts`) places the text against
+  the composer's current text: before what the user was writing, and after
+  returned text that is still at the head of the box, so a message that returns
+  later keeps its place in the send order. It records the ids **per tab**
+  (`sessionStorage`), as the input box is per tab, and keeps only the ids the
+  server still offers — one the server was answered for never comes again.
+- The composer sets that text and saves it as the draft, adds the files as file
+  chips (`pendingFiles`; the send path turns a path under `/uploads/` back into
+  an upload), and only then calls `onReturnedTaken`, which sends the
+  acknowledgement.
+- A list that arrives a second time (the acknowledgement was lost, or the tab
   was loaded again) adds nothing, and is acknowledged again.
+- A session switch clears the file chips: they name the outgoing session's
+  files.
 - `handleAgentInterrupted` no longer clears the queue rows. The server's
   `queue_updated` says what the queue holds, and a row for a message that the
   user sent after the Stop stays.
@@ -140,9 +167,13 @@ None of these is a requirement. Each has a reason.
   automatic CI fix then stayed "running" for ever, and its claim blocked the
   automatic merge for 30 minutes. This is the same statement as point 3 of the
   rule.
-- **Two viewers that are attached at the same moment both take the messages.**
-  The input box is per browser, and the server cannot know which one the user
-  looks at.
+- **Every viewer that is attached when the list arrives takes the messages**,
+  two tabs of one browser too. The input box is per tab, and the server cannot
+  know which one the user looks at. Two tabs of one session share one saved
+  draft, as before this feature: the last one to change it wins.
+- **A file chip is cleared on a session switch** (`resumeSessionInternal`).
+  Before, a chip added with "Add to chat" stayed and was sent with the next
+  session's message.
 - **Uploads return as file chips, not as upload chips.** An upload chip owns
   its file: removing it deletes the file, which an earlier message can still
   show. A file chip is a reference.
@@ -183,8 +214,16 @@ user work.
   is the full instruction, and the card stays marked as sent.
 - An inline image (`images` on the frame) does not return. The composer sends
   uploads, never inline images.
-- A steer that the agent did not take and that is not put back (the process
-  was killed and gave no result) stays a bubble in the transcript, as before.
+- When only a message on its way is there at the Stop (no turn, no queue), the
+  Stop still answers "No active agent process to interrupt"; the message
+  returns to the input box all the same.
+- The draft and the per-tab record are written one after the other, and a full
+  storage drops a write without a word, as for any draft. A tab that closes
+  between them, or a draft that could not be saved, can show a message two
+  times or lose it on a reload.
+- A held turn whose saved row could not be deleted (a database error) comes
+  back after a Stop or a cancel, as it did before this feature, and its
+  sender's callback can be called a second time.
 - A turn that the user stopped while it set up was the user's answer to a
   question: the automatic turns that the question held are put back in the
   queue by that setup, after the Stop, with no send order. They run, as
@@ -217,6 +256,26 @@ notice if it were removed?", and what is wrong.
   left out, which changed it; it follows the rule now.
 - **Not changed:** the held turns of a stopped answer turn (see "Known
   limits").
+
+2026-10-13, on the code. One run of the configured reviewer.
+
+- **Changed:** a message sent after the Stop was written into the ending
+  process, and lost when it ended with no result; a stopped turn takes no
+  message now. A message on its way at the Stop could start a turn after it;
+  the cutoff is checked where a message is accepted now, not only in the queue.
+  A steer that the stopped agent never read stayed a bubble when its process
+  ended with no result; it is put back and returned. A refused steer that came
+  after the stopped turn's last drain stayed in the queue; the refusal applies
+  the cutoff. Returned messages that came in two parts were in reverse order;
+  the composer keeps the order. The record of applied ids was shared by the
+  tabs of a browser and capped at 100; it is per tab and pruned by the
+  server's list. The draft was written from storage and the box from React
+  state; both take the same text now. File chips crossed a session switch;
+  the switch clears them.
+- **Not changed:** the storage failures and the held-row deletion failure
+  ("Known limits"); the held turns of a stopped answer turn; a Stop during a
+  container restart (the queue is carried to the new runner); the consult
+  result (planning#695).
 
 ## Key files
 

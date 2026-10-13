@@ -657,32 +657,6 @@ export function saveDraftMessage(sessionKey: string, text: string): void {
   }
 }
 
-// docs/330-stop-returns-queued-messages — the returned messages that this browser has put
-// into the draft, so that a list which arrives a second time is not put in again.
-const DRAFT_RETURNED_KEY_PREFIX = "shipit-draft-returned:";
-const MAX_RETURNED_IDS = 100;
-
-export function getReturnedMessageIds(sessionKey: string): string[] {
-  try {
-    const raw = localStorage.getItem(DRAFT_RETURNED_KEY_PREFIX + sessionKey);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-export function addReturnedMessageIds(sessionKey: string, ids: string[]): void {
-  if (ids.length === 0) return;
-  try {
-    const all = [...getReturnedMessageIds(sessionKey), ...ids].slice(-MAX_RETURNED_IDS);
-    localStorage.setItem(DRAFT_RETURNED_KEY_PREFIX + sessionKey, JSON.stringify(all));
-  } catch {
-    // localStorage may be unavailable
-  }
-}
-
 const DRAFT_UPLOADS_KEY_PREFIX = "shipit-draft-uploads:";
 
 export function getSavedDraftUploads(sessionKey: string): string[] {

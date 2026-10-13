@@ -9,6 +9,7 @@ import {
   beginTurnSetup,
   noteCompactionTurn,
   noteTurnReady,
+  noteUserStop,
   setSteerRefused,
   steerRefused,
 } from "./turn-stop-request.js";
@@ -418,6 +419,17 @@ describe("a message of the user's behind one that waits", () => {
 
     expect(handle.admitted).toBe("steered");
     expect(sent).toEqual(["from a page"]);
+  });
+
+  // docs/330-stop-returns-queued-messages — the process of a stopped turn is ending.
+  it("does not steer into a turn that the user stopped", () => {
+    runner.messageQueue.length = 0;
+    noteUserStop(runner);
+
+    const handle = runner.dispatch(testDispatch({ text: "from a page", execution: "dispatched" }));
+
+    expect(handle.admitted).toBe("queued");
+    expect(sent).toEqual([]);
   });
 
   // docs/330-stop-returns-queued-messages — a steer that is put back reads as `interactive`,

@@ -33,10 +33,11 @@ import {
   getSavedRoleName,
   saveRoleName,
   getSavedMergeContinueOptOut,
+  saveDraftMessage,
   type MergeContinueControl,
 } from "../../utils/local-storage.js";
 import { applyRoleSeeds } from "../../utils/role-seed.js";
-import { prependReturnedText, takeReturnedIntoDraft } from "../../utils/returned-messages.js";
+import { takeReturnedMessages } from "../../utils/returned-messages.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
@@ -247,6 +248,9 @@ export function MessageInput({
 
   const settingsLocked = isLoading || (disabled && !!sessionId);
   const [text, setText] = useState("");
+  // The returned messages are placed against the text as it is now, outside an updater.
+  const textRef = useRef(text);
+  textRef.current = text;
 
   // folds the parameters away again, while switching sessions cannot carry an
 
@@ -533,8 +537,13 @@ export function MessageInput({
       // Left in the store while this composer cannot take it; the server keeps its copy.
       if (offer?.sessionId !== sessionId || inert) return;
       useSessionStore.getState().setReturnedToComposer(undefined);
-      const returned = takeReturnedIntoDraft(sessionId, persistDraft ? focusKey : undefined, offer.messages);
-      if (returned.text !== "") setText((prev) => prependReturnedText(prev, returned.text));
+      const returned = takeReturnedMessages(sessionId, offer.messages, textRef.current);
+      if (returned.text !== null) {
+        textRef.current = returned.text;
+        setText(returned.text);
+        // Before the answer below, which lets the server forget the messages.
+        if (focusKey) saveDraftMessage(focusKey, returned.text);
+      }
       for (const filePath of returned.files) onAddFile?.(filePath);
       onReturnedTaken?.(returned.ids);
     };
@@ -542,7 +551,7 @@ export function MessageInput({
     return useSessionStore.subscribe((state) => {
       consume(state.returnedToComposer);
     });
-  }, [surface, inert, sessionId, focusKey, persistDraft, onAddFile, onReturnedTaken]);
+  }, [surface, inert, sessionId, focusKey, onAddFile, onReturnedTaken]);
 
   // session switch). The ref is intentionally seeded with `undefined` (not `focusKey`)
 

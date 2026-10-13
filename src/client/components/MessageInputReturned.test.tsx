@@ -37,6 +37,7 @@ const offer = (sessionId: string) =>
 
 beforeEach(() => {
   localStorage.clear();
+  sessionStorage.clear();
   useSessionStore.getState().reset();
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -55,8 +56,13 @@ describe("the input box takes the messages that a Stop returned", () => {
   it("puts them before the text that is there, with their files, and then answers the server", () => {
     const { onAddFile, onReturnedTaken, textarea } = renderComposer();
     fireEvent.change(textarea(), { target: { value: "my draft" } });
+    // The answer lets the server forget the messages, so the draft must hold them already.
+    let savedAtAnswer: string | undefined;
+    onReturnedTaken.mockImplementation(() => { savedAtAnswer = getSavedDraftMessage("A"); });
 
     offer("A");
+
+    expect(savedAtAnswer).toBe("first\n\nsecond\n\nmy draft");
 
     expect(textarea().value).toBe("first\n\nsecond\n\nmy draft");
     expect(getSavedDraftMessage("A")).toBe("first\n\nsecond\n\nmy draft");
@@ -94,6 +100,17 @@ describe("the input box takes the messages that a Stop returned", () => {
     expect(onAddFile).not.toHaveBeenCalled();
     expect(onReturnedTaken).not.toHaveBeenCalled();
     expect(useSessionStore.getState().returnedToComposer?.sessionId).toBe("B");
+  });
+
+  it("takes a later message after the earlier one, in the order they were sent", () => {
+    const { textarea } = renderComposer();
+    fireEvent.change(textarea(), { target: { value: "my draft" } });
+
+    act(() => { useSessionStore.getState().setReturnedToComposer({ sessionId: "A", messages: [returned[0]] }); });
+    act(() => { useSessionStore.getState().setReturnedToComposer({ sessionId: "A", messages: [returned[1]] }); });
+
+    expect(textarea().value).toBe("first\n\nsecond\n\nmy draft");
+    expect(getSavedDraftMessage("A")).toBe("first\n\nsecond\n\nmy draft");
   });
 
   it("is not taken by the quick-capture composer", () => {

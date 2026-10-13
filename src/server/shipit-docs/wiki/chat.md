@@ -168,12 +168,14 @@ health strip is for ([sessions.md](sessions.md)).
 
 **Stop also empties the queue.** The messages that the user had waiting go back
 into their composer, in the order they sent them and before the text they were
-writing, with their attachments as file chips; nothing of theirs starts by
-itself after a Stop, and they send again what they still want. So when a user
-asks "where did my queued message go?" after a Stop, the answer is: into the
-composer. This is the same behind a turn they typed and a turn that ShipIt
-started, and **Force-kill the agent** does the same. A message that they send
-after the Stop is not affected: it runs when the stopped turn has ended.
+writing, with their attachments as file chips. So does a message still on its
+way when they pressed Stop, and one they steered into the turn that you had
+not read yet. Nothing they sent before the Stop starts by itself after it; they
+send again what they still want. So when a user asks "where did my queued
+message go?" after a Stop, the answer is: into the composer. This is the same
+behind a turn they typed and a turn that ShipIt started, and **Force-kill the
+agent** does the same. A message that they send after the Stop is not written
+into the stopped turn: it waits, and runs as the next turn.
 
 An entry that ShipIt had put in the queue is removed and does not go to the
 composer. Most come back by themselves: the notice that the session's pull

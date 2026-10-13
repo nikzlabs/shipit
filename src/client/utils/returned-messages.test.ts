@@ -1,70 +1,88 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useSessionStore } from "../stores/session-store.js";
-import { getReturnedMessageIds, getSavedDraftMessage, saveDraftMessage } from "./local-storage.js";
-import { offerReturnedMessages, prependReturnedText, takeReturnedIntoDraft } from "./returned-messages.js";
+import { offerReturnedMessages, placeReturnedText, takeReturnedMessages } from "./returned-messages.js";
 
 beforeEach(() => {
-  localStorage.clear();
+  sessionStorage.clear();
   useSessionStore.getState().reset();
-  useSessionStore.setState({ sessionId: "A", queuedMessages: [] });
+  useSessionStore.setState({ sessionId: "A", queuedMessages: [], messages: [] });
 });
 
-describe("the text of the returned messages goes before the draft (docs/330 req 1)", () => {
+describe("the returned text goes before the draft (docs/330 req 1)", () => {
   it("puts a blank line between the returned text and what the user was writing", () => {
-    expect(prependReturnedText("my draft", "first\n\nsecond")).toBe("first\n\nsecond\n\nmy draft");
+    expect(placeReturnedText("my draft", "first\n\nsecond", "")).toEqual({
+      text: "first\n\nsecond\n\nmy draft",
+      block: "first\n\nsecond",
+    });
   });
 
   it("is the returned text alone when the input box is empty", () => {
-    expect(prependReturnedText("  \n", "first")).toBe("first");
+    expect(placeReturnedText("  \n", "first", "").text).toBe("first");
   });
 
-  it("changes nothing when no text returned", () => {
-    expect(prependReturnedText("my draft", "")).toBe("my draft");
+  it("goes after returned text that is still at the head, so the send order holds", () => {
+    expect(placeReturnedText("first\n\nmy draft", "second", "first")).toEqual({
+      text: "first\n\nsecond\n\nmy draft",
+      block: "first\n\nsecond",
+    });
+  });
+
+  it("goes to the head when the user changed the returned text", () => {
+    expect(placeReturnedText("edited\n\nmy draft", "second", "first").text).toBe("second\n\nedited\n\nmy draft");
   });
 });
 
-describe("takeReturnedIntoDraft", () => {
+describe("takeReturnedMessages", () => {
   const messages = [
     { id: "m1", text: "first", files: [{ path: "src/a.ts" }] },
     { id: "m2", text: "second", files: [{ path: "/uploads/shot.png" }] },
   ];
 
-  it("saves the messages into the session's draft, in order, before it answers", () => {
-    saveDraftMessage("A", "my draft");
-
-    const returned = takeReturnedIntoDraft("A", "A", messages);
-
-    expect(getSavedDraftMessage("A")).toBe("first\n\nsecond\n\nmy draft");
-    expect(returned).toEqual({
-      text: "first\n\nsecond",
+  it("gives the new text, the files, and every id to answer", () => {
+    expect(takeReturnedMessages("A", messages, "my draft")).toEqual({
+      text: "first\n\nsecond\n\nmy draft",
       files: ["src/a.ts", "/uploads/shot.png"],
       ids: ["m1", "m2"],
     });
-    expect(getReturnedMessageIds("A")).toEqual(["m1", "m2"]);
   });
 
   it("adds nothing when the same list arrives a second time, and still names its ids", () => {
-    takeReturnedIntoDraft("A", "A", messages);
+    const first = takeReturnedMessages("A", messages, "");
 
-    const again = takeReturnedIntoDraft("A", "A", messages);
-
-    expect(again).toEqual({ text: "", files: [], ids: ["m1", "m2"] });
-    expect(getSavedDraftMessage("A")).toBe("first\n\nsecond");
+    expect(takeReturnedMessages("A", messages, first.text ?? "")).toEqual({ text: null, files: [], ids: ["m1", "m2"] });
   });
 
-  it("adds only the message that is new in a longer list", () => {
-    takeReturnedIntoDraft("A", "A", [messages[0]]);
+  it("keeps the send order when a later message returns in a second list", () => {
+    const first = takeReturnedMessages("A", [messages[0]], "my draft");
 
-    const next = takeReturnedIntoDraft("A", "A", messages);
+    const second = takeReturnedMessages("A", [messages[1]], first.text ?? "");
 
-    expect(next.text).toBe("second");
-    expect(getSavedDraftMessage("A")).toBe("second\n\nfirst");
+    expect(second.text).toBe("first\n\nsecond\n\nmy draft");
+  });
+
+  it("forgets an id that the server no longer offers, however many there were", () => {
+    const many = Array.from({ length: 150 }, (_, i) => ({ id: `m${i}`, text: `message ${i}` }));
+    const taken = takeReturnedMessages("A", many, "");
+
+    // The answer was lost: the whole list comes again, and nothing is added a second time.
+    expect(takeReturnedMessages("A", many, taken.text ?? "").text).toBeNull();
+    // Answered: the server offers only a new one, and the record keeps only that one.
+    takeReturnedMessages("A", [{ id: "new", text: "new" }], "");
+    expect(JSON.parse(sessionStorage.getItem("shipit-returned:A") ?? "{}").ids).toEqual(["new"]);
   });
 
   it("keeps the record per session", () => {
-    takeReturnedIntoDraft("A", "A", messages);
+    takeReturnedMessages("A", messages, "");
 
-    expect(takeReturnedIntoDraft("B", "B", messages).text).toBe("first\n\nsecond");
+    expect(takeReturnedMessages("B", messages, "").text).toBe("first\n\nsecond");
+  });
+
+  // Per tab: a second tab of the same session puts the messages into its own input box.
+  it("keeps the record in the tab, not in the browser", () => {
+    takeReturnedMessages("A", messages, "");
+
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.getItem("shipit-returned:A")).not.toBeNull();
   });
 });
 
@@ -91,6 +109,20 @@ describe("offerReturnedMessages", () => {
     expect(useSessionStore.getState().queuedMessages).toEqual([
       { text: "sent later", position: 1, requestId: "m9" },
     ]);
+  });
+
+  // It was still on its way to the server at the Stop, so no queue row took its bubble.
+  it("removes the bubble of a returned message from the transcript", () => {
+    useSessionStore.setState({
+      messages: [
+        { role: "user", text: "ran", clientRequestId: "m0" },
+        { role: "user", text: "first", clientRequestId: "m1" },
+      ],
+    });
+
+    offerReturnedMessages("A", [{ id: "m1", text: "first" }]);
+
+    expect(useSessionStore.getState().messages).toEqual([{ role: "user", text: "ran", clientRequestId: "m0" }]);
   });
 
   it("offers nothing for an empty list", () => {

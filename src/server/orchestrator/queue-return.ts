@@ -78,15 +78,24 @@ export function returnQueueOnStop(runner: StoppedRunner): boolean {
   return leaving.length > 0;
 }
 
+/** An entry with no send order is never taken for one sent before the Stop. */
+export function sentBeforeStop(runner: object, sendOrder: number | undefined): boolean {
+  const cutoff = stopCutoffs.get(runner);
+  return cutoff !== undefined && sendOrder !== undefined && sendOrder < cutoff;
+}
+
 /**
  * An entry that was sent before the last Stop can enter the queue after it: a steer that the
  * agent did not take, or a message that a compaction is put ahead of. It leaves here, before
- * a drain or a delivery uses it. An entry with no send order stays.
+ * a drain or a delivery uses it.
  */
 export function returnQueueSentBeforeStop(runner: StoppedRunner): void {
-  const cutoff = stopCutoffs.get(runner);
-  if (cutoff === undefined) return;
-  leaveQueue(runner, runner.messageQueue.filter((m) => m.sendOrder !== undefined && m.sendOrder < cutoff));
+  leaveQueue(runner, runner.messageQueue.filter((m) => sentBeforeStop(runner, m.sendOrder)));
+}
+
+/** A message that was on its way when the user pressed Stop: it gets the Stop's rule, not a turn. */
+export function returnLateEntry(runner: StoppedRunner, entry: QueuedMessage): void {
+  leaveQueue(runner, [entry]);
 }
 
 /** The messages that wait for an input box, in send order. */

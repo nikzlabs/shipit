@@ -34,8 +34,29 @@ describe("Integration: Interrupt and Redirect", () => {
   let chatHistoryManager: ChatHistoryManager;
   let lastClaude: FakeClaudeProcess;
   let dbManager: DatabaseManager;
+  /** While set, every git call waits for it: the commit after a turn stays open. */
+  let gitGate: Promise<void> | null = null;
+
+  function gatedGit(git: GitManager): GitManager {
+    return new Proxy(git, {
+      get(target, prop, receiver) {
+        const value: unknown = Reflect.get(target, prop, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          const gate = gitGate;
+          const call = () => (value as (...a: unknown[]) => unknown).apply(target, args);
+          if (!gate) return call();
+          return (async () => {
+            await gate;
+            return call();
+          })();
+        };
+      },
+    });
+  }
 
   beforeEach(async () => {
+    gitGate = null;
     dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-interrupt-"));
@@ -48,7 +69,7 @@ describe("Integration: Interrupt and Redirect", () => {
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
-      createGitManager: (dir: string) => new GitManager(dir),
+      createGitManager: (dir: string) => gatedGit(new GitManager(dir)),
       sessionManager,
       chatHistoryManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
@@ -236,6 +257,33 @@ describe("Integration: Interrupt and Redirect", () => {
 
       client.send({ type: "queue_returned_taken", ids: [id] });
       await waitFor(async () => (await listsOnAttach()).length === 0, "no viewer is offered a taken message");
+
+      client.close();
+    });
+
+    it("returns a message that was on its way at the Stop, instead of starting its turn", async () => {
+      const client = await TestClient.connect(port);
+      await client.receive();
+      client.send({ type: "send_message", text: "first message" });
+      const turn = await waitForClaude(() => lastClaude);
+      const runner = app.runnerRegistry.get(client.sessionId)!;
+      let openGate!: () => void;
+      gitGate = new Promise<void>((resolve) => { openGate = resolve; });
+      turn.finish("first");
+      await waitFor(() => !runner.running && runner.turnCommitPending, "the commit after the turn is open");
+
+      // The send waits for that commit; the Stop comes meanwhile.
+      client.send({ type: "send_message", text: "on its way" });
+      await new Promise((r) => setTimeout(r, 50));
+      client.send({ type: "interrupt_agent" });
+      await new Promise((r) => setTimeout(r, 50));
+      gitGate = null;
+      openGate();
+
+      expect((await nextReturn(client)).returned).toMatchObject([{ text: "on its way" }]);
+      await new Promise((r) => setTimeout(r, 200));
+      expect(lastClaude).toBe(turn);
+      expect(runner.running).toBe(false);
 
       client.close();
     });
