@@ -31,6 +31,31 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
+  it("ends a sub-agent run at once when the adapter finds no credential in run()", async () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = Object.assign(new EventEmitter(), {
+      run: () => { agent.emit("auth_required"); },
+      kill: vi.fn(),
+    });
+    runner.setSystemTurnDeps({ agentFactory: () => agent } as never);
+
+    const res = await runner.spawnSubAgent({
+      agentId: "codex" as AgentId,
+      prompt: "review",
+      spawnId: "sp-1",
+      depth: 0,
+      model: "gpt-5.6-sol",
+    });
+
+    expect(res.status).toBe("error");
+    expect(res.error).toMatch(/credential/);
+    runner.dispose({ force: true });
+  });
+
   it("manages message queue", () => {
     const runner = new SessionRunner({
       sessionId: "s1",

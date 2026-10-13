@@ -360,6 +360,12 @@ id or a bad flag, since neither condition can ever clear.
 - **Output is plain text** on stdout (exit 0), or a clear error on stderr with a
   non-zero exit (feature disabled, unknown agent, cap exceeded, crash, timeout,
   cancel).
+- **A run that fails says why.** When a run ends `error` or `timeout`, stderr
+  carries one line with the reason: the harness's message, its exit code, and
+  the last part of its stderr, with credentials replaced by `[REDACTED]`. The
+  consult card shows the same line, and `shipit agent result <RUN-ID>` prints
+  it again. Read it before you run the consult again: a missing credential or
+  a CLI that does not start fails the same way each time.
 - **The sub-agent runs full-capability** in the *same* workspace — it can read,
   write, and run shell. If you want it to only review (not edit), **say so in the
   prompt**. Any files it writes are committed for you: if the run finishes while
@@ -406,8 +412,13 @@ id or a bad flag, since neither condition can ever clear.
   the limit returns an error without spawning: wait for one of the runs to
   finish (`shipit agent result <RUN-ID> --wait`), then run the command again.
   Every run is a process in this container and shares its memory.
-- **Bounded run.** Each spawn has a wall-clock cap (~30 min) and an output cap; an
-  over-limit run is truncated and flagged.
+- **Bounded run.** Each spawn has two limits, and **neither is a cost limit**: a
+  time limit (~30 min) and an output-size limit (32,000 characters). A run that
+  passes the time limit is stopped, ends `timeout`, and returns what it wrote
+  before that. An answer longer than the size limit is cut at the limit, and the
+  run keeps its status. Both are flagged, and the note on stderr names the limit
+  that applied. To get a full answer under the size limit, ask for a shorter
+  report or divide the work into more than one run.
 - **The run's lifetime is its own.** Nothing about your turn ends a consult —
   not an interrupt, not a Stop, not asking the user a question, not your turn
   finishing. It ends only on its own ~30-minute cap or if the session container

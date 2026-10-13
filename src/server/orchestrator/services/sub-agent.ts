@@ -41,7 +41,8 @@ import {
   subAgentSpawnHomeContainerDir,
   subAgentSpawnHomeDir,
 } from "../session-credentials.js";
-import { positiveIntEnv, type SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import { describeSubAgentFailure, positiveIntEnv, type SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import { redactCredentials } from "../../shared/credential-redaction.js";
 import {
   detectHardExhaustion,
   detectHardExhaustionInTurnText,
@@ -128,6 +129,8 @@ export interface RunSubAgentInput {
 export interface RunSubAgentResult extends SubAgentRunResult {
   subAgentId: AgentId;
   spawnId: string;
+  /** The same text as the card's `statusDetail`. */
+  statusDetail?: string;
 }
 
 function allAccountsExhaustedMessage(providerName: string, earliestResetAt: string | null): string {
@@ -404,12 +407,13 @@ async function runSubAgentInSlot(
     } catch (err) {
       console.warn(`[sub-agent] durability read-back failed session=${sessionId} card=${cardId}:`, err);
     }
+    const reason = card.statusDetail ? ` reason=${JSON.stringify(card.statusDetail)}` : "";
     console.log(
       `[sub-agent] finished session=${sessionId} spawn=${spawnId} card=${cardId} agent=${subAgentId} `
       + `status=${card.status} durationMs=${card.durationMs ?? 0} costUsd=${card.costUsd ?? 0} `
       + `outputChars=${card.outputMarkdown?.length ?? 0} truncated=${card.truncated === true} `
       + `emitted=true persisted=${durable} route=${inFlight ? "in-flight-turn" : "finalized-row"} `
-      + `liveRunner=${live === runner ? "original" : "reresolved"}`,
+      + `liveRunner=${live === runner ? "original" : "reresolved"}${reason}`,
     );
   };
 
@@ -553,39 +557,52 @@ async function runSubAgentInSlot(
       );
     }
 
+    const statusDetail = result.status === "cancelled"
+      ? HOST_SHUTDOWN_CONSULT_DETAIL
+      : describeSubAgentFailure(result);
     finalizeConsultCard({
       ...pendingCard,
       status: result.status,
       durationMs: result.durationMs,
       costUsd: result.costUsd,
       truncated: result.truncated,
-      ...(result.status === "cancelled" ? { statusDetail: HOST_SHUTDOWN_CONSULT_DETAIL } : {}),
+      ...(statusDetail ? { statusDetail } : {}),
       ...(result.text ? { outputMarkdown: result.text } : {}),
     });
 
-    return { ...result, subAgentId, spawnId };
+    // `shipit agent run --json` prints this object, and a worker made the two texts.
+    return {
+      ...result,
+      ...(result.error !== undefined ? { error: redactCredentials(result.error).text } : {}),
+      ...(result.stderrTail !== undefined
+        ? { stderrTail: redactCredentials(result.stderrTail).text }
+        : {}),
+      subAgentId,
+      spawnId,
+      ...(statusDetail ? { statusDetail } : {}),
+    };
   } catch (err) {
     const status: SubAgentConsultCard["status"] =
       err instanceof WorkerAbortedError ? "cancelled"
       : err instanceof WorkerTimeoutError ? "timeout"
       : "error";
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = describeSubAgentFailure({
+      status: "error",
+      error: err instanceof Error ? err.message : String(err),
+    });
     console.warn(
       `[sub-agent] failed session=${sessionId} spawn=${spawnId} agent=${subAgentId} status=${status}: ${detail}`,
     );
+    const statusDetail = status === "cancelled"
+      ? teardownConsultDetail(err instanceof WorkerAbortedError ? err.reason : undefined)
+      : detail;
     finalizeConsultCard({
       ...pendingCard,
       status,
       durationMs: Math.max(0, Date.now() - startedAtMs),
       costUsd: 0,
       truncated: false,
-      ...(status === "cancelled"
-        ? {
-          statusDetail: teardownConsultDetail(
-            err instanceof WorkerAbortedError ? err.reason : undefined,
-          ),
-        }
-        : {}),
+      ...(statusDetail ? { statusDetail } : {}),
     });
     throw err;
   } finally {

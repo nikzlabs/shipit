@@ -30,6 +30,7 @@ import {
 import {
   runAgentToCompletion,
   buildSubAgentRunParams,
+  describeSubAgentFailure,
   type SubAgentRunHandle,
 } from "../shared/sub-agent-run.js";
 
@@ -262,13 +263,14 @@ export class AgentController {
             ? { [serviceRouting.credentialSourceEnv]: credentialSecret }
             : {};
           this.withTemporaryEnv({ SHIPIT_AGENT_DEPTH: childDepth, ...routedCredential }, () => {
-            agent.run(buildSubAgentRunParams(runOpts));
+            handle.start(() => { agent.run(buildSubAgentRunParams(runOpts)); });
           });
           const result = await handle.promise;
+          const reason = describeSubAgentFailure(result);
           console.log(
             `[sub-agent] worker done spawn=${spawnId} status=${result.status} `
             + `durationMs=${result.durationMs} outputChars=${result.text.length} `
-            + `truncated=${result.truncated}`,
+            + `truncated=${result.truncated}${reason ? ` reason=${JSON.stringify(reason)}` : ""}`,
           );
           return result;
         } catch (err) {

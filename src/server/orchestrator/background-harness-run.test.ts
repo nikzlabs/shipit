@@ -68,6 +68,13 @@ describe("LocalBackgroundHarnessRunner", () => {
     expect((await run).text).toBe("cleaned up");
   });
 
+  it("ends at once when the adapter finds no credential in run()", async () => {
+    agentsReadEnv = () => { agents.at(-1)!.emit("auth_required"); };
+    const res = await makeRunner().run({ harnessId: "claude", prompt: "clean this up", model: "haiku" });
+    expect(res.status).toBe("error");
+    expect(res.error).toMatch(/credential/);
+  });
+
   // The orchestrator process has no routed credential in its own environment
   // either, so the value has to be delivered around the synchronous run().
   it("delivers the routed credential for exactly the span that reads it", async () => {

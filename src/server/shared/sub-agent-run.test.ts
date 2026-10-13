@@ -1,9 +1,13 @@
 import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import {
+  describeSubAgentFailure,
   runAgentToCompletion,
   DEFAULT_SUB_AGENT_TIMEOUT_MS,
+  SUB_AGENT_FAILURE_MESSAGE_MAX_CHARS,
+  SUB_AGENT_STDERR_TAIL_MAX_CHARS,
   SUB_AGENT_TRANSPORT_TIMEOUT_MS,
+  type SubAgentRunResult,
 } from "./sub-agent-run.js";
 import type { AgentEvent } from "./types.js";
 
@@ -181,6 +185,7 @@ describe("runAgentToCompletion", () => {
     const res = await handle.promise;
     expect(res.text).toBe("0123456789");
     expect(res.truncated).toBe(true);
+    expect(res.outputLimitChars).toBe(10);
   });
 
   it("reports an error status when the adapter emits error", async () => {
@@ -199,7 +204,8 @@ describe("runAgentToCompletion", () => {
     const res = await handle.promise;
     expect(res.status).toBe("error");
     expect(res.text).toBe("");
-    expect(res.error).toContain("exited with code 1");
+    expect(res.error).toContain("exited before it reported a result");
+    expect(res.exitCode).toBe(1);
   });
 
   it("reports a crash that leaked a preamble as an error, keeping the partial text", async () => {
@@ -210,7 +216,7 @@ describe("runAgentToCompletion", () => {
     const res = await handle.promise;
     expect(res.status).toBe("error");
     expect(res.text).toBe("Let me inspect the files…");
-    expect(res.error).toContain("exited with code 1");
+    expect(res.exitCode).toBe(1);
   });
 
   it("keeps a clean exit a success", async () => {
@@ -263,6 +269,8 @@ describe("runAgentToCompletion", () => {
       expect(agent.kill).toHaveBeenCalled();
       expect(res.status).toBe("timeout");
       expect(res.truncated).toBe(true);
+      expect(res.outputLimitChars).toBeUndefined();
+      expect(res.error).toContain("time limit (1 s)");
     } finally {
       vi.useRealTimers();
     }
@@ -289,6 +297,255 @@ describe("runAgentToCompletion", () => {
 
   it("keeps the transport backstop above the run's own cap", () => {
     expect(SUB_AGENT_TRANSPORT_TIMEOUT_MS).toBeGreaterThan(DEFAULT_SUB_AGENT_TIMEOUT_MS);
+  });
+});
+
+// A credential shape that is put together here, so that no secret scan reads one in this file.
+const FAKE_KEY = ["sk", "proj", "k".repeat(28)].join("-");
+
+async function settledSoon(handle: { promise: Promise<SubAgentRunResult> }): Promise<SubAgentRunResult | "still running"> {
+  return Promise.race([
+    handle.promise,
+    new Promise<"still running">((resolve) => setTimeout(() => resolve("still running"), 50)),
+  ]);
+}
+
+describe("runAgentToCompletion — a run that fails says why", () => {
+  it("ends at once when the adapter finds no credential in run() and starts no process", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    handle.start(() => { agent.emit("auth_required"); });
+    const res = await settledSoon(handle);
+    expect(res).toMatchObject({ status: "error", text: "" });
+    expect((res as SubAgentRunResult).error).toMatch(/credential/);
+  });
+
+  it("ends a cancelled run as cancelled when the adapter then finds no credential", async () => {
+    const agent = new FakeAgent();
+    // The Codex adapter emits no `done` for a kill with no process.
+    agent.kill.mockImplementation(() => {});
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    handle.cancel();
+    handle.start(() => { agent.emit("auth_required"); });
+    const res = await settledSoon(handle);
+    expect(res).toMatchObject({ status: "cancelled" });
+    expect((res as SubAgentRunResult).error).toBeUndefined();
+  });
+
+  it("lets a live process that reports a credential problem run on, and names it if the process then fails", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    handle.start(() => {});
+    // The Claude adapter emits the event before it logs the line.
+    agent.emit("auth_required");
+    agent.emit("log", "stderr", "API Error: 401 authentication_error");
+    expect(await settledSoon(handle)).toBe("still running");
+
+    agent.emit("done", 1);
+    const res = await handle.promise;
+    expect(res).toMatchObject({ status: "error", exitCode: 1, stderrTail: "API Error: 401 authentication_error" });
+    expect(res.error).toMatch(/credential/);
+  });
+
+  // The Codex adapter emits the event for a stderr line with "api key" in it. The account
+  // failover in the orchestrator reads the error of the result that follows.
+  it("keeps the error of a result that follows a credential report from a live process", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    handle.start(() => {});
+    agent.emit("log", "codex-stderr", "API key quota exceeded");
+    agent.emit("auth_required");
+    agent.emit("event", { type: "agent_result", status: "error", sessionId: "s", error: "Quota exceeded for this account" });
+    agent.emit("done", 1);
+    expect(await handle.promise).toMatchObject({ status: "error", error: "Quota exceeded for this account" });
+  });
+
+  it("keeps the success of a live process that recovered", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    handle.start(() => {});
+    agent.emit("auth_required");
+    agent.emit("event", assistant("2 findings"));
+    agent.emit("event", result(0.01, 1000));
+    agent.emit("done", 0);
+    expect(await handle.promise).toMatchObject({ status: "success", text: "2 findings" });
+  });
+
+  // The Claude adapter does not pass on the result of an auth failure, and the CLI can exit with 0.
+  it("fails a live process that reported a credential problem and then exited with no result", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    handle.start(() => {});
+    agent.emit("auth_required");
+    agent.emit("done", 0);
+    const res = await handle.promise;
+    expect(res).toMatchObject({ status: "error", exitCode: 0 });
+    expect(res.error).toMatch(/credential/);
+  });
+
+  // The Claude and OpenCode adapters emit `error` and then `done` in one callback.
+  it("keeps the exit code that follows an adapter error directly", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    agent.emit("error", new Error("write EPIPE"));
+    agent.emit("done", 2);
+    expect(await handle.promise).toMatchObject({ status: "error", error: "write EPIPE", exitCode: 2 });
+  });
+
+
+  it("carries the exit code and the end of the harness's stderr", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    agent.emit("log", "codex", "spawning: codex app-server | cwd: /w");
+    agent.emit("log", "codex-stderr", "error: unexpected argument '--frobnicate' found");
+    agent.emit("log", "stderr", "Usage: codex [OPTIONS]");
+    agent.emit("done", 2);
+    const res = await handle.promise;
+    expect(res.status).toBe("error");
+    expect(res.exitCode).toBe(2);
+    expect(res.stderrTail).toBe("error: unexpected argument '--frobnicate' found Usage: codex [OPTIONS]");
+  });
+
+  it("keeps stderr that came before an adapter error", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    agent.emit("log", "codex-stderr", "thread/start failed: config.toml is not valid");
+    agent.emit("error", new Error("Codex initialize timed out"));
+    const res = await handle.promise;
+    expect(res).toMatchObject({
+      status: "error",
+      error: "Codex initialize timed out",
+      stderrTail: "thread/start failed: config.toml is not valid",
+    });
+    expect(res.exitCode).toBeUndefined();
+  });
+
+  it("keeps only the end of a long stderr", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    for (let i = 0; i < 400; i += 1) agent.emit("log", "stderr", `retry ${i} of the upstream call`);
+    agent.emit("log", "stderr", "fatal: the last line");
+    agent.emit("done", 1);
+    const tail = (await handle.promise).stderrTail!;
+    expect(tail.length).toBeLessThanOrEqual(SUB_AGENT_STDERR_TAIL_MAX_CHARS + 1);
+    expect(tail.startsWith("…")).toBe(true);
+    expect(tail.endsWith("fatal: the last line")).toBe(true);
+  });
+
+  // A kill makes the Codex adapter reject its open requests, and its start-up then emits `error`.
+  it("ends a cancelled run as cancelled when the kill makes the adapter emit an error", async () => {
+    const agent = new FakeAgent();
+    agent.kill.mockImplementation(() => { agent.emit("error", new Error("Process killed")); });
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    handle.start(() => {});
+    handle.cancel();
+    const res = await settledSoon(handle);
+    expect(res).toMatchObject({ status: "cancelled" });
+    expect((res as SubAgentRunResult).error).toBeUndefined();
+  });
+
+  it("redacts a credential in stderr before the text leaves the run", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    agent.emit("log", "codex-stderr", `401 Unauthorized for key ${FAKE_KEY} at https://api.example.test/v1/responses`);
+    agent.emit("done", 1);
+    const res = await handle.promise;
+    expect(JSON.stringify(res)).not.toContain(FAKE_KEY);
+    expect(res.stderrTail).toContain("401 Unauthorized for key [REDACTED]");
+    // A diagnosis needs the URL, so only the credential shape goes.
+    expect(res.stderrTail).toContain("https://api.example.test/v1/responses");
+  });
+
+  it("adds no stderr to a run that succeeded", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    agent.emit("log", "stderr", "warning: a plugin took 2 s to start");
+    agent.emit("event", assistant("All good."));
+    agent.emit("event", result(0.01, 1000));
+    agent.emit("done", 0);
+    const res = await handle.promise;
+    expect(res.status).toBe("success");
+    expect(res.stderrTail).toBeUndefined();
+    expect(res.exitCode).toBe(0);
+  });
+
+  it("gives a timed-out run its stderr too", async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = new FakeAgent();
+      const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w", timeoutMs: 120_000 }, Date.now());
+      agent.emit("log", "stderr", "stream error: retrying in 30s");
+      vi.advanceTimersByTime(120_001);
+      const res = await handle.promise;
+      expect(res.status).toBe("timeout");
+      expect(res.error).toContain("time limit (2 min)");
+      expect(res.stderrTail).toBe("stream error: retrying in 30s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("runAgentToCompletion — stderr that the adapter emits at the kill", () => {
+  // The Codex adapter gives its text with no line end when it is killed.
+  it("is in the tail of a run that the time limit stopped", async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = new FakeAgent();
+      agent.kill.mockImplementation(() => { agent.emit("log", "codex-stderr", "fatal: cannot open the state database"); });
+      const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w", timeoutMs: 50 }, Date.now());
+      vi.advanceTimersByTime(60);
+      expect(await handle.promise).toMatchObject({
+        status: "timeout",
+        stderrTail: "fatal: cannot open the state database",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("describeSubAgentFailure", () => {
+  const failed = (over: Partial<SubAgentRunResult>): SubAgentRunResult => ({
+    status: "error", text: "", truncated: false, durationMs: 147, costUsd: 0, ...over,
+  });
+
+  it("puts the message, the exit code and the stderr tail on one line", () => {
+    expect(describeSubAgentFailure(failed({
+      error: "The agent process exited before it reported a result.",
+      exitCode: 2,
+      stderrTail: "error: unexpected argument",
+    }))).toBe(
+      "The agent process exited before it reported a result. Exit code 2. Last stderr: error: unexpected argument",
+    );
+  });
+
+  it("says nothing for a run that succeeded or was cancelled", () => {
+    expect(describeSubAgentFailure(failed({ status: "success" }))).toBeUndefined();
+    expect(describeSubAgentFailure(failed({ status: "cancelled", error: "x" }))).toBeUndefined();
+  });
+
+  it("still says something when the harness gave no reason", () => {
+    expect(describeSubAgentFailure(failed({}))).toMatch(/gave no reason/);
+    expect(describeSubAgentFailure(failed({ status: "timeout" }))).toMatch(/time limit/);
+  });
+
+  it("names an exit code of zero too", () => {
+    expect(describeSubAgentFailure(failed({ error: "Quota exhausted", exitCode: 0 }))).toBe(
+      "Quota exhausted. Exit code 0.",
+    );
+  });
+
+  it("redacts and bounds text that did not come from the run core", () => {
+    const reason = describeSubAgentFailure(failed({
+      error: `request failed\nAuthorization: Bearer ${FAKE_KEY} ${"x".repeat(2_000)}`,
+      stderrTail: `${"y".repeat(2_000)} token ${FAKE_KEY}`,
+    }))!;
+    expect(reason).not.toContain(FAKE_KEY);
+    expect(reason).not.toContain("\n");
+    expect(reason.length).toBeLessThanOrEqual(
+      SUB_AGENT_FAILURE_MESSAGE_MAX_CHARS + SUB_AGENT_STDERR_TAIL_MAX_CHARS + 40,
+    );
   });
 });
 

@@ -97,6 +97,15 @@ function RunAttribution({ text }: { text: string | null }) {
   );
 }
 
+function StatusDetail({ text }: { text: string | undefined }) {
+  if (!text) return null;
+  return (
+    <div className="mt-1 text-xs text-(--color-text-secondary)" data-testid="sub-agent-consult-status-detail">
+      {text}
+    </div>
+  );
+}
+
 function statusVerb(status: SubAgentConsultCardData["status"]): string {
   return (
     status === "pending" ? "Asking"
@@ -148,11 +157,7 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
       >
         {summary}
         <RunAttribution text={attribution} />
-        {card.statusDetail && (
-          <div className="mt-1 text-xs text-(--color-text-secondary)" data-testid="sub-agent-consult-status-detail">
-            {card.statusDetail}
-          </div>
-        )}
+        <StatusDetail text={card.statusDetail} />
       </div>
     );
   }
@@ -173,6 +178,7 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
           />
         </div>
         <RunAttribution text={attribution} />
+        <StatusDetail text={card.statusDetail} />
         <div className="mt-1 truncate text-xs text-(--color-text-secondary)" data-testid="sub-agent-consult-preview">
           {previewLine(output)}
         </div>

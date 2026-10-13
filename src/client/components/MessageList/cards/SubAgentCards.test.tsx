@@ -56,6 +56,18 @@ describe("SubAgentConsultCardRow (docs/220)", () => {
     expect(row.getAttribute("data-pending")).toBeNull();
   });
 
+  it("shows the explanation on a failed run that left a part of its output", () => {
+    render(<SubAgentConsultCardRow card={card({
+      status: "timeout",
+      outputMarkdown: "half a review",
+      truncated: true,
+      statusDetail: "The run did not finish within its time limit (30 min), and ShipIt stopped it.",
+    })} />);
+
+    expect(screen.getByTestId("sub-agent-consult-status-detail").textContent).toContain("time limit (30 min)");
+    expect(screen.getByTestId("sub-agent-consult-preview").textContent).toContain("half a review");
+  });
+
   it("omits the explanation row when the card carries none", () => {
     render(<SubAgentConsultCardRow card={card({ status: "cancelled", costUsd: 0 })} />);
     expect(screen.queryByTestId("sub-agent-consult-status-detail")).toBeNull();

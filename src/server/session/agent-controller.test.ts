@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -330,6 +330,103 @@ describe("AgentController — /agent/spawn requires a model (docs/261)", () => {
     expect(res.statusCode).toBe(200);
     expect(spawned).toHaveLength(1);
     expect(spawned[0].lastParams?.homeDir).toBe("/credentials/sub-agent-homes/s-3");
+  });
+});
+
+describe("AgentController — /agent/spawn says why a run failed", () => {
+  // Put together here, so that no secret scan reads a credential in this file.
+  const FAKE_KEY = ["sk", "proj", "k".repeat(28)].join("-");
+
+  type Ending = "exit" | "no-credential" | "success";
+
+  class EndingAgent extends EventEmitter {
+    readonly agentId = "codex" as const;
+    constructor(private readonly ending: Ending) {
+      super();
+    }
+    run(): void {
+      if (this.ending === "no-credential") {
+        this.emit("auth_required");
+        return;
+      }
+      setImmediate(() => {
+        if (this.ending === "success") {
+          this.emit("log", "codex-stderr", "warning: a plugin took 2 s to start");
+          this.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "no findings" }] });
+          this.emit("event", { type: "agent_result", status: "success" });
+          this.emit("done", 0);
+          return;
+        }
+        this.emit("log", "codex-stderr", `error: config.toml is not valid (key ${FAKE_KEY})`);
+        this.emit("done", 2);
+      });
+    }
+    kill(): void {}
+  }
+
+  let app: FastifyInstance;
+  let workspace: string;
+  let ending: Ending;
+
+  beforeEach(async () => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-spawn-fail-"));
+    ending = "exit";
+    app = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => new EndingAgent(ending) as unknown as AgentProcess,
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+    }).registerRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await app.close();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  async function spawnAndReadDoneLine(spawnId: string): Promise<{ body: Record<string, unknown>; doneLine: string }> {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/spawn",
+      payload: { agentId: "codex", prompt: "review", spawnId, model: "gpt-5.6-sol" },
+    });
+    expect(res.statusCode).toBe(200);
+    const doneLine = log.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.includes(`worker done spawn=${spawnId}`));
+    expect(doneLine).toBeDefined();
+    return { body: res.json(), doneLine: doneLine! };
+  }
+
+  it("logs the exit code and the stderr tail, with the credential redacted", async () => {
+    const { body, doneLine } = await spawnAndReadDoneLine("s-crash");
+    expect(body).toMatchObject({ status: "error", exitCode: 2 });
+    expect(doneLine).toContain("status=error");
+    expect(doneLine).toContain("Exit code 2.");
+    expect(doneLine).toContain("config.toml is not valid");
+    expect(doneLine).not.toContain(FAKE_KEY);
+    expect(JSON.stringify(body)).not.toContain(FAKE_KEY);
+  });
+
+  it("answers at once, with a reason, when the harness has no credential", async () => {
+    ending = "no-credential";
+    const { body, doneLine } = await spawnAndReadDoneLine("s-noauth");
+    expect(body).toMatchObject({ status: "error" });
+    expect(doneLine).toMatch(/reason=".*credential/);
+  }, 2_000);
+
+  it("adds no reason to the line of a run that succeeded", async () => {
+    ending = "success";
+    const { body, doneLine } = await spawnAndReadDoneLine("s-ok");
+    expect(body).toMatchObject({ status: "success", text: "no findings" });
+    expect(doneLine).not.toContain("reason=");
+    expect(doneLine).not.toContain("plugin");
   });
 });
 

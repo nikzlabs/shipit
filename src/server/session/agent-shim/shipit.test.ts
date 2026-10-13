@@ -3577,6 +3577,51 @@ describe("runShim — agent run", () => {
     expect(out.exitCode).toBe(1);
   });
 
+  it("prints why a failed run failed", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const reason = "The agent process exited before it reported a result. Exit code 2. Last stderr: error: config.toml is not valid";
+    const out = await run(["agent", "run", "--role", "reviewer", "--prompt-file", file], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "error", text: "", truncated: false, durationMs: 147, costUsd: 0, spawnId: "run-9", statusDetail: reason },
+      },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("shipit agent run: sub-agent error.");
+    expect(out.stderr).toContain(`shipit agent run: ${reason}`);
+    expect(out.stdout).toBe("");
+  });
+
+  it("names the output-size limit when that limit cut the output, and no cost limit", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run(["agent", "run", "--role", "reviewer", "--prompt-file", file], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "success", text: "a long review", truncated: true, outputLimitChars: 32_000, durationMs: 10, costUsd: 0 },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stderr).toContain("output-size limit (32,000 characters)");
+    expect(out.stderr).not.toMatch(/cost/i);
+  });
+
+  it("names the time limit when a timeout left the output incomplete", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run(["agent", "run", "--role", "reviewer", "--prompt-file", file], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "timeout", text: "partial...", truncated: true, durationMs: 1_800_000, costUsd: 0 },
+      },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("time limit");
+    expect(out.stderr).not.toContain("output-size limit");
+    expect(out.stderr).not.toMatch(/cost/i);
+  });
+
   it("prints the raw result object with --json", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
@@ -3883,6 +3928,35 @@ describe("shipit agent result — exit codes (docs/248)", () => {
     });
     expect(out.stderr).toContain("ShipIt restarted while this consult was running");
     expect(out.stdout).not.toContain("ShipIt restarted");
+  });
+
+  it("prints why a failed run failed when it reads the run back", async () => {
+    const { run } = makeRunner();
+    const reason = "The agent CLI reported that its credential is missing or was refused.";
+    const out = await run(["agent", "result", "run-77"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "error", statusDetail: reason, createdAt: "x" },
+      },
+    });
+    expect(out.exitCode).toBe(3);
+    expect(out.stderr).toContain(`shipit agent result: ${reason}`);
+    expect(out.stdout).toBe("");
+  });
+
+  it("says which limit cut the output of a run that it reads back", async () => {
+    const { run } = makeRunner();
+    const cut = await run(["agent", "result"], { "GET /agent-ops/agent/result": card("success", { truncated: true }) });
+    expect(cut.exitCode).toBe(0);
+    expect(cut.stderr).toContain("output-size limit");
+    expect(cut.stderr).not.toMatch(/cost/i);
+
+    const timedOut = await run(["agent", "result"], { "GET /agent-ops/agent/result": card("timeout", { truncated: true }) });
+    expect(timedOut.stderr).toContain("time limit");
+    expect(timedOut.stderr).not.toContain("output-size limit");
+
+    const whole = await run(["agent", "result"], { "GET /agent-ops/agent/result": card("success") });
+    expect(whole.stderr).not.toContain("limit");
   });
 
   it("surfaces the explanation to a --json caller too", async () => {
