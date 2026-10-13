@@ -17,6 +17,7 @@ import {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GH_SHIM = path.resolve(HERE, "../session/agent-shim/gh.ts");
 const PLUGIN_SHIM = path.resolve(HERE, "../session/agent-shim/shipit-plugin.ts");
+const GIT_HOOK = path.resolve(HERE, "../../../docker/agent-hooks/block-branch-ops.mjs");
 
 describe("mapAgentOpsPath", () => {
   it("maps the fixed PR routes, including the worker's rename of pr/create", () => {
@@ -38,6 +39,13 @@ describe("mapAgentOpsPath", () => {
     expect(mapAgentOpsPath("/agent-ops/plugin/refresh")).toBe("plugin/refresh");
     expect(mapAgentOpsPath("/agent-ops/plugin/exec")).toBe("plugin/exec");
     expect(mapAgentOpsPath("/agent-ops/plugin/exec/stdin")).toBe("plugin/exec/stdin");
+  });
+
+  it("maps the one read the git hook makes, so the merged-branch guard follows the session in local mode too", () => {
+    const hook = fs.readFileSync(GIT_HOOK, "utf8");
+    const paths = [...hook.matchAll(/\/agent-ops\/[a-z/-]+/g)].map((m) => m[0]);
+    expect(paths).toEqual(["/agent-ops/branch/destructive-git-guard"]);
+    expect(mapAgentOpsPath(paths[0])).toBe("branch/destructive-git-guard");
   });
 
   it("still denies the CI verbs the shim never emits", () => {

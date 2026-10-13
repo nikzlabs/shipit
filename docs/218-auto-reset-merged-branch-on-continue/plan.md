@@ -884,8 +884,8 @@ destructive command:
 
 `git rebase` also joined the hook's destructive set
 (`docker/agent-hooks/block-branch-ops.mjs`, docs/130), armed by the same
-`SHIPIT_GUARD_DESTRUCTIVE_GIT=1` as its siblings and exempting the in-progress
-verbs. That does not cover this incident — the guard was already disarmed by the
+merged state as its siblings and exempting the in-progress verbs. That does not
+cover this incident — the guard was already disarmed by the
 re-arm above — but it closes the gap where the one rewrite ShipIt's own docs
 forbid in that window was also the only one the hook did not mention. A broader
 block was rejected: a rebase is legitimate nearly always, and deciding otherwise

@@ -659,8 +659,33 @@ function offendsSelfMatchingProcessTest(line) {
   return null;
 }
 
-// The orchestrator enables this only during merged-branch recovery.
-const guardDestructiveGit = process.env.SHIPIT_GUARD_DESTRUCTIVE_GIT === "1";
+// The destructive rules apply only while the session's branch is merged. An
+// agent process outlives that state, so it is read from ShipIt for each command
+// (docs/130); the spawn environment is the answer when ShipIt gives none.
+const GUARD_QUERY_TIMEOUT_MS = 3000;
+
+async function askGuard() {
+  const atSpawn = process.env.SHIPIT_GUARD_DESTRUCTIVE_GIT === "1";
+  const worker = (
+    process.env.SHIPIT_AGENT_OPS_URL || `http://127.0.0.1:${process.env.WORKER_PORT || "9100"}`
+  ).replace(/\/$/, "");
+  try {
+    const res = await fetch(`${worker}/agent-ops/branch/destructive-git-guard`, {
+      signal: AbortSignal.timeout(GUARD_QUERY_TIMEOUT_MS),
+    });
+    if (!res.ok) return atSpawn;
+    const guarded = (await res.json())?.guarded;
+    return typeof guarded === "boolean" ? guarded : atSpawn;
+  } catch {
+    return atSpawn;
+  }
+}
+
+let guardAnswer = null;
+function guardsDestructiveGit() {
+  guardAnswer ??= askGuard();
+  return guardAnswer;
+}
 
 // The git rules judge only what runs in this container: a heredoc that is data
 // for another program and an ssh remote command are cut first (docs/130). What
@@ -686,8 +711,8 @@ for (const seg of sandboxSession ? [] : segments(runsHere)) {
     process.exit(2);
   }
 
-  const destructive = guardDestructiveGit ? offendsDestructive(seg) : null;
-  if (destructive) {
+  const destructive = offendsDestructive(seg);
+  if (destructive && (await guardsDestructiveGit())) {
     process.stderr.write(
       `Blocked: ${destructive}.\n\n` +
         "This session's PR has merged and ShipIt has recorded the merged head " +
