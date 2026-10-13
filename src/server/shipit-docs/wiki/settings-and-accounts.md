@@ -288,6 +288,12 @@ it — a review written by the model that wrote the work is not a second opinion
 so when the brokered run cannot happen, tell the user why instead of reviewing
 it yourself.
 
+**Reviews are limited by how many run at once, not by how many a turn makes.** A
+session can have 16 runs in progress at the same time unless the operator
+changed the number. A call past that is refused until a run finishes: wait, then
+run it again. Every run shares the memory of the session's container, so on a
+machine with little memory the user can tell you to start fewer at a time.
+
 ## SSH hosts
 
 Settings → Integrations → **SSH hosts** is a list of remote servers a session can

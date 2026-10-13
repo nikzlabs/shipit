@@ -18,7 +18,6 @@ import { prepareSteer, shouldSteerMessage, userMessageWaits } from "../dispatch-
 import { currentTurnPhase, turnInSetup, turnTakesMessages } from "../turn-stop-request.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { turnCommitSettled } from "../turn-admission.js";
-import { resetSubAgentSpawnBudget } from "../session-runner.js";
 import { settleNetworkModeWrites } from "../services/network-mode-writes.js";
 import { prepareDispatch, type PreparedDispatch } from "../prepared-dispatch.js";
 import { toQueuedMessage } from "../session-runner.js";
@@ -342,9 +341,6 @@ async function decideAndRunSend(
             runnerForQueue.appliedPermissionMode = msg.permissionMode;
           }
           steerTarget.sendUserMessage(steerPrompt);
-
-          // Refill the human-message budget without clearing the running turn's history.
-          resetSubAgentSpawnBudget(runnerForQueue);
 
           const historyImages = prepared.images;
           const historyFiles = prepared.files;

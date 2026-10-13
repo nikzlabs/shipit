@@ -178,7 +178,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   private _disposed = false;
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
-  private _subAgentSpawnsThisTurn = 0;
   private readonly _subAgentAborts = new Map<string, { controller: AbortController; agentId: AgentId }>();
   private _lastAnnouncedWork = "[]";
   private readonly _postTurnHold = new PostTurnHold();
@@ -365,8 +364,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
-  get subAgentSpawnsThisTurn(): number { return this._subAgentSpawnsThisTurn; }
-  set subAgentSpawnsThisTurn(n: number) { this._subAgentSpawnsThisTurn = n; }
 
   // Independent of the primary turn; disposal aborts the request, and transport has its own cap.
   async spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult> {

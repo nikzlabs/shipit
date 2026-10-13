@@ -1,10 +1,9 @@
 import { recordSteeredMessage, persistTurnInProgress } from "./ws-handlers/agent-listeners.js";
-import {
-  resetSubAgentSpawnBudget,
-  type SessionRunnerInterface,
-  type AgentDispatchOptions,
-  type QueuedMessage,
-  type SystemTurnDeps,
+import type {
+  SessionRunnerInterface,
+  AgentDispatchOptions,
+  QueuedMessage,
+  SystemTurnDeps,
 } from "./session-runner.js";
 import type { FileAttachment, FileContextRef, ImageAttachment, UploadRef } from "../shared/types.js";
 import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
@@ -278,7 +277,6 @@ function recordDelivered(
   entry: QueuedMessage,
   prepared: PreparedSteer,
 ): void {
-  resetSubAgentSpawnBudget(runner);
   const clientRequestId = recordSteeredMessage(runner, entry.text, {
     images: prepared.images,
     files: prepared.files,
