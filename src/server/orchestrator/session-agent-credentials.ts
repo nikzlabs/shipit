@@ -12,7 +12,6 @@ import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 import {
   AGENT_TOKEN_FILES,
   SUBTREE_STATE_SUBPATHS,
-  preserveBorrowedTokensBeforeWipe,
   syncSubAgentSpawnHomeTokenBack,
 } from "./token-sync-manager.js";
 import {
@@ -20,10 +19,8 @@ import {
   SHARED_CREDENTIAL_PATHS,
   SUB_AGENT_HOME_SUBDIR,
   agentCredentialDirs,
-  beginSubtreeBorrow,
   chownSessionCredentialsTree,
   copyCredentialPath,
-  endSubtreeBorrow,
   perSessionCredentialsDir,
   readSessionAccountMarker,
   writeSessionAccountMarker,
@@ -270,61 +267,7 @@ function provisionAgentCredentialsFromRoot(
   chownSessionCredentialsTree(credentialsRoot, sessionId);
 }
 
-export function provisionSubAgentCredentials(
-  credentialsRoot: string,
-  sessionId: string,
-  subAgentId: AgentId,
-  /** The spawn taking the subtree; failover re-provisions under the same id. */
-  holderId: string,
-  accountId?: string,
-): void {
-  const sourceRoot = accountId
-    ? providerAccountCredentialRoot(credentialsRoot, subAgentId, accountId)
-    : credentialsRoot;
-  // Record the borrow before copying so concurrent token write-back cannot misattribute it.
-  beginSubtreeBorrow(credentialsRoot, sessionId, subAgentId, holderId);
-  provisionAgentCredentialsFromRoot(credentialsRoot, sessionId, subAgentId, sourceRoot, true);
-  writeSessionAccountMarker(credentialsRoot, sessionId, subAgentId, accountId ?? null);
-}
-
-export function releaseSubAgentCredentials(
-  credentialsRoot: string,
-  sessionId: string,
-  subAgentId: AgentId,
-  holderId: string,
-): string | undefined {
-  // Cross-harness consults share one subtree, so only the LAST holder may wipe
-  // it: an earlier release deletes the credentials of a consult still running.
-  const release = endSubtreeBorrow(sessionId, subAgentId, holderId);
-  if (!release.last) {
-    console.log(`[session-credentials] keep-credentials session=${sessionId} agent=${subAgentId} holder=${holderId}`);
-    return undefined;
-  }
-  // Preserve rotations while the marker still identifies their owner.
-  preserveBorrowedTokens(
-    credentialsRoot,
-    sessionId,
-    subAgentId,
-    readSessionAccountMarker(credentialsRoot, sessionId)[subAgentId],
-  );
-  removeSubAgentCredentials(credentialsRoot, sessionId, subAgentId);
-  return release.displaced;
-}
-
-function preserveBorrowedTokens(
-  credentialsRoot: string,
-  sessionId: string,
-  subAgentId: AgentId,
-  accountId: string | undefined,
-): void {
-  try {
-    preserveBorrowedTokensBeforeWipe(credentialsRoot, sessionId, subAgentId, accountId);
-  } catch (err) {
-    console.warn(`[session-credentials] borrow preservation failed for ${subAgentId}:`, err);
-  }
-}
-
-// Revocation and failover wipe credentials without ending the borrow or saving revoked tokens.
+// Sign-out sweep: an older build could leave a consult's credentials in the session's own subtree.
 export function removeSubAgentCredentials(
   credentialsRoot: string,
   sessionId: string,

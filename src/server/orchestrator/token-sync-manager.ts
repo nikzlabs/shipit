@@ -18,7 +18,6 @@ import {
   chownSessionCredentialsTree,
   perSessionCredentialsDir,
   readSessionAccountMarker,
-  subtreeBorrowInFlight,
   writeSessionAccountMarker,
 } from "./session-credentials-scaffold.js";
 
@@ -902,18 +901,7 @@ export function syncAgentTokenBack(
   credentialsRoot: string,
   sessionId: string,
   agentId: AgentId,
-  opts?: ProviderTokenWriteBackOptions,
 ): void {
-  // Borrow copies precede their markers; block session-route writes for the whole borrow.
-  if (opts?.sessionOwnRoute === true && subtreeBorrowInFlight(sessionId, agentId)) {
-    logWriteBackOutcome(
-      "refused",
-      { sessionId, agentId, target: "flat-root", holder: undefined, reason: "borrow-in-flight" },
-      `refusing ${agentId} token write-back for ${sessionId} to the flat root: `
-        + `the subtree is lent to a sub-agent`,
-    );
-    return;
-  }
   // Publishing an account token to the flat root also creates a false legacy migration.
   const holder = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
   if (holder !== undefined) {
@@ -963,15 +951,6 @@ export function syncProviderAccountTokenBack(
   opts?: ProviderTokenWriteBackOptions,
 ): void {
   // Check ownership before freshness; a newer token may belong to another account.
-  if (opts?.sessionOwnRoute === true && subtreeBorrowInFlight(sessionId, agentId)) {
-    logWriteBackOutcome(
-      "refused",
-      { sessionId, agentId, target: `account:${accountId}`, holder: undefined, reason: "borrow-in-flight" },
-      `refusing ${agentId} token write-back for ${sessionId} to account ${accountId}: `
-        + `the subtree is lent to a sub-agent`,
-    );
-    return;
-  }
   const holder = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
   if (holder !== accountId) {
     const repairable = holder === undefined && opts?.sessionOwnRoute === true;
@@ -991,7 +970,7 @@ export function syncProviderAccountTokenBack(
       "repaired",
       { sessionId, agentId, target: `account:${accountId}`, holder, reason: "lost-marker" },
       `repairing lost ${agentId} account marker for ${sessionId}: recording ${accountId} `
-        + `(the session's own turn route, no borrow in flight) and publishing its rotation`,
+        + `(the session's own turn route) and publishing its rotation`,
     );
     writeSessionAccountMarker(credentialsRoot, sessionId, agentId, accountId);
   }
@@ -1162,32 +1141,4 @@ export function syncSubAgentSpawnHomeTokenBack(
     }
   }
   return safeToDelete;
-}
-
-// Run after publishing. Borrow cleanup must wipe for isolation even if rescue fails.
-export function preserveBorrowedTokensBeforeWipe(
-  credentialsRoot: string,
-  sessionId: string,
-  agentId: AgentId,
-  accountId?: string,
-): void {
-  const files = AGENT_TOKEN_FILES[agentId];
-  if (!files) return;
-  const freshness = TOKEN_FRESHNESS[agentId] ?? (() => null);
-  const targetRoot = accountId
-    ? providerAccountCredentialRoot(credentialsRoot, agentId, accountId)
-    : credentialsRoot;
-  const borrowRoot = perSessionCredentialsDir(credentialsRoot, sessionId);
-  for (const rel of files) {
-    const borrowedFile = path.join(borrowRoot, rel);
-    rescueAdapterQuarantines(targetRoot, rel, borrowedFile);
-    const borrowedReading = classifyTokenFreshness(agentId, "replica", freshness, borrowedFile);
-    if (borrowedReading.kind === "absent") continue;
-    const targetReading = classifyTokenFreshness(agentId, "source", freshness, path.join(targetRoot, rel));
-    const superseded = borrowedReading.kind === "ordered"
-      && targetReading.kind === "ordered"
-      && borrowedReading.at <= targetReading.at;
-    if (superseded) continue;
-    quarantineTokenCopy(targetRoot, rel, borrowedFile);
-  }
 }

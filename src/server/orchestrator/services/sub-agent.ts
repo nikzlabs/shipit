@@ -418,7 +418,7 @@ async function runSubAgentInSlot(
   };
 
   try {
-    // Provision inside the try so partial borrows are closed on failure.
+    // Provision inside the try so a partial home is released on failure.
     await provisionAttempt();
     const spawn = () => {
       // Rebuild per attempt: failover can change the credential's environment variable.

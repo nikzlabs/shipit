@@ -372,8 +372,8 @@ Three changes, no new subsystem:
    Every tick begins by reconciling the source with the sessions that share it:
    for each per-session subtree whose docs/260 account **marker** names this
    account, if its copy is ahead of the source, publish it through the ordinary
-   `syncProviderAccountTokenBack` — guards, marker check and borrow refusal
-   intact, `sessionOwnRoute: true` on the same authority
+   `syncProviderAccountTokenBack` — guards and marker check intact,
+   `sessionOwnRoute: true` on the same authority
    `finalizeSessionAgentEnvironment` uses when it falls back to the marker. A
    harvest **is** the rotation: no CLI runs, and the tick takes the normal
    success path, so the adopted token reaches every other pinned session via the
@@ -382,8 +382,8 @@ Three changes, no new subsystem:
    so pushing it back onto the session it came from is byte-identical.
 
    Two conditions select a candidate, answering different questions. The
-   **marker**, because token bytes cannot say whose they are, so an unmarked
-   subtree or one lent to a sub-agent's account is never read. And
+   **marker**, because token bytes cannot say whose they are, so a subtree
+   with no marker, or with another account's marker, is never read. And
    **containment** — the token file must physically resolve inside its own
    subtree — because a leaked subtree-root symlink (`<sessionDir>/.claude` →
    `/credentials/provider-accounts/…`, the artifact `containerVisibleCredentialPath`
@@ -938,11 +938,6 @@ the few seconds a probe runs, and depends on no event that can be lost.
   marker is published on the marker's word. This is the pre-existing trust of
   the turn-end write-back, unchanged; the harvest widens *when* that write can
   fire (a timer, not a turn), not what it trusts.
-- **The borrow guard is not re-entrant.** `beginSubtreeBorrow` returns early if
-  a borrow is already recorded and `endSubtreeBorrow` deletes the single entry,
-  so overlapping same-session borrows leave `subtreeBorrowInFlight` false while
-  one is still live. Pre-existing (planning#445) and equally under the turn-end
-  write-back; tracked as planning#463.
 - **`syncAgentTokenBackToRoot` reads source freshness and copies over that
   pathname with no re-check**, so an external writer landing between the two is
   overwritten. Pre-existing, in a function this change does not touch, and it

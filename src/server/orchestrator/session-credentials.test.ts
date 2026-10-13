@@ -10,9 +10,7 @@ import {
   ensureSessionAgentUserConfig,
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
-  provisionSubAgentCredentials,
   provisionSubAgentSpawnHome,
-  releaseSubAgentCredentials,
   releaseSubAgentSpawnHome,
   removeSubAgentCredentials,
   subAgentSpawnHomeContainerDir,
@@ -30,8 +28,6 @@ import {
   repoMemoryDir,
   provisionRepoMemory,
   chownSessionCredentialsTree,
-  clearSubtreeBorrows,
-  subtreeBorrowInFlight,
 } from "./session-credentials.js";
 
 function seedCredentialsRoot(root: string): void {
@@ -55,7 +51,6 @@ describe("session-credentials", () => {
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    clearSubtreeBorrows();
   });
 
   it("computes the per-session dir and POSIX subpath", () => {
@@ -349,134 +344,14 @@ describe("session-credentials", () => {
     expect(readTail(path.join(accountA, ".claude", ".credentials.json"))).toBe("A-OLD");
   });
 
-  it("does not publish a BORROWED account's token into the session's own account root", () => {
-    const accountA = path.join(root, "provider-accounts", "claude", "acct-a");
-    const accountB = path.join(root, "provider-accounts", "claude", "acct-b");
-    writeClaudeToken(accountA, "A-FRESH", 12_000);
-    writeClaudeToken(accountB, "B-LIVE", 5_000);
-    provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-    provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-
-    syncProviderAccountTokenBack(root, sid, "claude", "acct-b");
-
-    expect(readTail(path.join(accountB, ".claude", ".credentials.json"))).toBe("B-LIVE");
-  });
-
-  it("does not publish a borrowed account's token into the flat root", () => {
+  it("does not publish an account's token into the flat root", () => {
     writeClaudeToken(root, "FLAT", 1_000);
     writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A-FRESH", 12_000);
-    fs.mkdirSync(perSessionCredentialsDir(root, sid), { recursive: true });
-    provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
+    provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
 
     syncAgentTokenBack(root, sid, "claude");
 
     expect(readTail(path.join(root, ".claude", ".credentials.json"))).toBe("FLAT");
-  });
-
-  it("records the borrowed account on the subtree marker, so the borrow is visible", () => {
-    writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
-    writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
-    provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-    expect(readSessionAccountMarker(root, sid).claude).toBe("acct-b");
-
-    provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-    expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
-
-    writeClaudeToken(perSessionCredentialsDir(root, sid), "A-ROTATED", 15_000);
-    syncProviderAccountTokenBack(root, sid, "claude", "acct-a");
-    expect(readTail(path.join(root, "provider-accounts", "claude", "acct-a", ".claude", ".credentials.json")))
-      .toBe("A-ROTATED");
-  });
-
-  /**
-   * Cross-harness consults do NOT get a private spawn home: they provision into
-   * `<sessionDir>/<credential path>`, one location per (session, harness). A
-   * session may have several running at once (a consult can be backgrounded), so
-   * the borrow record has to outlive the first of them to finish.
-   */
-  // Cross-harness consults share one subtree per (session, harness) — only
-  // same-harness ones get a private spawn home — and several can run at once.
-  describe("overlapping borrows of one subtree", () => {
-    const tokenPath = (dir: string): string => path.join(dir, ".claude", ".credentials.json");
-    const A = "consult-a";
-    const B = "consult-b";
-
-    beforeEach(() => {
-      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
-      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
-    });
-
-    it("keeps the credentials when the first of two overlapping consults finishes", () => {
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", B, "acct-b");
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", A)).toBeUndefined();
-
-      expect(
-        fs.existsSync(tokenPath(perSessionCredentialsDir(root, sid))),
-        "the first release wiped the subtree under a consult that is still running",
-      ).toBe(true);
-    });
-
-    it("wipes once the last consult has finished", () => {
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", B, "acct-b");
-      releaseSubAgentCredentials(root, sid, "claude", A);
-
-      releaseSubAgentCredentials(root, sid, "claude", B);
-
-      expect(fs.existsSync(tokenPath(perSessionCredentialsDir(root, sid)))).toBe(false);
-    });
-
-    it("returns the displaced account only to the last release", () => {
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", B, "acct-a");
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", A)).toBeUndefined();
-      expect(releaseSubAgentCredentials(root, sid, "claude", B)).toBe("acct-b");
-    });
-
-    it("blocks the session's own token write-back for the whole overlap", () => {
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", B, "acct-a");
-      releaseSubAgentCredentials(root, sid, "claude", A);
-
-      writeClaudeToken(perSessionCredentialsDir(root, sid), "BORROWED", 20_000);
-      syncAgentTokenBack(root, sid, "claude", { sessionOwnRoute: true });
-
-      expect(readTail(tokenPath(root))).not.toBe("BORROWED");
-    });
-
-    // Counting begin calls instead of holders leaves a record that never reaches
-    // zero, blocking the session's own write-back for the rest of the process.
-    it("treats a failover re-provision as the same holder, not a second one", () => {
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", A)).toBe("acct-b");
-      expect(subtreeBorrowInFlight(sid, "claude")).toBe(false);
-    });
-
-    it("is unchanged for a single borrow: one release restores and wipes", () => {
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", A)).toBe("acct-b");
-      expect(fs.existsSync(tokenPath(perSessionCredentialsDir(root, sid)))).toBe(false);
-    });
-
-    // Revocation and failover wipe without ending the borrow, so a release can
-    // arrive with no record; it must still clean up rather than silently skip.
-    it("still wipes for a release with no record open", () => {
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-      removeSubAgentCredentials(root, sid, "claude");
-      releaseSubAgentCredentials(root, sid, "claude", A);
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", B)).toBeUndefined();
-      expect(fs.existsSync(tokenPath(perSessionCredentialsDir(root, sid)))).toBe(false);
-    });
   });
 
   describe("same-harness spawn home isolation", () => {
@@ -741,41 +616,6 @@ describe("session-credentials", () => {
       });
     });
 
-    describe("cross-harness borrow cleanup", () => {
-      const strandedFiles = (accountRoot: string) => {
-        try {
-          return fs.readdirSync(path.join(accountRoot, ".shipit-stranded-tokens"));
-        } catch {
-          return [];
-        }
-      };
-
-      it("preserves a refused rotation before the borrowed subtree is wiped", () => {
-        const accountRoot = path.join(root, "provider-accounts", "claude", "acct-a");
-        writeClaudeToken(accountRoot, "A", 12_000);
-        provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-        const borrowed = path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json");
-        fs.writeFileSync(borrowed, '{"claudeAiOauth":{"accessToken":"tok-ROTATED"}}');
-
-        releaseSubAgentCredentials(root, sid, "claude", "consult-1");
-
-        expect(fs.existsSync(borrowed)).toBe(false);
-        const kept = strandedFiles(accountRoot);
-        expect(kept).toHaveLength(1);
-        expect(readTail(path.join(accountRoot, ".shipit-stranded-tokens", kept[0]))).toBe("ROTATED");
-      });
-
-      it("keeps nothing when the borrowed copy is provably superseded", () => {
-        const accountRoot = path.join(root, "provider-accounts", "claude", "acct-a");
-        writeClaudeToken(accountRoot, "A", 12_000);
-        provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-
-        releaseSubAgentCredentials(root, sid, "claude", "consult-1");
-
-        expect(strandedFiles(accountRoot)).toEqual([]);
-      });
-    });
-
     it("the container path pairs with the host path under the /credentials mount", () => {
       expect(subAgentSpawnHomeContainerDir(spawnId)).toBe(`/credentials/sub-agent-homes/${spawnId}`);
       expect(subAgentSpawnHomeDir(root, sid, spawnId)).toBe(
@@ -784,61 +624,26 @@ describe("session-credentials", () => {
     });
   });
 
-  describe("a borrow never loses the session's own account", () => {
-    const seedTwoAccounts = () => {
-      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
-      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
-    };
+  it("never exposes an empty account marker mid-write", () => {
+    writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
+    provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
 
-    it("restores the session's account after an ordinary borrow", () => {
-      seedTwoAccounts();
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-      provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", "consult-1")).toBe("acct-b");
+    const observed: (string | undefined)[] = [];
+    const realRename = fs.renameSync;
+    const spy = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      observed.push(readSessionAccountMarker(root, sid).claude);
+      realRename(from, to);
     });
+    try {
+      writeSessionAccountMarker(root, sid, "claude", "acct-a");
+    } finally {
+      spy.mockRestore();
+    }
 
-    it("survives a borrow taken while the marker reads as absent", () => {
-      seedTwoAccounts();
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-
-      provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-      removeSubAgentCredentials(root, sid, "claude");
-      expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
-
-      provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-      expect(releaseSubAgentCredentials(root, sid, "claude", "consult-1")).toBe("acct-b");
-    });
-
-    it("reports no account to restore for a session that never had one", () => {
-      seedTwoAccounts();
-      fs.mkdirSync(perSessionCredentialsDir(root, sid), { recursive: true });
-      provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", "consult-1")).toBeUndefined();
-    });
-
-    it("never exposes an empty marker mid-write", () => {
-      seedTwoAccounts();
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-
-      const observed: (string | undefined)[] = [];
-      const realRename = fs.renameSync;
-      const spy = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
-        observed.push(readSessionAccountMarker(root, sid).claude);
-        realRename(from, to);
-      });
-      try {
-        writeSessionAccountMarker(root, sid, "claude", "acct-a");
-      } finally {
-        spy.mockRestore();
-      }
-
-      expect(observed).toEqual(["acct-b"]);
-      expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
-      const leftovers = fs.readdirSync(perSessionCredentialsDir(root, sid)).filter((f) => f.includes(".tmp-"));
-      expect(leftovers).toEqual([]);
-    });
+    expect(observed).toEqual(["acct-b"]);
+    expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
+    const leftovers = fs.readdirSync(perSessionCredentialsDir(root, sid)).filter((f) => f.includes(".tmp-"));
+    expect(leftovers).toEqual([]);
   });
 
   describe("write-back marker repair", () => {
@@ -890,7 +695,7 @@ describe("session-credentials", () => {
       }
     });
 
-    it("still refuses a caller that is publishing a BORROWED account", () => {
+    it("does not repair a lost marker for a caller that is not on the session's own route", () => {
       writeClaudeToken(accountA(), "A", 12_000);
       provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
       writeSessionAccountMarker(root, sid, "claude", null);
@@ -900,39 +705,6 @@ describe("session-credentials", () => {
 
       expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
       expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
-    });
-
-    it("refuses while a flat-route borrow holds the subtree", () => {
-      writeClaudeToken(accountA(), "A", 12_000);
-      writeClaudeToken(root, "FLAT", 1_000);
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", "consult-1");
-      rotateInSession();
-
-      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
-
-      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
-      expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", "consult-1")).toBe("acct-a");
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
-      writeSessionAccountMarker(root, sid, "claude", null);
-      rotateInSession();
-      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
-      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("ROTATED");
-    });
-
-    it("refuses a session-route publish for the whole borrow, marker agreement included", () => {
-      writeClaudeToken(accountA(), "A", 1_000);
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-      expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
-      rotateInSession();
-
-      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
-
-      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
-      releaseSubAgentCredentials(root, sid, "claude", "consult-1");
     });
 
     it("still refuses when the marker names a different account", () => {
@@ -2064,27 +1836,26 @@ describe("session-credentials", () => {
   });
 
   describe("sub-agent credentials (docs/144)", () => {
-    it("provisions only the sub-agent subtree next to the pinned agent's", () => {
-      provisionAgentCredentials(root, sid, "claude");
-      const dir = perSessionCredentialsDir(root, sid);
-      expect(fs.existsSync(path.join(dir, ".claude"))).toBe(true);
-      expect(fs.existsSync(path.join(dir, ".codex"))).toBe(false);
-
-      provisionSubAgentCredentials(root, sid, "codex", "consult-1");
-      expect(fs.existsSync(path.join(dir, ".codex", "auth.json"))).toBe(true);
-      expect(fs.existsSync(path.join(dir, ".claude", ".credentials.json"))).toBe(true);
-    });
-
     it("removes cross-provider auth and config, leaving the pinned agent intact", () => {
       provisionAgentCredentials(root, sid, "claude");
-      provisionSubAgentCredentials(root, sid, "codex", "consult-1");
+      provisionAgentCredentials(root, sid, "codex");
       const dir = perSessionCredentialsDir(root, sid);
-      expect(fs.existsSync(path.join(dir, ".codex"))).toBe(true);
+      expect(fs.existsSync(path.join(dir, ".codex", "auth.json"))).toBe(true);
 
       removeSubAgentCredentials(root, sid, "codex");
       expect(fs.existsSync(path.join(dir, ".codex", "auth.json"))).toBe(false);
       expect(fs.existsSync(path.join(dir, ".claude", ".credentials.json"))).toBe(true);
       expect(fs.existsSync(path.join(dir, ".claude.json"))).toBe(true);
+    });
+
+    it("clears the account marker with the subtree", () => {
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+      expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
+
+      removeSubAgentCredentials(root, sid, "claude");
+
+      expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
     });
 
     it("preserves a Codex parent's rollout across same-harness reviewer cleanup", () => {
