@@ -68,6 +68,7 @@ import type {
   ServiceDef,
 } from "./index.js";
 import { formatModelName } from "../../../client/utils/format-model.js";
+import { modelContextWindows } from "../model-windows.js";
 
 // Widen literal rows so invariant checks can index all API styles.
 const CATALOGUE: readonly ServiceDef[] = SERVICES;
@@ -406,12 +407,12 @@ describe("resolving a retired model (req 13, phase 8)", () => {
     expect(retirementSuccessor("codex", RETIRED)).toEqual({
       serviceId: "openai",
       billingMode: "sub",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
     });
     expect(retirementSuccessor("codex", { ...RETIRED, billingMode: "key" })).toEqual({
       serviceId: "openai",
       billingMode: "key",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
     });
   });
 
@@ -489,7 +490,7 @@ describe("resolving a retired model (req 13, phase 8)", () => {
 
   it("says nothing about a model that is still current, or that never existed", () => {
     expect(
-      retirementSuccessor("codex", { ...RETIRED, modelId: "gpt-5.6-sol" }),
+      retirementSuccessor("codex", { ...RETIRED, modelId: "gpt-6.1-sol" }),
     ).toBeUndefined();
     expect(retirementSuccessor("codex", { ...RETIRED, modelId: "nope" })).toBeUndefined();
     expect(
@@ -501,7 +502,7 @@ describe("resolving a retired model (req 13, phase 8)", () => {
     expect(resolveRetiredModelId("codex", "gpt-5.6", "openai")).toEqual({
       serviceId: "openai",
       billingMode: "sub",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
     });
     expect(resolveRetiredModelId("claude", "gpt-5.6", "openai")).toBeUndefined();
     expect(resolveRetiredModelId("codex", undefined)).toBeUndefined();
@@ -576,20 +577,11 @@ describe("the harness\u00d7service join", () => {
       "claude-haiku-5-5",
       "claude-fable-5-1",
     ]);
-    expect(catalogueModelIdsForHarness("codex").slice(0, 13)).toEqual([
-      "gpt-5.6-sol",
-      "gpt-6-astra",
+    expect(catalogueModelIdsForHarness("codex").slice(0, 4)).toEqual([
       "gpt-6.1-sol",
+      "gpt-6-astra",
       "gpt-6-sol",
       "gpt-6-luna",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
-      "gpt-5.3-codex-spark",
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "gpt-5.5",
-      "gpt-5.3-codex",
-      "gpt-5.2",
     ]);
   });
 
@@ -685,7 +677,7 @@ describe("the harness\u00d7service join", () => {
     expect(reasoningOptionsFor("codex", keySelection).map((option) => option.value))
       .toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(reasoningOptionsFor("grok", keySelection)).toEqual([]);
-    expect(catalogueModelIdsForHarness("codex")[0]).toBe("gpt-5.6-sol");
+    expect(catalogueModelIdsForHarness("codex")[0]).toBe("gpt-6.1-sol");
     expect(visionSupportFor({ serviceId: "openai", billingMode: "sub", modelId: "gpt-6-astra" }))
       .toBe("yes");
   });
@@ -731,34 +723,13 @@ describe("the harness\u00d7service join", () => {
         expect(selectionHonoursEffort(harness, selection, "none")).toBe(false);
       }
     }
-    expect(catalogueModelIdsForHarness("codex")[0]).toBe("gpt-5.6-sol");
-  });
-
-  it("offers Codex Spark only through the OpenAI subscription", () => {
-    const sub = getModel({
-      serviceId: "openai",
-      billingMode: "sub",
-      modelId: "gpt-5.3-codex-spark",
-    });
-    const key = getModel({
-      serviceId: "openai",
-      billingMode: "key",
-      modelId: "gpt-5.3-codex-spark",
-    });
-    const proxy = getModel({
-      serviceId: "openai",
-      billingMode: "key",
-      modelId: "gpt-5.3-codex",
-    });
-
-    expect(sub?.price).toEqual(proxy?.price);
-    expect(key).toBeUndefined();
+    expect(catalogueModelIdsForHarness("codex")[0]).toBe("gpt-6.1-sol");
   });
 
   it("reaches services the harness shares a style with, and no others", () => {
     expect(catalogueModelIdsForHarness("claude")).toContain("deepseek-flash");
     expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-flash");
-    expect(catalogueModelIdsForHarness("codex")).toContain("openai/gpt-5.6-sol");
+    expect(catalogueModelIdsForHarness("codex")).toContain("openai/gpt-6-sol");
     expect(catalogueModelIdsForHarness("claude")).toContain("anthropic/claude-opus-5");
     expect(catalogueModelIdsForHarness("codex")).toContain("deepseek/deepseek-v4-flash");
     expect(catalogueModelIdsForHarness("codex")).not.toContain("anthropic/claude-opus-5");
@@ -768,8 +739,6 @@ describe("the harness\u00d7service join", () => {
 
 describe("eligibility (req 8)", () => {
   const deepseekKey = { serviceId: "deepseek", billingMode: "key" as const, via: "string" as const };
-  const openaiKey = { serviceId: "openai", billingMode: "key" as const, via: "string" as const };
-  const openaiAccount = { serviceId: "openai", billingMode: "sub" as const, via: "account" as const };
   const anthropicAccount = {
     serviceId: "anthropic",
     billingMode: "sub" as const,
@@ -779,18 +748,6 @@ describe("eligibility (req 8)", () => {
   it("offers nothing at all when no credential is configured", () => {
     expect(eligibleEntriesForHarness("claude", [])).toEqual([]);
     expect(eligibleEntriesForHarness("codex", [])).toEqual([]);
-  });
-
-  it("offers Codex Spark to an OpenAI subscription, never an OpenAI API key", () => {
-    const spark = {
-      serviceId: "openai",
-      billingMode: "sub" as const,
-      modelId: "gpt-5.3-codex-spark",
-    };
-    expect(isSelectionEligible("codex", spark, [openaiAccount])).toBe(true);
-    expect(
-      isSelectionEligible("codex", { ...spark, billingMode: "key" }, [openaiKey]),
-    ).toBe(false);
   });
 
   it("req 2: a DeepSeek key alone makes Claude Code runnable, with no Anthropic row", () => {
@@ -1013,8 +970,8 @@ describe("spawn shaping", () => {
     expect(windows["claude-fable-5-1"]).toBe(1_000_000);
     expect(windows.haiku).toBe(200_000);
     expect(windows["gpt-6-astra"]).toBe(272_000);
-    expect(windows["gpt-5.6-sol"]).toBe(272_000);
-    expect(windows["gpt-5.2"]).toBe(272_000);
+    expect(modelContextWindows()["gpt-5.6-sol"]).toBe(272_000);
+    expect(modelContextWindows()["gpt-5.2"]).toBe(272_000);
   });
 
   it("keeps EVERY display label the client's hand-kept record reported", () => {
@@ -1034,8 +991,13 @@ describe("spawn shaping", () => {
       "gpt-5.3-codex": "GPT-5.3 Codex",
       "gpt-5.2": "GPT-5.2",
     };
+    // Rows removed from the picker keep their label only in the client's legacy record.
+    const LEFT_THE_CATALOGUE = new Set([
+      "gpt-5.3-codex-spark", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2",
+      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+    ]);
     for (const [id, label] of Object.entries(PRE_CATALOGUE_LABELS)) {
-      expect(labels[id], id).toBe(label);
+      if (!LEFT_THE_CATALOGUE.has(id)) expect(labels[id], id).toBe(label);
       expect(formatModelName(id), id).toBe(label);
     }
   });
@@ -1080,9 +1042,9 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
       .toBe("https://opencode.ai/zen/v1");
     expect(resolveEndpoint("opencode", { serviceId: "opencode", billingMode: "sub", modelId: "glm-5.3" }))
       .toBe("https://opencode.ai/zen/go/v1");
-    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "key", modelId: "gpt-5.6-sol" }))
+    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "key", modelId: "gpt-6.1-sol" }))
       .toBe("https://opencode.ai/zen/v1");
-    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "sub", modelId: "gpt-5.6-luna" }))
+    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "sub", modelId: "gpt-6-luna" }))
       .toBe("https://opencode.ai/zen/go/v1");
   });
 
@@ -1091,8 +1053,8 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
       catalogueEntriesForHarness("codex")
         .filter((e) => e.service.id === "opencode" && e.mode.kind === billingMode)
         .map((e) => e.model.id);
-    expect(idsFor("key").sort()).toEqual(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.6"]);
-    expect(idsFor("sub")).toEqual(["gpt-5.6-luna"]);
+    expect(idsFor("key").sort()).toEqual(["gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "grok-4.6"]);
+    expect(idsFor("sub")).toEqual(["gpt-6-luna"]);
     for (const entry of catalogueEntriesForHarness("codex").filter((e) => e.service.id === "opencode")) {
       expect(entry.model.styles, entry.model.id).toEqual(["openai-responses"]);
     }
@@ -1109,10 +1071,8 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
       getModel({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" })!.price.input,
     );
     expect(go("deepseek-v4-flash")!.price.input).not.toBe(zen("deepseek-v4-flash")!.price.input);
-    expect(zen("gpt-5.6-terra")!.price.input).toBeGreaterThan(
-      getModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.6-terra" })!.price.input,
-    );
-    expect(go("gpt-5.6-luna")!.price.input).toBeLessThan(zen("gpt-5.6-luna")!.price.input);
+    // OpenCode's Zen and Go pages publish the same GPT-6 Luna rate (docs/272 §7).
+    expect(go("gpt-6-luna")!.price.input).toBe(zen("gpt-6-luna")!.price.input);
   });
 
   it("names OpenCode's own inference as its harness's native service (docs/272)", () => {

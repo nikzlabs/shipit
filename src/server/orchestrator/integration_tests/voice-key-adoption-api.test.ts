@@ -159,11 +159,11 @@ describe("Integration: voice-key adoption over HTTP (docs/299-direct-provider-ca
    */
   it("never overwrites a background-work choice the user already made", async () => {
     await setVoiceKey();
-    credentialStore.stampNonTurnModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini" });
+    credentialStore.stampNonTurnModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-6-luna" });
 
     expect((await adopt()).statusCode).toBe(200);
 
-    expect(credentialStore.getNonTurnModel()).toMatchObject({ modelId: "gpt-5.4-mini" });
+    expect(credentialStore.getNonTurnModel()).toMatchObject({ modelId: "gpt-6-luna" });
   });
 
   it("refuses a second adoption rather than storing the key twice", async () => {

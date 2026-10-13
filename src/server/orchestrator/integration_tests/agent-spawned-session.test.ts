@@ -245,11 +245,11 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const { sessionId: childId } = res.json() as { sessionId: string };
 
     const child = sessionManager.get(childId);
-    expect(child?.model).toBe("gpt-5.6-sol");
+    expect(child?.model).toBe("gpt-6.1-sol");
     expect(child?.serviceId).toBe("openai");
     expect(child?.billingMode).toBe("key");
 
-    expect(sessionManager.get(parentId)?.model).toBe("gpt-5.6-sol");
+    expect(sessionManager.get(parentId)?.model).toBe("gpt-6.1-sol");
     expect(sessionManager.get(parentId)?.billingMode).toBe("key");
   });
 
@@ -849,7 +849,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   it("docs/217 — a level the child's harness doesn't offer is dropped, not forwarded", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
     sessionManager.setAgentId(parentId, "codex");
-    sessionManager.setModel(parentId, "gpt-5.5");
+    sessionManager.setModel(parentId, "gpt-6.1-sol");
     sessionManager.setReasoning(parentId, "minimal");
 
     const res = await app.inject({
@@ -1210,7 +1210,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
         agentId: "claude",
         serviceId: "openai",
         billingMode: "sub",
-        modelId: "gpt-5.6-sol",
+        modelId: "gpt-6.1-sol",
         reasoningEffort: "high",
       },
     });
@@ -1241,7 +1241,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
         harnessId: "codex",
         serviceId: "openai",
         billingMode: "key",
-        modelId: "gpt-5.6-sol",
+        modelId: "gpt-6.1-sol",
         reasoningEffort: "high",
       },
     });
@@ -1307,11 +1307,11 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", title: "Mismatch", agent: "claude", model: "gpt-5.5" },
+      payload: { prompt: "x", title: "Mismatch", agent: "claude", model: "gpt-6.1-sol" },
     });
     expect(res.statusCode).toBe(400);
     const err = (res.json() as { error: string }).error;
-    expect(err).toContain("gpt-5.5");
+    expect(err).toContain("gpt-6.1-sol");
     expect(err).toContain("codex");
   });
 
@@ -1321,12 +1321,12 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", title: "Derive agent", model: "gpt-5.5" },
+      payload: { prompt: "x", title: "Derive agent", model: "gpt-6.1-sol" },
     });
     expect(res.statusCode).toBe(200);
     const childId = (res.json() as { sessionId: string }).sessionId;
     expect(sessionManager.get(childId)?.agentId).toBe("codex");
-    expect(sessionManager.get(childId)?.model).toBe("gpt-5.5");
+    expect(sessionManager.get(childId)?.model).toBe("gpt-6.1-sol");
   });
 
   it("planning#304 — inheritance cannot hand a child a model its harness can't run", { timeout: 15_000 }, async () => {
@@ -1334,8 +1334,8 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const parentId = await createParentSession();
     sessionManager.setAgentId(parentId, "claude");
     sessionManager.setAgentPinned(parentId);
-    sessionManager.setModel(parentId, "gpt-5.5");
-    expect(sessionManager.get(parentId)?.model).toBe("gpt-5.5");
+    sessionManager.setModel(parentId, "gpt-6.1-sol");
+    expect(sessionManager.get(parentId)?.model).toBe("gpt-6.1-sol");
 
     const res = await app.inject({
       method: "POST",
@@ -1379,7 +1379,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const spawnRes = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", title: "View agent/model", agent: "codex", model: "gpt-5.5" },
+      payload: { prompt: "x", title: "View agent/model", agent: "codex", model: "gpt-6.1-sol" },
     });
     expect(spawnRes.statusCode).toBe(200);
     const childId = (spawnRes.json() as { sessionId: string }).sessionId;
@@ -1391,7 +1391,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(viewRes.statusCode).toBe(200);
     const child = (viewRes.json() as { child: { agent?: string; model?: string } }).child;
     expect(child.agent).toBe("codex");
-    expect(child.model).toBe("gpt-5.5");
+    expect(child.model).toBe("gpt-6.1-sol");
   });
 
   it("prepareSessionAgentEnvironment is idempotent: provisioning runs once, pin sticks", { timeout: 15_000 }, async () => {

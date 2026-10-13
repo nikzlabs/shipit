@@ -104,7 +104,7 @@ describe("SupportedModelsDialog", () => {
       codex: "yes",
       opencode: "yes",
     });
-    expect(answers("vercel:key", "openai/gpt-5.6-sol")).toEqual({
+    expect(answers("vercel:key", "openai/gpt-6-sol")).toEqual({
       claude: "no",
       codex: "yes",
       opencode: "yes",
@@ -115,16 +115,10 @@ describe("SupportedModelsDialog", () => {
       opencode: "yes",
     });
 
-    expect(answers("openai:sub", "gpt-5.6-sol")).toEqual({
+    expect(answers("openai:sub", "gpt-6.1-sol")).toEqual({
       claude: "no",
       codex: "yes",
       opencode: "yes",
-    });
-    // OpenCode's own filter refuses this id, so the dialog must still say no.
-    expect(answers("openai:sub", "gpt-5.2")).toEqual({
-      claude: "no",
-      codex: "yes",
-      opencode: "no",
     });
     expect(answers("zai:sub", "glm-5.2[1m]")).toEqual({
       claude: "yes",
@@ -197,7 +191,7 @@ describe("SupportedModelsDialog", () => {
 
     expect(screen.queryByTestId("supported-models-row-vercel:key-anthropic/claude-opus-5")).toBeNull();
     expect(
-      screen.getByTestId("supported-models-row-vercel:key-openai/gpt-5.6-sol"),
+      screen.getByTestId("supported-models-row-vercel:key-openai/gpt-6-sol"),
     ).toBeInTheDocument();
   });
 

@@ -38,16 +38,6 @@ const OPENAI_PRICES = {
   gpt6sol: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
   gpt6luna: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
   gpt6astra: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
-  sol: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
-  terra: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
-  luna: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
-  gpt55: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
-  gpt54: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
-  gpt54mini: { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 },
-  gpt53codex: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
-  // No published Spark token price (2026-08-17); use the closest same-vendor rate provisionally.
-  gpt53codexSparkProvisional: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
-  gpt52: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
 } as const;
 
 // api-docs.deepseek.com/quick_start/pricing, 2026-09-10.
@@ -70,7 +60,6 @@ const OPENROUTER_PRICES = {
   grok46: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 2 },
   kimiK3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
   qwen38max: { input: 2, output: 6, cacheRead: 0.25, cacheWrite: 2.5 },
-  gpt56terra: { input: 1, output: 6, cacheRead: 0.1, cacheWrite: 1.25 },
   v4flash: { input: 0.06146, output: 0.12292, cacheRead: 0.012292, cacheWrite: 0.06146 },
   glm52: { input: 0.308, output: 0.968, cacheRead: 0.0572, cacheWrite: 0.308 },
   oxAlpha: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -97,9 +86,10 @@ const OPENCODE_ZEN_PRICES = {
   v4flash: { input: 0.14, output: 0.28, cacheRead: 0.028, cacheWrite: 0.14 },
   glm52: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
   kimiK3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
-  gpt56sol: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
-  gpt56terra: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 3.125 },
-  gpt56luna: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+  // opencode.ai/docs/zen, 2026-10-13: GPT-6 rates; the over-272K tier is longPrompt.
+  gpt6sol: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5, longPrompt: { aboveTokens: 272_000, input: 4, output: 15, cacheRead: 0.4, cacheWrite: 5 } },
+  gpt6astra: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5, longPrompt: { aboveTokens: 272_000, input: 20, output: 75, cacheRead: 2, cacheWrite: 25 } },
+  gpt6luna: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, longPrompt: { aboveTokens: 272_000, input: 0.2, output: 0.75, cacheRead: 0.02, cacheWrite: 0.25 } },
   grok46: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
   oxAlpha: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 } as const;
@@ -113,7 +103,8 @@ const OPENCODE_GO_PRICES = {
   v41flash: { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0.15 },
   glm5x: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
   kimiK3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
-  gpt56luna: { input: 0.1, output: 0.6, cacheRead: 0.01, cacheWrite: 0.125 },
+  // Same figures as Zen's GPT-6 Luna row (opencode.ai/docs/go, 2026-10-13).
+  gpt6luna: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, longPrompt: { aboveTokens: 272_000, input: 0.2, output: 0.75, cacheRead: 0.02, cacheWrite: 0.25 } },
   oxAlpha: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 } as const;
 
@@ -227,48 +218,53 @@ export const SERVICES = [
         endpoints: { [O_RESP]: "https://api.openai.com/v1" },
         quota: "openai-chatgpt-usage",
         credentials: [{ via: "account", login: "openai-chatgpt", carriers: ["codex", "opencode"] }],
-        retired: [{ id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } }],
+        // Pre-GPT-6 rows left the catalogue (req 13): each id moves to a GPT-6 successor on this route.
+        retired: [
+          { id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.6-sol", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.6-terra", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.6-luna", styles: [O_RESP], successors: { [O_RESP]: "gpt-6-luna" } },
+          { id: "gpt-5.5", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.4", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.4-mini", styles: [O_RESP], successors: { [O_RESP]: "gpt-6-luna" } },
+          { id: "gpt-5.3-codex", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.3-codex-spark", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.2", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+        ],
         models: [
           // `harnesses` here tracks OpenCode's own ChatGPT-route model filter,
           // transcribed and checked against the pinned binary by
           // `opencode-subscription-models.test.ts`. Absent means both harnesses.
           // Keep Sol first: Astra may be hidden by account entitlement.
-          { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
-          { id: "gpt-6-astra", label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt6astra, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", ...MODEL_IDENTITIES.gpt61sol, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt61sol, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+          { id: "gpt-6-astra", label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt6astra, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "gpt-6-sol", label: "GPT-6 Sol", ...MODEL_IDENTITIES.gpt6sol, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6sol, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] },
           { id: "gpt-6-luna", label: "GPT-6 Luna", ...MODEL_IDENTITIES.gpt6luna, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6luna, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] },
-          { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
-          { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
-          { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", ...MODEL_IDENTITIES.gpt53codexSpark, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codexSparkProvisional },
-          { id: "gpt-5.4", label: "GPT-5.4", ...MODEL_IDENTITIES.gpt54, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54 },
-          { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", ...MODEL_IDENTITIES.gpt54mini, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54mini },
-          { id: "gpt-5.5", label: "GPT-5.5", ...MODEL_IDENTITIES.gpt55, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt55 },
-          // OpenCode's filter refuses these two by id, so offering them would
-          // hand the user a pairing that cannot start a turn (docs/310 req 7).
-          { id: "gpt-5.3-codex", harnesses: ["codex"], label: "GPT-5.3 Codex", ...MODEL_IDENTITIES.gpt53codex, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codex },
-          { id: "gpt-5.2", harnesses: ["codex"], label: "GPT-5.2", ...MODEL_IDENTITIES.gpt52, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt52 },
         ],
       },
       {
         kind: "key",
         endpoints: { [O_RESP]: "https://api.openai.com/v1", [O_CC]: "https://api.openai.com/v1" },
         credentials: [{ via: "string", storageEnv: "OPENAI_API_KEY", directCall: {} }],
-        retired: [{ id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-5.6-sol" } }],
+        // Responses only: no GPT-6 row speaks chat-completions, so a retired
+        // chat-completions route moves to its Responses successor instead.
+        retired: [
+          { id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.6-sol", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.6-terra", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.6-luna", styles: [O_RESP], successors: { [O_RESP]: "gpt-6-luna" } },
+          { id: "gpt-5.5", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.4", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.4-mini", styles: [O_RESP], successors: { [O_RESP]: "gpt-6-luna" } },
+          { id: "gpt-5.3-codex", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.2", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+        ],
         models: [
-          { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
           // GPT-6 reasoning with tools requires Responses.
-          { id: "gpt-6-astra", label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt6astra, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", ...MODEL_IDENTITIES.gpt61sol, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt61sol, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+          { id: "gpt-6-astra", label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt6astra, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "gpt-6-sol", label: "GPT-6 Sol", ...MODEL_IDENTITIES.gpt6sol, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6sol, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] },
           { id: "gpt-6-luna", label: "GPT-6 Luna", ...MODEL_IDENTITIES.gpt6luna, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6luna, reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"] },
-          { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
-          { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
-          { id: "gpt-5.4", label: "GPT-5.4", ...MODEL_IDENTITIES.gpt54, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54 },
-          { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", ...MODEL_IDENTITIES.gpt54mini, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54mini },
-          { id: "gpt-5.5", label: "GPT-5.5", ...MODEL_IDENTITIES.gpt55, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt55 },
-          { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", ...MODEL_IDENTITIES.gpt53codex, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codex },
-          { id: "gpt-5.2", label: "GPT-5.2", ...MODEL_IDENTITIES.gpt52, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt52 },
         ],
       },
     ],
@@ -518,6 +514,9 @@ export const SERVICES = [
               [O_RESP]: "zai/glm-5.2",
             },
           },
+          // GPT-5.6 rows left the gateway for GPT-6 (req 13). Both styles have a successor on the same row set.
+          { id: "openai/gpt-5.6-sol", styles: [O_RESP, O_CC], successors: { [O_RESP]: "openai/gpt-6-sol", [O_CC]: "openai/gpt-6-sol" } },
+          { id: "openai/gpt-5.6-terra", styles: [O_RESP, O_CC], successors: { [O_RESP]: "openai/gpt-6-sol", [O_CC]: "openai/gpt-6-sol" } },
         ],
         // Vercel's translation differs from OpenRouter's: Gemini failed A_MSG; Fable failed O_RESP.
         models: [
@@ -525,8 +524,9 @@ export const SERVICES = [
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
           // Styles carried over from 5.0, not re-measured for 5.1 (2026-09-01).
           { id: "anthropic/claude-fable-5.1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
-          { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
-          { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
+          // Vercel's changelog lists these two GPT-6 ids; no GPT-6 rate is published there, so OpenAI's list rates stand in.
+          { id: "openai/gpt-6-sol", label: "GPT-6 Sol", ...MODEL_IDENTITIES.gpt6sol, styles: [O_RESP, O_CC], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6sol },
+          { id: "openai/gpt-6-luna", label: "GPT-6 Luna", ...MODEL_IDENTITIES.gpt6luna, styles: [O_RESP, O_CC], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6luna },
           { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.v4flash },
           // Styles carried over from V4 Flash; probes returned 402 (2026-09-10).
           { id: "deepseek/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash", ...MODEL_IDENTITIES.deepseekV41Flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.v41flash },
@@ -567,6 +567,10 @@ export const SERVICES = [
             styles: [O_CC],
             successors: { [O_CC]: "deepseek-v4-flash" },
           },
+          // GPT-5.6 rows left Zen for GPT-6 (req 13); Zen's GPT endpoint is Responses only.
+          { id: "gpt-5.6-sol", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.6-terra", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
+          { id: "gpt-5.6-luna", styles: [O_RESP], successors: { [O_RESP]: "gpt-6-luna" } },
         ],
         // Zen does not translate styles; use each model's published endpoint.
         models: [
@@ -579,9 +583,10 @@ export const SERVICES = [
           { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4flash },
           { id: "glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.glm52 },
           { id: "x-preview-f-free", label: "Ox Alpha Free", ...MODEL_IDENTITIES.oxAlpha, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.oxAlpha, reasoningEfforts: ["max", "high", "low"] },
-          { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENCODE_ZEN_PRICES.gpt56sol },
-          { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENCODE_ZEN_PRICES.gpt56terra },
-          { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENCODE_ZEN_PRICES.gpt56luna },
+          { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", ...MODEL_IDENTITIES.gpt61sol, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENCODE_ZEN_PRICES.gpt6sol },
+          { id: "gpt-6-astra", label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENCODE_ZEN_PRICES.gpt6astra },
+          { id: "gpt-6-sol", label: "GPT-6 Sol", ...MODEL_IDENTITIES.gpt6sol, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENCODE_ZEN_PRICES.gpt6sol },
+          { id: "gpt-6-luna", label: "GPT-6 Luna", ...MODEL_IDENTITIES.gpt6luna, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENCODE_ZEN_PRICES.gpt6luna },
           { id: "grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [O_RESP], contextWindow: HALF_M, price: OPENCODE_ZEN_PRICES.grok46 },
         ],
       },
@@ -617,6 +622,7 @@ export const SERVICES = [
             styles: [O_CC],
             successors: { [O_CC]: "deepseek-v4-flash" },
           },
+          { id: "gpt-5.6-luna", styles: [O_RESP], successors: { [O_RESP]: "gpt-6-luna" } },
         ],
         // Qwen omitted pending a wire probe: vendor docs and models.dev disagree on its style.
         models: [
@@ -631,7 +637,7 @@ export const SERVICES = [
           // header before it looks at the model — `pair-verification.md`.
           { id: "deepseek-flash", label: "DeepSeek V4.1 Flash", ...MODEL_IDENTITIES.deepseekV41Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v41flash },
           { id: "ox-alpha-free", label: "Ox Alpha Free", ...MODEL_IDENTITIES.oxAlpha, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.oxAlpha, reasoningEfforts: ["max", "high", "low"] },
-          { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENCODE_GO_PRICES.gpt56luna },
+          { id: "gpt-6-luna", label: "GPT-6 Luna", ...MODEL_IDENTITIES.gpt6luna, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENCODE_GO_PRICES.gpt6luna },
         ],
       },
     ],

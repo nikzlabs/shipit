@@ -338,7 +338,7 @@ describe("QuickCaptureOverlay", () => {
     useUiStore.setState({
       agentList: [
         { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["sonnet", "haiku", "claude-opus-4-8"], supportsReview: true },
-        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.5", "gpt-5.3-codex"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-6.1-sol", "gpt-6-astra"], supportsReview: true },
       ],
     });
     useRepoStore.setState({
@@ -373,7 +373,7 @@ describe("QuickCaptureOverlay", () => {
     useUiStore.setState({
       agentList: [
         { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8"], supportsReview: true },
-        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.5", "gpt-5.3-codex"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-6.1-sol", "gpt-6-astra"], supportsReview: true },
       ],
     });
     useRepoStore.setState({
@@ -390,7 +390,7 @@ describe("QuickCaptureOverlay", () => {
     expect(lastMessageInputProps?.activeAgentId).toBe("codex");
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
     expect(startQuickSessionMock).toHaveBeenCalledWith(
-      expect.objectContaining({ agent: "codex", model: "gpt-5.5" }),
+      expect.objectContaining({ agent: "codex", model: "gpt-6.1-sol" }),
       expect.any(Function),
     );
 
@@ -405,7 +405,7 @@ describe("QuickCaptureOverlay", () => {
     useUiStore.setState({
       agentList: [
         { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8", "deepseek-v4-flash"], supportsReview: true },
-        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.5", "deepseek-v4-flash"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-6.1-sol", "deepseek-v4-flash"], supportsReview: true },
       ],
     });
     useRepoStore.setState({
@@ -442,7 +442,7 @@ describe("QuickCaptureOverlay", () => {
             harnessId: "codex",
             serviceId: "openai",
             billingMode: "sub",
-            modelId: "gpt-5.6-sol",
+            modelId: "gpt-6.1-sol",
             reasoningEffort: "low",
           },
           reserved: false,
@@ -452,7 +452,7 @@ describe("QuickCaptureOverlay", () => {
             serviceId: "openai",
             billingMode: "sub",
             serviceName: "OpenAI",
-            modelId: "gpt-5.6-sol",
+            modelId: "gpt-6.1-sol",
             label: "GPT-5.6 Sol",
             reasoningEffort: "low",
           },
@@ -462,7 +462,7 @@ describe("QuickCaptureOverlay", () => {
     useUiStore.setState({
       agentList: [
         { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8"], supportsReview: true },
-        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.6-sol"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-6.1-sol"], supportsReview: true },
       ],
     });
     useRepoStore.setState({
@@ -479,7 +479,7 @@ describe("QuickCaptureOverlay", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
     expect(startQuickSessionMock).toHaveBeenCalledWith(
-      expect.objectContaining({ agent: "codex", model: "gpt-5.6-sol", reasoning: "low" }),
+      expect.objectContaining({ agent: "codex", model: "gpt-6.1-sol", reasoning: "low" }),
       expect.any(Function),
     );
 

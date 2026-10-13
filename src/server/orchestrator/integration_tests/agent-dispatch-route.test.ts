@@ -294,7 +294,7 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
   // and named on the session's own harness (docs/299-direct-provider-calls).
   it("warm session — dispatch graduation resolves the background-work choice", async () => {
     credentialStore.setNonTurnModel({
-      serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini",
+      serviceId: "openai", billingMode: "key", modelId: "gpt-6-luna",
     });
     const client = await TestClient.connect(port);
     await client.receive();

@@ -273,7 +273,7 @@ describe("createHeadlessSession", () => {
 
   it("claims a workspace, starts the runner with the prompt, and returns the session", async () => {
     const result = await createHeadlessSession(deps(), {
-      ...repo({ agent: "codex", model: "gpt-5.4" }),
+      ...repo({ agent: "codex", model: "gpt-6.1-sol" }),
       prompt: "  Fix the failing tests  ",
       title: "Fix the failing tests",
     });
@@ -285,7 +285,7 @@ describe("createHeadlessSession", () => {
       title: "Fix the failing tests",
       branch: result.branch,
       branchRenamed: true,
-      model: "gpt-5.4",
+      model: "gpt-6.1-sol",
     });
     const persisted = sessionManager.get("quick-1");
     expect(persisted).toMatchObject({
@@ -613,7 +613,7 @@ describe("createHeadlessSession", () => {
 
       const result = await createHeadlessSession(deps({ claimService: claim }), {
         target: { kind: "sandbox", capabilities },
-        params: { model: "gpt-5.4", reasoning: "high" },
+        params: { model: "gpt-6.1-sol", reasoning: "high" },
         prompt: "Check current security PRs and merge them.",
         title: "Security PRs · 2026-10-07",
       });
@@ -624,7 +624,7 @@ describe("createHeadlessSession", () => {
         kind: "sandbox",
         capabilities,
         title: "Security PRs · 2026-10-07",
-        model: "gpt-5.4",
+        model: "gpt-6.1-sol",
         reasoningEffort: "high",
         agentId: "codex",
       });

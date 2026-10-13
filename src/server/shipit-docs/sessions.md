@@ -321,7 +321,7 @@ role, nothing changes and `--no-role` is unnecessary.
 Inheritance is per-parameter, and the rules are deliberately not a role's:
 
 - **`--model M` alone** moves the child to a backend that can actually run that
-  model, so you do not also need `--agent`: pass `--model gpt-5.5` from a Claude
+  model, so you do not also need `--agent`: pass `--model gpt-6.1-sol` from a Claude
   parent and the child lands on Codex. It switches only when it has to — where
   **your own** harness already offers the model (a few models are carried by
   both), the child stays on yours rather than being moved to a backend you never

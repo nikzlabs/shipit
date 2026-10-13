@@ -50,7 +50,7 @@ const OPENROUTER_KEY = route({ serviceId: "openrouter", billingMode: "key" });
 describe("reviewerDistanceTier (req 4)", () => {
   const claude = { canonicalModelKey: "claude-opus-5", family: "claude" as const };
   const sonnet = { canonicalModelKey: "claude-sonnet-5", family: "claude" as const };
-  const gpt = { canonicalModelKey: "gpt-5.4", family: "gpt" as const };
+  const gpt = { canonicalModelKey: "gpt-6.1-sol", family: "gpt" as const };
 
   it("tier 1 — a different family on a different harness is the ideal", async () => {
     const { reviewerDistanceTier } = await import("./reviewer-model.js");
@@ -240,7 +240,7 @@ describe("resolving the two reviewer slots", () => {
     expect(slots[0].target?.selection).toEqual({
       serviceId: "openai",
       billingMode: "key",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
     });
     expect(slots[0].target?.harnessId).toBe("codex");
     expect(slots[1].target?.selection.serviceId).toBe("deepseek");
@@ -325,7 +325,7 @@ describe("resolving the two reviewer slots", () => {
     });
 
     expect(slots[0].source).toBe("pinned");
-    expect(slots[0].target?.selection.modelId).toBe("gpt-5.6-sol");
+    expect(slots[0].target?.selection.modelId).toBe("gpt-6.1-sol");
   });
 
   it("reports a pin the install can no longer run", async () => {
@@ -336,7 +336,7 @@ describe("resolving the two reviewer slots", () => {
         first: {
           serviceId: "openai",
           billingMode: "key",
-          modelId: "gpt-5.4",
+          modelId: "gpt-6.1-sol",
           reasoningEffort: "high",
         },
       }),
@@ -441,7 +441,7 @@ describe("a pinned level does not cross onto a selection that refuses it (planni
     const result = selectReviewer(
       {
         harnessId: "codex",
-        selection: { serviceId: "openai", billingMode: "key", modelId: "gpt-5.4" },
+        selection: { serviceId: "openai", billingMode: "key", modelId: "gpt-6.1-sol" },
       },
       {
         // Pin both slots so automatic selection cannot bypass the pinned level.
@@ -810,7 +810,7 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
           second: {
             serviceId: "openai",
             billingMode: "key",
-            modelId: "gpt-5.4",
+            modelId: "gpt-6.1-sol",
             reasoningEffort: "high",
           },
         }),

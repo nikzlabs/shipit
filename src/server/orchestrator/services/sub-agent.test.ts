@@ -66,7 +66,7 @@ function explicit(
   const codex = {
     serviceId: "openai",
     billingMode: "sub" as const,
-    modelId: "gpt-5.6-sol",
+    modelId: "gpt-6.1-sol",
     reasoningEffort: "high",
   };
   return {
@@ -198,14 +198,14 @@ function makeDeps(opts: {
                 serviceId: "openai",
                 serviceName: "OpenAI",
                 billingMode: "sub",
-                modelId: "gpt-5.6-sol",
+                modelId: "gpt-6.1-sol",
                 label: "GPT-5.6 Sol",
               },
               {
                 serviceId: "openai",
                 serviceName: "OpenAI",
                 billingMode: "sub",
-                modelId: "gpt-5.6-terra",
+                modelId: "gpt-6-sol",
                 label: "GPT-5.6 Terra",
               },
               {
@@ -427,7 +427,7 @@ describe("runSubAgent — authorization gates", () => {
         target: explicit("claude", {
           serviceId: "openai",
           billingMode: "sub",
-          modelId: "gpt-5.6-sol",
+          modelId: "gpt-6.1-sol",
         }),
         prompt: "review",
         depth: 0,
@@ -443,7 +443,7 @@ describe("runSubAgent — authorization gates", () => {
     for (let i = 0; i < MAX_SUB_AGENT_RUNS_IN_PROGRESS; i++) {
       await expectServiceError(
         runSubAgent(deps, "s1", {
-          target: explicit("claude", { modelId: "gpt-5.6-luna" }),
+          target: explicit("claude", { modelId: "gpt-6-luna" }),
           prompt: "review",
           depth: 0,
         }),
@@ -497,7 +497,7 @@ describe("runSubAgent — --role reviewer", () => {
     const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
       .mock.calls[0][0];
     expect(arg.agentId).toBe("codex");
-    expect(arg.model).toBe("gpt-5.6-sol");
+    expect(arg.model).toBe("gpt-6.1-sol");
     expect(arg.reasoningEffort).toBeTruthy();
     expect(arg.serviceRouting).toBeDefined();
   });
@@ -682,7 +682,7 @@ describe("runSubAgent — happy path", () => {
     expect(record).toHaveBeenCalledWith("s1", 0, 4200, 1000, 200, {
       subAgentId: "codex",
       costSource: "per-turn",
-      model: "gpt-5.6-sol",
+      model: "gpt-6.1-sol",
       attribution: expect.objectContaining({ serviceId: "openai", billingMode: "sub" }),
       contextTokens: 1200,
     });
@@ -696,7 +696,7 @@ describe("runSubAgent — happy path", () => {
         runOn: {
           serviceId: "openai",
           billingMode: "sub",
-          modelId: "gpt-5.6-sol",
+          modelId: "gpt-6.1-sol",
           reasoningEffort: "high",
         },
       }),
@@ -716,7 +716,7 @@ describe("runSubAgent — happy path", () => {
         durationMs: 4200,
         costUsd: 0.03,
         outputMarkdown: "2 bugs found",
-        runOn: expect.objectContaining({ modelId: "gpt-5.6-sol" }),
+        runOn: expect.objectContaining({ modelId: "gpt-6.1-sol" }),
       }),
     });
     expect((msgs[3] as unknown as { card: { spawnId: string } }).card.spawnId).toBe(
@@ -775,12 +775,12 @@ describe("runSubAgent — happy path", () => {
   it("forwards the explicitly named model and effort to the spawn", async () => {
     const { deps, runner } = makeDeps({});
     await runSubAgent(deps, "s1", {
-      target: explicit("codex", { modelId: "gpt-5.6-terra", reasoningEffort: "low" }),
+      target: explicit("codex", { modelId: "gpt-6-sol", reasoningEffort: "low" }),
       prompt: "review",
       depth: 0,
     });
     expect(runner.spawnSubAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "codex", reasoningEffort: "low", model: "gpt-5.6-terra" }),
+      expect.objectContaining({ agentId: "codex", reasoningEffort: "low", model: "gpt-6-sol" }),
     );
   });
 
@@ -790,7 +790,7 @@ describe("runSubAgent — happy path", () => {
     const calls = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } }).mock.calls;
     const arg = calls[0][0];
     expect(arg.reasoningEffort).toBe("high");
-    expect(arg.model).toBe("gpt-5.6-sol");
+    expect(arg.model).toBe("gpt-6.1-sol");
   });
 
   it("spawns a complete target on a no-levels harness with the effort key absent (docs/275)", async () => {
