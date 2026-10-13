@@ -169,6 +169,7 @@ export class GrokAdapter
   private lastTurnCwd: string | null = null;
   // A turn's homeDir overrides the resolver, and the goal lives under whichever one it used.
   private lastTurnHome: string | null = null;
+  private lastTurnConfigRoot: string | null = null;
   private heldResult: AgentEvent | null = null;
   private goalReadToken = 0;
   private sawResult = false;
@@ -267,7 +268,8 @@ export class GrokAdapter
     const scopedHome = params.homeDir ?? this.resolveHome?.();
     const home = resolveAgentHome(scopedHome);
     this.lastTurnHome = home;
-    const configRoot = this.makeSpawnHome(grokHome(home));
+    this.lastTurnConfigRoot = grokHome(scopedHome);
+    const configRoot = this.makeSpawnHome(this.lastTurnConfigRoot);
     if (configRoot === null) {
       this.cleanupTurnFiles();
       this.emit(
@@ -701,7 +703,8 @@ export class GrokAdapter
     command: AgentGoalCommand,
     timeoutMs?: number,
   ): Promise<AgentGoalCommandResult> {
-    const home = this.lastTurnHome ?? resolveAgentHome(this.resolveHome?.());
+    const scopedHome = this.resolveHome?.();
+    const home = this.lastTurnHome ?? resolveAgentHome(scopedHome);
     return runGrokGoalControl({
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       threadId,
@@ -709,7 +712,7 @@ export class GrokAdapter
       // `-r` resolves a session by id whatever the cwd, so this only sets the trusted folder.
       cwd: this.lastTurnCwd ?? process.cwd(),
       home,
-      configRoot: grokHome(home),
+      configRoot: this.lastTurnConfigRoot ?? grokHome(scopedHome),
       binary: resolveGrokBinary(),
       compatToggles: COMPAT_TOGGLES,
       spawnFn: this.spawnFn,

@@ -755,6 +755,48 @@ describe("GrokAdapter — the per-spawn config root", () => {
     }
   });
 
+  it("uses the scoped home's .grok when the worker inherits a GROK_HOME", () => {
+    const inherited = fs.mkdtempSync(path.join(os.tmpdir(), "grok-inherited-"));
+    const spawnHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-spawn-home-"));
+    try {
+      fs.writeFileSync(path.join(inherited, "auth.json"), '{"scope":{"key":"inherited"}}');
+      fs.mkdirSync(path.join(spawnHome, ".grok"), { recursive: true });
+      fs.writeFileSync(path.join(spawnHome, ".grok", "auth.json"), '{"scope":{"key":"isolated"}}');
+      fs.mkdirSync(path.join(home, ".grok"), { recursive: true });
+      fs.writeFileSync(path.join(home, ".grok", "auth.json"), '{"scope":{"key":"account"}}');
+      process.env.GROK_HOME = inherited;
+
+      const consult = build();
+      consult.adapter.run({ prompt: "p", cwd: "/workspace", homeDir: spawnHome });
+      expect(fs.readFileSync(path.join(consult.env().GROK_HOME, "auth.json"), "utf8"))
+        .toBe('{"scope":{"key":"isolated"}}');
+      consult.child.close(0);
+
+      const turn = build();
+      turn.adapter.run({ prompt: "p", cwd: "/workspace" });
+      expect(fs.readFileSync(path.join(turn.env().GROK_HOME, "auth.json"), "utf8"))
+        .toBe('{"scope":{"key":"account"}}');
+      turn.child.close(0);
+
+      // With no scoped home, the inherited root stays the durable one.
+      const child = new FakeChild();
+      let unscopedEnv: Record<string, string> = {};
+      const unscoped = new GrokAdapter({
+        spawnFn: (_cmd, _args, opts) => {
+          unscopedEnv = (opts.env ?? {}) as Record<string, string>;
+          return child as unknown as ChildProcess;
+        },
+      });
+      unscoped.run({ prompt: "p", cwd: "/workspace" });
+      expect(fs.readFileSync(path.join(unscopedEnv.GROK_HOME, "auth.json"), "utf8"))
+        .toBe('{"scope":{"key":"inherited"}}');
+      child.close(0);
+    } finally {
+      fs.rmSync(inherited, { recursive: true, force: true });
+      fs.rmSync(spawnHome, { recursive: true, force: true });
+    }
+  });
+
   it("scrubs inherited env credentials when a subscription login is on disk", () => {
     const configRoot = path.join(home, ".grok");
     fs.mkdirSync(configRoot, { recursive: true });
@@ -1121,10 +1163,11 @@ describe("GrokAdapter — goals", () => {
     homes.push(home);
     const controlArgs: string[][] = [];
     const controlPrompts: string[] = [];
+    const controlEnvs: Record<string, string>[] = [];
     const turnChildren: FakeChild[] = [];
     const adapter = new GrokAdapter({
       resolveHome: () => home,
-      spawnFn: (_cmd, args) => {
+      spawnFn: (_cmd, args, opts) => {
         const prompt = fs.readFileSync(args[args.indexOf("--prompt-file") + 1], "utf8");
         const child = new FakeChild();
         if (!CONTROL_PROMPTS.has(prompt)) {
@@ -1133,6 +1176,7 @@ describe("GrokAdapter — goals", () => {
         }
         controlArgs.push(args);
         controlPrompts.push(prompt);
+        controlEnvs.push((opts.env ?? {}) as Record<string, string>);
         const answer = answers.shift();
         queueMicrotask(() => {
           if (answer !== undefined) child.emitStdout([resultLine(answer)]);
@@ -1141,7 +1185,7 @@ describe("GrokAdapter — goals", () => {
         return child as unknown as ChildProcess;
       },
     });
-    return { adapter, controlArgs, controlPrompts, turnChildren, home };
+    return { adapter, controlArgs, controlPrompts, controlEnvs, turnChildren, home };
   }
 
   const REPORT = "Goal: ship it\nStatus: UserPaused | Phase: Idle\nGoal tokens used: 120\nElapsed: 1m5s";
@@ -1173,6 +1217,56 @@ describe("GrokAdapter — goals", () => {
     // CLI stops recognising reaches the model without the means to act on it.
     expect(args[args.indexOf("--permission-mode") + 1]).toBe("plan");
     expect(args).not.toContain("--always-approve");
+  });
+
+  it("reads a goal under the config root the turn used, not under an inherited GROK_HOME", async () => {
+    process.env.GROK_HOME = "/inherited/.grok";
+    const g = goalHarness([REPORT, REPORT]);
+    await g.adapter.goalCommand("thread-1", { action: "get" });
+    expect(g.controlEnvs[0].GROK_HOME).toBe(path.join(g.home, ".grok"));
+
+    const turnHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-goal-turn-home-"));
+    homes.push(turnHome);
+    const done = new Promise<void>((resolve) => g.adapter.on("done", () => { resolve(); }));
+    g.adapter.run({ prompt: "/goal ship it", cwd: "/workspace", sessionId: "thread-9", homeDir: turnHome });
+    g.turnChildren[0].emitStdout([JSON.stringify({
+      type: "result", subtype: "success", is_error: false, session_id: "thread-9", result: "done",
+    })]);
+    g.turnChildren[0].close(0);
+    await done;
+    expect(g.controlEnvs[1].GROK_HOME).toBe(path.join(turnHome, ".grok"));
+  });
+
+  it("reads a goal under an inherited GROK_HOME after a turn with no scoped home used it", async () => {
+    const inherited = fs.mkdtempSync(path.join(os.tmpdir(), "grok-goal-inherited-"));
+    homes.push(inherited);
+    process.env.GROK_HOME = inherited;
+    const controlEnvs: Record<string, string>[] = [];
+    let turnChild: FakeChild | undefined;
+    const adapter = new GrokAdapter({
+      spawnFn: (_cmd, args, opts) => {
+        const prompt = fs.readFileSync(args[args.indexOf("--prompt-file") + 1], "utf8");
+        const child = new FakeChild();
+        if (!CONTROL_PROMPTS.has(prompt)) {
+          turnChild = child;
+          return child as unknown as ChildProcess;
+        }
+        controlEnvs.push((opts.env ?? {}) as Record<string, string>);
+        queueMicrotask(() => {
+          child.emitStdout([resultLine(REPORT)]);
+          child.close(0);
+        });
+        return child as unknown as ChildProcess;
+      },
+    });
+    const done = new Promise<void>((resolve) => adapter.on("done", () => { resolve(); }));
+    adapter.run({ prompt: "/goal ship it", cwd: "/workspace", sessionId: "thread-9" });
+    turnChild?.emitStdout([JSON.stringify({
+      type: "result", subtype: "success", is_error: false, session_id: "thread-9", result: "done",
+    })]);
+    turnChild?.close(0);
+    await done;
+    expect(controlEnvs.map((env) => env.GROK_HOME)).toEqual([inherited]);
   });
 
   // Two processes on one session write the same goal files; a mid-turn read was measured doing it.

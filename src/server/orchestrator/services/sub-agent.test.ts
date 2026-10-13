@@ -35,6 +35,7 @@ import {
   readSessionAccountMarker,
   releaseSubAgentSpawnHome,
   subAgentSpawnHomeDir,
+  sweepSubAgentSpawnHomes,
   writeSessionAccountMarker,
 } from "../session-credentials.js";
 
@@ -1825,9 +1826,18 @@ describe("runSubAgent — every provisioned spawn runs from its own home", () =>
   // The worker's rule: a spawn runs in its homeDir, and with none in the session's own subtree.
   const codexHomeOf = (req: { spawnId: string; homeDir?: string }) =>
     path.join(
-      req.homeDir ? subAgentSpawnHomeDir(root, "s1", req.spawnId) : perSessionCredentialsDir(root, "s1"),
+      req.homeDir
+        ? subAgentSpawnHomeDir(root, "s1", path.posix.basename(req.homeDir))
+        : perSessionCredentialsDir(root, "s1"),
       ".codex",
     );
+  const homesLeft = () => {
+    try {
+      return fs.readdirSync(path.join(perSessionCredentialsDir(root, "s1"), "sub-agent-homes"));
+    } catch {
+      return [];
+    }
+  };
 
   it("a cross-harness spawn runs from an isolated home and never writes the session subtree", async () => {
     seedCodexAccount();
@@ -1928,7 +1938,58 @@ describe("runSubAgent — every provisioned spawn runs from its own home", () =>
     expect(held).toEqual([codexAuth("acct-primary-OLD", 1_000), codexAuth("acct-secondary-OLD", 1_000)]);
     expect(fs.readFileSync(accountFile("acct-primary"), "utf-8")).toBe(codexAuth("acct-primary-ROTATED", 2_000));
     expect(fs.readFileSync(accountFile("acct-secondary"), "utf-8")).toBe(codexAuth("acct-secondary-ROTATED", 2_000));
-    expect(fs.existsSync(subAgentSpawnHomeDir(root, "s1", result.spawnId))).toBe(false);
+    expect(homesLeft()).toEqual([]);
+  });
+
+  it("an account failover does not delete a home that the release kept", async () => {
+    const accounts = ["acct-primary", "acct-secondary", "acct-tertiary"];
+    const accountRoot = (id: string) => path.join(root, "provider-accounts", "codex", id);
+    const stranded = (id: string) => path.join(accountRoot(id), ".shipit-stranded-tokens");
+    // A rotation with no expiry cannot be published.
+    const unpublishable = (id: string) => `{"tokens":{"access_token":"${id}-ROTATED"}}`;
+    for (const id of accounts) {
+      fs.mkdirSync(path.join(accountRoot(id), ".codex"), { recursive: true });
+      fs.writeFileSync(path.join(accountRoot(id), ".codex", "auth.json"), codexAuth(`${id}-OLD`, 1_000));
+    }
+    // A file here makes the quarantine fail too (ENOTDIR, also as root).
+    for (const id of accounts.slice(0, 2)) fs.writeFileSync(stranded(id), "not a directory");
+
+    const { deps, runner, selectAccountForTurn } = makeDeps({ credentialsDir: root, containerRunner: true });
+    for (const id of accounts) {
+      selectAccountForTurn.mockReturnValueOnce({ ok: true, route: { kind: "account", id } });
+    }
+    const homes: string[] = [];
+    const held: string[] = [];
+    runner.spawnSubAgent = vi.fn(async (req: { spawnId: string; homeDir?: string }) => {
+      const file = path.join(codexHomeOf(req), "auth.json");
+      const account = accounts[homes.length];
+      homes.push(codexHomeOf(req));
+      held.push(fs.readFileSync(file, "utf-8"));
+      if (homes.length === accounts.length) {
+        return { status: "success", text: "ok", truncated: false, durationMs: 5, costUsd: 0 };
+      }
+      fs.writeFileSync(file, unpublishable(account));
+      return { status: "error", text: "", error: "Weekly usage limit reached. It resets at 2099-08-02T12:00:00.000Z.", truncated: false, durationMs: 10, costUsd: 0 };
+    }) as never;
+
+    const result = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    expect(result.status).toBe("success");
+    expect(held).toEqual(accounts.map((id) => codexAuth(`${id}-OLD`, 1_000)));
+    expect(new Set(homes).size).toBe(3);
+    expect(fs.readFileSync(path.join(homes[0], "auth.json"), "utf-8")).toBe(unpublishable("acct-primary"));
+    expect(fs.readFileSync(path.join(homes[1], "auth.json"), "utf-8")).toBe(unpublishable("acct-secondary"));
+    expect(fs.existsSync(homes[2])).toBe(false);
+
+    // The next container create quarantines what the kept homes hold.
+    for (const id of accounts.slice(0, 2)) fs.rmSync(stranded(id));
+    sweepSubAgentSpawnHomes(root, "s1");
+    expect(homesLeft()).toEqual([]);
+    for (const id of accounts.slice(0, 2)) {
+      const rescued = fs.readdirSync(stranded(id));
+      expect(rescued).toHaveLength(1);
+      expect(fs.readFileSync(path.join(stranded(id), rescued[0]), "utf-8")).toBe(unpublishable(id));
+    }
   });
 
   it("releases the home when the run ends on its wall-clock cap", async () => {
