@@ -11,6 +11,7 @@
 - [x] Shared adapter-run core (`runAgentToCompletion`) — container + local
 - [x] `SHIPIT_AGENT_DEPTH` stamping + best-effort recursion guard
 - [x] Per-turn cap (3) — forgery-resistant, reset at primary-turn start
+      (removed later — see "Run limit" below)
 - [x] Wall-clock + output caps (truncation flagged)
 - [x] Lazy, account-correct cross-agent credential provisioning + wipe
 - [x] Token-sync-back before wipe
@@ -119,6 +120,13 @@ auto-reset, so the merged session was never synced back to base.
       its OAuth refresh token → resolved account root updated before wipe).
 - [ ] Per-agent usage breakdown row in the per-session usage UI (the
       `sub_agent_id` column is stored; the UI split is not yet rendered).
+
+## Run limit (requirements.md req 1–3)
+
+- [x] Remove the per-turn cap and both of its refill points (turn start, a
+      message the user steers into a running turn)
+- [x] Limit the runs in progress for a session instead (16 by default,
+      `SHIPIT_SUB_AGENT_MAX_IN_PROGRESS`); every exit of a run frees its slot
 
 ## Future work (out of v0 scope — see plan.md "Future work")
 

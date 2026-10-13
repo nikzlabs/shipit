@@ -647,16 +647,7 @@ export function resetRunnerTurnState(runner: SessionRunnerInterface): void {
   runner.wasInterrupted = false;
   runner.pendingCommitLink = null;
   clearCommittedBodyIds(runner.committedBodyIds);
-  resetSubAgentSpawnBudget(runner);
   resetVoiceNoteTurnState(runner);
-}
-
-// Human live steering refills this budget without clearing the running turn's transcript.
-// Agent-reachable steers must not let the agent refill its own budget.
-export function resetSubAgentSpawnBudget(
-  runner: Pick<SessionRunnerInterface, "subAgentSpawnsThisTurn">,
-): void {
-  runner.subAgentSpawnsThisTurn = 0;
 }
 
 // An idle turn can still have a resident CLI reading or rotating credentials.
@@ -744,8 +735,6 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   agentId: AgentId;
   /** Defer linking until final chat rows exist; an early agent_result can precede final text. */
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null;
-
-  subAgentSpawnsThisTurn: number;
 
   /** Caller enforces authorization, credentials and budget; this leaves the main agent slot intact. */
   spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult>;
@@ -872,7 +861,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _detectedPorts: number[] = [];
   private _disposed = false;
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
-  private _subAgentSpawnsThisTurn = 0;
   private _subAgentHandles = new Map<SubAgentRunHandle, AgentId>();
   private _lastAnnouncedWork = "[]";
   private _postTurnHold = new PostTurnHold();
@@ -977,8 +965,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set awaitingUserAnswer(v: boolean) { this._awaitingUserAnswer = v; }
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
-  get subAgentSpawnsThisTurn(): number { return this._subAgentSpawnsThisTurn; }
-  set subAgentSpawnsThisTurn(n: number) { this._subAgentSpawnsThisTurn = n; }
 
   async spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult> {
     const factory = this._systemTurnDeps?.agentFactory;

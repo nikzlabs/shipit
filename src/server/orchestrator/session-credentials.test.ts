@@ -391,9 +391,8 @@ describe("session-credentials", () => {
   /**
    * Cross-harness consults do NOT get a private spawn home: they provision into
    * `<sessionDir>/<credential path>`, one location per (session, harness). A
-   * session may have several running at once (the per-turn cap is 3 and a consult
-   * can be backgrounded), so the borrow record has to outlive the first of them
-   * to finish.
+   * session may have several running at once (a consult can be backgrounded), so
+   * the borrow record has to outlive the first of them to finish.
    */
   // Cross-harness consults share one subtree per (session, harness) — only
   // same-harness ones get a private spawn home — and several can run at once.

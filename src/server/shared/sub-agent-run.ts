@@ -1,6 +1,6 @@
 import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, AgentRequestUsage, ServiceRouting } from "./types.js";
 
-export const DEFAULT_SUB_AGENT_TIMEOUT_MS = parseTimeoutEnv(
+export const DEFAULT_SUB_AGENT_TIMEOUT_MS = positiveIntEnv(
   process.env.SHIPIT_SUB_AGENT_TIMEOUT_MS,
   30 * 60_000,
 );
@@ -8,7 +8,7 @@ export const DEFAULT_SUB_AGENT_TIMEOUT_MS = parseTimeoutEnv(
 // The worker timer dies with its container; bound the transport independently.
 export const SUB_AGENT_TRANSPORT_TIMEOUT_MS = DEFAULT_SUB_AGENT_TIMEOUT_MS + 5 * 60_000;
 
-function parseTimeoutEnv(raw: string | undefined, fallback: number): number {
+export function positiveIntEnv(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
