@@ -25,9 +25,6 @@ export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
   // OpenAI model pages, 2026-09-22.
   "gpt-6-sol": "yes",
   "gpt-6-luna": "yes",
-  "gpt-5.6-sol": "yes",
-  "gpt-5.6-terra": "yes",
-  "gpt-5.6-luna": "yes",
 
   "deepseek-v4-flash": "no",
   "glm-5.2": "no",

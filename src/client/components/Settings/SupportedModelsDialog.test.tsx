@@ -104,7 +104,7 @@ describe("SupportedModelsDialog", () => {
       codex: "yes",
       opencode: "yes",
     });
-    expect(answers("vercel:key", "openai/gpt-5.6-sol")).toEqual({
+    expect(answers("vercel:key", "openai/gpt-6-sol")).toEqual({
       claude: "no",
       codex: "yes",
       opencode: "yes",
@@ -191,7 +191,7 @@ describe("SupportedModelsDialog", () => {
 
     expect(screen.queryByTestId("supported-models-row-vercel:key-anthropic/claude-opus-5")).toBeNull();
     expect(
-      screen.getByTestId("supported-models-row-vercel:key-openai/gpt-5.6-sol"),
+      screen.getByTestId("supported-models-row-vercel:key-openai/gpt-6-sol"),
     ).toBeInTheDocument();
   });
 

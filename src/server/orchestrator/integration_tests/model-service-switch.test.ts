@@ -239,7 +239,7 @@ describe("Integration: mid-session model switching across services (docs/252 pha
 
     client.send({
       type: "set_model",
-      model: "openai/gpt-5.6-sol",
+      model: "openai/gpt-6-sol",
       serviceId: "openai",
       billingMode: "key",
     });

@@ -729,7 +729,7 @@ describe("the harness\u00d7service join", () => {
   it("reaches services the harness shares a style with, and no others", () => {
     expect(catalogueModelIdsForHarness("claude")).toContain("deepseek-flash");
     expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-flash");
-    expect(catalogueModelIdsForHarness("codex")).toContain("openai/gpt-5.6-sol");
+    expect(catalogueModelIdsForHarness("codex")).toContain("openai/gpt-6-sol");
     expect(catalogueModelIdsForHarness("claude")).toContain("anthropic/claude-opus-5");
     expect(catalogueModelIdsForHarness("codex")).toContain("deepseek/deepseek-v4-flash");
     expect(catalogueModelIdsForHarness("codex")).not.toContain("anthropic/claude-opus-5");
@@ -970,7 +970,7 @@ describe("spawn shaping", () => {
     expect(windows["claude-fable-5-1"]).toBe(1_000_000);
     expect(windows.haiku).toBe(200_000);
     expect(windows["gpt-6-astra"]).toBe(272_000);
-    expect(windows["gpt-5.6-sol"]).toBe(272_000);
+    expect(modelContextWindows()["gpt-5.6-sol"]).toBe(272_000);
     expect(modelContextWindows()["gpt-5.2"]).toBe(272_000);
   });
 
@@ -994,6 +994,7 @@ describe("spawn shaping", () => {
     // Rows removed from the picker keep their label only in the client's legacy record.
     const LEFT_THE_CATALOGUE = new Set([
       "gpt-5.3-codex-spark", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2",
+      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
     ]);
     for (const [id, label] of Object.entries(PRE_CATALOGUE_LABELS)) {
       if (!LEFT_THE_CATALOGUE.has(id)) expect(labels[id], id).toBe(label);
@@ -1041,9 +1042,9 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
       .toBe("https://opencode.ai/zen/v1");
     expect(resolveEndpoint("opencode", { serviceId: "opencode", billingMode: "sub", modelId: "glm-5.3" }))
       .toBe("https://opencode.ai/zen/go/v1");
-    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "key", modelId: "gpt-5.6-sol" }))
+    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "key", modelId: "gpt-6.1-sol" }))
       .toBe("https://opencode.ai/zen/v1");
-    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "sub", modelId: "gpt-5.6-luna" }))
+    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "sub", modelId: "gpt-6-luna" }))
       .toBe("https://opencode.ai/zen/go/v1");
   });
 
@@ -1052,8 +1053,8 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
       catalogueEntriesForHarness("codex")
         .filter((e) => e.service.id === "opencode" && e.mode.kind === billingMode)
         .map((e) => e.model.id);
-    expect(idsFor("key").sort()).toEqual(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.6"]);
-    expect(idsFor("sub")).toEqual(["gpt-5.6-luna"]);
+    expect(idsFor("key").sort()).toEqual(["gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "grok-4.6"]);
+    expect(idsFor("sub")).toEqual(["gpt-6-luna"]);
     for (const entry of catalogueEntriesForHarness("codex").filter((e) => e.service.id === "opencode")) {
       expect(entry.model.styles, entry.model.id).toEqual(["openai-responses"]);
     }
@@ -1070,7 +1071,8 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
       getModel({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" })!.price.input,
     );
     expect(go("deepseek-v4-flash")!.price.input).not.toBe(zen("deepseek-v4-flash")!.price.input);
-    expect(go("gpt-5.6-luna")!.price.input).toBeLessThan(zen("gpt-5.6-luna")!.price.input);
+    // OpenCode's Zen and Go pages publish the same GPT-6 Luna rate (docs/272 §7).
+    expect(go("gpt-6-luna")!.price.input).toBe(zen("gpt-6-luna")!.price.input);
   });
 
   it("names OpenCode's own inference as its harness's native service (docs/272)", () => {
