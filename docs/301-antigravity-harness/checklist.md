@@ -173,20 +173,14 @@ Antigravity-specific is in [plan.md](./plan.md).
 
 ## Still open
 
-- **Concurrent spawns share one durable directory** (planning#572). Two Antigravity runs
-  against the same session's credential subtree — a key-mode and an account-mode
-  consult, or local mode — can change each other's credentials and
-  `settings.json` mid-run, so one can end up billed to the other's route. The
-  per-spawn HOME isolates `config/` and deliberately not the durable directory,
-  which is where the token and conversations live; the cause is ShipIt's
-  cross-harness BORROW path, which provisions one subtree per session without
-  serializing the runs. PR #2772 fixed the cleanup half — the ledger now tracks
-  the spawns holding a subtree, so an earlier release no longer wipes a consult
-  still running — and the OVERWRITE half is untouched: a second borrow still
-  replaces the first's credentials while it runs. The settings write is atomic,
-  which stops a torn read and fixes nothing else. This is not Antigravity-specific,
-  and the shape — a private subtree per spawn, or serialized borrows — is the
-  decision planning#572 is open on.
+- **Spawns in local mode share one durable directory** (planning#572). In a
+  session container every brokered run has a credential home of its own
+  (docs/144-cross-agent-review §4), so a key-mode and an account-mode
+  Antigravity consult no longer see each other's token and `settings.json`.
+  `RUNTIME_MODE=local` provisions no home: there a turn and a brokered run still
+  share the account root's durable directory, and one can end up billed to the
+  other's route. The settings write is atomic, which stops a torn read and fixes
+  nothing else.
 - ~~**The account-mode host is inferred, not observed.**~~ **Measured 2026-09-14
   and it WAS wrong.** A real account turn sent every `loadCodeAssist` and
   `streamGenerateContent` to `daily-cloudcode-pa.googleapis.com`; the bare

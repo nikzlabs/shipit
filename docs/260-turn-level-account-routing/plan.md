@@ -446,6 +446,12 @@ route, which makes the next turn's identity check reprovision — where a stale
 "match" used to let the session spawn on the borrowed account's token, which is
 this section's own poisoning class arriving through the back door.
 
+**Since 2026-10-13 nothing opens a borrow.** Every provisioned spawn, cross-harness
+ones included, runs from a private home (docs/144-cross-agent-review §4), so
+`provisionSubAgentCredentials` and the ledger have no caller, and the
+`borrow-in-flight` refusal cannot fire. The marker's identity check is what still
+guards the session's own write-backs.
+
 ## 5. Account identity is process-scoped (design-context constraint)
 
 - The turn route object (section 1b) is the in-turn identity. For a
