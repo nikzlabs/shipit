@@ -731,6 +731,14 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/branch/reset-to-base", request.body ?? {}, reply),
   );
 
+  // Read by block-branch-ops.mjs, which waits 3 s. Each attempt is limited so that a
+  // stale orchestrator address leaves the next one time to answer (docs/130-block-branch-ops).
+  app.get(
+    "/agent-ops/branch/destructive-git-guard",
+    async (_request, reply) =>
+      relay("GET", "/branch/destructive-git-guard", undefined, reply, { timeoutMs: 1000 }),
+  );
+
   app.get(
     "/agent-ops/session/cohort",
     async (_request, reply) => relay("GET", "/cohort", undefined, reply),

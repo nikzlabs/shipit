@@ -661,10 +661,6 @@ files this feature does not change.
   changed. A typed message does the same.
 - The rebase-resolution turn and ShipIt's compaction turns refused a steer
   until Part 3, which removed that.
-- A wake after a merge enters the resident process, which started before the
-  merge and so runs without the merged-branch git guard
-  (`SHIPIT_GUARD_DESTRUCTIVE_GIT`, read at spawn only). A typed turn after a
-  merge did the same before this feature (planning#694).
 
 ## Review record
 

@@ -777,7 +777,9 @@ rebase you are already inside must remain exitable — as does a plain `git pull
 which merges rather than rewrites.) `shipit branch reset-to-base` is unaffected — it relays to
 the orchestrator rather than running git in your shell. The block is scoped to
 that window only: on an ordinary session, discarding a local mess with
-`git reset --hard` still works normally.
+`git reset --hard` still works normally. The window is checked each time you
+run one of those commands, so the block starts when ShipIt records the merge and
+ends when the branch is reset, also in the middle of a turn.
 
 Then continue the work, open the next PR, and — if more remains after it — run
 `shipit session notify-on-merge --self` again. Each link re-arms itself; ShipIt

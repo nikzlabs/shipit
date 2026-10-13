@@ -185,6 +185,18 @@ describe("agent-ops routes", () => {
     expect((res.json() as { error: string }).error).toContain("is off");
   });
 
+  it("GET /agent-ops/branch/destructive-git-guard gives the hook no answer when the orchestrator gives none", async () => {
+    client.setResponse("GET", "/branch/destructive-git-guard", {
+      ok: false, status: 0, body: { error: "Could not reach orchestrator" },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/agent-ops/branch/destructive-git-guard" });
+
+    // The hook reads only a 2xx with a boolean, and takes its spawn value otherwise.
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).not.toHaveProperty("guarded");
+  });
+
   it("POST /agent-ops/pr/create forwards to /pr/agent-create with body", async () => {
     client.setResponse("POST", "/pr/agent-create", {
       ok: true, status: 200,

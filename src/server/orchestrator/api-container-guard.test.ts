@@ -561,6 +561,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   // docs/324-agent-requested-compaction — records a compaction of the agent's own context.
   "POST /api/sessions/:sessionId/compact-after-turn",
   "POST /api/sessions/:id/branch/reset-to-base",
+  // docs/130-block-branch-ops — the git hook reads its own session's merged state; a pure read.
+  "GET /api/sessions/:id/branch/destructive-git-guard",
   // docs/305 — the agent may ask for its own session's identities and
   // signatures. Every check is on the orchestrator side of these two, because
   // the guard identifies the session and not the process inside it.

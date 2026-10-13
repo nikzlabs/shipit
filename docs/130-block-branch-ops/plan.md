@@ -237,36 +237,86 @@ and the hook only matches segments whose command token is `git`).
 
 **Scoping — deliberately not a blanket block.** `git reset --hard` has
 legitimate uses (throwing away a local mess the user asked to discard), so the
-rule is armed only in the state the reset command guards. The signal is
-`SHIPIT_GUARD_DESTRUCTIVE_GIT=1`, set exactly like `SHIPIT_SANDBOX`: the
-orchestrator derives it from the session row at run-params build time and it
-reaches the hook as CLI spawn env, never as anything the agent can write.
+rule is armed only in the state the reset command guards: the session row
+carries a `mergedHeadSha`. That answer reaches the hook on two paths. Neither is
+a file or a variable that a command of the agent's sets: the worker answers from
+the orchestrator's session row, and the hook's environment is the CLI's own.
 
 ```
+for each Bash call with a segment that a destructive rule would refuse
+block-branch-ops.mjs   GET <worker>/agent-ops/branch/destructive-git-guard
+        ▼
+session/agent-ops-routes.ts   relays for the worker's own session
+        ▼
+api-routes-git.ts   GET /api/sessions/:id/branch/destructive-git-guard
+                    → { guarded: Boolean(session.mergedHeadSha) }
+
+at spawn: the answer when the read above gets none
 session-agent-run-params.ts   guardDestructiveGitActive = Boolean(session.mergedHeadSha)
         ▼
 agents/claude/run-params-prep.ts   → params.guardDestructiveGit
         ▼
 claude/adapter.ts → claude/process.ts   spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT = "1"
-        ▼
-block-branch-ops.mjs   arms offendsDestructive()
 ```
 
 `mergedHeadSha` is the right anchor rather than a new flag: it is set at merge
-detection and dropped by `clearMerged` **and** by a successful reset, so the
-guard arms and disarms itself with no extra bookkeeping. Sandbox sessions never
-carry one, and the hook's docs/211 early exit covers them regardless.
+detection and dropped by `clearMerged` (`sessions.ts`), which the re-arm after a
+successful reset calls (`services/pr-rearm.ts`), so the guard arms and disarms
+itself with no extra bookkeeping. Sandbox sessions never carry one, and the
+hook's docs/211 early exit covers them regardless.
 
-**Known limitation — resident streaming processes.** The env is fixed at spawn,
-and under live steering (docs/140) one CLI process serves many turns. A session
-that merges *while* a streaming process is resident keeps the pre-merge env
-until the process exits. This is acceptable because the hazard window — the
-docs/239 self-merge wake — arrives as a **system turn**, and system turns never
-reuse the resident process (`dispatched-turn.ts` nulls `resident` when
-`opts.systemTurn`), so a wake turn always spawns with freshly-computed env. The
-residual case is a user-typed turn on a session that merged mid-conversation,
-where nothing has refused and so nothing is being worked around. The same
-staleness already applies to `SHIPIT_AUTO_CREATE_PR`.
+#### 2026-10-13 — the hook reads the merged state for each command (planning#694)
+
+**The defect.** The hook read the state from its environment only, and a
+process keeps the environment it started with. Under live steering (docs/140)
+one CLI process serves many turns, so a process that started before the merge
+ran its later turns without the guard. Since `docs/329-user-steers-every-turn`
+that includes the self-merge wake, the turn the guard exists for. This plan had
+said that a wake always started a new process.
+
+**How it works now.** When a segment of a Bash command matches a destructive
+rule, and only then, the hook asks the session worker, which relays to the
+orchestrator. Most commands match no destructive rule and cost no request. The
+hook asks once for each Bash call, before the command runs, and waits 3 seconds
+at most. The relay limits each attempt to 1 second, so a worker that still
+holds the orchestrator's old address first (planning#626) reaches the next
+address inside the hook's wait.
+
+With an answer, a turn on a merged branch is guarded on a resident process as
+on a new one, and a turn after the reset is not. A reset or a recorded merge in
+the middle of a turn takes effect at the next Bash call. With no answer (no
+worker, no orchestrator, a status that is not 2xx, a body with no boolean) the
+hook takes the value its process started with, which is the earlier behaviour.
+
+**Why the resident process is not retired instead.** The other fix was to add
+the merged state to `sessionSpawnIdentity` (`service-routing.ts`), so that a
+change retires the resident as a model change does. It is fewer lines, and it
+does not hold the requirement:
+
+- A resident that ShipIt adopts after an orchestrator restart has no recorded
+  spawn identity, and `releaseResidentOnSpawnChange` leaves such a process
+  alone. Each ShipIt update restarts the orchestrator, so a process from before
+  the merge would stay unguarded.
+- A retirement happens only when a turn starts. It cannot follow a reset or a
+  merge during a turn, and a process that started guarded and reset its branch
+  in that turn is retired once more at the next one.
+- It has costs that buy nothing. The interactive path compares the identity
+  before the pre-turn reset runs (`ws-handlers/agent-execution.ts`), so on the
+  usual path (merge, next message, automatic reset) it would retire the
+  resident for a guard the new process then starts without. Each retirement
+  ends the agent's background jobs.
+
+**Limits.**
+
+- The answer is as new as the session row. Merge detection is poll-driven and
+  is refreshed at turn admission (`docs/282-merge-race-at-turn-admission`).
+- The hook reaches the worker as the `shipit` commands do, with `fetch` to the
+  worker's loopback address. An environment that sends loopback requests to a
+  proxy (`NODE_USE_ENV_PROXY=1` with no `NO_PROXY` entry for loopback) breaks
+  both, and the hook then takes the spawn value.
+- A session container on an older image keeps the older hook until ShipIt
+  replaces the container. A new hook on an older worker gets a 404 and takes
+  the spawn value.
 
 ### Third rule — a process test that matches its own command line
 
@@ -395,7 +445,7 @@ claude.ts → claude CLI
 
 | File | Role |
 |---|---|
-| `docker/agent-hooks/block-branch-ops.mjs` | New PreToolUse hook. Node, no deps. Blocks branch create/switch, and (planning#267, armed by `SHIPIT_GUARD_DESTRUCTIVE_GIT=1`) destructive git. |
+| `docker/agent-hooks/block-branch-ops.mjs` | New PreToolUse hook. Node, no deps. Blocks branch create/switch, and (planning#267, while the session's branch is merged) destructive git. |
 | `docker/agent-hooks/managed-settings.json` | Adds the `PreToolUse` entry (matcher `Bash`) alongside the existing `Stop` entry. Also carries `"includeCoAuthoredBy": false` (always-on, ungated) so the Claude CLI drops the `Co-Authored-By: Claude` commit trailer and the `🤖 Generated with Claude Code` PR footer — ShipIt owns the commit/PR surface, so the upstream attribution is noise. Takes effect on the next session-worker image rebuild (the file is `COPY`'d in, not mounted). |
 | `docker/agent-hooks/stop-pr-check.sh` | Early-exits unless `SHIPIT_AUTO_CREATE_PR=1` — PR enforcement stays opt-in now that the settings file is always wired up. |
 | `docker/Dockerfile.session-worker.{prod,dev,dogfood}` | `COPY` + `chmod` the new hook into `/etc/shipit/agent-hooks/`. |
@@ -416,6 +466,15 @@ planning#267 additions:
 | `src/server/session/agents/claude/process.ts` | Sets/clears `SHIPIT_GUARD_DESTRUCTIVE_GIT` in the spawn env — both the PTY and the streaming class. |
 | `src/server/shipit-docs/sessions.md` | Tells the agent the "don't hand-roll a reset" rule is enforced, and that the block is scoped to merged sessions. |
 
+planning#694 additions:
+
+| File | Role |
+|---|---|
+| `docker/agent-hooks/block-branch-ops.mjs` | Reads the merged state for each Bash call that a destructive rule would refuse; the environment is the fallback. |
+| `src/server/session/agent-ops-routes.ts` | `GET /agent-ops/branch/destructive-git-guard`: the relay the hook calls, 1 second for each attempt. |
+| `src/server/orchestrator/api-routes-git.ts` | `GET /api/sessions/:id/branch/destructive-git-guard`, reachable from the session's own container. |
+| `src/server/orchestrator/local-agent-ops.ts` | Maps the same read in local mode. |
+
 ### Tests
 
 | Test | What it covers |
@@ -424,6 +483,12 @@ planning#267 additions:
 | `src/server/orchestrator/session-agent-run-params.test.ts` | planning#267: the guard arms iff the session row carries `mergedHeadSha` (off when unmerged, cleared, missing, or sandbox). |
 | `src/server/orchestrator/agent-run-params-prep.test.ts` | planning#267: Claude's hook forwards `guardDestructiveGitActive` → `guardDestructiveGit`, defaulting false. |
 | `src/server/session/agents/claude/process.test.ts` | planning#267: `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` is set in the spawn env iff `guardDestructiveGit` is true. |
+| `src/server/session/agent-shim/block-branch-ops.test.ts` | planning#694: against a worker the test serves, a process with no spawn value is blocked when the answer is "guarded" and a process with the spawn value is free when it is not; one request for each command, none for a command no destructive rule would refuse and none in a sandbox; the spawn value decides on a status that is not 2xx, a body with no boolean, an address where nothing listens and a worker that does not answer in time. The planning#267 matrix above runs with no worker, so it is the fallback's test. |
+| `src/server/orchestrator/integration_tests/destructive-git-guard.test.ts` | planning#694: the real hook process, the worker's relay and the orchestrator's route over a real `SessionManager`, through merge detection and `clearMerged`; a first orchestrator address that does not answer; an orchestrator that is gone. It is the test that fails when the layers do not name the same path, or when the relay's attempts do not fit in the hook's wait. |
+| `src/server/orchestrator/api-routes-git.test.ts` | planning#694: the route answers for the session in the path, and gives no answer for an unknown one. |
+| `src/server/session/agent-ops-routes.test.ts` | planning#694: a 502 with no answer when the orchestrator gives none. |
+| `src/server/orchestrator/local-agent-ops.test.ts` | planning#694: local mode maps the one path the hook's source names. |
+| `src/server/orchestrator/api-container-guard.test.ts` | planning#694: the route is in the golden table of container-reachable routes. |
 | `src/server/session/agent-shim/stop-pr-check.test.ts` | Updated: `runHook` now sets `SHIPIT_AUTO_CREATE_PR=1` by default; added a case proving the hook no-ops when the var is unset. |
 | `src/server/session/claude.test.ts` | Added: `SHIPIT_AUTO_CREATE_PR=1` is set in the spawn env iff `autoCreatePr` is true. |
 
