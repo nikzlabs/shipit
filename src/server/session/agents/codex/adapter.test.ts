@@ -6,6 +6,7 @@ import path from "node:path";
 import { CodexAdapter, CODEX_SANDBOX_ARGS } from "./adapter.js";
 import type { AgentEvent } from "../agent-process.js";
 import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { createRedactedTail, STDERR_TEXT_REMOVED } from "../../../shared/redacted-tail.js";
 
 // Prefix for assertions about what ELSE rides the pre-subcommand `-c` position.
 // The contents are pinned literally in "sandbox overrides", not here.
@@ -1709,7 +1710,118 @@ describe("CodexAdapter", () => {
 
     fakeProc.stderr.emit("data", Buffer.from("Error: Invalid API key provided"));
 
-    expect(authRequired).toBe(true);
+    await vi.waitFor(() => expect(authRequired).toBe(true));
+  });
+
+  describe("stderr", () => {
+    // Put together here, so that no secret scan reads a credential in this file.
+    const FAKE_KEY = ["sk", "proj", "k".repeat(28)].join("-");
+
+    async function startWithLogs(): Promise<{ logs: string[]; order: string[]; auth: () => number }> {
+      adapter = new CodexAdapter();
+      const logs: string[] = [];
+      const order: string[] = [];
+      let auth = 0;
+      adapter.on("log", (source, text) => {
+        if (source !== "codex-stderr") return;
+        logs.push(text);
+        order.push("log");
+      });
+      adapter.on("done", () => order.push("done"));
+      adapter.on("auth_required", () => {
+        auth += 1;
+        order.push("auth_required");
+      });
+      adapter.run({ prompt: "Hello", cwd: "/workspace" });
+      await vi.waitFor(() => expect(fakeProc).toBeDefined());
+      return { logs, order, auth: () => auth };
+    }
+
+    const write = (text: string): void => { fakeProc.stderr.emit("data", Buffer.from(text)); };
+
+    it("emits a line that two chunks hold one time, and whole", async () => {
+      const { logs } = await startWithLogs();
+      write("Error: failed to initialize sqlite sta");
+      expect(logs).toEqual([]);
+      write("te runtime under /home/x/.codex\n");
+      expect(logs).toEqual(["Error: failed to initialize sqlite state runtime under /home/x/.codex"]);
+    });
+
+    it("emits the last line with no line end when the process closes, before done", async () => {
+      const { logs, order } = await startWithLogs();
+      write("fatal: no line end");
+      expect(logs).toEqual([]);
+      fakeProc.emit("close", 1);
+      expect(logs).toEqual(["fatal: no line end"]);
+      expect(order).toEqual(["log", "done"]);
+    });
+
+    // A caller reads the logs directly after a kill: the time limit of a sub-agent run does.
+    it("emits the text with no line end when the process is killed", async () => {
+      const { logs } = await startWithLogs();
+      write("fatal: cannot open the state database");
+      adapter.kill();
+      expect(logs).toEqual(["fatal: cannot open the state database"]);
+    });
+
+    it("detects an auth error in a line that is too long for the logs", async () => {
+      const { logs, auth } = await startWithLogs();
+      write("x".repeat(64_001));
+      write(" 401 Unauthorized\n");
+      expect(auth()).toBe(1);
+      expect(logs).toEqual([STDERR_TEXT_REMOVED]);
+    });
+
+    it("gives a redaction the whole of a credential that a chunk boundary divided", async () => {
+      const { logs } = await startWithLogs();
+      write(`401 for key ${FAKE_KEY.slice(0, 12)}`);
+      write(`${FAKE_KEY.slice(12)} at the provider\nOPENAI_API_KEY=`);
+      write("q7q7q7q7q7q7q7q7q7\n");
+
+      const tail = createRedactedTail();
+      for (const line of logs) tail.add(line);
+      expect(tail.read(300)).toBe("401 for key [REDACTED] at the provider OPENAI_API_KEY=[REDACTED]");
+    });
+
+    it("detects an auth error that a chunk boundary divided", async () => {
+      const { auth } = await startWithLogs();
+      write("Error: 401 Unauth");
+      write("orized\n");
+      expect(auth()).toBe(1);
+    });
+
+    // The primary turn kills the process on auth_required, and a log after that is dropped.
+    it("logs a prompt for a key before it raises auth_required, with no line end", async () => {
+      const { logs, order } = await startWithLogs();
+      write("Enter your API key: ");
+      await vi.waitFor(() => expect(order).toEqual(["log", "auth_required"]));
+      expect(logs).toEqual(["Enter your API key:"]);
+    });
+
+    it("keeps the order of the lines when an auth_required listener kills the adapter", async () => {
+      const { logs } = await startWithLogs();
+      adapter.on("auth_required", () => { adapter.kill(); });
+      write("401 Unauthorized\nmiddle\nlast");
+      expect(logs).toEqual(["401 Unauthorized", "middle", "last"]);
+    });
+
+    it("keeps the stderr of a killed process apart from the stderr of the next one", async () => {
+      const { logs } = await startWithLogs();
+      const killed = fakeProc;
+      write("fatal from the old process");
+      adapter.kill();
+      expect(logs).toEqual(["fatal from the old process"]);
+
+      adapter.run({ prompt: "Again", cwd: "/workspace" });
+      await vi.waitFor(() => expect(fakeProc).not.toBe(killed));
+      write("part of a line of the new process");
+      killed.stderr.emit("data", Buffer.from("last words of the old process\n"));
+      killed.emit("close", 1);
+      expect(logs).toEqual(["fatal from the old process"]);
+
+      write(", and the rest of it\n");
+      expect(logs).toEqual(["fatal from the old process", "part of a line of the new process, and the rest of it"]);
+    });
   });
 
   it("ignores an empty-string message delta", async () => {

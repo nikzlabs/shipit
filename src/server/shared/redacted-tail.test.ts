@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createRedactedTail } from "./redacted-tail.js";
+import { createRedactedTail, REDACTED_TAIL_NOT_SHOWN, STDERR_TEXT_REMOVED } from "./redacted-tail.js";
 
 // Credential shapes that are put together here, so that no secret scan reads one in this file.
 const FAKE_KEY = ["sk", "proj", "k".repeat(28)].join("-");
@@ -54,35 +54,35 @@ describe("createRedactedTail", () => {
     expect(tail).toBe("[REDACTED] fatal");
   });
 
-  it("does not show the rest of a credential that the budget cut", () => {
-    const opaque = "q7".repeat(40);
-    // The cut removes the name and the start of the value. No pattern knows the rest.
-    const tail = tailOf([`OPENAI_API_KEY="${"a".repeat(1_000)}`, `${opaque}"`, "x".repeat(63_900)], 100_000);
-    expect(tail).not.toContain(opaque);
-    expect(tail).toHaveLength(64_000 - 8_000);
+  // A cut changes which quotes are a pair: with the start gone, the second value is not redacted.
+  it("shows nothing of a text that is longer than the budget", () => {
+    const opaque = "s".repeat(40);
+    const tail = tailOf([
+      'API_KEY="x TOKEN=" ',
+      "x".repeat(260_000),
+      `API_KEY=" ${opaque}" fatal`,
+    ]);
+    expect(tail).toBe(REDACTED_TAIL_NOT_SHOWN);
   });
 
-  it("does not show the part of a key at the cut when the redaction makes the text after it short", () => {
-    const longKey = ["sk", "proj", "k".repeat(2_000)].join("-");
-    const tail = tailOf(Array.from({ length: 40 }, () => longKey), 100_000);
-    expect(tail).toMatch(/^\[REDACTED\]( \[REDACTED\])+$/);
+  it("shows nothing when one piece is longer than the budget", () => {
+    expect(tailOf(["x".repeat(256_001), "fatal"])).toBe(REDACTED_TAIL_NOT_SHOWN);
   });
 
-  it("does not show the rest of a credential when the redaction makes the text before it longer", () => {
-    // Each `a` becomes a placeholder of 10 characters: 7,215 characters become more than 8,000.
-    const rest = `${"TOKEN=a\n".repeat(900)}LEAKED_SUFFIX"\n`;
-    const tail = tailOf([`API_KEY="${"x".repeat(1_000)}\n${rest}${" ".repeat(64_000 - rest.length)}`]);
-    expect(tail).toBe("");
+  it("takes a text that is as long as the budget", () => {
+    expect(tailOf(["x".repeat(256_000)], 5)).toBe("…xxxxx");
+    expect(tailOf(["x".repeat(255_999), ""], 5)).toBe("…xxxxx");
+    expect(tailOf(["x".repeat(255_999), "y"])).toBe(REDACTED_TAIL_NOT_SHOWN);
   });
 
-  it("does not show the end of a credential that goes across the guard", () => {
-    const opaque = "q7".repeat(40);
-    const tail = tailOf(["a".repeat(1_100), `${"b".repeat(7_890)} OPENAI_API_KEY="${"c".repeat(200)}${opaque}" fatal`, "x".repeat(55_900)], 100_000);
-    expect(tail).not.toContain(opaque);
-    expect(tail.startsWith("fatal xxx")).toBe(true);
+  // The emitter removed the line with the name and the first quote of the value.
+  it("shows nothing of a text from which the emitter removed a line", () => {
+    const opaque = "q7".repeat(20);
+    expect(tailOf([STDERR_TEXT_REMOVED, `${opaque}" fatal`])).toBe(REDACTED_TAIL_NOT_SHOWN);
+    expect(tailOf(["first", STDERR_TEXT_REMOVED, "fatal"])).toBe(REDACTED_TAIL_NOT_SHOWN);
   });
 
-  it("shows the end of a long text that the budget cut", () => {
+  it("shows the end of a long text that is in the budget", () => {
     const tail = tailOf([...Array.from({ length: 5_000 }, (_, i) => `retry ${i} of the upstream call`), "fatal: gave up"]);
     expect(tail.endsWith("retry 4999 of the upstream call fatal: gave up")).toBe(true);
   });

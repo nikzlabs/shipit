@@ -432,6 +432,18 @@ describe("runAgentToCompletion — a run that fails says why", () => {
     expect(tail.endsWith("fatal: the last line")).toBe(true);
   });
 
+  // A kill makes the Codex adapter reject its open requests, and its start-up then emits `error`.
+  it("ends a cancelled run as cancelled when the kill makes the adapter emit an error", async () => {
+    const agent = new FakeAgent();
+    agent.kill.mockImplementation(() => { agent.emit("error", new Error("Process killed")); });
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    handle.start(() => {});
+    handle.cancel();
+    const res = await settledSoon(handle);
+    expect(res).toMatchObject({ status: "cancelled" });
+    expect((res as SubAgentRunResult).error).toBeUndefined();
+  });
+
   it("redacts a credential in stderr before the text leaves the run", async () => {
     const agent = new FakeAgent();
     const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
@@ -468,6 +480,25 @@ describe("runAgentToCompletion — a run that fails says why", () => {
       expect(res.status).toBe("timeout");
       expect(res.error).toContain("time limit (2 min)");
       expect(res.stderrTail).toBe("stream error: retrying in 30s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("runAgentToCompletion — stderr that the adapter emits at the kill", () => {
+  // The Codex adapter gives its text with no line end when it is killed.
+  it("is in the tail of a run that the time limit stopped", async () => {
+    vi.useFakeTimers();
+    try {
+      const agent = new FakeAgent();
+      agent.kill.mockImplementation(() => { agent.emit("log", "codex-stderr", "fatal: cannot open the state database"); });
+      const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w", timeoutMs: 50 }, Date.now());
+      vi.advanceTimersByTime(60);
+      expect(await handle.promise).toMatchObject({
+        status: "timeout",
+        stderrTail: "fatal: cannot open the state database",
+      });
     } finally {
       vi.useRealTimers();
     }

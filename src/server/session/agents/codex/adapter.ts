@@ -33,6 +33,7 @@ import { CodexEventHandler } from "./codex-event-handler.js";
 import { ensureCodexProjectTrusted } from "./project-trust.js";
 import { executeGoalCommand, runCodexGoalControl } from "./codex-goal.js";
 import { shipitToolSpec } from "../../mcp-tool-spec.js";
+import { createStderrLines, type StderrLines } from "../stderr-lines.js";
 
 export { unwrapShellCommand, buildCodexPermissionInput } from "./codex-tool-normalizer.js";
 
@@ -132,6 +133,16 @@ export function hasCodexFileAuth(configDir?: string): boolean {
   }
 }
 
+function stderrIndicatesAuthFailure(text: string): boolean {
+  const lc = text.toLowerCase();
+  return (
+    lc.includes("unauthorized") ||
+    lc.includes("invalid api key") ||
+    lc.includes("authentication") ||
+    lc.includes("api key")
+  );
+}
+
 export class CodexAdapter
   extends EventEmitter<AgentProcessEvents>
   implements AgentProcess
@@ -186,6 +197,7 @@ export class CodexAdapter
 
   private proc: ChildProcess | null = null;
   private buffer = "";
+  private stderrLines: StderrLines | null = null;
   private nextId = 1;
 
   private readonly eventHandler: CodexEventHandler;
@@ -311,20 +323,19 @@ export class CodexAdapter
       this.drainLines();
     });
 
+    // One for each process: a process that was killed can close after the next one started.
+    const stderrLines = createStderrLines(
+      (line) => {
+        this.emit("log", "codex-stderr", line);
+        if (stderrIndicatesAuthFailure(line)) this.emit("auth_required");
+      },
+      (removed) => {
+        if (stderrIndicatesAuthFailure(removed)) this.emit("auth_required");
+      },
+    );
+    this.stderrLines = stderrLines;
     this.proc.stderr?.on("data", (chunk: Buffer) => {
-      const text = chunk.toString("utf-8").trim();
-      if (text) {
-        this.emit("log", "codex-stderr", text);
-        const lc = text.toLowerCase();
-        if (
-          lc.includes("unauthorized") ||
-          lc.includes("invalid api key") ||
-          lc.includes("authentication") ||
-          lc.includes("api key")
-        ) {
-          this.emit("auth_required");
-        }
-      }
+      stderrLines.write(chunk);
     });
 
     this.proc.on("error", (err) => {
@@ -336,6 +347,7 @@ export class CodexAdapter
       exited = true;
       this.rejectEarlySteers();
       this.drainLines(true);
+      stderrLines.end();
       this.emit("done", code ?? 1);
       this.proc = null;
       // A request still waiting would hang forever — and with it the goal restore in initializeAndRun's finally.
@@ -473,10 +485,15 @@ export class CodexAdapter
   }
 
   kill(): void {
+    // The text with no line end is given now: a caller reads the logs directly after a kill,
+    // and what the process writes after it must not go to the logs of the next process.
+    const stderrLines = this.stderrLines;
+    this.stderrLines = null;
     if (this.proc) {
       killProcessTree(this.proc, "SIGTERM", { label: "codex" });
       this.proc = null;
     }
+    stderrLines?.end();
     this.pendingRequests.forEach(({ reject }) => reject(new Error("Process killed")));
     this.pendingRequests.clear();
   }

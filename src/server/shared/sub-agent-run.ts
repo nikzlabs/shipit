@@ -298,10 +298,13 @@ export function runAgentToCompletion(
         finish();
       });
       agent.on("error", (err: Error) => {
-        resultStatus = "error";
-        resultError = err.message;
+        // A kill can make the adapter emit this: the Codex adapter rejects its open requests.
+        if (!cancelled && !timedOut) {
+          resultStatus = "error";
+          resultError = err.message;
+        }
         // The Claude and OpenCode adapters emit `done`, with the exit code, directly after this.
-        queueMicrotask(() => finish("error"));
+        queueMicrotask(() => finish());
       });
     }),
   };

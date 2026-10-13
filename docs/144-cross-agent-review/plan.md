@@ -344,23 +344,44 @@ Flow:
   orchestrator's `finished` log, in the card's `statusDetail` (so
   `shipit agent result` prints it again), and on the stderr of
   `shipit agent run`.
-  - **Redaction.** `shared/redacted-tail.ts` keeps the emissions as the adapter
-    gave them, up to 64,000 characters, and redacts all of the kept text with
-    `redactCredentials` one time, when the run ends: the redaction comes before
-    the white space is removed and before the 300-character cut. When the
-    budget cut the text, the rest of a credential that the cut divided is at
-    the start of the kept text, and no pattern knows it. The shown text is then
-    made from the raw text behind the first 8,000 characters only, and it is
-    shown only where it agrees with the redaction of all the kept text (a
-    position in the redacted text is not a guard: a redaction can make text
-    longer). `describeSubAgentFailure` redacts and bounds its
-    input again, because a result can come from a worker. The `error` that the
-    account failover reads stays as the harness gave it; the copies of `error`
-    and `stderrTail` in the answer to the CLI are redacted.
-    **Known limit:** four adapters emit stderr as lines, so the kept text is
-    the text of the process. The Codex adapter emits trimmed pipe chunks. A
-    credential that a chunk boundary divides is not redacted here, and it is
-    not redacted in the primary turn's tail (`agent-stderr-tail.ts`) either.
+  - **Redaction.** `shared/redacted-tail.ts` keeps the stderr lines as the
+    adapter gave them and redacts all of the kept text with `redactCredentials`
+    one time, when the run ends: the redaction comes before the white space is
+    removed and before the 300-character cut. A text with a part removed cannot
+    be redacted by shape: the cut can go through a credential, and it changes
+    which quotes are a pair in all the text after it. So the budget is 256,000
+    characters, and of a longer stderr, or of one from which the emitter
+    removed a line, nothing is shown (the line then says
+    `[not shown: too long for a safe redaction]`). `describeSubAgentFailure`
+    redacts and bounds its input again, because a result can come from a
+    worker. The `error` that the account failover reads stays as the harness
+    gave it; the copies of `error` and `stderrTail` in the answer to the CLI
+    are redacted.
+  - **Whole lines.** The redaction is sound only if each emission is a whole
+    line: a credential in two emissions has no shape. Every process that
+    `runAgentToCompletion` runs emits stderr as lines. The Codex adapter
+    emitted trimmed pipe chunks before; it now uses
+    `session/agents/stderr-lines.ts`, one for each process:
+    - a text with no line end is given after 250 ms of quiet (a prompt waits
+      with no line end), when the process closes, and when the adapter is
+      killed (the time limit of a run reads the tail directly after the kill;
+      what a killed process writes after that is not logged);
+    - the auth check runs on each given line, after its `log`, so a text with
+      no line end raises `auth_required` up to 250 ms later than before;
+    - a line longer than 64,000 characters is removed, not cut: the logs get
+      `STDERR_TEXT_REMOVED` in its place, which makes the tail show nothing,
+      and the auth check still reads the removed text.
+
+    **Known limits.** The redaction reads the lines as the adapters give
+    them: each adapter trims a line, and the Claude adapter removes ANSI
+    sequences. A credential whose shape needs the removed characters is not
+    found (that is true for every reader of these logs). A text with no line
+    end that is younger than 250 ms when
+    the adapter reports an `error` is not in that run's tail. The resident
+    Claude process (`StreamingClaudeProcess`, used only for primary turns with
+    `useStreaming`) still emits chunks, and the primary turn's tail
+    (`agent-stderr-tail.ts`) cuts its buffer before it redacts, so that tail
+    can still show a part of a credential. A sub-agent run uses neither.
   - **`auth_required`.** An adapter that finds no credential emits it inside
     `run()` and starts no process, so no `done` follows; such a run used to wait
     for the wall-clock cap. Each caller starts the adapter through
