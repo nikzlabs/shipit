@@ -28,13 +28,11 @@ export const CLI_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 // What a probe's private copy claims is left, so that the CLI refreshes it now.
 export const PROBE_REMAINING_MS = 60_000;
 
-// scripts/probe-claude-refresh.mjs runs these against the real binary.
-export const REFRESH_PROBE_COMMANDS = {
-  tier1: ["auth", "status", "--json"],
-  tier2: ["--print", "ok", "--model", "claude-haiku-4-5-20251001", "--tools", "", "--no-session-persistence"],
-} as const;
+// scripts/probe-claude-refresh.mjs runs this against the real binary. A billable API call.
+export const REFRESH_PROBE_COMMAND = [
+  "--print", "ok", "--model", "claude-haiku-4-5-20251001", "--tools", "", "--no-session-persistence",
+] as const;
 
-// Before the subcommand: `claude auth status` rejects --debug as an unknown option.
 export function withDebugCapture(args: readonly string[], debugFile: string): string[] {
   return ["--debug", "api", "--debug-file", debugFile, ...args];
 }
@@ -58,8 +56,7 @@ const GENERIC_BACKOFF_MS: readonly number[] = [
   900_000,
 ];
 
-const TIER1_TIMEOUT_MS = 30_000;
-const TIER2_TIMEOUT_MS = 60_000;
+const PROBE_TIMEOUT_MS = 60_000;
 const KILL_SETTLE_MS = 5_000;
 
 // A session's CLI reads its file again about 0.5 s after a 401, so the install must not wait
@@ -77,7 +74,7 @@ const TIMED_OUT = "[timeout] claude CLI did not exit in time";
 const INSTALL_FAILED = "[install-failed] the rotated credential is kept for the next tick";
 
 // A tick that starts this long before expiry ends before the session CLIs refresh by themselves:
-// both tier timeouts, their kill grace and the late-rotation wait come to 105 s.
+// the probe's timeout, its kill grace and the late-rotation wait come to 70 s.
 const LAST_CHANCE_BEFORE_EXPIRY_MS = CLI_REFRESH_WINDOW_MS + 2 * 60_000;
 
 const CLAUDE_CREDENTIALS_RELATIVE = path.join(".claude", ".credentials.json");
@@ -111,7 +108,11 @@ const CREDENTIAL_HEADER_PATTERN =
 // The CLI knows the account's address. After the token shapes, which can take a part of one:
 // "[redacted]@example.com" must not keep its host. Bounded: an open local part is quadratic on a long line.
 const EMAIL_PATTERN =
-  /(?:\[redacted\]|[\w.+-]){1,64}@(?:\[redacted\]|[\w-]){1,63}(?:\.(?:\[redacted\]|[\w-]){1,63})+/g;
+  /(?:"[^"\n]{1,64}"|(?:\[redacted\]|[\w.+-]){1,64})@(?:\[redacted\]|[\w-]){1,63}(?:\.(?:\[redacted\]|[\w-]){1,63})+/g;
+
+// A whole JWT: one of its segments can be shorter than a long token. The lookbehind gives a run
+// of these characters one place to start at, so that a long run without a dot costs one pass.
+const JWT_PATTERN = /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*){1,4}/g;
 
 // The word is found in a lookahead, which does not backtrack: a quote before a long run of letters
 // costs one pass, not one per word in the run. Keys of any length still match.
@@ -124,6 +125,7 @@ function redactSecrets(text: string): string {
     .replace(CREDENTIAL_HEADER_PATTERN, "$1$2$3[redacted]")
     .replace(SECRET_JSON_VALUE_PATTERN, '$1[redacted]"')
     .replace(/\b(bearer|basic)(\s+)\S+/gi, "$1$2[redacted]")
+    .replace(JWT_PATTERN, "[redacted]")
     .replace(/sk-ant-[A-Za-z0-9_-]+/g, "[redacted]")
     .replace(/\b[A-Za-z0-9_\-+/]{24,}={0,2}/g, "[redacted]")
     .replace(EMAIL_PATTERN, "[email]");
@@ -178,7 +180,7 @@ interface ProbeHome {
 }
 
 // What started a tick. A caller that joins a tick in flight is reported under the first one's.
-type TickTrigger = "scheduled" | "backoff_retry" | "turn_start" | "forced_heal" | "nudge";
+export type TickTrigger = "scheduled" | "backoff_retry" | "turn_start" | "forced_heal" | "nudge";
 
 interface CliRun {
   output: string;
@@ -190,8 +192,7 @@ interface CliRun {
   exit: string | null;
 }
 
-function describeTierRun(run: CliRun | null): string {
-  if (run === null) return "not_run";
+export function describeCliRun(run: Pick<CliRun, "durationMs" | "timedOut" | "exit">): string {
   const parts = [`${(run.durationMs / 1000).toFixed(1)}s`];
   if (run.timedOut) parts.push("timeout");
   parts.push(run.exit === null ? "no_exit" : `exit=${run.exit}`);
@@ -202,8 +203,9 @@ function describeTierRun(run: CliRun | null): string {
 // "superseded": the copy rotated, but the source holds another token by now.
 type ProbeResult = "installed" | "rejected" | "unchanged" | "superseded" | "install_failed";
 
+// "rotated_tier2" is the probe's rotation. The name is from when a first command ran before it,
+// and incidents are searched by it.
 export type RefreshOutcome =
-  | "rotated_tier1"
   | "rotated_tier2"
   | "rotated_kept"
   | "rotated_private_run"
@@ -630,10 +632,6 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     }
 
     const claimedExpiresAt = isNearExpiry ? Math.min(before, now + PROBE_REMAINING_MS) : null;
-    // Tier 1 sends the refresh grant and exits before the token host can answer, so that tier 2
-    // would present a grant that is spent already (docs/153). It gets only a copy that the CLI
-    // will not refresh for as long as tier 1 can run.
-    const runTier1 = (claimedExpiresAt ?? before) - now > CLI_REFRESH_WINDOW_MS + TIER1_TIMEOUT_MS;
     let probe: ProbeHome;
     try {
       probe = this.createProbeHome(sourceFile, claimedExpiresAt);
@@ -643,75 +641,55 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       return this.handleFailure(accountId, before, before, `[probe-home-failed] ${code}`);
     }
     try {
-      return await this.runProbes(accountId, probe, before, trigger, force, isNearExpiry, runTier1);
+      return await this.runProbe(accountId, probe, before, trigger, force, isNearExpiry);
     } finally {
-      // Decided here, so that no path out of the probes, a throw included, deletes a rotation.
+      // Decided here, so that no path out of the probe, a throw included, deletes a rotation.
       if (probe.outstanding) state.pendingRotation = probe;
       else this.removeProbeHome(probe);
     }
   }
 
-  private async runProbes(
+  private async runProbe(
     accountId: string,
     probe: ProbeHome,
     before: number,
     trigger: TickTrigger,
     force: boolean,
     isNearExpiry: boolean,
-    runTier1: boolean,
   ): Promise<RefreshResult> {
     const state = this.ensureAccountState(accountId);
-    let tier1: CliRun | null = null;
-    let probeResult: ProbeResult = "unchanged";
-    let after: number | null = before;
-    if (runTier1) {
-      tier1 = await this.spawnCli(probe, "tier1", TIER1_TIMEOUT_MS);
-      probeResult = this.adoptProbeRotation(accountId, probe);
-      after = this.readSourceExpiresAt(accountId);
-      if (after !== NO_EXPIRY && (probeResult === "installed" || after > before)) {
-        return this.handleSuccess(accountId, before, after, "rotated_tier1");
-      }
-    }
-
-    let tier2: CliRun | null = null;
-    if (probeResult === "unchanged") {
-      const detail = ` tier1=${describeTierRun(tier1)}`;
-      // Installed while the CLI still runs: from the refresh on, the sessions' token can be dead (docs/153).
-      const early: { installedAt: number | null; result: RefreshResult | null } = { installedAt: null, result: null };
-      // A billable API call.
-      tier2 = await this.spawnCli(probe, "tier2", TIER2_TIMEOUT_MS, () => {
-        if (this.adoptProbeRotation(accountId, probe) !== "installed") return;
-        const installedAt = this.readSourceExpiresAt(accountId);
-        if (installedAt === NO_EXPIRY) return;
-        // Before the success path, whose listeners can throw.
-        early.installedAt = installedAt;
-        // A throw below must not leave the result of an earlier install standing for this one.
-        early.result = null;
-        early.result = this.handleSuccess(accountId, before, installedAt, "rotated_tier2", detail);
-      });
-      probeResult = this.adoptProbeRotation(accountId, probe);
-      after = this.readSourceExpiresAt(accountId);
-      // Before any success: a rotation that is not installed is the only record of a live grant.
-      if (probe.outstanding) return this.handleFailure(accountId, before, after, INSTALL_FAILED);
-      if (after !== NO_EXPIRY && probeResult === "installed") {
-        return this.handleSuccess(accountId, before, after, "rotated_tier2", detail);
-      }
-      // The source still holds what was installed while the CLI ran.
-      if (early.installedAt !== null && probeResult === "unchanged" && after !== NO_EXPIRY) {
-        if (!early.result) return this.handleSuccess(accountId, before, after, "rotated_tier2", detail);
-        // A scheduled tick that fired during the run joined this one, and is spent.
-        this.scheduleAccount(accountId);
-        return early.result;
-      }
-      if (after !== NO_EXPIRY && after > (early.installedAt ?? before)) {
-        return this.handleSuccess(accountId, before, after, "rotated_tier2", detail);
-      }
-    }
-
+    // Installed while the CLI still runs: from the refresh on, the sessions' token can be dead (docs/153).
+    const early: { installedAt: number | null; result: RefreshResult | null } = { installedAt: null, result: null };
+    const run = await this.spawnCli(probe, () => {
+      if (this.adoptProbeRotation(accountId, probe) !== "installed") return;
+      const installedAt = this.readSourceExpiresAt(accountId);
+      if (installedAt === NO_EXPIRY) return;
+      // Before the success path, whose listeners can throw.
+      early.installedAt = installedAt;
+      // A throw below must not leave the result of an earlier install standing for this one.
+      early.result = null;
+      early.result = this.handleSuccess(accountId, before, installedAt, "rotated_tier2");
+    });
+    const probeResult = this.adoptProbeRotation(accountId, probe);
+    const after = this.readSourceExpiresAt(accountId);
+    // Before any success: a rotation that is not installed is the only record of a live grant.
     if (probe.outstanding) return this.handleFailure(accountId, before, after, INSTALL_FAILED);
-    const combinedOutput = `${tier1?.output ?? ""}\n${tier2?.output ?? ""}`;
+    if (after !== NO_EXPIRY && probeResult === "installed") {
+      return this.handleSuccess(accountId, before, after, "rotated_tier2");
+    }
+    // The source still holds what was installed while the CLI ran.
+    if (early.installedAt !== null && probeResult === "unchanged" && after !== NO_EXPIRY) {
+      if (!early.result) return this.handleSuccess(accountId, before, after, "rotated_tier2");
+      // A scheduled tick that fired during the run joined this one, and is spent.
+      this.scheduleAccount(accountId);
+      return early.result;
+    }
+    if (after !== NO_EXPIRY && after > (early.installedAt ?? before)) {
+      return this.handleSuccess(accountId, before, after, "rotated_tier2");
+    }
+
     const blanked = probeResult === "rejected";
-    const grantRejected = blanked || this.outputIndicatesRevoked(combinedOutput);
+    const grantRejected = blanked || this.outputIndicatesRevoked(run.output);
     // Before the source check: a session's rotation can reach the source during the wait.
     if (grantRejected) await this.waitForLateRotation();
     if (this.readSourceIdentity(accountId) !== probe.seedIdentity) {
@@ -733,23 +711,16 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       const late = this.harvestSessionRotations(accountId);
       if (late) return this.handleSuccess(accountId, late.before, late.after, "harvested_session");
       state.rejectedIdentity = probe.seedIdentity;
-      const namedBy = [tier1, tier2]
-        .map((run, index) => (run && this.outputIndicatesRevoked(run.output) ? `tier${index + 1}` : null))
-        .filter((tier) => tier !== null)
-        .join("+");
-      const verdict = blanked
-        ? `verdict=blanked_copy rejected_by=${tier2 ? "tier2" : "tier1"}`
-        : `verdict=output_phrase rejected_by=${namedBy}`;
-      rejection = `trigger=${trigger} ${verdict} tier1=${describeTierRun(tier1)} tier2=${describeTierRun(tier2)}`;
+      const verdict = blanked ? "blanked_copy" : "output_phrase";
+      rejection = `trigger=${trigger} verdict=${verdict} rejected_by=tier2 tier2=${describeCliRun(run)}`;
     }
     // No rotation before expiry is not a scheduling failure; retain the expiry schedule.
     if (force && !isNearExpiry && !grantRejected) {
       state.failureCount = 0;
       this.scheduleAccount(accountId);
       let reason = "forced validity probe found a live token that needed no rotation";
-      // Tier 1 sends no request for a token that is not near expiry: only tier 2 tests it.
-      if (!tier2?.completed) {
-        reason = summarizeRefreshFailure(combinedOutput);
+      if (!run.completed) {
+        reason = summarizeRefreshFailure(run.output);
         console.log(
           `[claude-oauth-refresh] account=${accountId} forced probe did not complete — no verdict on the token`
             + ` reason="${reason}"`,
@@ -763,7 +734,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
         reason,
       };
     }
-    return this.handleFailure(accountId, before, after, combinedOutput, rejection);
+    return this.handleFailure(accountId, before, after, run.output, rejection);
   }
 
   private outputIndicatesRevoked(combinedOutput: string): boolean {
@@ -775,8 +746,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     accountId: string,
     before: number | null,
     after: number,
-    outcome: "rotated_tier1" | "rotated_tier2" | "rotated_kept" | "rotated_private_run" | "harvested_session",
-    detail = "",
+    outcome: "rotated_tier2" | "rotated_kept" | "rotated_private_run" | "harvested_session",
   ): RefreshResult {
     const state = this.ensureAccountState(accountId);
     state.failureCount = 0;
@@ -784,7 +754,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     const wasUnauthenticated = state.emittedUnauthenticated;
     state.emittedUnauthenticated = false;
     console.log(
-      `[claude-oauth-refresh] account=${accountId} ${outcome} new_expires_at=${new Date(after).toISOString()}${detail}`,
+      `[claude-oauth-refresh] account=${accountId} ${outcome} new_expires_at=${new Date(after).toISOString()}`,
     );
     try {
       this.deps.repushAccountToken("claude", accountId);
@@ -829,7 +799,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
     before: number | null,
     after: number | null,
     combinedOutput: string,
-    // How the probes found the grant rejected; absent for every other failure.
+    // How the probe found the grant rejected; absent for every other failure.
     rejection?: string,
   ): RefreshResult {
     const state = this.ensureAccountState(accountId);
@@ -1032,22 +1002,15 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
   }
 
   // `onCopyChange` runs, while the CLI runs, each time the copy's bytes change.
-  private spawnCli(
-    probe: ProbeHome,
-    label: "tier1" | "tier2",
-    timeoutMs: number,
-    onCopyChange?: () => void,
-  ): Promise<CliRun> {
+  private spawnCli(probe: ProbeHome, onCopyChange: () => void): Promise<CliRun> {
     return new Promise<CliRun>((resolve) => {
       const startedAt = performance.now();
       const finish = (output: string, timedOut: boolean, exit: string | null): void => {
         const completed = !timedOut && exit !== null;
         resolve({ output, completed, durationMs: performance.now() - startedAt, timedOut, exit });
       };
-      // Tier 1 prints the account's email and organization; keep them out of the log.
-      const keepStdout = label === "tier2";
-      const debugFile = path.join(probe.home, `${label}.debug.log`);
-      const fullArgs = withDebugCapture(REFRESH_PROBE_COMMANDS[label], debugFile);
+      const debugFile = path.join(probe.home, "probe.debug.log");
+      const fullArgs = withDebugCapture(REFRESH_PROBE_COMMAND, debugFile);
       const readCopy = (): string | null => {
         try {
           return fs.readFileSync(probe.credentialsFile, "utf8");
@@ -1075,29 +1038,27 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
       let stdout = "";
       let stderr = "";
       let settled = false;
-      child.stdout?.on("data", (d: Buffer) => { if (keepStdout) stdout += d.toString("utf8"); });
+      child.stdout?.on("data", (d: Buffer) => { stdout += d.toString("utf8"); });
       child.stderr?.on("data", (d: Buffer) => { stderr += d.toString("utf8"); });
 
-      const copyPoll = onCopyChange
-        ? setInterval(() => {
-          const current = readCopy();
-          if (current === copySeen) return;
-          copySeen = current;
-          try {
-            onCopyChange();
-          } catch (err) {
-            console.error("[claude-oauth-refresh] judging the probe's copy while the CLI runs failed:", err);
-          }
-        }, PROBE_COPY_POLL_MS)
-        : null;
-      if (copyPoll && typeof copyPoll.unref === "function") copyPoll.unref();
+      const copyPoll = setInterval(() => {
+        const current = readCopy();
+        if (current === copySeen) return;
+        copySeen = current;
+        try {
+          onCopyChange();
+        } catch (err) {
+          console.error("[claude-oauth-refresh] judging the probe's copy while the CLI runs failed:", err);
+        }
+      }, PROBE_COPY_POLL_MS);
+      if (typeof copyPoll.unref === "function") copyPoll.unref();
 
       let timedOut = false;
       let killGrace: ReturnType<typeof setTimeout> | null = null;
       const settle = (note: string, exit: string | null): void => {
         if (settled) return;
         settled = true;
-        if (copyPoll) clearInterval(copyPoll);
+        clearInterval(copyPoll);
         clearTimeout(timer);
         if (killGrace) clearTimeout(killGrace);
         let debugContent = "";
@@ -1114,7 +1075,7 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
         killGrace = setTimeout(() => settle(TIMED_OUT, null), KILL_SETTLE_MS);
         if (typeof killGrace.unref === "function") killGrace.unref();
         killProcessTree(child, "SIGKILL", { label: "claude-refresh" });
-      }, timeoutMs);
+      }, PROBE_TIMEOUT_MS);
       if (typeof timer.unref === "function") timer.unref();
 
       child.on("exit", (code, signal) => settle(timedOut ? TIMED_OUT : "", String(code ?? signal ?? "unknown")));

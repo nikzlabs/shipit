@@ -358,6 +358,68 @@ the CLI's working directory.
 `harvested_session`, `noop`, `rate_limited`, `revoked (<code>)`,
 `unknown_failure` and `missing_credentials`.
 
+### The revoked line, and the account's row (2026-10-13)
+
+Two fixes of the Claude refresher (docs/153-orchestrator-owned-claude-oauth-refresh, "The
+revoked line" and "A sign-in is not the harvest's to complete") were missing here. Both
+gaps were present in this refresher.
+
+**The line.** `revoked (<code>) — emitting auth_required` was the whole line. It keeps
+that sentence, and the first line for a rejected grant continues with what ran:
+
+```
+… — emitting auth_required trigger=scheduled verdict=token_host_code refresh=0.2s,exit=0 expires_in=40m reason="…"
+```
+
+- `trigger`: `scheduled` (the expiry timer), `backoff_retry`, `turn_start`, `forced_heal` (a
+  session reported an auth failure) or `nudge` (`refreshNow`: a completed sign-in, or an
+  auth-required report). A caller that joins a tick in flight is reported under the
+  trigger that started it.
+- `verdict`: `token_host_code`, the token host's answer to this tick's refresh, as the
+  CLI's line gave it.
+- `refresh`: the run time of `codex app-server`, then `timeout` if the refresher killed it
+  (no answer in 30 s, or no end within 5 s of the answer), then `exit=<code or signal>`,
+  or `no_exit` when the CLI did not start or did not end within the grace after the kill.
+- `expires_in`: what the source token had left, in minutes, negative when it is expired.
+  It is the value that the refresher schedules by (`readCodexTokenFreshness`). For a
+  file whose expiry cannot be read that is the time of the last refresh, so the number
+  is negative.
+- `reason`: the redacted summary that the other failure lines carry. The account's
+  tokens are JWTs, and the summary removes a JWT whole since 2026-10-13: before, it
+  removed each long run, so a short segment stayed (docs/153, "Say what failed"). The
+  code is in the parentheses, and the reason can lose it: a line is cut at 96
+  characters, and the summary reads `refresh_token_invalidated` (25 characters) as a
+  long token.
+
+Each later tick on the same grant logs the sentence with `trigger=… verdict=known_rejected`
+and nothing more, so `grep 'revoked (' | grep -v known_rejected` gives the first line, as
+for Claude.
+
+**The row.** The refresher announced an account once and then stayed silent until a
+success (`emittedUnauthenticated`).
+
+- *It reports again when the row reads `ready`.* A completed sign-in sets the row
+  `ready` (`wireEventHandlers`), and so does a cancelled one that finds a credential
+  file (`ProviderAccountManager.cancelAccountAuth`), with no word to the refresher. Only
+  a tick clears the announcement: a success, or a healthy source. In containerized mode
+  such a tick follows a completed sign-in. In local mode it does not (`refreshNow` with
+  no account does nothing there, while `ensureFresh` still runs ticks), so the
+  announcement of an earlier rejection stayed set, and a later rejection of the new
+  credential changed nothing: the row stayed `ready` over a dead credential. That is the
+  one path found for this refresher. The path that the Claude fix was made for, a
+  sign-in reported complete over the rejected credential, is not known here, because
+  the Codex sign-in is complete only when its login CLI ends. The rule costs one read of
+  the row, and it holds for every writer of the row.
+- *A tick that finds the source missing while the row reads `authenticating` reports
+  nothing* (`missing_credentials — waiting for auth_complete sign_in=in_progress`).
+  `codex login --device-auth` removes `auth.json` at its start (measured offline on CLI
+  0.159.2, 2026-10-13: the file is gone within 0.5 s, before the CLI's first request is
+  answered), so the source is missing for the whole sign-in, as for Claude. A nudge
+  ticks every account (each Codex `auth_required` report sends one). For an account
+  that the refresher had not announced before, its `agent_auth_failed` event closed the
+  sign-in that the user was in and set the row `auth_failed` while the login CLI still
+  ran. The sign-in reports its own outcome.
+
 ### Turn start and forced heal
 
 - A **turn start** (`ensureFresh`) returns at once for a token outside the
@@ -453,16 +515,23 @@ installs the CLI with the images' own `install-agent-clis.sh`
   is what brings the tick.
 - **Whether a resident `codex app-server` refreshes with no turn in progress**
   was not measured. For Claude this was seen in production.
+- **That the login CLI removes `auth.json` at its start was measured on CLI 0.159.2
+  only**, and the probe script does not check it. With a login CLI that kept the file,
+  the source would be present during a sign-in, and a tick that found its grant
+  rejected then would report the account and close the sign-in.
 
 ### Key files (2026-10)
 
 - `src/server/orchestrator/agents/codex/oauth-refresher.ts` — `refreshOnDemand`,
   `classifyCodexRefreshOutput`, `harvestSessionRotations`, `rejectedIdentity`,
-  `retryNotBefore`, `ensureFresh`.
+  `retryNotBefore`, `ensureFresh`; since 2026-10-13 `RefreshRun`, the detail in
+  `handleRevoked`, and `accountStatus` in `emitUnauthenticated` and `executeTick`.
 - `src/server/orchestrator/agents/codex/oauth-refresher.test.ts` — the fake
   speaks the app-server's side of the exchange; refusals use the CLI's real
-  lines.
+  lines. The rig's account row follows the refresher's events, as the orchestrator
+  wires it.
 - `scripts/probe-codex-refresh.mjs`, and the `codex-refresh-probe` job in
   `.github/workflows/ci.yml`.
 - `src/server/orchestrator/agents/claude/oauth-refresher.ts` —
-  `summarizeRefreshFailure`, shared for the redacted reason.
+  `summarizeRefreshFailure`, shared for the redacted reason; `describeCliRun` and
+  `TickTrigger`, shared for the revoked line.

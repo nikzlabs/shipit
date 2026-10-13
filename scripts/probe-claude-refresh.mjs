@@ -1,5 +1,5 @@
 // Checks the Claude CLI behaviors that the OAuth refresher depends on (docs/153, "Known limits").
-// Tier 2 is the tier that sends the refresh grant; tier 1 is checked for not sending it.
+// The refresher runs one command, a model call (REFRESH_PROBE_COMMAND); every run here uses it.
 // Run: node --import tsx scripts/probe-claude-refresh.mjs   [CLAUDE_BIN=/path/to/claude]
 // All credentials are synthetic, and the local proxy never forwards a request. Each run gets
 // its own HOME and working directory under a temp directory, and none of this process's
@@ -15,13 +15,13 @@ import { killProcessTree } from "../src/server/shared/kill-child.ts";
 import {
   CLI_REFRESH_WINDOW_MS,
   PROBE_REMAINING_MS,
-  REFRESH_PROBE_COMMANDS,
+  REFRESH_PROBE_COMMAND,
   withDebugCapture,
 } from "../src/server/orchestrator/agents/claude/oauth-refresher.ts";
 
 const bin = process.env.CLAUDE_BIN ?? "claude";
 const RUN_TIMEOUT_MS = 60_000;
-// Longer than a real token host takes, and far longer than tier 1 stays alive after its request.
+// Longer than a real token host takes. A CLI that does not wait for the answer fails the check.
 const SLOW_ANSWER_MS = 1_500;
 const TOKEN_LIFETIME_S = 8 * 60 * 60;
 const HOURS_LEFT_MS = 8 * 60 * 60 * 1000;
@@ -76,11 +76,12 @@ function startRecorder() {
     key: fs.readFileSync(path.join(root, "key.pem")),
     cert: fs.readFileSync(path.join(root, "cert.pem")),
   });
-  // tokenDelayMs holds a 200 back, as a real token host does. apiStatus answers every other request.
-  // With rejectOriginal, the model call gets a 401 for the original token and an answer for the new one.
+  // tokenDelayMs holds a 200 back, as a real token host does. Every other request gets a 404.
+  // With answerModel, the model call gets an answer. With rejectOriginal, it gets a 401 for the
+  // original token and an answer for the new one.
   const recorder = {
-    requests: [], tokenAnswer: "ok", tokenDelayMs: 0, apiStatus: 404, port: 0, close: () => {},
-    home: "", rejectOriginal: false, on401: null, onTokenRequest: null,
+    requests: [], tokenAnswer: "ok", tokenDelayMs: 0, port: 0, close: () => {},
+    home: "", answerModel: false, rejectOriginal: false, on401: null, onTokenRequest: null,
   };
 
   const inner = http.createServer((req, res) => {
@@ -99,8 +100,8 @@ function startRecorder() {
         copyRotated: recorder.home ? isRotated(recorder.home) : false,
       });
       res.setHeader("content-type", "application/json");
-      if (isModelCall && recorder.rejectOriginal) {
-        if (bearer !== ORIGINAL.accessToken) {
+      if (isModelCall && (recorder.rejectOriginal || recorder.answerModel)) {
+        if (recorder.answerModel || bearer !== ORIGINAL.accessToken) {
           answerMessages(res);
           return;
         }
@@ -111,11 +112,8 @@ function startRecorder() {
       }
       if (isTokenRequest) recorder.onTokenRequest?.();
       if (!isTokenRequest) {
-        res.writeHead(recorder.apiStatus);
-        res.end(JSON.stringify({
-          type: "error",
-          error: { type: recorder.apiStatus === 401 ? "authentication_error" : "not_found_error", message: "probe" },
-        }));
+        res.writeHead(404);
+        res.end(JSON.stringify({ type: "error", error: { type: "not_found_error", message: "probe" } }));
         return;
       }
       if (recorder.tokenAnswer === "invalid_grant") {
@@ -198,19 +196,19 @@ function pushCredentials(home, tokens, msLeft) {
 
 // Returns what the refresher sees: the exit, the output, and the token requests the CLI made.
 // `session(home)` returns the hooks of a run that stands for a session's CLI (see (f)).
-function run(recorder, name, command, msLeft, tokenAnswer = "ok", { tokenDelayMs = 0, apiStatus = 404, session = null } = {}) {
+function run(recorder, name, msLeft, tokenAnswer = "ok", { tokenDelayMs = 0, answerModel = false, session = null } = {}) {
   const home = makeHome(name, msLeft);
   const debugFile = path.join(home, "probe.debug.log");
   recorder.requests = [];
   recorder.tokenAnswer = tokenAnswer;
   recorder.tokenDelayMs = tokenDelayMs;
-  recorder.apiStatus = apiStatus;
+  recorder.answerModel = answerModel;
   recorder.home = home;
   Object.assign(recorder, { rejectOriginal: false, on401: null, onTokenRequest: null }, session ? session(home) : {});
   const proxyUrl = `http://127.0.0.1:${recorder.port}`;
   return new Promise((resolve) => {
     // Nothing of this process's environment, so that no real credential or config directory leaks in.
-    const child = spawn(bin, withDebugCapture(command, debugFile), {
+    const child = spawn(bin, withDebugCapture(REFRESH_PROBE_COMMAND, debugFile), {
       // Not the caller's directory: the CLI reads project settings from where it runs.
       cwd: home,
       env: {
@@ -238,7 +236,6 @@ function run(recorder, name, command, msLeft, tokenAnswer = "ok", { tokenDelayMs
         stderr,
         debug,
         tokenRequests: recorder.requests.filter((request) => request.isTokenRequest),
-        apiRequests: recorder.requests.filter((request) => !request.isTokenRequest),
         modelCalls: recorder.requests.filter((request) => request.isModelCall),
       });
     };
@@ -268,82 +265,65 @@ async function main() {
   }
   console.log(`claude CLI: ${version} (${bin})`);
   const recorder = await startRecorder();
-  const { tier1, tier2 } = REFRESH_PROBE_COMMANDS;
   const outside = CLI_REFRESH_WINDOW_MS + 30_000;
   const inside = CLI_REFRESH_WINDOW_MS - 30_000;
 
   try {
-    // (a) The refresher's tier 1 command line is accepted.
-    const healthy = await run(recorder, "a-healthy", tier1, 45 * 60_000);
-    let status = null;
-    try { status = JSON.parse(healthy.stdout); } catch { /* not JSON */ }
+    // (a) The refresher's command line is accepted.
+    const healthy = await run(recorder, "a-healthy", 45 * 60_000, "ok", { answerModel: true });
     check(
-      healthy.exitCode === 0 && status?.loggedIn === true && healthy.debug.length > 0,
-      "(a) tier 1 runs with the debug flags and writes the debug file",
-      `exit=${healthy.exitCode} stderr=${healthy.stderr.trim().slice(0, 120)}`,
+      healthy.exitCode === 0 && healthy.modelCalls.length > 0 && healthy.debug.length > 0,
+      "(a) the command runs with the debug flags, makes its model call and writes the debug file",
+      `exit=${healthy.exitCode} model calls=${healthy.modelCalls.length} stderr=${healthy.stderr.trim().slice(0, 120)}`,
     );
 
     // (b) A refresh is requested only when the file says the window's length or less is left.
-    // Tier 1 runs only outside the window: it sends the grant and does not wait for the answer.
-    check(healthy.tokenRequests.length === 0, "(b) tier 1: no token request with 45.0 min left");
-    const justOutside = await run(recorder, "b-outside", tier1, outside);
+    // A forced probe keeps the real expiry: it must not spend the grant of a healthy token.
+    check(healthy.tokenRequests.length === 0, "(b) no token request with 45.0 min left");
+    const justOutside = await run(recorder, "b-outside", outside);
     check(
       justOutside.tokenRequests.length === 0,
-      `(b) tier 1: no token request with ${minutes(outside)} left`,
+      `(b) no token request with ${minutes(outside)} left`,
       "the CLI's refresh window is wider than CLI_REFRESH_WINDOW_MS",
     );
-    const rejectedAccess = await run(recorder, "b-rejected-access", tier1, 45 * 60_000, "ok", { apiStatus: 401 });
-    check(
-      rejectedAccess.exitCode === 0 && rejectedAccess.apiRequests.length > 0 && rejectedAccess.tokenRequests.length === 0,
-      "(b) tier 1: no token request with 45.0 min left when the API answers 401",
-      `exit=${rejectedAccess.exitCode} API requests answered 401=${rejectedAccess.apiRequests.length}`
-        + ` token requests=${rejectedAccess.tokenRequests.length}`,
-    );
-    const justInside = await run(recorder, "b-inside", tier2, inside);
+    const justInside = await run(recorder, "b-inside", inside);
     const grant = justInside.tokenRequests[0]?.body ?? {};
     check(
       justInside.tokenRequests.length > 0 && grant.grant_type === "refresh_token" && grant.refresh_token === ORIGINAL.refreshToken,
-      `(b) tier 2: an ordinary refresh_token grant with ${minutes(inside)} left`,
+      `(b) an ordinary refresh_token grant with ${minutes(inside)} left`,
       `token requests=${justInside.tokenRequests.length} grant_type=${grant.grant_type}`,
     );
     check(!("expires_in" in grant), "(b) the grant asks for no lifetime of its own", `expires_in=${grant.expires_in}`);
-    const tier2Outside = await run(recorder, "b-tier2-outside", tier2, 10 * 60_000);
-    check(tier2Outside.tokenRequests.length === 0, "(b) tier 2: no token request with 10.0 min left");
 
-    // (c) The copy's claimed life makes tier 2 refresh, and the result lands in the file it read.
-    const claimed = await run(recorder, "c-tier2", tier2, PROBE_REMAINING_MS);
+    // (c) The copy's claimed life makes the CLI refresh, and the result lands in the file it read.
+    const claimed = await run(recorder, "c-claimed", PROBE_REMAINING_MS);
     const after = readCredentials(claimed.home);
     const lifetimeMs = after.claudeAiOauth.expiresAt - Date.now();
     check(
       isRotated(claimed.home) && Math.abs(lifetimeMs - TOKEN_LIFETIME_S * 1000) < 2 * 60_000,
-      `(c) tier 2: with ${minutes(PROBE_REMAINING_MS)} claimed, the new tokens and expiry are written to the copy`,
+      `(c) with ${minutes(PROBE_REMAINING_MS)} claimed, the new tokens and expiry are written to the copy`,
       `token requests=${claimed.tokenRequests.length} rotated=${isRotated(claimed.home)} lifetime=${minutes(lifetimeMs)}`,
     );
-    check(after.mcpOAuth?.["probe-server"]?.marker === "kept", "(c) tier 2: the file's other keys are kept");
+    check(after.mcpOAuth?.["probe-server"]?.marker === "kept", "(c) the file's other keys are kept");
     // The refresher installs the rotation while the CLI runs, before the CLI's model call ends.
     check(
       claimed.modelCalls.length > 0 && claimed.modelCalls.every((call) => call.copyRotated && call.bearer === "rotated"),
-      "(c) tier 2: the rotation is in the copy before the CLI makes its model call",
+      "(c) the rotation is in the copy before the CLI makes its model call",
       `model calls=${claimed.modelCalls.map((call) => `${call.bearer}/copyRotated=${call.copyRotated}`).join(",")}`,
     );
 
-    // (e) A real token host does not answer at once. The tier that sends the grant must wait for
-    // the answer: a grant that was sent and not written is spent, and its successor is lost.
-    const slow = await run(recorder, "e-tier2-slow", tier2, PROBE_REMAINING_MS, "ok", { tokenDelayMs: SLOW_ANSWER_MS });
+    // (e) A real token host does not answer at once. The CLI must wait for the answer: a grant
+    // that was sent and not written is spent, and its successor is lost.
+    const slow = await run(recorder, "e-slow", PROBE_REMAINING_MS, "ok", { tokenDelayMs: SLOW_ANSWER_MS });
     check(
       slow.tokenRequests.length === 1 && isRotated(slow.home),
-      `(e) tier 2: waits for a token host that answers after ${SLOW_ANSWER_MS} ms, and sends the grant once`,
+      `(e) the CLI waits for a token host that answers after ${SLOW_ANSWER_MS} ms, and sends the grant once`,
       `token requests=${slow.tokenRequests.length} rotated=${isRotated(slow.home)}`,
-    );
-    const slowTier1 = await run(recorder, "e-tier1-slow", tier1, PROBE_REMAINING_MS, "ok", { tokenDelayMs: SLOW_ANSWER_MS });
-    console.log(
-      `info  tier 1 ${slowTier1.tokenRequests.length > 0 ? "sends" : "does not send"} the grant on a copy in the window, and`
-        + ` ${isRotated(slowTier1.home) ? "waits" : "does not wait"} for that answer (the refresher gives it no such copy)`,
     );
 
     // (d) invalid_grant blanks the file the CLI ran against; a failure that can pass does not.
     for (const [answer, status] of [["rate_limited", 429], ["server_error", 500]]) {
-      const transient = await run(recorder, `d-${answer}`, tier2, PROBE_REMAINING_MS, answer);
+      const transient = await run(recorder, `d-${answer}`, PROBE_REMAINING_MS, answer);
       const kept = readCredentials(transient.home).claudeAiOauth;
       check(
         transient.tokenRequests.length > 0 && kept.accessToken === ORIGINAL.accessToken && kept.refreshToken === ORIGINAL.refreshToken,
@@ -351,7 +331,7 @@ async function main() {
         `token requests=${transient.tokenRequests.length} accessToken=${kept.accessToken ? "kept" : "empty"}`,
       );
     }
-    const rejected = await run(recorder, "d-rejected", tier2, PROBE_REMAINING_MS, "invalid_grant");
+    const rejected = await run(recorder, "d-rejected", PROBE_REMAINING_MS, "invalid_grant");
     const blanked = readCredentials(rejected.home).claudeAiOauth;
     check(
       rejected.tokenRequests.length > 0 && blanked.accessToken === "" && blanked.refreshToken === "",
@@ -367,7 +347,7 @@ async function main() {
     // early install depends on it: the push must reach the session before the CLI gives up.
     const retriedWith = (result, bearer) =>
       result.modelCalls[0]?.bearer === "original" && result.modelCalls.slice(1).some((call) => call.bearer === bearer);
-    const pushedBefore = await run(recorder, "f-pushed", tier2, HOURS_LEFT_MS, "invalid_grant", {
+    const pushedBefore = await run(recorder, "f-pushed", HOURS_LEFT_MS, "invalid_grant", {
       session: (home) => ({ rejectOriginal: true, on401: () => pushCredentials(home, ROTATED, HOURS_LEFT_MS) }),
     });
     check(
@@ -376,7 +356,7 @@ async function main() {
       `exit=${pushedBefore.exitCode} token requests=${pushedBefore.tokenRequests.length}`
         + ` model calls=${pushedBefore.modelCalls.map((call) => call.bearer).join(",")}`,
     );
-    const pushedDuring = await run(recorder, "f-during-refresh", tier2, HOURS_LEFT_MS, "invalid_grant", {
+    const pushedDuring = await run(recorder, "f-during-refresh", HOURS_LEFT_MS, "invalid_grant", {
       session: (home) => ({ rejectOriginal: true, onTokenRequest: () => pushCredentials(home, ROTATED, HOURS_LEFT_MS) }),
     });
     check(
@@ -389,7 +369,7 @@ async function main() {
     // How long after a 401 a pushed token is still taken without a refresh (docs/153: about 0.5 s).
     for (const lagMs of [300, 1_000]) {
       let push = null;
-      const lagged = await run(recorder, `f-lag-${lagMs}`, tier2, HOURS_LEFT_MS, "invalid_grant", {
+      const lagged = await run(recorder, `f-lag-${lagMs}`, HOURS_LEFT_MS, "invalid_grant", {
         session: (home) => ({
           rejectOriginal: true,
           on401: () => { push ??= setTimeout(() => pushCredentials(home, ROTATED, HOURS_LEFT_MS), lagMs); },
@@ -401,6 +381,16 @@ async function main() {
           + ` (token requests=${lagged.tokenRequests.length} exit=${lagged.exitCode})`,
       );
     }
+
+    // (g) A forced probe of a token with hours left: when the API rejects that token and no newer one
+    // reaches the copy, the CLI spends the grant, and the refresher gets the rotation from the copy.
+    const forced = await run(recorder, "g-forced", HOURS_LEFT_MS, "ok", { session: () => ({ rejectOriginal: true }) });
+    check(
+      forced.exitCode === 0 && forced.tokenRequests.length === 1 && isRotated(forced.home) && retriedWith(forced, "rotated"),
+      "(g) after a 401 with no newer token in its file, the CLI refreshes once and writes the rotation",
+      `exit=${forced.exitCode} token requests=${forced.tokenRequests.length} rotated=${isRotated(forced.home)}`
+        + ` model calls=${forced.modelCalls.map((call) => call.bearer).join(",")}`,
+    );
   } finally {
     recorder.close();
   }

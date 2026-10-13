@@ -71,6 +71,11 @@ interface AuthPayload {
   mark?: string;
 }
 
+interface AuthTokens {
+  access_token: string;
+  refresh_token: string;
+}
+
 function writeAuthFile(file: string, payload: AuthPayload): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const mark = payload.mark ?? String(payload.freshness);
@@ -109,11 +114,12 @@ function writeSessionAuth(
   if (opts.accountId !== null) writeSessionAccountMarker(rootDir, sessionId, "codex", opts.accountId);
 }
 
+function sourceTokens(rootDir: string, accountId: string): AuthTokens {
+  return (JSON.parse(fs.readFileSync(accountAuthFile(rootDir, accountId), "utf8")) as { tokens: AuthTokens }).tokens;
+}
+
 function sourceMark(rootDir: string, accountId: string): string {
-  const auth = JSON.parse(fs.readFileSync(accountAuthFile(rootDir, accountId), "utf8")) as {
-    tokens: { refresh_token: string };
-  };
-  return auth.tokens.refresh_token;
+  return sourceTokens(rootDir, accountId).refresh_token;
 }
 
 // What Codex CLI 0.159.2 writes to stderr when the token host refuses a refresh (color codes included).
@@ -168,6 +174,9 @@ interface SpawnEffect {
   noReply?: boolean;
   // The CLI neither answers nor ends.
   hang?: boolean;
+  // The CLI answers, and does not end when its input ends.
+  staysAfterAnswer?: boolean;
+  exitCode?: number;
   // The CLI sends a request of its own, with the id of the awaited answer, before it answers.
   serverRequestFirst?: boolean;
 }
@@ -210,12 +219,12 @@ function makeFakeSpawn(): FakeSpawnHandle {
     const stderr = new EventEmitter();
     const stdin = new EventEmitter() as EventEmitter & { write: (line: string) => boolean; end: () => void };
     let ended = false;
-    const exit = (): void => {
+    const exit = (code: number | null = effect.exitCode ?? 0, signal: NodeJS.Signals | null = null): void => {
       if (ended) return;
       ended = true;
-      child.emit("exit", 0, null);
+      child.emit("exit", code, signal);
       if (effect.stderrAfterExit) stderr.emit("data", Buffer.from(effect.stderrAfterExit, "utf8"));
-      child.emit("close", 0, null);
+      child.emit("close", code, signal);
     };
     const say = (message: unknown): void => {
       const line = `${JSON.stringify(message)}\n`;
@@ -264,10 +273,10 @@ function makeFakeSpawn(): FakeSpawnHandle {
       return true;
     };
     stdin.end = (): void => {
-      setTimeout(exit, 0);
+      if (!effect.staysAfterAnswer) setTimeout(exit, 0);
     };
-    const kill = (): boolean => {
-      if (!effect.ignoresKill) setTimeout(exit, 0);
+    const kill = (signal: NodeJS.Signals = "SIGTERM"): boolean => {
+      if (!effect.ignoresKill) setTimeout(() => exit(null, signal), 0);
       return true;
     };
     Object.assign(child, { stdin, stdout, stderr, kill });
@@ -286,6 +295,7 @@ interface TestRig {
   spawnHandle: FakeSpawnHandle;
   repushCalls: { agentId: AgentId; accountId: string }[];
   sseCalls: { event: string; data: unknown }[];
+  accounts: CredentialRoute[];
   clock: { now: number };
 }
 
@@ -326,14 +336,15 @@ function buildRig(opts: {
   };
   if (opts.safetyMarginMs !== undefined) deps.safetyMarginMs = opts.safetyMarginMs;
 
-  return {
-    rootDir,
-    refresher: new CodexOAuthRefresher(deps),
-    spawnHandle,
-    repushCalls,
-    sseCalls,
-    clock,
+  const refresher = new CodexOAuthRefresher(deps);
+  // As the orchestrator wires it: the account's row follows the refresher's verdicts.
+  const setStatus = (accountId: string, status: CredentialRoute["status"]): void => {
+    for (const account of opts.accounts) if (account.id === accountId) account.status = status;
   };
+  refresher.on("account_unauthenticated", (accountId) => setStatus(accountId, "auth_failed"));
+  refresher.on("account_reauthenticated", (accountId) => setStatus(accountId, "ready"));
+
+  return { rootDir, refresher, spawnHandle, repushCalls, sseCalls, accounts: opts.accounts, clock };
 }
 
 function cleanupRig(rig: TestRig): void {
@@ -707,6 +718,127 @@ describe("CodexOAuthRefresher", () => {
         event: "agent_auth_failed",
         data: { loginId: "openai-chatgpt", accountId: "codex-default", reason: "revoked" },
       });
+    });
+
+    it("reports the account unauthenticated again when its row was set ready over the rejected credential", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{ stderr: REUSED }];
+      await rig.refresher.refreshNow("codex-default");
+      expect(rig.accounts[0]!.status).toBe("auth_failed");
+
+      // A sign-in's handlers do this without a word to the refresher.
+      rig.accounts[0]!.status = "ready";
+      expect(await rig.refresher.ensureFresh("codex-default")).toBe(false);
+
+      expect(rig.accounts[0]!.status).toBe("auth_failed");
+      expect(rig.sseCalls.filter((c) => c.event === "agent_auth_failed")).toHaveLength(2);
+      expect(rig.spawnHandle.invocations).toHaveLength(1);
+    });
+
+    const revokedLines = (lines: string[]): string[] => lines.filter((line) => line.includes(") — emitting auth_required"));
+
+    it("says in the first revoked line what ran and what it found, and keeps the repeated line short", async () => {
+      const rig = marginRig();
+      // As long as real tokens: a token without a known prefix is redacted from 24 characters.
+      writeAuth(accountRootOf(rig.rootDir, "codex-default"), { freshness: NOW + 40 * MINUTE, mark: "M".repeat(40) });
+      const tokens = sourceTokens(rig.rootDir, "codex-default");
+      // Short lines: the cut at 96 characters must not hide a part that the redaction left.
+      const cliLines = [`ERROR sent ${tokens.refresh_token}`, `ERROR ${tokens.access_token} for ${ACCOUNT_EMAIL}`];
+      rig.spawnHandle.effects = [{ stderr: `${REUSED}${cliLines.join("\n")}\n`, exitCode: 1 }];
+      const logs = captureLogs();
+      try {
+        await rig.refresher.refreshNow("codex-default");
+        await rig.refresher.ensureFresh("codex-default", { force: true });
+      } finally {
+        logs.restore();
+      }
+
+      const sentence = "[codex-oauth-refresh] account=codex-default revoked (refresh_token_reused) — emitting auth_required";
+      const [detailed, repeated, ...rest] = revokedLines(logs.lines);
+      expect(rest).toEqual([]);
+      const [, run, reason] = /^(.*) reason="(.*)"$/.exec(detailed!) ?? [];
+      expect(run).toMatch(/ trigger=nudge verdict=token_host_code refresh=\d+\.\ds,exit=1 expires_in=40m$/);
+      expect(run!.startsWith(`${sentence} trigger=`)).toBe(true);
+      expect(reason!.split(" | ")).toEqual([
+        expect.stringMatching(/^ERROR codex_login::auth::manager: Failed to refresh token status=401 Unauthorized .*…$/),
+        "ERROR sent [redacted]",
+        "ERROR [redacted] for [email]",
+      ]);
+      expect(repeated).toBe(`${sentence} trigger=forced_heal verdict=known_rejected`);
+    });
+
+    it("names a turn start, and what the token had left, in the revoked line", async () => {
+      const rig = marginRig({ freshness: NOW - 3 * MINUTE });
+      rig.spawnHandle.effects = [{ stderr: EXPIRED }];
+      const logs = captureLogs();
+      try {
+        await rig.refresher.ensureFresh("codex-default");
+      } finally {
+        logs.restore();
+      }
+
+      expect(revokedLines(logs.lines)[0]).toMatch(
+        /revoked \(refresh_token_expired\) — emitting auth_required trigger=turn_start verdict=token_host_code refresh=\d+\.\ds,exit=0 expires_in=-3m reason="/,
+      );
+    });
+
+    it("names the tick that a forced heal joined in the revoked line", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{ stderr: INVALIDATED, delayMs: 30 }];
+      const logs = captureLogs();
+      try {
+        const tick = rig.refresher.refreshNow("codex-default");
+        expect(await rig.refresher.ensureFresh("codex-default", { force: true })).toBe(false);
+        await tick;
+      } finally {
+        logs.restore();
+      }
+
+      const lines = revokedLines(logs.lines);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(" trigger=nudge verdict=token_host_code ");
+    });
+
+    it("names the backoff's tick in the revoked line", async () => {
+      vi.useFakeTimers();
+      const logs = captureLogs();
+      try {
+        const rig = marginRig();
+        rig.spawnHandle.effects = [{ stderr: RATE_LIMITED }, { stderr: INVALIDATED }];
+
+        const first = rig.refresher.refreshNow("codex-default");
+        await vi.advanceTimersByTimeAsync(10);
+        expect((await first)[0]!.outcome).toBe("rate_limited");
+        await vi.advanceTimersByTimeAsync(120_000 + 10);
+
+        expect(revokedLines(logs.lines)[0]).toContain(" trigger=backoff_retry verdict=token_host_code ");
+      } finally {
+        logs.restore();
+        vi.useRealTimers();
+      }
+    });
+
+    it.each<{ ending: string; effect: SpawnEffect; afterMs: number; run: string }>([
+      { ending: "does not answer, and ends at the kill", effect: { hang: true }, afterMs: 31_000, run: "30.0s,timeout,exit=SIGKILL" },
+      { ending: "does not answer, and does not end", effect: { hang: true, ignoresKill: true }, afterMs: 36_000, run: "35.0s,timeout,no_exit" },
+      { ending: "answers, and ends only at the kill", effect: { staysAfterAnswer: true }, afterMs: 6_000, run: "5.0s,timeout,exit=SIGKILL" },
+      { ending: "answers, and does not end", effect: { staysAfterAnswer: true, ignoresKill: true }, afterMs: 11_000, run: "10.0s,timeout,no_exit" },
+    ])("names a scheduled tick, and a CLI that $ending, in the revoked line", async (row) => {
+      vi.useFakeTimers();
+      const logs = captureLogs();
+      try {
+        const rig = marginRig();
+        // The token host's refusal reached the CLI's log.
+        rig.spawnHandle.effects = [{ ...row.effect, stderr: INVALIDATED }];
+
+        rig.refresher.start();
+        await vi.advanceTimersByTimeAsync(1_000 + row.afterMs);
+
+        expect(revokedLines(logs.lines)[0]).toContain(` trigger=scheduled verdict=token_host_code refresh=${row.run} expires_in=40m `);
+      } finally {
+        logs.restore();
+        vi.useRealTimers();
+      }
     });
 
     it("does not read a rejected credential with time left as a new sign-in", async () => {
@@ -1210,5 +1342,31 @@ describe("CodexOAuthRefresher", () => {
     expect(reauthenticated).toEqual(["codex-default"]);
     expect(rig.repushCalls).toEqual([{ agentId: "codex", accountId: "codex-default" }]);
     expect(rig.refresher._inspectForTest("codex-default").emittedUnauthenticated).toBe(false);
+  });
+
+  it("reports nothing for a missing source while a sign-in is in progress, and reports it when the sign-in has failed", async () => {
+    const rig = buildRig({ accounts: [makeAccount("codex-default", { status: "authenticating" })] });
+    rigs.push(rig);
+    const logs = captureLogs();
+    let result: CodexRefreshResult | undefined;
+    try {
+      [result] = await rig.refresher.refreshNow("codex-default");
+    } finally {
+      logs.restore();
+    }
+
+    expect(result!.outcome).toBe("missing_credentials");
+    expect(rig.sseCalls).toEqual([]);
+    expect(rig.accounts[0]!.status).toBe("authenticating");
+    expect(logs.lines.filter((line) => line.includes("missing_credentials"))).toEqual([
+      "[codex-oauth-refresh] account=codex-default missing_credentials — waiting for auth_complete sign_in=in_progress",
+    ]);
+
+    rig.accounts[0]!.status = "auth_failed";
+    await rig.refresher.refreshNow("codex-default");
+    expect(rig.sseCalls).toContainEqual({
+      event: "agent_auth_failed",
+      data: { loginId: "openai-chatgpt", accountId: "codex-default", reason: "missing_credentials" },
+    });
   });
 });
