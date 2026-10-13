@@ -180,12 +180,11 @@ into the stopped turn: it waits, and runs as the next turn.
 An entry that ShipIt had put in the queue is removed and does not go to the
 composer. Most come back by themselves: the notice that the session's pull
 request merged, a message from another session, an automatic CI fix. A note
-about a restart, about stopped background jobs or about a rebase rides the next
-turn. Three kinds do not come back: an action the user started with a button
-while a turn ran (**Fix CI**, **Create PR**), which they press again; a
-compaction you asked for with `shipit compact`, which you ask for again; and the
-turn that tells you a `shipit agent run` consult finished — after a Stop, read
-its result yourself with `shipit agent result`.
+about a restart, about stopped background jobs, about a rebase or about a
+finished `shipit agent run` consult rides the next turn; no turn starts for it.
+Two kinds do not come back: an action the user started with a button while a
+turn ran (**Fix CI**, **Create PR**), which they press again; and a compaction
+you asked for with `shipit compact`, which you ask for again.
 
 **Background work outlives a turn only on an agent process that stays up.** With
 live steering on and a harness whose process stays up between turns, a turn

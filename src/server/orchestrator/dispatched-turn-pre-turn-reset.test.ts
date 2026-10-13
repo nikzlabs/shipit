@@ -409,3 +409,32 @@ describe("dispatched turn — a resolved bug-report card (nikzlabs/shipit#2350)"
     expect(promptSeen).toBe("keep going");
   });
 });
+
+// planning#695 — the drain of a dispatched turn ran the next turn's setup with no catch, so
+// the sender of a queued turn whose setup threw never heard of it.
+describe("dispatched turn — a queued turn whose setup fails when this turn drains it", () => {
+  let runner: SessionRunner;
+  afterEach(() => { runner?.dispose({ force: true }); vi.restoreAllMocks(); });
+
+  it("tells its sender that it failed to start", async () => {
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    const spawn = deps.agentFactory;
+    deps.agentFactory = (agentId) => {
+      if (agents.length === 1) throw new Error("container unreachable");
+      return spawn(agentId);
+    };
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "first" }));
+    await flushTurn();
+    const queued = runner.dispatch(testDispatch({ text: "a wake" }));
+    expect(queued.admitted).toBe("queued");
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    const outcome = await queued.settled;
+
+    expect(outcome.status).toBe("errored");
+    expect(outcome.detail).toBe("dispatched turn failed to start: container unreachable");
+  });
+});

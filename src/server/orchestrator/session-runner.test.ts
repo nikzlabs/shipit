@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { AgentTurnAdmissionError, SessionRunner, SessionRunnerRegistry, resetRunnerTurnState, sessionHasLiveAgent } from "./session-runner.js";
+import { AgentTurnAdmissionError, SessionRunner, SessionRunnerRegistry, resetRunnerTurnState, sessionHasLiveAgent, toQueuedMessage } from "./session-runner.js";
 import type { QueuedMessage } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
@@ -9,7 +9,7 @@ import {
 } from "./session-agent-env.js";
 import type { AgentId } from "../shared/types.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
-import { TURN_COMPLETED } from "./turn-settlement.js";
+import { TURN_COMPLETED, type TurnOutcome } from "./turn-settlement.js";
 import { noteTurnReady } from "./turn-stop-request.js";
 import { nextSendOrder } from "./queue-identity.js";
 import { returnQueueOnStop, returnedMessages } from "./queue-return.js";
@@ -1148,6 +1148,67 @@ describe("the send order of a dispatch", () => {
     runner.dispatch(testDispatch({ text: "drained", sendOrder: 3 }));
 
     expect(run.mock.calls[0]?.[0].sendOrder).toBe(3);
+    runner.dispose({ force: true });
+  });
+});
+
+// A sender told that its dispatch failed acts on it (planning#695 parks a note), so a
+// dispatch that still runs must not be told so.
+describe("a dispatch that a pre-turn compaction put back in the queue", () => {
+  it("is not settled as a setup failure when the compaction fails, and runs next", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const forgetHeldTurn = vi.fn();
+    runner.setSystemTurnDeps({
+      answerHold: {
+        automaticTurnsHeld: () => false,
+        setAwaitingAnswer: vi.fn(),
+        holdTurn: vi.fn(),
+        heldTurns: () => [],
+        forgetHeldTurn,
+        hasHeldDelivery: () => false,
+      },
+    } as never);
+    const run = vi.spyOn(runner, "runDispatchedTurn")
+      .mockImplementationOnce((opts) => {
+        runner.messageQueue.unshift({ ...toQueuedMessage(opts), compactContext: false });
+        return Promise.reject(new Error("the compaction could not start"));
+      })
+      .mockResolvedValue(undefined);
+    const outcomes: TurnOutcome[] = [];
+
+    const handle = runner.dispatch(testDispatch({
+      text: "a wake",
+      heldId: 5,
+      onTurnComplete: (o) => { outcomes.push(o); },
+    }));
+
+    await vi.waitFor(() => { expect(run).toHaveBeenCalledTimes(2); });
+    expect(run.mock.calls[1]?.[0].text).toBe("a wake");
+    expect(runner.queueLength).toBe(0);
+    expect(outcomes).toEqual([]);
+    // Its saved copy goes when it runs, not before.
+    expect(forgetHeldTurn).not.toHaveBeenCalled();
+
+    run.mock.calls[1]![0].onTurnComplete!(TURN_COMPLETED);
+    expect(await handle.settled).toEqual(TURN_COMPLETED);
+    expect(outcomes).toEqual([TURN_COMPLETED]);
+    runner.dispose({ force: true });
+  });
+
+  it("is told of its own setup failure while another entry waits in the queue", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    runner.setSystemTurnDeps({} as never);
+    const run = vi.spyOn(runner, "runDispatchedTurn")
+      .mockRejectedValueOnce(new Error("no worker"))
+      .mockResolvedValue(undefined);
+    runner.messageQueue.push({ text: "waiting", execution: "dispatched", onTurnComplete: () => {} });
+
+    const handle = runner.dispatch(testDispatch({ text: "a wake" }));
+
+    const outcome = await handle.settled;
+    expect(outcome.status).toBe("errored");
+    expect(outcome.detail).toContain("no worker");
+    await vi.waitFor(() => { expect(run.mock.calls[1]?.[0].text).toBe("waiting"); });
     runner.dispose({ force: true });
   });
 });

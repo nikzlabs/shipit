@@ -187,17 +187,15 @@ read at the source on 2026-10-12. "Dropped" is the outcome that a Stop gives.
 |---|---|
 | Notice that the session's own pull request merged or closed (`merge-watch.ts`) | Sends again by itself: 30 s to 10 min later, five attempts in all. |
 | Message from another session (`services/session-inbox.ts`) | Sends again by itself: when the session is idle, and on a 60 s pass. The notice is a database fact until the agent has read it. |
-| Automatic CI fix (`auto-fix-manager.ts`) | Starts again by itself at a later poll, about 1 to 3 minutes later. A dropped fix counts as no attempt. |
-| Note after a container restart, note about stopped background jobs, follow-up of a rebase | Kept as a note for the session's next turn. Nothing starts a turn for it. |
-| Result of a finished consult (`services/consult-result-delivery.ts`) | **Not sent again.** The result stays on its card, and `shipit agent result` reads it. |
+| Automatic CI fix (`auto-fix-manager.ts`) | Starts again by itself at a later poll, about 1 to 3 minutes later. A dropped fix, or one that failed to start, counts as no attempt. |
+| Note after a container restart, note about stopped background jobs, follow-up of a rebase, result of a finished consult (`services/consult-result-delivery.ts`, since planning#695) | Kept as a note for the session's next turn. Nothing starts a turn for it. |
 | An action that the user started with a button and that waited (Fix CI, Create PR, Fix preview errors), a message from a page (`window.shipit`) | **Not sent again.** The user presses the button again. |
 | A compaction that the agent asked for | **Not done.** |
 | A held turn that came back from the database after an orchestrator restart | **Not sent again**, except the merge notice above. Its callback died with the old process. |
 
 The rows in bold lose their entry. All of them did so before this feature
 behind a turn that the user typed; the feature makes it true behind every
-turn. planning#695 tracks the consult result, which is the one that costs the
-user work.
+turn.
 
 ## Known limits
 

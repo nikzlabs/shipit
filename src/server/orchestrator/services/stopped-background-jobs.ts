@@ -8,7 +8,7 @@ import {
   type InProgressPersister,
 } from "../chat-card-persistence.js";
 import { loadPrompt, fillPromptTokens } from "../load-prompt.js";
-import type { TurnAdmission } from "../turn-settlement.js";
+import { informingWakeMissed, type TurnAdmission } from "../turn-settlement.js";
 import { getErrorMessage } from "../validation.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
 import type { QuotaResumeRecorder } from "./quota-continuation.js";
@@ -21,10 +21,6 @@ const WAKE_DELIVERY_PREFIX = "stopped-background-jobs:";
 
 const MAX_JOBS_LISTED = 10;
 const MAX_JOB_CHARS = 300;
-
-// Wider than `shouldRepark`: this note only informs, so a repeat costs little and a loss
-// leaves the agent waiting. A stopped turn is the user's choice.
-const DELIVERED_STATUSES = new Set(["completed", "steered", "interrupted"]);
 
 export interface StoppedBackgroundJobsDeps extends WakeSessionDeps {
   chatHistoryManager: InProgressPersister;
@@ -127,7 +123,7 @@ export async function reportStoppedBackgroundJobs(
         activity: WAKE_ACTIVITY,
         deliveryId: `${WAKE_DELIVERY_PREFIX}${randomUUID()}`,
         onSettled: (outcome) => {
-          if (DELIVERED_STATUSES.has(outcome.status)) return;
+          if (!informingWakeMissed(outcome)) return;
           console.warn(
             `[stopped-jobs] the wake turn for ${sessionId} ended as "${outcome.status}"; `
             + "parking the note for the next turn",

@@ -29,6 +29,7 @@ import {
 import {
   createPromptRepark,
   createPromptTakeLedger,
+  settleDispatchSetupFailure,
   settleWhenRunnerLetsGo,
   type PromptTakeLedger,
   type TurnOutcome,
@@ -348,7 +349,12 @@ async function runDispatchedTurnInner(
     if (!next) return;
     runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
     const queued = settleWhenRunnerLetsGo(runner, queuedMessageToDispatchOptions(next));
-    await runDispatchedTurn(runner, deps, agentId, queued, createAgent);
+    try {
+      await runDispatchedTurn(runner, deps, agentId, queued, createAgent);
+    } catch (err) {
+      settleDispatchSetupFailure(runner, queued, err);
+      throw err;
+    }
   };
 
   let noResultRetries = 0;

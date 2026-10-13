@@ -70,6 +70,75 @@ describe("queue drain routing (planning#257)", () => {
     expect(events.listenerCount("disposed")).toBe(0);
   });
 
+  // planning#695 — the drain's own catch only logged, so the sender of a drained turn whose
+  // setup threw never heard of it.
+  describe("a drained turn whose setup throws", () => {
+    function failingRunner(requeueFirst: boolean) {
+      const events = new EventEmitter();
+      const forgetHeldTurn = vi.fn();
+      const messageQueue: QueuedMessage[] = [];
+      const runner = Object.assign(events, {
+        sessionId: "s1",
+        canRunDispatchedTurn: true,
+        messageQueue,
+        answerHoldStore: { forgetHeldTurn } as unknown as AnswerHoldStore,
+        runDispatchedTurn: (o: AgentDispatchOptions) => {
+          if (requeueFirst) messageQueue.unshift({ ...toQueuedMessage(o as never), compactContext: false });
+          return Promise.reject(new Error("the branch reset failed"));
+        },
+      }) as unknown as SessionRunnerInterface;
+      return { runner, forgetHeldTurn, messageQueue };
+    }
+
+    it("tells its sender that it failed to start, once", async () => {
+      const { runner, forgetHeldTurn } = failingRunner(false);
+      const onTurnComplete = vi.fn();
+
+      await expect(startQueuedMessage(
+        runner,
+        { text: "a wake", execution: "dispatched", heldId: 4, onTurnComplete },
+        vi.fn(async () => {}),
+      )).rejects.toThrow("the branch reset failed");
+      (runner as unknown as EventEmitter).emit("disposed");
+
+      expect(onTurnComplete).toHaveBeenCalledTimes(1);
+      expect(onTurnComplete.mock.calls[0]![0]).toEqual({
+        status: "errored",
+        errored: true,
+        detail: "dispatched turn failed to start: the branch reset failed",
+      });
+      expect(forgetHeldTurn).toHaveBeenCalledWith(4);
+    });
+
+    it("leaves one that a failed compaction put back in the queue to settle when it runs", async () => {
+      const { runner, messageQueue } = failingRunner(true);
+      const onTurnComplete = vi.fn();
+
+      await expect(startQueuedMessage(
+        runner,
+        { text: "a wake", execution: "dispatched", onTurnComplete },
+        vi.fn(async () => {}),
+      )).rejects.toThrow();
+
+      expect(messageQueue.map((m) => m.text)).toEqual(["a wake"]);
+      expect(onTurnComplete).not.toHaveBeenCalled();
+    });
+
+    // A held turn restored after a restart has no callback.
+    it("keeps the saved copy of a held turn with no callback that went back in the queue", async () => {
+      const { runner, forgetHeldTurn, messageQueue } = failingRunner(true);
+
+      await expect(startQueuedMessage(
+        runner,
+        { text: "a wake", execution: "dispatched", heldId: 4 },
+        vi.fn(async () => {}),
+      )).rejects.toThrow();
+
+      expect(messageQueue.map((m) => m.heldId)).toEqual([4]);
+      expect(forgetHeldTurn).not.toHaveBeenCalled();
+    });
+  });
+
   it("routes an interactive entry to the transport's own re-entry", async () => {
     const { runner, ran } = fakeRunner();
     const runInteractive = vi.fn(async () => {});
