@@ -256,6 +256,20 @@ export async function registerGitRoutes(
     },
   );
 
+  // What `buildAgentRunParams` gives a new agent process, for the hook of one that is already up.
+  app.get<{ Params: { id: string } }>(
+    "/api/sessions/:id/branch/destructive-git-guard",
+    { config: { containerAccessible: true } },
+    (request, reply) => {
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      return { guarded: Boolean(session.mergedHeadSha) };
+    },
+  );
+
   app.get<{ Params: { id: string } }>("/api/sessions/:id/git/log", async (request, reply) => {
     const dir = resolveSessionDir(sessionManager, request.params.id, reply);
     if (!dir) return;

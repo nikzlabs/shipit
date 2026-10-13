@@ -527,7 +527,8 @@ export class StreamingClaudeProcess extends EventEmitter {
     } else {
       delete spawnEnv.SHIPIT_SANDBOX;
     }
-    // Read at spawn only: a resident that started before a merge runs without it (planning#694).
+    // Only the hook's fallback: this process outlives the merged state it started in, so
+    // the hook asks ShipIt at each call (docs/130-block-branch-ops).
     if (guardDestructiveGit) {
       spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT = "1";
     } else {
