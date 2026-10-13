@@ -18,8 +18,8 @@ const HOOK_SCRIPT = path.resolve(
   "block-branch-ops.mjs",
 );
 
-// `fetch` refuses this port without a connection, so the hook gets no answer and the
-// destructive rules take the value the process started with.
+// Nothing listens on this port, so the hook gets no answer and the destructive rules take
+// the value the process started with.
 const NO_WORKER = { SHIPIT_AGENT_OPS_URL: "http://127.0.0.1:1" };
 
 function hookEnv(env?: Record<string, string>): NodeJS.ProcessEnv {
@@ -288,10 +288,13 @@ describe("block-branch-ops.mjs", () => {
     const GUARD_READ = "GET /agent-ops/branch/destructive-git-guard";
     const RESET = bash("git reset --hard origin/main");
     let worker: FakeWorker | undefined;
+    let proxy: FakeWorker | undefined;
 
     afterEach(async () => {
       await worker?.close();
+      await proxy?.close();
       worker = undefined;
+      proxy = undefined;
     });
 
     it("blocks on a process that started before the merge", async () => {
@@ -315,6 +318,22 @@ describe("block-branch-ops.mjs", () => {
     it("finds the worker on WORKER_PORT when no address is given", async () => {
       worker = await startWorker(answering(200, '{"guarded":true}'));
       const r = await runHookAsync(RESET, { SHIPIT_AGENT_OPS_URL: "", WORKER_PORT: String(worker.port) });
+      expect(r.status).toBe(2);
+      expect(worker.requests).toEqual([GUARD_READ]);
+    });
+
+    // Under these variables Node sends `fetch` and the default `http` agent to the proxy.
+    it("reaches the worker when the environment sends HTTP requests to a proxy", async () => {
+      worker = await startWorker(answering(200, '{"guarded":true}'));
+      proxy = await startWorker(answering(403, ""));
+      const r = await runHookAsync(RESET, {
+        SHIPIT_AGENT_OPS_URL: worker.url,
+        NODE_USE_ENV_PROXY: "1",
+        HTTP_PROXY: proxy.url,
+        http_proxy: proxy.url,
+        NO_PROXY: "",
+        no_proxy: "",
+      });
       expect(r.status).toBe(2);
       expect(worker.requests).toEqual([GUARD_READ]);
     });
@@ -352,6 +371,10 @@ describe("block-branch-ops.mjs", () => {
         ["a body with no answer", answering(200, "{}")],
         ["an answer that is not a boolean", answering(200, '{"guarded":"yes"}')],
         ["a null body", answering(200, "null")],
+        [
+          "a body longer than an answer can be",
+          answering(200, JSON.stringify({ pad: "x".repeat(2000), guarded: true })),
+        ],
       ];
       for (const [name, answer] of noAnswer) {
         it(name, async () => {
@@ -371,17 +394,31 @@ describe("block-branch-ops.mjs", () => {
         expect(await runHookAsync(RESET, env)).toEqual({ status: 0, stderr: "" });
       });
 
-      it("a worker that does not answer in time", async () => {
-        worker = await startWorker(() => { /* holds the request open */ });
-        const began = Date.now();
-        const r = await runHookAsync(RESET, {
-          SHIPIT_AGENT_OPS_URL: worker.url,
-          SHIPIT_GUARD_DESTRUCTIVE_GIT: "1",
-        });
-        expect(r.status).toBe(2);
-        expect(worker.requests).toEqual([GUARD_READ]);
-        expect(Date.now() - began).toBeLessThan(10_000);
-      }, 20_000);
+      it("an address that is not a URL", async () => {
+        const env = { SHIPIT_AGENT_OPS_URL: "worker" };
+        expect((await runHookAsync(RESET, { ...env, SHIPIT_GUARD_DESTRUCTIVE_GIT: "1" })).status).toBe(2);
+        expect(await runHookAsync(RESET, env)).toEqual({ status: 0, stderr: "" });
+      });
+
+      const neverDone: [string, (res: http.ServerResponse) => void][] = [
+        ["a worker that does not answer in time", () => { /* holds the request open */ }],
+        ["a worker whose body does not finish", (res) => { res.writeHead(200); res.write('{"guarded":'); }],
+      ];
+      for (const [name, answer] of neverDone) {
+        it(name, async () => {
+          worker = await startWorker(answer);
+          const env = { SHIPIT_AGENT_OPS_URL: worker.url };
+          const began = Date.now();
+          const [guarded, free] = await Promise.all([
+            runHookAsync(RESET, { ...env, SHIPIT_GUARD_DESTRUCTIVE_GIT: "1" }),
+            runHookAsync(RESET, env),
+          ]);
+          expect(guarded.status).toBe(2);
+          expect(free).toEqual({ status: 0, stderr: "" });
+          expect(worker.requests).toEqual([GUARD_READ, GUARD_READ]);
+          expect(Date.now() - began).toBeLessThan(10_000);
+        }, 20_000);
+      }
     });
   });
 

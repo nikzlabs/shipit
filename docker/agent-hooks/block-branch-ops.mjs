@@ -6,6 +6,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import http from "node:http";
 
 // Sandbox sessions own their branches (docs/211). That exemption is about
 // branch ownership and nothing else, so it scopes the git checks below rather
@@ -663,22 +664,44 @@ function offendsSelfMatchingProcessTest(line) {
 // agent process outlives that state, so it is read from ShipIt for each command
 // (docs/130); the spawn environment is the answer when ShipIt gives none.
 const GUARD_QUERY_TIMEOUT_MS = 3000;
+const GUARD_ANSWER_MAX_LENGTH = 1024;
 
-async function askGuard() {
+function askGuard() {
   const atSpawn = process.env.SHIPIT_GUARD_DESTRUCTIVE_GIT === "1";
   const worker = (
     process.env.SHIPIT_AGENT_OPS_URL || `http://127.0.0.1:${process.env.WORKER_PORT || "9100"}`
   ).replace(/\/$/, "");
-  try {
-    const res = await fetch(`${worker}/agent-ops/branch/destructive-git-guard`, {
-      signal: AbortSignal.timeout(GUARD_QUERY_TIMEOUT_MS),
-    });
-    if (!res.ok) return atSpawn;
-    const guarded = (await res.json())?.guarded;
-    return typeof guarded === "boolean" ? guarded : atSpawn;
-  } catch {
-    return atSpawn;
-  }
+  return new Promise((resolve) => {
+    const answer = (guarded) => resolve(typeof guarded === "boolean" ? guarded : atSpawn);
+    // One limit for the connection, the headers and the body.
+    setTimeout(answer, GUARD_QUERY_TIMEOUT_MS);
+    try {
+      // Under `NODE_USE_ENV_PROXY`, `fetch` and the default `http` agent send
+      // this loopback request to the proxy. `agent: false` makes an agent with
+      // no proxy configuration.
+      http
+        .get(`${worker}/agent-ops/branch/destructive-git-guard`, { agent: false }, (res) => {
+          if (res.statusCode < 200 || res.statusCode > 299) return answer();
+          let body = "";
+          res.setEncoding("utf8");
+          res.on("error", () => answer());
+          res.on("data", (chunk) => {
+            body += chunk;
+            if (body.length > GUARD_ANSWER_MAX_LENGTH) answer();
+          });
+          res.on("end", () => {
+            try {
+              answer(JSON.parse(body)?.guarded);
+            } catch {
+              answer();
+            }
+          });
+        })
+        .on("error", () => answer());
+    } catch {
+      answer(); // an address that is not an `http:` URL
+    }
+  });
 }
 
 let guardAnswer = null;
