@@ -361,52 +361,89 @@ Flow:
 
 ### 4. Lazy, scoped, post-spawn-wiped cross-agent credentials
 
-Only relevant for a **cross-provider** spawn (a same-provider spawn reuses
-the pinned agent's already-present credentials and provisions nothing).
+Every provisioned spawn — cross-provider or not — gets credentials of its own,
+in a home of its own.
 
-- **Lazy.** The other agent's subtree is provisioned *only* on a
-  cross-provider `shipit agent` invocation, which only fires if the setting
-  is on AND the primary chose to spawn. Pre-invocation, docs/138 isolation
-  holds exactly.
-- **Just-in-time, just-before-spawn, account-correct.** `runSubAgent`
-  resolves the sub-agent's provider-account route first —
-  `providerAccountManager.selectRouteForTurn(subAgentId)`, exactly as the
-  primary turn path does (`session-agent-env.ts`) — then provisions from
-  *that account's* root, not the flat credentials root. When the route is
-  `{ kind: "account", id: accountId }` it copies from
-  `providerAccountCredentialRoot(credentialsRoot, subAgentId, accountId)` via
-  `provisionProviderAccountCredentials(credentialsRoot, sessionId, subAgentId,
-  accountId)`; only the legacy no-account fallback copies from the flat
-  `credentialsRoot`. Post-docs/150/153 the flat root holds legacy-alias
-  symlinks into the provider-account subtrees and is **not** the freshest
-  source for a multi-account user — provisioning from it would start the
-  sub-agent CLI on stale credentials and 401. The copy pulls *only* the
-  sub-agent's subtree (`AGENT_CREDENTIAL_PATHS[subAgentId]` plus a refresh of
-  the token-sync files); it must never touch `AGENT_CREDENTIAL_PATHS[pinnedAgentId]`
-  (would clobber the CLI's in-place writes per docs/138 §"write-once").
-  Record the resolved `accountId` — the wipe and token-sync-back below must
-  target the same account root.
-- **Token-sync-back before wipe.** If the sub-agent CLI rotated its OAuth
-  refresh token during the run (docs/142 — Claude and Codex both rotate
-  refresh tokens), the new token lives in the per-session subtree.
-  `runSubAgent` runs `syncAgentTokenBack(subAgentId)` to the orchestrator's
-  source-of-truth credentials — the **same account root** resolved at
-  provision time (`providerAccountCredentialRoot(...)` for an account route,
-  the flat root only for the legacy fallback), not unconditionally the flat
-  root — **before** invoking the wipe. Otherwise the next session that lazily
-  provisions this agent starts from a stale refresh token and 401s.
-- **Wiped on completion.** `removeSubAgentCredentials(credentialsRoot,
-  sessionId, subAgentId)` runs in a `finally` after the subprocess exits
-  (success, failure, crash, or cancel). Deletes only the sub-agent's subtree.
-- **Wipe is best-effort.** The sub-agent CLI may still be flushing writes to
-  its subtree at the instant we `rm -rf` it. Tolerable: any interrupted write
-  is the sub-agent's *own* transient state, and the next provision re-copies
-  cleanly from source-of-truth. The pinned agent's subtree is never touched.
-- **Sign-out propagation.** When the user signs out of an agent
-  (`AgentRegistry` emits a sign-out for `agentX`), the orchestrator runs
-  `removeSubAgentCredentials` for every session where `agentX` is *not* the
-  pinned agent — sweeping any in-flight cross-agent creds that would
-  otherwise outlive the user's authorization.
+- **Lazy.** A sub-agent's credentials are provisioned *only* on a `shipit agent`
+  invocation, which only fires if the setting is on AND the primary chose to
+  spawn. Pre-invocation, docs/138 isolation holds exactly.
+- **Just-in-time, account-correct, one private home for each spawn.**
+  `runSubAgent` resolves the sub-agent's provider-account route first, then
+  `provisionSubAgentSpawnHome(credentialsRoot, sessionId, spawnId, subAgentId,
+  accountId)` copies `AGENT_CREDENTIAL_PATHS[subAgentId]` from *that account's*
+  root — the flat root only for the legacy no-account fallback, which is **not**
+  the freshest source for a multi-account user — into
+  `<credentialsRoot>/sessions/<id>/sub-agent-homes/<spawnId>`. The spawn request
+  carries the container path of that home as `homeDir`, and each adapter prefers
+  it over its own home. The session's own subtree is never written: not the
+  pinned agent's (docs/138 §"write-once"), and not another harness's.
+- **Token-sync-back before delete.** If the CLI rotated its OAuth refresh token
+  during the run (docs/142), the new token lives in the spawn home.
+  `releaseSubAgentSpawnHome` publishes it to the root the home's
+  `.shipit-spawn-home.json` names — the root it was provisioned from, never a
+  caller-supplied account — and only then deletes the home. A rotation that can
+  be neither published nor quarantined keeps the home. The account-failover
+  loop does not honour that: its next attempt provisions the same home again.
+- **Deleted when the run settles.** The release runs in a `finally` once the
+  run has an outcome (success, failure, crash, timeout or cancel), and before
+  each account-failover attempt. The worker has signalled the CLI by then; its
+  exit is not awaited. A home orphaned by an orchestrator restart is released
+  at the next container create (`sweepSubAgentSpawnHomes`).
+- **Revocation.** A spawn home sets no session account marker, so its
+  provenance file is the only record of what it holds, and both revocation
+  paths read it (`removeSubAgentSpawnHomesOf`, no sync-back). Disconnecting an
+  account, or signing out of a provider (`revokeRecordedAccountCopies`,
+  `services/settings.ts`), removes the homes provisioned from those accounts
+  in every session. When an agent becomes unrunnable (`AgentRegistry` emits
+  `sign-out` for `agentX`), the orchestrator removes, in every session where
+  `agentX` is *not* the pinned agent, the homes provisioned for `agentX` and
+  any `agentX` subtree an older build left in the session's own directory. A
+  run still in flight loses its home and can fail.
+
+**Why not one subtree for each (session, harness).** That was the design for
+cross-provider spawns until 2026-10-13: they borrowed the session's subtree for
+that harness, with a ledger of holders so that only the last release wiped it
+(planning#572 records the half that ledger did not fix). Same-harness spawns had
+left it on 2026-08-22, when a borrow replaced the live primary's token. Two
+consults of one harness in one turn are routine — a turn may start three — and
+a shared home fails them in two ways, both reproduced with three Codex consults
+started at one moment:
+
+- **Each provision prunes the home under the CLIs already in it.** A provision
+  removes everything but conversation state and copies the account's files
+  again. Recorded on the deployed build: the second provision deleted the first
+  process's `state_5.sqlite` and its `auth.json` 50 ms after that process
+  started.
+- **The CLIs race to create one set of state.** Codex creates and migrates its
+  SQLite state databases at startup, and a provision makes the home new again
+  each time. Two processes that start within about 30 ms of each other in such
+  a home: one exits with code 1 in 50–200 ms (`failed to initialize sqlite state
+  runtime`), or waits 30 s for the other's "state db backfill" and then exits
+  the same way. On Codex 0.159.2 and 0.160.1, 16–17 of 30 starts failed in a
+  shared new home, and 0 of 30 with a home for each process.
+
+Serialising the starts was the alternative. It needs a signal for "this CLI
+finished its startup" for every harness, it makes a consult wait for the turn
+or the consult before it, and it leaves two runs on different accounts writing
+one token file. A private home needs none of that and was already the
+same-harness path.
+
+**The cost: several copies of one account's token.** Three consults on one
+account each hold a copy of its refresh token, where the shared subtree held
+one file. Codex reloads its auth file before a refresh and skips the refresh
+when the file changed, so with one file a second process could see the first
+one's rotation; with a copy each it cannot, and a late refresh with the old
+token is refused. The shared file never made two refreshes at one moment safe
+(the CLI's guard is process-local), and same-harness spawns have had this
+exposure since 2026-08-22. A consult's CLI should not refresh at all: the
+orchestrator renews a Codex or Claude account's token 45 minutes ahead of
+expiry (`agents/*/oauth-refresher.ts`), the Codex CLI refreshes by itself only
+in the last 5, and a consult is capped at 30. The exposure is a renewal that
+is overdue when the consult starts.
+
+**Local mode is not covered.** `RUNTIME_MODE=local` provisions no home (§8;
+OpenCode is the exception), so a spawn there runs in the user's own home and
+shares it with the session's turns.
 
 ### 5. Caps, cost, attribution
 
@@ -650,8 +687,8 @@ the set and keep flowing. Guard test:
 In `RUNTIME_MODE=local`, agents run in-process and credential provisioning is
 a no-op (docs/138). Sub-agent spawning in local mode:
 
-- Provisioning helpers (`provisionSubAgentCredentials` /
-  `removeSubAgentCredentials`) short-circuit, mirroring docs/138.
+- Spawn-home provisioning (`provisionSubAgentSpawnHome`) is skipped, mirroring
+  docs/138 — except for OpenCode, which always needs its private data home.
 - The "spawn sub-agent as subprocess" path mirrors local mode's primary-agent
   flow (in-process spawn rather than container subprocess).
 - Setting gate, per-turn cap, cost cap, recursion cap, and the `shipit agent`
@@ -774,9 +811,9 @@ persisted output and `shipit agent result` are unaffected.
   `GET /api/sessions/:id/agent/result` → `getSubAgentResult`.
 - **New `services/sub-agent.ts`** — `runSubAgent({ sessionId, subAgentId,
   prompt })`. Checks the setting + auth + pin + recursion depth + per-turn
-  cap; resolves the sub-agent's provider-account route; provisions creds (§4)
-  for a cross-provider spawn; calls worker `/agent/spawn`; on completion runs
-  token-sync-back and wipes creds in `finally`; records usage + emits the live
+  cap; resolves the sub-agent's provider-account route; provisions the spawn
+  home (§4); calls worker `/agent/spawn`; on completion runs token-sync-back
+  and deletes the home in `finally`; records usage + emits the live
   bill refresh; returns `{ status, text, truncated, durationMs, costUsd,
   inputTokens?, outputTokens?, cacheReadTokens?, cacheCreateTokens?,
   contextTokens? }`. Tracks each in-flight spawn so it can
@@ -799,10 +836,10 @@ persisted output and `shipit agent result` are unaffected.
   (`this.agent`) is untouched. Worker memory holds two CLI processes during a
   spawn window. **This is a meaningful new code path, not a drop-in adapter
   reuse.**
-- **`session-credentials.ts`** — add `provisionSubAgentCredentials()` and
-  `removeSubAgentCredentials()` (lazy + scoped + reversible + account-correct
-  per §4), plus a sub-agent-scoped variant of `syncAgentTokenBack` invoked
-  before the wipe. Reuse `provisionProviderAccountCredentials` /
+- **`session-credentials.ts`** — `provisionSubAgentSpawnHome()` /
+  `releaseSubAgentSpawnHome()` (lazy + scoped + account-correct per §4; the
+  release publishes a rotated token before it deletes the home) and
+  `removeSubAgentSpawnHomesOf()` for the sign-out sweep. Reuses
   `providerAccountCredentialRoot` (docs/150/153).
 - **`AgentRegistry`** — `refreshAuth(agentId)` and `get(id)?.authConfigured`
   already exist (verified). `AgentRegistry` becomes an `EventEmitter` (new
@@ -1034,8 +1071,8 @@ v0 is implemented end-to-end behind the `enableSubAgents` global setting
 - **Orchestrator route + service** — `api-routes-agent.ts`
   (`POST /api/sessions/:id/agent/spawn`) → `services/sub-agent.ts` (`runSubAgent`
   with the setting/auth/pin/recursion/per-turn-cap gates, lazy account-correct
-  credential provisioning, usage attribution, the spawn chip, and token-sync-back
-  + wipe in `finally`; `sweepSubAgentCredentialsOnSignOut`).
+  spawn-home provisioning, usage attribution, the spawn chip, and token-sync-back
+  + home release in `finally`; `sweepSubAgentCredentialsOnSignOut`).
 - **Worker spawn execution** — `session/agent-controller.ts` (`POST /agent/spawn`,
   a fresh adapter outside the slot, `SHIPIT_AGENT_DEPTH` stamping, and
   `cancelAllSpawns` reachable only from `stop()` — see §8), sharing the
@@ -1046,9 +1083,9 @@ v0 is implemented end-to-end behind the `enableSubAgents` global setting
   `resetRunnerTurnState`), `container-session-runner.ts`
   (`ContainerSessionRunner.spawnSubAgent` → worker).
 - **Credentials** — `session-credentials.ts`
-  (`provisionSubAgentCredentials` / `removeSubAgentCredentials`, scoped to the
-  sub-agent subtree; token-sync-back reuses the existing `syncAgentTokenBack` /
-  `syncProviderAccountTokenBack`).
+  (`provisionSubAgentSpawnHome` / `releaseSubAgentSpawnHome`, one home for each
+  spawn under `sub-agent-homes/`; token-sync-back is
+  `syncSubAgentSpawnHomeTokenBack`, driven by the home's provenance file).
 - **Registry sign-out** — `shared/agent-registry.ts` (now an `EventEmitter`,
   emits `sign-out` on a configured→not-configured edge), wired in
   `app-lifecycle.ts`.

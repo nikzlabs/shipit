@@ -313,7 +313,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     chatHistoryManager,
     usageManager,
     ...(credentialsDir ? { credentialsDir } : {}),
-    sessionManager,
     fallback: (prompt, cwd, opts) => generateText(prompt, cwd, opts),
   });
 

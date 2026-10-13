@@ -378,7 +378,7 @@ function readSpawnHomeProvenance(home: string): SpawnHomeProvenance | null {
   }
 }
 
-// Same-harness background runs need separate homes so they cannot replace the live agent's tokens.
+// One home for each run: runs must not replace the live agent's tokens, or each other's CLI state.
 export function provisionSubAgentSpawnHome(
   credentialsRoot: string,
   sessionId: string,
@@ -454,6 +454,36 @@ function releaseSpawnHomeAt(credentialsRoot: string, sessionId: string, home: st
     fs.rmSync(home, { recursive: true, force: true });
   } catch {
     // Retry at the next container create.
+  }
+}
+
+// Revocation: no rotation is published before the delete. A spawn home sets no session
+// marker, so its provenance is the only record of the account it holds.
+export function removeSubAgentSpawnHomesOf(
+  credentialsRoot: string,
+  sessionId: string,
+  subAgentId: AgentId,
+  /** Only the homes provisioned from these accounts; every home of the agent when absent. */
+  accountIds?: ReadonlySet<string>,
+): void {
+  const dir = path.join(perSessionCredentialsDir(credentialsRoot, sessionId), SUB_AGENT_HOME_SUBDIR);
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const home = path.join(dir, entry);
+    const provenance = readSpawnHomeProvenance(home);
+    if (provenance?.agentId !== subAgentId) continue;
+    if (accountIds && !(provenance.accountId !== null && accountIds.has(provenance.accountId))) continue;
+    revokeOpenCodeAccount(home);
+    try {
+      fs.rmSync(home, { recursive: true, force: true });
+    } catch {
+      // Retry at the next container create.
+    }
   }
 }
 

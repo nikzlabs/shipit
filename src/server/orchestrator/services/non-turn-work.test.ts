@@ -327,28 +327,29 @@ describe("makeNonTurnGenerateText — credential window", () => {
     vi.doUnmock("../session-credentials.js");
   });
 
-  it("gives a same-harness run an isolated spawn home and never borrows the session subtree", async () => {
-    const calls: string[] = [];
+  const mockSpawnHomes = (calls: string[], provision: () => void = () => {}) => {
     vi.doMock("../session-credentials.js", () => ({
-      provisionSubAgentCredentials: () => calls.push("provision"),
-      releaseSubAgentCredentials: () => {
-        calls.push("wipe");
-        return "acct_marker";
+      provisionSubAgentSpawnHome: () => {
+        calls.push("provision-home");
+        provision();
       },
-      provisionSubAgentSpawnHome: () => calls.push("provision-home"),
       releaseSubAgentSpawnHome: () => calls.push("release-home"),
       subAgentSpawnHomeContainerDir: (spawnId: string) => `/credentials/sub-agent-homes/${spawnId}`,
-      syncAgentTokenBack: () => calls.push("sync"),
-      syncProviderAccountTokenBack: () => calls.push("sync-account"),
-      provisionProviderAccountCredentials: () => calls.push("restore"),
     }));
+  };
+
+  // No session harness is given to the run: a run of ANY harness gets its own home. A run that
+  // shared the session's subtree was pruned under by the next one (planning#572).
+  it("gives every run a private spawn home and never writes the session subtree", async () => {
+    const calls: string[] = [];
+    mockSpawnHomes(calls);
     const { ContainerSessionRunner } = await import("../container-session-runner.js");
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
-    let seenHomeDir: string | undefined;
+    const homes: (string | undefined)[] = [];
     const runner = fakeContainerRunner(ContainerSessionRunner, {
       spawnSubAgent: async (req: { spawnId: string; homeDir?: string }) => {
         calls.push("spawn");
-        seenHomeDir = req.homeDir;
+        homes.push(req.homeDir);
         return OK_RESULT;
       },
     });
@@ -356,78 +357,25 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const generate = makeNonTurnGenerateText({
       ...(deps as object),
       getRunnerRegistry: () => ({ get: () => runner }),
-      sessionManager: { get: () => ({ agentId: "claude" }) },
       credentialsDir: TEST_CREDENTIALS_DIR,
       fallback: async () => "unused",
     } as never);
 
-    await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
+    await Promise.all([
+      generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" }),
+      generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" }),
+    ]);
 
-    expect(calls).toEqual(["provision-home", "spawn", "release-home"]);
-    expect(seenHomeDir).toMatch(/^\/credentials\/sub-agent-homes\//);
+    expect(calls.filter((c) => c === "provision-home")).toHaveLength(2);
+    expect(calls.filter((c) => c === "release-home")).toHaveLength(2);
+    expect(homes[0]).toMatch(/^\/credentials\/sub-agent-homes\//);
+    expect(homes[1]).toMatch(/^\/credentials\/sub-agent-homes\//);
+    expect(homes[0]).not.toBe(homes[1]);
   });
 
-  it("still borrows the session subtree for a cross-harness run, and restores on release", async () => {
+  it("still releases the home when the spawn throws", async () => {
     const calls: string[] = [];
-    const restored: string[] = [];
-    vi.doMock("../session-credentials.js", () => ({
-      provisionSubAgentCredentials: () => calls.push("provision"),
-      releaseSubAgentCredentials: () => {
-        calls.push("wipe");
-        return "acct_marker";
-      },
-      provisionSubAgentSpawnHome: () => calls.push("provision-home"),
-      releaseSubAgentSpawnHome: () => calls.push("release-home"),
-      subAgentSpawnHomeContainerDir: (spawnId: string) => `/credentials/sub-agent-homes/${spawnId}`,
-      syncAgentTokenBack: () => calls.push("sync"),
-      syncProviderAccountTokenBack: () => calls.push("sync-account"),
-      provisionProviderAccountCredentials: (
-        _dir: string, _sessionId: string, _agentId: string, accountId: string,
-      ) => {
-        calls.push("restore");
-        restored.push(accountId);
-      },
-    }));
-    const { ContainerSessionRunner } = await import("../container-session-runner.js");
-    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
-    const runner = fakeContainerRunner(ContainerSessionRunner, {
-      spawnSubAgent: async () => {
-        calls.push("spawn");
-        return OK_RESULT;
-      },
-    });
-    const { deps } = buildDeps({});
-    // Model a session changing harness between capture and release.
-    const agentIds = ["codex", "claude"];
-    const generate = makeNonTurnGenerateText({
-      ...(deps as object),
-      getRunnerRegistry: () => ({ get: () => runner }),
-      sessionManager: { get: () => ({ agentId: agentIds.length > 1 ? agentIds.shift() : agentIds[0] }) },
-      credentialsDir: TEST_CREDENTIALS_DIR,
-      fallback: async () => "unused",
-    } as never);
-
-    await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
-
-    expect(calls).toEqual(["provision", "spawn", "sync", "wipe", "restore"]);
-    expect(restored).toEqual(["acct_marker"]);
-  });
-
-  it("still wipes when the spawn throws", async () => {
-    const calls: string[] = [];
-    vi.doMock("../session-credentials.js", () => ({
-      provisionSubAgentCredentials: () => calls.push("provision"),
-      releaseSubAgentCredentials: () => {
-        calls.push("wipe");
-        return undefined;
-      },
-      provisionSubAgentSpawnHome: () => calls.push("provision-home"),
-      releaseSubAgentSpawnHome: () => calls.push("release-home"),
-      subAgentSpawnHomeContainerDir: (spawnId: string) => `/credentials/sub-agent-homes/${spawnId}`,
-      syncAgentTokenBack: () => calls.push("sync"),
-      syncProviderAccountTokenBack: () => calls.push("sync-account"),
-      provisionProviderAccountCredentials: () => calls.push("restore"),
-    }));
+    mockSpawnHomes(calls);
     const { ContainerSessionRunner } = await import("../container-session-runner.js");
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const runner = fakeContainerRunner(ContainerSessionRunner, {
@@ -442,27 +390,14 @@ describe("makeNonTurnGenerateText — credential window", () => {
     } as never);
 
     expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
-    expect(calls).toContain("wipe");
+    expect(calls).toEqual(["provision-home", "release-home"]);
   });
 
   it("closes the credential window when provisioning itself throws", async () => {
     const calls: string[] = [];
-    vi.doMock("../session-credentials.js", () => ({
-      provisionSubAgentCredentials: () => calls.push("provision"),
-      releaseSubAgentCredentials: () => {
-        calls.push("wipe");
-        return "acct_marker";
-      },
-      provisionSubAgentSpawnHome: () => {
-        calls.push("provision-home");
-        throw new Error("ENOSPC: no space left on device");
-      },
-      releaseSubAgentSpawnHome: () => calls.push("release-home"),
-      subAgentSpawnHomeContainerDir: (spawnId: string) => `/credentials/sub-agent-homes/${spawnId}`,
-      syncAgentTokenBack: () => calls.push("sync"),
-      syncProviderAccountTokenBack: () => calls.push("sync-account"),
-      provisionProviderAccountCredentials: () => calls.push("restore"),
-    }));
+    mockSpawnHomes(calls, () => {
+      throw new Error("ENOSPC: no space left on device");
+    });
     const { ContainerSessionRunner } = await import("../container-session-runner.js");
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const runner = fakeContainerRunner(ContainerSessionRunner, {
@@ -475,7 +410,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const generate = makeNonTurnGenerateText({
       ...(deps as object),
       getRunnerRegistry: () => ({ get: () => runner }),
-      sessionManager: { get: () => ({ agentId: "claude" }) },
       credentialsDir: TEST_CREDENTIALS_DIR,
       fallback: async () => "unused",
     } as never);

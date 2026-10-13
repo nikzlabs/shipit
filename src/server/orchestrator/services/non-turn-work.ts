@@ -3,7 +3,6 @@ import type { AgentId, AgentRequestUsage, NonTurnFailureCard } from "../../share
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { UsageManager } from "../usage.js";
 import type { CredentialStore } from "../credential-store.js";
-import type { SessionManager } from "../sessions.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { PersistedMessage } from "../chat-history.js";
 import {
@@ -16,15 +15,10 @@ import { getErrorMessage } from "../validation.js";
 import { getModel } from "../../shared/catalogue/index.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import {
-  provisionProviderAccountCredentials,
-  provisionSubAgentCredentials,
   provisionSubAgentSpawnHome,
-  releaseSubAgentCredentials,
   releaseSubAgentSpawnHome,
   subAgentSpawnHomeContainerDir,
   subAgentSpawnHomeDir,
-  syncAgentTokenBack,
-  syncProviderAccountTokenBack,
 } from "../session-credentials.js";
 import {
   resolveNonTurnModel,
@@ -70,7 +64,6 @@ export interface NonTurnWorkDeps {
   chatHistoryManager: NonTurnFailurePersister;
   usageManager?: UsageManager | undefined;
   credentialsDir?: string | undefined;
-  sessionManager?: Pick<SessionManager, "get"> | undefined;
   // Injection point for the direct clients' transport.
   fetchImpl?: typeof fetch | undefined;
 }
@@ -500,17 +493,12 @@ async function runNonTurnSpawn(
   const credentialsDir = deps.credentialsDir;
   const provisioned = (runner instanceof ContainerSessionRunner || target.harnessId === "opencode") && !!credentialsDir;
   const accountId = target.route?.kind === "account" ? target.route.id : undefined;
-  // Isolate same-harness credentials from the live primary CLI, which can reread them mid-turn.
-  const sameHarness = deps.sessionManager?.get(sessionId)?.agentId === target.harnessId || target.harnessId === "opencode";
   try {
-    // Provision inside try so partial failures still release the credential borrow.
+    // Provision inside try so a partial failure still releases the home.
     if (target.harnessId === "opencode" && accountId && deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", accountId)) throw new Error("ChatGPT account renewal failed.");
+    // A private home for each run, as in runSubAgent: runs that share one home break each other's CLI state.
     if (provisioned && credentialsDir) {
-      if (sameHarness) {
-        provisionSubAgentSpawnHome(credentialsDir, sessionId, spawnId, target.harnessId, accountId);
-      } else {
-        provisionSubAgentCredentials(credentialsDir, sessionId, target.harnessId, spawnId, accountId);
-      }
+      provisionSubAgentSpawnHome(credentialsDir, sessionId, spawnId, target.harnessId, accountId);
     }
     const result = await runner.spawnSubAgent({
       agentId: target.harnessId,
@@ -519,7 +507,7 @@ async function runNonTurnSpawn(
       depth: 0,
       model: target.selection.modelId,
       ...(target.serviceRouting ? { serviceRouting: target.serviceRouting } : {}),
-      ...(sameHarness && provisioned
+      ...(provisioned
         ? { homeDir: runner instanceof ContainerSessionRunner ? subAgentSpawnHomeContainerDir(spawnId) : subAgentSpawnHomeDir(credentialsDir, sessionId, spawnId) }
         : {}),
       timeoutMs: NON_TURN_SPAWN_TIMEOUT_MS,
@@ -556,29 +544,6 @@ async function runNonTurnSpawn(
     emitNonTurnFailure(deps, { sessionId, purpose, target, detail: getErrorMessage(err) });
     return "";
   } finally {
-    // Sync renewed tokens before removing borrowed credentials.
-    if (provisioned && credentialsDir) {
-      if (sameHarness) {
-        releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId);
-      } else {
-        try {
-          if (accountId) syncProviderAccountTokenBack(credentialsDir, sessionId, target.harnessId, accountId);
-          else syncAgentTokenBack(credentialsDir, sessionId, target.harnessId);
-        } catch {
-          // Release the borrow even when token sync fails.
-        }
-        // The borrow captured the prior account; reading the current marker would find the borrower.
-        const restoreAccountId = releaseSubAgentCredentials(credentialsDir, sessionId, target.harnessId, spawnId);
-        const session = deps.sessionManager?.get(sessionId);
-        if (session?.agentId === target.harnessId && restoreAccountId) {
-          provisionProviderAccountCredentials(
-            credentialsDir,
-            sessionId,
-            target.harnessId,
-            restoreAccountId,
-          );
-        }
-      }
-    }
+    if (provisioned && credentialsDir) releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId);
   }
 }
