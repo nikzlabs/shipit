@@ -299,18 +299,26 @@ read it; if nothing does after this change, it is dropped in the same PR.
 
 ### 4b. The borrow — the hole this closed and then reopened (2026-08-17)
 
-The identity check above makes the subtree belong to the turn's account *at
-spawn time*. It does not hold for the whole turn, because something else writes
-that same subtree **while the turn runs**: a same-harness `shipit agent run`,
-session naming, or voice cleanup provisions its own credentials into the
-session's dir (`provisionSubAgentCredentials`) and routes independently of the
-session — under `balanced` the background work takes the least-recently-used
-account, which is by design *the other one*.
+**The borrow is gone.** Since 2026-10-13 every provisioned spawn runs from a
+private home (docs/144-cross-agent-review §4), and the code that lent the
+session's subtree to background work — the provision and release functions and
+their ledger of holders — is deleted. This section stays because three things
+that the borrow's incidents produced are still in the code: the marker's
+identity check on every write-back, the atomic marker write, and the marker
+repair. It describes the borrow itself in the past tense.
 
-For the duration of that borrow the session's token file holds the borrowed
+The identity check above makes the subtree belong to the turn's account *at
+spawn time*. It did not hold for the whole turn, because something else wrote
+that same subtree **while the turn ran**: a same-harness `shipit agent run`,
+session naming, or voice cleanup provisioned its own credentials into the
+session's dir and routed independently of the session — under `balanced` the
+background work takes the least-recently-used account, which is by design *the
+other one*.
+
+For the duration of that borrow the session's token file held the borrowed
 account's bearer while both write-back paths — the turn-end sync-back and the
-docs/153 mid-turn publisher, which polls every 3s — are still pointed at the
-session's own account. Their only guard is a freshness compare, which orders two
+docs/153 mid-turn publisher, which polls every 3s — were still pointed at the
+session's own account. Their only guard was a freshness compare, which orders two
 tokens and cannot tell whose they are, so the borrowed token published straight
 into the session's account root whenever it was the newer of the two. It usually
 was: **a freshly reconnected account has the latest expiry there is**, which is
@@ -319,8 +327,8 @@ account I reconnected spread to my other account" — both rows then held one
 bearer, and `quarantineDuplicateClaudeCredentials` marked both `auth_failed` at
 the next boot with no way to say which row owned it.
 
-The same hazard runs in the direction that looks safe. A reserved/legacy-route
-session still gets same-harness background work, and that work routes to an
+The same hazard ran in the direction that looks safe. A reserved/legacy-route
+session still got same-harness background work, and that work routed to an
 *account* of its own — so the flat write-back (`syncAgentTokenBack`) could be
 handed an account's bearer. That is worse than one more misplaced copy:
 `<credentialsRoot>/.claude/.credentials.json` is exactly what
@@ -330,16 +338,14 @@ account's token — and the duplicate quarantine then demands a reconnect of bot
 
 The close is identity before ordering, on the record that already exists:
 
-- **The borrow states what is on disk.** `provisionSubAgentCredentials` writes
-  the account marker, and `removeSubAgentCredentials` clears it — the marker
-  describes the copy, so it travels with the copy. The account to restore is
-  captured by the borrow itself (see the follow-up below; callers used to read
-  it before provisioning, which is what raced).
+- **The borrow stated what was on disk.** It wrote the account marker with its
+  copy, and the wipe (`removeSubAgentCredentials`) cleared it — the marker
+  describes the copy, so it travels with the copy.
 - **`syncProviderAccountTokenBack` refuses any write the marker does not
   agree with**, so the guarantee is at the single write rather than at each of
-  its four call sites. An absent marker is equally a refusal: every
-  account-routed turn writes one, so its absence means no account turn has run
-  here and there is nothing of that account's to publish. `syncAgentTokenBack`
+  its four call sites. An absent marker was equally a refusal at first, on the
+  reasoning that every account-routed turn writes one; the follow-up below
+  replaced that with a repair for the session's own route. `syncAgentTokenBack`
   carries the mirror rule — a subtree that names any account may not publish to
   the flat root.
 - **The marker also decides which subtrees an account may HARVEST from**
@@ -349,14 +355,12 @@ The close is identity before ordering, on the record that already exists:
   selects the subtrees to read by this marker, for the same reason the write
   side checks it — token bytes cannot say whose they are. Same refusals, same
   direction: it publishes through `syncProviderAccountTokenBack` with
-  `sessionOwnRoute` on the marker's authority, so a *recorded* borrow refuses
-  the whole window and an unmarked subtree is never guessed at. It is a fifth
-  reader, not a new rule — and it inherits both of the rule's limits, which
-  matter more here because a tick fires on a timer and scans every subtree on
-  the disk rather than the one session taking a turn: the marker records
-  intended provisioning rather than the bytes present (below), and the borrow
-  ledger is not re-entrant, so overlapping borrows clear the guard early
-  (planning#463). The harvest adds one condition of its own that the turn-end
+  `sessionOwnRoute` on the marker's authority, and an unmarked subtree is never
+  guessed at. It is a fifth reader, not a new rule — and it inherits the rule's
+  limit, which matters more here because a tick fires on a timer and scans
+  every subtree on the disk rather than the one session taking a turn: the
+  marker records intended provisioning rather than the bytes present (below).
+  The harvest adds one condition of its own that the turn-end
   write-back does not need — the token file must physically resolve inside its
   own subtree, or a leaked subtree-root symlink would offer another account's
   root as if it were a session's rotation.
@@ -367,8 +371,8 @@ overlapping same-harness borrows are safe to leave: each could capture the
 other's account as the one to restore, but "no cross-account credential can be
 published while it is true, and the next turn's identity check reprovisions."
 That reasoning only ever considered the marker being *wrong*. The state the
-overlap actually produces is the marker being *gone* — a borrow whose capture
-read `undefined` restores nothing and clears it — and an absent marker was
+overlap actually produced was the marker being *gone* — a borrow whose capture
+read `undefined` restored nothing and cleared it — and an absent marker was
 itself a refusal, so it did not fail closed. It failed permanently:
 
 > A refused write-back is a DROPPED rotation. Anthropic's refresh token is
@@ -387,70 +391,59 @@ write-back publishes a foreign bearer into Y's root on freshness alone. That is
 the shape to remember when reading anything below: **the marker records which
 account a subtree was provisioned for, not whose bytes are in it.** The repair
 added here keys on provenance the marker cannot lose (the turn's own resolved
-route, plus "not lent out"), and it inherits the freshness compare's blindness
-to ownership exactly as every other write-back path does.
+route), and it inherits the freshness compare's blindness to ownership exactly
+as every other write-back path does.
 
-Three changes, each aimed at one half of that:
+Three changes, each aimed at one half of that. The first and the third are
+still in the code; the second went with the borrow:
 
 - **The marker write is atomic** (temp + rename). Every reader treats an
   unparseable file as "no recorded account", so the in-place `writeFileSync`'s
   truncation window was a second, borrow-independent way to read a loss that
   had not happened.
-- **The borrow captures what it displaces, in a process-local ledger**
-  (`beginSubtreeBorrow` / `endSubtreeBorrow`, `session-credentials-scaffold.ts`),
-  at the instant `provisionSubAgentCredentials` overwrites the marker, and
-  `releaseSubAgentCredentials` hands it back for the restore. Callers no longer
-  read the marker themselves — the contract "read the account to restore before
-  provisioning" was implemented twice and raced both times. The ledger is
-  re-entrant, so a borrow taken while another is outstanding inherits the
-  first's captured account: the overlap this section used to accept now
-  resolves to the session's own account rather than to nothing.
+- **The borrow captured what it displaced, in a process-local ledger**, at the
+  instant it overwrote the marker, and its release handed that account back for
+  the restore. Before that, each caller read the marker itself — the contract
+  "read the account to restore before provisioning" was implemented twice and
+  raced both times. The ledger counted its holders, so a borrow taken while
+  another was outstanding inherited the first's captured account.
 - **A write-back on the session's own turn route repairs a lost marker rather
-  than dropping the rotation** (`{ sessionOwnRoute: true }`, passed only by the
-  turn-end sync-back and the mid-turn publisher). Absence is no longer assumed
-  to mean "no account turn has run here"; the ledger distinguishes a flat-route
-  borrow (refuse — the subtree is lent out) from a marker that went missing
-  (record it and publish). Such a caller also refuses for the *whole* duration
-  of a borrow whatever the marker says, because the borrow writes its marker
-  after its copy lands.
+  than dropping the rotation** (`{ sessionOwnRoute: true }` on
+  `syncProviderAccountTokenBack`, passed by the turn-end sync-back, the
+  mid-turn publisher and the refreshers' harvest). Absence is no longer assumed
+  to mean "no account turn has run here": such a caller records the account
+  and publishes. A caller that does not pass it is refused as before; no
+  production caller omits it now. While the borrow existed, the ledger also
+  made such a caller refuse for the *whole* duration of a borrow, because a
+  flat-route borrow cleared the marker and every borrow wrote its marker after
+  its copy landed.
 
-The identity guarantee is unchanged: a borrowed account's marker still names
-that account, so `holder !== accountId` refuses exactly as before, and a
-borrow's own write-back passes no `sessionOwnRoute` and can never repair its way
-into another account's root.
+The identity guarantee is unchanged: a marker that names another account
+refuses (`holder !== accountId`) whatever the caller passes, so the repair
+applies only where no account is recorded.
 
 **Counting it in production.** Every write-back outcome that is not an ordinary
 publish prints one `key=value` record — `write-back=repaired … reason=lost-marker`
-and `write-back=refused … reason=borrow-in-flight | no-recorded-account |
-other-account | subtree-holds-account` — with the original sentence kept verbatim
+and `write-back=refused … reason=no-recorded-account | other-account |
+subtree-holds-account | source-absent` — with the original sentence kept verbatim
 after it, because the incident was diagnosed by grepping that sentence. A repair
 count measures marker losses **that a rotation landed on**, which is the
 population that costs anything; a loss whose session simply stops rotating shows
 up instead as the next turn's `[credentials] <session> account subtree replaced
 for <id>` heal. Count both to see the whole shape.
 
-**Where the borrow opens matters as much as what it records.** Both callers used
-to provision *before* their `try`, so a provisioning failure (ENOSPC, a source
-root deleted between route resolution and copy) threw past every cleanup — and
-after the ledger existed, that left the subtree recorded as lent out for the
-process's lifetime, refusing the session's own write-backs forever. That is the
-incident's own symptom reached from a second direction, so the provision now
-happens as the first statement inside each caller's `try`. Nothing between the
-old and new positions needs credentials; the only thing that changed is what
-cleans up. The two bare-wipe call sites are deliberate and must stay bare: the
-account failover swaps one borrowed account for another *within* one borrow, and
-the sign-out sweep wipes a cross-provider subtree it never borrowed.
+**Where the borrow opened mattered as much as what it recorded.** Both callers
+used to provision *before* their `try`, so a provisioning failure (ENOSPC, a
+source root deleted between route resolution and copy) threw past every
+cleanup — and after the ledger existed, that left the subtree recorded as lent
+out for the process's lifetime, refusing the session's own write-backs forever.
+That was the incident's own symptom reached from a second direction, so the
+provision moved inside each caller's `try`.
 
-A crash mid-borrow now leaves a marker that *disagrees* with the session's
-route, which makes the next turn's identity check reprovision — where a stale
-"match" used to let the session spawn on the borrowed account's token, which is
-this section's own poisoning class arriving through the back door.
-
-**Since 2026-10-13 nothing opens a borrow.** Every provisioned spawn, cross-harness
-ones included, runs from a private home (docs/144-cross-agent-review §4), so
-`provisionSubAgentCredentials` and the ledger have no caller, and the
-`borrow-in-flight` refusal cannot fire. The marker's identity check is what still
-guards the session's own write-backs.
+A crash mid-borrow left a marker that *disagreed* with the session's route,
+which made the next turn's identity check reprovision. The same check heals a
+subtree of the session's own harness that a build with the borrow left behind;
+the sign-out sweep (`removeSubAgentCredentials`) wipes one of another harness.
 
 ## 5. Account identity is process-scoped (design-context constraint)
 
@@ -599,8 +592,8 @@ plus, at most, the running-turn wait message.
 | Router + refusal memory | `provider-account-manager.ts`, `credential-store.ts`, `service-routing.ts` |
 | Attempt loop | `turn-executor.ts`, `ws-handlers/agent-listeners.ts`, `ws-handlers/agent-rate-limits.ts` |
 | Env-prep / provisioning | `session-agent-env.ts`, `token-sync-manager.ts`, `session-credentials.ts` |
-| Subtree account marker (§4b) | `session-credentials-scaffold.ts` (definition — the token sync reads it without a cycle), `session-agent-credentials.ts` (re-export + writers), `session-token-publisher.ts`, `services/sub-agent.ts`, `services/non-turn-work.ts`, `agents/claude/oauth-refresher.ts` (harvest scope, planning#462) |
-| Borrow ledger + marker repair (§4b, planning#445) | `session-credentials-scaffold.ts` (`beginSubtreeBorrow`/`endSubtreeBorrow`/`subtreeBorrowInFlight`), `session-agent-credentials.ts` (`releaseSubAgentCredentials`), `token-sync-manager.ts` (`sessionOwnRoute`) |
+| Subtree account marker (§4b) | `session-credentials-scaffold.ts` (definition and atomic write — the token sync reads it without a cycle), `session-agent-credentials.ts` (re-export + writers), `session-token-publisher.ts`, `services/sub-agent.ts` (sign-out sweep), `agents/claude/oauth-refresher.ts` (harvest scope, planning#462) |
+| Marker repair (§4b, planning#445) | `token-sync-manager.ts` (`sessionOwnRoute` on `syncProviderAccountTokenBack`) |
 | Process identity / capture | `ws-handlers/agent-execution.ts`, `runner-registry-factory.ts`, `bootstrap-managers.ts`, `session/agent-controller.ts` + `shared/types/agent-types.ts` (worker status route echo), `usage.ts` + `shared/database.ts` (attribution column) |
 | Dispatched / warm-up entry points | `dispatched-turn.ts`, `resident-spawn-guard.ts`, `services/github-ci-fix.ts`, `wake-session.ts`, `services/headless-sessions.ts`, `services/child-sessions.ts`, `services/sub-agent.ts` |
 | String-credential surface | `service-routing.ts` (`stringSelectionFor`), `services/credential-routes.ts`, `api-routes-bootstrap.ts`, `components/Settings/ServicesPanel.tsx` |

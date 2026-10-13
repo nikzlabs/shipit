@@ -710,8 +710,9 @@ no container-local `grok login`):
   `SHIPIT_CREDENTIAL_*`. The listing is not that mount: an ordinary
   session can still *name* a grok subscription target, and
   `shipit agent run` — role or explicit — resolves the route
-  server-side and copies the grok account in for the spawn
-  (`provisionSubAgentCredentials`), then wipes auth on the way out.
+  server-side and copies the grok account into a private home for the
+  spawn (`provisionSubAgentSpawnHome`), then releases that home
+  (docs/144-cross-agent-review §4).
   `--role GrokSub` and the explicit four-plus-effort form are the
   same credential path. Do not provision every account into every
   session to make the worker look like the listing.

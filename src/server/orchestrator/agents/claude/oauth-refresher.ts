@@ -1088,7 +1088,6 @@ export class ClaudeOAuthRefresher extends EventEmitter<ClaudeOAuthRefresherEvent
 
   // Require both the account marker and physical containment. The writable marker
   // records intended ownership; it cannot prove which account owns the token bytes.
-  // Write-back guards also reject recorded sub-agent borrows.
   private harvestSessionRotations(accountId: string): HarvestResult | null {
     const credentialsDir = this.deps.credentialsDir;
     let entries: fs.Dirent[];

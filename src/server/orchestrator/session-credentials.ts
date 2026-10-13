@@ -6,8 +6,6 @@ export {
   ensureSessionCredentialsScaffold,
   removeSessionCredentials,
   sessionCredentialsRoot,
-  clearSubtreeBorrows,
-  subtreeBorrowInFlight,
 } from "./session-credentials-scaffold.js";
 
 export {
@@ -16,11 +14,9 @@ export {
   ensureSessionAccountCredentials,
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
-  provisionSubAgentCredentials,
   provisionSubAgentSpawnHome,
   readSessionAccountMarker,
   readSessionResidentRoute,
-  releaseSubAgentCredentials,
   releaseSubAgentSpawnHome,
   removeSubAgentCredentials,
   removeSubAgentSpawnHomesOf,
@@ -41,7 +37,6 @@ export {
   repushProviderAccountToken,
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
-  preserveBorrowedTokensBeforeWipe,
 } from "./token-sync-manager.js";
 
 export {

@@ -651,7 +651,7 @@ export function finalizeSessionAgentEnvironment(
         { sessionOwnRoute: true },
       );
     } else if (route?.providerRouteId !== "claude-env-oauth") {
-      syncAgentTokenBack(args.deps.credentialsDir, args.sessionId, args.agentId, { sessionOwnRoute: true });
+      syncAgentTokenBack(args.deps.credentialsDir, args.sessionId, args.agentId);
     }
   } catch (err) {
     console.warn("[credentials] token sync-back failed:", getErrorMessage(err));
