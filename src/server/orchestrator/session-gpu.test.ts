@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { gpuEnv, gpuFromContainer, gpuGraphicsBinds, gpuReason, gpuRequestRefusal, noGpuWhy } from "./session-gpu.js";
+import { GPU_GRAPHICS_GLIBC_TUNABLES } from "../shared/gpu-graphics-env.js";
+import {
+  GPU_GRAPHICS_ENV, gpuEnv, gpuFromContainer, gpuGraphicsBinds, gpuReason, gpuRequestRefusal, noGpuWhy,
+} from "./session-gpu.js";
 
 describe("gpuFromContainer — an adopted container's state", () => {
   it("reads the state each create leaves on the container", () => {
@@ -24,6 +27,12 @@ describe("gpuGraphicsBinds", () => {
   it("binds nothing on a kernel that is not WSL2's", () => {
     expect(gpuGraphicsBinds("6.8.0-1017-azure")).toEqual([]);
     expect(gpuGraphicsBinds("6.1.0-18-amd64")).toEqual([]);
+  });
+});
+
+describe("GPU_GRAPHICS_ENV", () => {
+  it("is the copy tunable under the name that glibc reads (req 12)", () => {
+    expect(GPU_GRAPHICS_ENV).toEqual([`GLIBC_TUNABLES=${GPU_GRAPHICS_GLIBC_TUNABLES}`]);
   });
 });
 
