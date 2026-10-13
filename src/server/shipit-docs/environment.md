@@ -169,6 +169,26 @@ These are infrastructure, not your project — you should never need to write to
 
 Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restricted — the deny list targets the specific credential files, not the whole `~/.claude` tree, precisely so memory updates keep working. Confidentiality of the credentials (reads, exfil) is handled at the network/credential layer, not by these file-edit rules.
 
+### Writes that wait for the user's approval
+
+Some writes are neither allowed nor refused: the agent CLI asks, and ShipIt shows the user an approve/deny card. **The call returns nothing until the user answers.** With no user at the screen it waits: the Claude CLI ends an unanswered request as denied after 30 minutes. So know what asks before you plan around it, most of all for work you give to subagents.
+
+For the Claude agent (measured with Claude Code 2.1.293):
+
+| Write | Card? |
+|---|---|
+| An ordinary file under `/workspace`, by Write, Edit, or a shell command | No |
+| `/persist` or `/tmp` by its **real path**, by Write, Edit, or a shell command | No |
+| Through a **symlink in `/workspace` that points into `/persist`** | No |
+| Through a symlink in `/workspace` that points to **another place outside `/workspace`** (measured with `/tmp`), by Write, Edit, or a shell command whose target the CLI can read (`>`, `cp`, `mv`, `mkdir`, `touch`, `tee`, `sed -i`) | **Yes** |
+| A file the CLI treats as sensitive, for example `.env` or `.npmrc` | **Yes** |
+
+So a scratch directory that you move to `/persist` and link back into the workspace stays writable through the link. For any other place outside the workspace, use the real path, not a symlink in the workspace.
+
+When a **background subagent** makes a call that asks, you get no result and no error from it. After two minutes ShipIt puts a `[ShipIt]` line in your running turn that lists the calls that wait. You can stop that subagent, or get its work done in a way that needs no approval. The line needs a turn of yours that runs and the user's live steering setting to be on: if your turn ended while you waited for the subagents, the line comes in your next turn when the call still waits then. A call of your own that asks keeps you inside the call until it has an answer, and so does a call of a subagent that you did not start in the background.
+
+This section is about the Claude agent. The other harnesses were not measured.
+
 ## Installed tools
 
 - **Node.js** (with npm; `pnpm` and `yarn` are available via corepack — it reads the repo's `packageManager` field and fetches the pinned version). The container bakes Node 24, but **a repo's own Node pin wins** — see [Node version](#node-version) below.
