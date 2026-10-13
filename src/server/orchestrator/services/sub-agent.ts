@@ -318,6 +318,9 @@ async function runSubAgentInSlot(
   const credentialsDir = deps.credentialsDir;
 
   const spawnId = randomUUID();
+  // One home for each attempt: a release can keep a home as the only copy of a rotated token,
+  // and provisioning into that home again would delete it.
+  let homeId = spawnId;
   const cardId = randomUUID();
   // Completion may happen during a different turn.
   const originatingTurnEpoch = runner.turnEpoch ?? 0;
@@ -330,7 +333,7 @@ async function runSubAgentInSlot(
       `[sub-agent] provision-spawn-home session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
       + `account=${accountId ?? "flat"}`,
     );
-    provisionSubAgentSpawnHome(credentialsDir, sessionId, spawnId, subAgentId, accountId);
+    provisionSubAgentSpawnHome(credentialsDir, sessionId, homeId, subAgentId, accountId);
   };
   const startedAtMs = Date.now();
   runner.emitMessage({ type: "sub_agent_spawn", sessionId, spawnId, subAgentId });
@@ -427,7 +430,7 @@ async function runSubAgentInSlot(
         spawnId,
         depth,
         ...(provisioned
-          ? { homeDir: runner instanceof ContainerSessionRunner ? subAgentSpawnHomeContainerDir(spawnId) : subAgentSpawnHomeDir(credentialsDir!, sessionId, spawnId) }
+          ? { homeDir: runner instanceof ContainerSessionRunner ? subAgentSpawnHomeContainerDir(homeId) : subAgentSpawnHomeDir(credentialsDir!, sessionId, homeId) }
           : {}),
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
         model: spawnModel,
@@ -483,10 +486,11 @@ async function runSubAgentInSlot(
         `[sub-agent] account-fallback session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
         + `benched=${failedRoute.id} next=${fallback.route.id}`,
       );
-      if (provisioned && credentialsDir) releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId);
+      if (provisioned && credentialsDir) releaseSubAgentSpawnHome(credentialsDir, sessionId, homeId);
       route = fallback.route;
       accountId = route.kind === "account" ? route.id : undefined;
       attemptedRouteIds.add(route.id);
+      homeId = `${spawnId}-${attemptedRouteIds.size}`;
       await provisionAttempt();
       result = await spawn();
       exhausted = detectExhaustion(result);
@@ -586,7 +590,7 @@ async function runSubAgentInSlot(
     throw err;
   } finally {
     if (provisioned && credentialsDir) {
-      releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId);
+      releaseSubAgentSpawnHome(credentialsDir, sessionId, homeId);
       console.log(
         `[sub-agent] release-spawn-home session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
         + `account=${accountId ?? "flat"}`,

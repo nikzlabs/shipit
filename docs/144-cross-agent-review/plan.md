@@ -386,8 +386,12 @@ in a home of its own.
   `releaseSubAgentSpawnHome` publishes it to the root the home's
   `.shipit-spawn-home.json` names — the root it was provisioned from, never a
   caller-supplied account — and only then deletes the home. A rotation that can
-  be neither published nor quarantined keeps the home. The account-failover
-  loop does not honour that: its next attempt provisions the same home again.
+  be neither published nor quarantined keeps the home, and the next container
+  create tries again (`sweepSubAgentSpawnHomes`).
+- **A home is provisioned once.** `provisionSubAgentSpawnHome` empties its
+  target first, so a second provision of a kept home would delete the only
+  copy of that rotation. An account-failover attempt therefore gets a home of
+  its own, `sub-agent-homes/<spawnId>-<attempt>`.
 - **Deleted when the run settles.** The release runs in a `finally` once the
   run has an outcome (success, failure, crash, timeout or cancel), and before
   each account-failover attempt. The worker has signalled the CLI by then; its
@@ -409,7 +413,7 @@ cross-provider spawns until 2026-10-13: they borrowed the session's subtree for
 that harness, with a ledger of holders so that only the last release wiped it
 (planning#572 records the half that ledger did not fix). Same-harness spawns had
 left it on 2026-08-22, when a borrow replaced the live primary's token. Two
-consults of one harness in one turn are routine — a turn may start three — and
+consults of one harness at one moment are routine, and
 a shared home fails them in two ways, both reproduced with three Codex consults
 started at one moment:
 

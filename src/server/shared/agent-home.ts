@@ -9,9 +9,12 @@ export function codexHome(): string {
   return process.env.CODEX_HOME || `${agentHome()}/.codex`;
 }
 
-/** GROK_HOME is the .grok directory itself. Use the spawn's account-scoped home. */
-export function grokHome(home: string): string {
-  return process.env.GROK_HOME || `${home}/.grok`;
+/**
+ * GROK_HOME is the .grok directory itself. A scoped home wins over an inherited GROK_HOME,
+ * which would otherwise send every account and every consult to one directory.
+ */
+export function grokHome(scopedHome?: string): string {
+  return scopedHome ? `${scopedHome}/.grok` : process.env.GROK_HOME || `${agentHome()}/.grok`;
 }
 
 /** Resolve at spawn time, after account routing; undefined keeps the global home. */
