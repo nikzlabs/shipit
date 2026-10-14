@@ -18,43 +18,49 @@ is that directory. Docker Desktop looks that device up on the host, so ShipIt
 refuses the mount there (`docs/317-compose-persist-mount/plan.md`, "Docker
 Desktop").
 
-After this change each session's `/persist` is a plain named volume,
-`shipit-persist-<session-id>`, on every host (req 4). A service's
-`persist/<sub>` mount is a subpath of that volume, and Docker confines a subpath
-to the root of its volume, which is now this session's `/persist` and nothing
-else (reqs 1, 2). An existing session's files are copied into its volume at its
-next start (req 5). The orchestrator cannot read a Docker volume, so the few
-places where ShipIt itself touches `/persist` go through one helper-container
-function.
+After this change each session's `/persist` is a plain named volume of its own,
+on every host (req 4). A service's `persist/<sub>` mount is a subpath of that
+volume, and Docker confines a subpath to the root of its volume, which is now
+this session's `/persist` and nothing else (reqs 1, 2). An existing session's
+files are copied into its volume at its next start (req 5). The orchestrator
+cannot read a Docker volume, so the few places where ShipIt itself touches
+`/persist` go through one helper-container function, and one per-session gate
+orders every user of `/persist`.
 
 ## The volume (req 4)
 
-- **Name:** `shipit-persist-<session-id>`, with the full id.
-- **Labels:** `shipit-managed=true`, `shipit-persist-of=<session-id>`, and
-  `stackLabel(DOCKER_STACK)` (every resource ShipIt creates carries the stack
-  label, `stack-label.ts`, planning#584).
+- **Name:** `<workspace volume>_persist-<session-id>`, for example
+  `shipit_workspace_persist-<uuid>`. The prefix is the install's own workspace
+  volume (`WORKSPACE_VOLUME`, `deployment/vps/docker-compose.yml`), so two
+  installs on one daemon never share a name. Two installs cannot share a
+  workspace volume either, so this isolation is as strong as today's, where
+  `/persist` is inside that volume.
+- **Found by name.** Full reset, the orphan sweep and the backup list persist
+  volumes by that name prefix and read the session id from the name. No code
+  selects them by label, so a volume that Docker created implicitly (a mount of
+  a missing named volume creates it, with no labels) is still found.
+- **Labels:** `shipit-managed=true` and `stackLabel(DOCKER_STACK)`, by
+  convention (`stack-label.ts`, planning#584). They select nothing.
 - **Driver:** `local`, with no `driver_opts`. A plain named volume lives where
   the daemon keeps its volumes: in `/var/lib/docker/volumes` on native Linux and
   inside the VM on Docker Desktop. No host path is looked up, so the Docker
   Desktop problem of docs/317 does not apply.
-- **Created by** the orchestrator through dockerode `createVolume`, when the
-  session's layout is `volume` and a container or a Compose start needs it.
-  `createVolume` with an existing name and driver returns that volume, so the
-  call is idempotent.
+- **Created by** `ensurePersistVolume` (dockerode `createVolume`, idempotent for
+  an existing name). Every mount site gets the name only from that function, so
+  the volume exists before anything mounts it.
 
-The name and the labels are chosen so that no existing removal path matches
-them (verified at the source):
+No existing removal path matches the volume (verified at the source):
 
 | Removal path | Selects by | Matches the new volume? |
 |---|---|---|
-| `pruneSessionVolumes` (`startup-janitor.ts`), on archive, hot→light and discard | `volume prune --filter label=shipit-session=<id>` | No. This is why the label is `shipit-persist-of`, not `shipit-session`: on an engine older than 23, `volume prune` also removes named volumes. |
-| `sweepOrphanSessionVolumes` (`startup-janitor.ts`), at boot | name `^shipit-([a-f0-9-]{12})_` | No (`shipit-persist-` is followed by the full id, not `_`). |
-| `removeProjectVolumes` (`compose-cli.ts`), after `down --volumes` | `com.docker.compose.project` | No. ShipIt creates the volume, and Compose neither labels nor removes an `external: true` volume (Compose's documented behaviour, not tested here). |
-| `cleanupSessionDockerResources` (`container-lifecycle.ts`), on every destroy | `shipit-parent-session=<id>` | No. That label also lets the agent delete the volume through the Docker proxy (`docker-proxy-auth.ts`), so it must never be set. |
+| `pruneSessionVolumes` (`startup-janitor.ts`), on archive, hot→light and discard | `volume prune --filter label=shipit-session=<id>` | No. The volume does not carry `shipit-session`: on an engine older than 23, `volume prune` also removes named volumes. |
+| `sweepOrphanSessionVolumes` (`startup-janitor.ts`), at boot | name `^shipit-([a-f0-9-]{12})_` | No. The name starts with the workspace volume name (`shipit_…` or `shipit-prod_…`). A test pins this for both standard names. |
+| `removeProjectVolumes` (`compose-cli.ts`), after `down --volumes` | `com.docker.compose.project` | No. ShipIt creates the volume, and Compose neither labels nor removes an `external: true` volume (Compose's documented behaviour). |
+| `cleanupSessionDockerResources` (`container-lifecycle.ts`), on every destroy | `shipit-parent-session=<id>` | No. That label would also let the agent delete the volume through the Docker proxy (`docker-proxy-auth.ts`), so it must never be set. |
 | `reapOrphanPluginInstalls` (`plugin-install.ts`), at boot | `shipit-plugin-generation` | No. |
-| `stop.sh --purge` (`deployment/*/stop.sh`) | the install's own Compose file | No. The volumes survive a purge, like project volumes do today. |
+| `stop.sh --purge` (`deployment/*/stop.sh`) | the install's own Compose file | No. The volumes survive a purge, as project volumes do today. |
 
-A unit test pins that the volume's labels contain none of `shipit-session`,
+A unit test pins that the labels contain none of `shipit-session`,
 `shipit-parent-session`, `com.docker.compose.project` and
 `shipit-plugin-generation`.
 
@@ -62,10 +68,11 @@ A unit test pins that the volume's labels contain none of `shipit-session`,
 
 One small file in the session's own directory records the layout:
 `sessions/<id>/persist-layout`, with the content `volume`. The session directory
-is sealed to the session (`session-worker-uid.ts`) and is never mounted into a
-container (docs/270), so the agent cannot write the record. Checkout reclaim
-removes only `workspace/`, `overlay/` and `state/` (`REGENERABLE_SESSION_SUBDIRS`,
-`disk-utils.ts`), so the record survives it.
+is sealed to the session (`session-worker-uid.ts`) and no container mounts it,
+only its children (`container-lifecycle.ts`, docs/270), so the agent cannot
+write the record. Checkout reclaim removes only `workspace/`, `overlay/` and
+`state/` (`REGENERABLE_SESSION_SUBDIRS`, `disk-utils.ts`), so the record
+survives it.
 
 `persistLayout(sessionDir)` is synchronous and decides:
 
@@ -77,74 +84,102 @@ removes only `workspace/`, `overlay/` and `state/` (`REGENERABLE_SESSION_SUBDIRS
 | absent | present | scratch | Not copied yet. |
 
 **The scratch directory is authoritative until the record says `volume`, and
-only the copy step writes `volume` over an existing `scratch/`.** That is what
-keeps a stray `scratch/` from causing data loss: a directory that some code
-creates after the copy changes nothing, because nothing wipes a volume whose
-record says `volume`.
+only the copy writes `volume` over an existing `scratch/`.** So a stray
+`scratch/` that some code creates later changes nothing: nothing wipes a volume
+whose record says `volume`.
 
-Every caller that today builds a path under `scratch/` asks `persistLayout`
-first: container creation, `ServiceManager.prepareStart`, the Compose helper,
-the replay writer, the retention sweep and Full reset.
+## One gate for every user of /persist
+
+`/persist` has users inside the orchestrator process and containers that can
+outlive it. Each kind is ordered differently.
+
+**Inside the process**, a per-session read-write gate in `persist-volume.ts`:
+
+- **Shared:** creating the agent container, every run of the confined Compose
+  helper (read, `config`, `build`, `up`), and the prepare and measure helper
+  runs.
+- **Exclusive:** the copy, a retention deletion, and Full reset of that session.
+
+Compose can start before the agent container exists on a cold start
+(`app-lifecycle.ts` creates the container in the background while
+`service-manager-setup.ts` starts Compose), and `ServiceManager.start` reads the
+project file through the helper before `prepareStart` (`service-manager.ts`). So
+the gate wraps the helper runs themselves, not only `prepareStart`.
+
+**Containers that can outlive the process.** Every persist helper container
+carries `shipit-persist-helper=<session-id>` and `shipit-boot=<boot id>`, a value
+the orchestrator picks at process start. An exclusive section first force-removes
+the session's persist helpers from an earlier boot, then checks that the session
+has no other container at all, in any state:
+
+- `shipit-session-id=<id>`: the agent container (`container-lifecycle.ts`);
+- `shipit-parent-session=<id>`: Compose services, and containers the agent made
+  through the Docker proxy (`compose-generator.ts`, `docker-proxy.ts`);
+- `shipit-compose-helper=<id>`: confined Compose helpers (`compose-helper.ts`).
+
+A persist helper of an earlier boot can still be writing, for example a copy
+that was running when ShipIt crashed. Removing it before the new section begins
+is what makes a repeated wipe and copy safe. Helpers of the current boot hold
+the shared side, so the exclusive side never meets one.
 
 ## Copy at the next start (req 5)
 
-`ensurePersistVolume(sessionId)` runs before the agent container is created
-(`createContainer`, `container-lifecycle.ts`) and before every Compose start
-(`ServiceManager.prepareStart`). Both can run at once on a cold start: the
-runner creates the container in the background while `setupServiceManager`
-starts Compose (`app-lifecycle.ts`, `service-manager-setup.ts`), and Compose can
-start before the agent container exists. So the function is single-flight per
-session, and the second caller waits for the first.
+"The next start" is the next time ShipIt creates the session's agent container
+(`createContainer`, `container-lifecycle.ts`). Only that path copies;
+`ServiceManager.prepareStart` waits at the gate and uses whatever layout the
+session then has.
 
-The copy runs only when the layout is `scratch` **and the session has no
-container at all**: no container labelled `shipit-session-id=<id>` (the agent,
-`container-lifecycle.ts`) or `shipit-parent-session=<id>` (Compose services and
-containers the agent made through the Docker proxy), in any state. A container
-that exists still has the old mount. This happens when:
+Under the exclusive gate, when the layout is `scratch`:
 
-- ShipIt restarted and re-adopted a running agent container
-  (`container-discovery.ts`);
-- idle reclaim removed the agent container and kept the preview
-  (`idle-enforcer.ts`, `preserveComposeOnDispose`).
+1. Stop the session's Compose stack through its `ServiceManager` (`stop`,
+   without volumes), if it runs. That is the case after idle reclaim, which
+   keeps the preview (`idle-enforcer.ts`, `preserveComposeOnDispose`), and after
+   a cold start in which Compose came first. The stack starts again through the
+   normal path after the gate is released, so a session's preview restarts once.
+2. Remove leftover persist helpers and check for containers, as above. If a
+   container remains, for example an agent container that ShipIt re-adopted
+   after a restart, the session stays on the scratch layout for this start.
+3. Create the volume.
+4. In one helper container, with the scratch directory mounted read-only at
+   `/old` (a subpath of the workspace volume, as the agent container mounts it
+   today) and the volume at `/new`, run:
+   `find /new -mindepth 1 -delete && cp -a /old/. /new/ && sync -f /new`.
+   - The wipe makes the step repeatable.
+   - `cp -a` keeps owners, modes, ACLs and symlinks, and it follows no symlink.
+   - `sync -f` flushes the copy before anything depends on it.
+5. Write the record: write a temporary file, fsync it, rename it, fsync the
+   session directory.
+6. Remove `scratch/` with `fs.rm`.
 
-Such a session stays on the old layout until a start with no container, at the
-latest after the 24-hour hot→light step, which destroys everything
-(`tier-escalation.ts`).
-
-The steps:
-
-1. Create the volume.
-2. In one helper container (see *The helper*), as root, with the scratch
-   directory mounted read-only at `/old` (a subpath of the workspace volume, as
-   the agent container mounts it today) and the volume at `/new`:
-   `find /new -mindepth 1 -delete && cp -a /old/. /new/`. The wipe makes the step
-   repeatable after a crash. `cp -a` keeps owners, modes, ACLs and symlinks as
-   symlinks; it follows none.
-3. Write the record `volume`: write a temporary file, fsync it, rename it.
-4. Remove `scratch/` with `fs.rm` (it is in the workspace volume).
-
-| Crash or failure | Next call sees | What happens |
+| Crash or failure | Next start sees | What happens |
 |---|---|---|
-| During 1 or 2 | no record, `scratch/` | Steps 1–4 run again. Step 2 wipes the partial copy first. |
-| Between 3 and 4, or during 4 | `volume`, `scratch/` | Step 4 runs again. |
-| Step 2 fails (for example no disk space) | — | ShipIt logs it, empties the volume (best effort), and this start continues on the old layout. The next start tries again. |
+| During 1–4, a ShipIt crash | no record, `scratch/` | Steps 1–6 run again. Step 2 removes a copy helper that is still running; step 4 wipes the partial copy. |
+| During 1–4, a host or VM crash | no record, `scratch/` | The same. |
+| Between 5 and 6, or during 6 | `volume`, `scratch/` | Step 6 runs again. |
+| Step 4 fails (for example no disk space) | — | ShipIt logs it, empties the volume (best effort), and this start continues on the scratch layout. The next start tries again. |
 
-The start waits for the copy. For a large `/persist` the first start after the
-update is slower, once; ShipIt logs the size and the time.
+The start waits for the copy, so for a large `/persist` the first start after
+the update is slower, once. ShipIt logs the size and the time.
+
+A session whose agent container is never created again stays on the scratch
+layout. That is the user's choice of "copy at next start" (requirements,
+resolved questions).
 
 ## The agent container (req 4; docs/317 req 5)
 
 For the volume layout, `buildMounts` (`container-lifecycle.ts`) mounts
-`{Type: "volume", Source: "shipit-persist-<id>", Target: "/persist"}`, and
-`createContainer` no longer creates `scratch/`. The scratch layout keeps today's
-subpath mount.
+`{Type: "volume", Source: <persist volume>, Target: "/persist"}`, and
+`createContainer` no longer creates `scratch/`. The scratch layout keeps
+today's subpath mount.
 
 Ownership needs no new code in the agent container. The worker entrypoint runs
-`chown -R` on `/persist` when the marker directory `.shipit-uid-<uid>-<gid>-v3`
-is missing (`docker/session-worker/entrypoint.sh`). A new volume has no marker,
-so its empty root goes to the session user. A copied volume has the marker from
-the copy, so nothing is changed again. The image has no `/persist` directory, so
-Docker copies nothing into an empty volume.
+as root without `DAC_OVERRIDE`. It runs `chown -R` on `/persist` when root can
+still write it and the marker directory `.shipit-uid-<uid>-<gid>-v3` is missing
+or has the wrong owner (`docker/session-worker/entrypoint.sh`). A new volume's
+root belongs to root and has no marker, so it goes to the session user. A copied
+volume's root already belongs to the session user, so root cannot write it and
+nothing is changed. The image has no `/persist` directory, so Docker copies
+nothing into an empty volume.
 
 ## Compose services (reqs 1, 2, 3)
 
@@ -161,7 +196,7 @@ services:
         volume: { nocopy: true, subpath: plan }   # no subpath for all of /persist
 volumes:
   persist:
-    name: shipit-persist-<session-id>
+    name: <workspace volume>_persist-<session-id>
     external: true
 ```
 
@@ -180,12 +215,14 @@ volumes:
   volume root must belong to the session (docs/317 req 5). Today
   `preparePersistDir` and `mkdirAsSession` (`compose-persist.ts`) do this with
   direct file operations. For the volume layout, one helper run does the same
-  steps before each `up` that mounts `persist`: as root, it gives the volume
-  root to the session uid and gid, sets `g+rwxs` and the default ACL `g::rwx`.
-  Then, as the session uid (`gosu`), it runs `mkdir -p`, `chmod g+rwxs` and
-  `setfacl -d -m g::rwx` for each subdirectory, with the names passed as
-  arguments, not interpolated into the script. A symlink the agent planted
-  reaches only the helper's own read-only, throwaway filesystem.
+  steps before each `up` that mounts `persist`:
+  - As root, it gives the volume root to the session uid and gid, sets
+    `g+rwxs`, and sets the default ACL `g::rwx`.
+  - Then, as the session uid (`gosu`), it runs `mkdir -p`, `chmod g+rwxs` and
+    `setfacl -d -m g::rwx` for each subdirectory. The names are passed as
+    arguments, never put into the script text.
+  - A symlink the agent planted reaches only the helper's own read-only,
+    throwaway filesystem.
 - `persistVolume` no longer resolves a daemon path for this layout. That path
   (`workspaceVolumeDaemonPath`) stays for `./sub` mounts on native Linux.
 
@@ -200,17 +237,24 @@ same way as `runInstallContainer` (`plugin-install.ts`):
   bypasses the worker entrypoint, and the image has GNU coreutils, `find`,
   `setfacl` and `gosu`.
 - **Isolation:** `NetworkMode: none`, `CapDrop: ALL`, a read-only root
-  filesystem with a tmpfs `/tmp`, `no-new-privileges`, memory and pid limits.
+  filesystem with a tmpfs `/tmp`, `no-new-privileges` (which does not stop
+  `gosu`, a root process dropping its own privileges), memory and pid limits.
 - **Mounts:** only the volume at `/persist` (read-only unless the script
   writes), and for the copy, the scratch subpath at `/old`.
+- **Labels:** `shipit-persist-helper=<session-id>`, `shipit-boot=<boot id>` and
+  the stack label.
 - **Capabilities, per script:**
 
 | Script | Runs as | Capabilities |
 |---|---|---|
-| prepare | root, then the session uid | `CHOWN`, `FOWNER`, `SETUID`, `SETGID` |
-| copy | root | `CHOWN`, `DAC_OVERRIDE`, `FOWNER` |
-| measure and list | root, read-only mount | `DAC_READ_SEARCH` |
+| prepare | root, then the session uid | `CHOWN`, `FOWNER`, `FSETID`, `SETUID`, `SETGID` |
+| copy | root | `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `FSETID` |
+| measure | root, read-only mount | `DAC_READ_SEARCH` |
 | empty | root | `DAC_OVERRIDE`, `FOWNER` |
+
+`FSETID` is needed because Linux clears the setgid bit when root, without that
+capability, sets it on a file whose group is not root's (`chmod(2)`). Today the
+orchestrator has it, because it runs as a full root process.
 
 A warm worker-image container measured 0.7–1.4 s wall clock on a real deployment
 (`docs/262-plugins/real-instance-e2e.md`). The prepare run adds about that much
@@ -218,72 +262,105 @@ to a Compose start that mounts `persist`, and nothing to one that does not.
 
 Rejected: the worker HTTP API. It has no file-write endpoint (verified across
 `session-worker.ts` and its controllers). Also, `/persist` must be reachable
-with no agent container: for a Compose start after idle reclaim, for a fork
-child, and for an archived session.
+with no agent container: for a Compose start after idle reclaim and for an
+archived session.
 
 ### The confined Compose helper
 
 `compose-helper.ts` mounts the scratch directory at its orchestrator path, so a
 reference such as `build.context: ../scratch/app` resolves the same inside the
 helper (`projectMounts`; docs/318 plan). For the volume layout it mounts the
-volume at that same path (`type=volume,src=shipit-persist-<id>,dst=<sessionDir>/scratch`)
+volume at that same path (`type=volume,src=<persist volume>,dst=<sessionDir>/scratch`)
 instead of checking `fs.existsSync`, so those references keep working.
 `readWorkspaceFile` already reads inside the helper, so it needs only the mount.
+Each run holds the shared side of the gate (see above).
 
 ### Replay files
 
 After a rewind, a fork or a retry, the orchestrator writes long tool inputs and
 results as files for the next agent and names them in the replay
 (`services/replay-detail.ts`). Today they go to `scratch/replay`, which the
-agent sees as `/persist/replay`. The writer can run before the target container
-exists (a fork child) and while it runs (a retry during a turn).
+agent sees as `/persist/replay`. The writer runs synchronously, before the
+target container exists (a fork child) or while it runs (a retry during a turn).
 
-For the volume layout the writer uses `sessions/<id>/replay`, an
-orchestrator-owned directory in the workspace volume. Container creation mounts
-it read-only at `/shipit-replay`, and the replay names `/shipit-replay/<file>`.
-The path is computed in one place, `replaySpillDirs`, and no agent doc names it.
-The writer empties the directory instead of removing it, because the mount holds
-the directory itself and a replaced directory would not be visible in a running
-container. The scratch layout keeps writing to `scratch/replay`.
+They move to `sessions/<id>/uploads/.shipit-replay`, for both layouts, and the
+replay names `/uploads/.shipit-replay/<file>`:
+
+- Every agent container already mounts `uploads/` read-only at `/uploads`
+  (`container-lifecycle.ts`), including containers from before the update, and
+  the orchestrator already writes there (`prompt-assembly.ts`).
+- The upload list shows files only and skips directories (`listUploads`,
+  `services/files.ts`).
+- A fork copies only the uploads its messages name (`copyUploadsForFork`), so it
+  does not carry the parent's replay files.
+- The writer keeps replacing its own directory, which is inside the mount, so a
+  running container sees the new files.
+- The path is computed in one place, `replaySpillDirs`, and no agent doc names
+  it.
+- So the replay writer never touches `/persist` and needs neither the gate nor
+  the layout.
+
+The retention sweep measures and deletes these files as part of the uploads, as
+it measured and deleted them as part of `/persist` before. A notice for a
+session with no other uploads then says "uploads" for them.
 
 ### Retention (docs/323)
 
 `data-retention-sweep.ts` keeps its schedule, its decisions and its notices. For
 a session on the volume layout:
 
-- **Measure** with the measure-and-list helper: the same rule as `treeBytes`
-  (files only, `max(1, blocks × 512 || size)`), from `find /persist -type f`.
-  The sweep measures a session only when its stored size is missing or older
-  than the start of its period, so a session costs one helper run per period,
-  plus one more before deletion.
-- **List** the top-level names in the same run.
-- **Delete** with the empty helper (`find /persist -mindepth 1 -delete`). The
-  volume stays, as `scratch/` stays today, so a restore needs nothing (docs/323
-  req 8). Emptying is used instead of `docker volume rm` because a volume that a
-  container still mounts cannot be removed.
-- Also empty `sessions/<id>/replay`, because those files were in `/persist`
-  before.
+- **Measure** with the measure helper, by the same rule as `treeBytes`: every
+  entry that is not a directory, symlinks included, by `lstat`,
+  `max(1, blocks × 512 || size)`. The helper runs
+  `find /persist -mindepth 1 ! -type d -printf '%b %s\n'`, and the orchestrator
+  sums the result. The sweep measures a session only when its stored size is
+  missing or older than the start of its period, so this is one helper run per
+  period, plus one before deletion.
+- **Delete** under the exclusive gate:
+  1. Check again that the session is still due, inside the gate.
+  2. Require that the session has no container (see the gate). Otherwise, skip
+     it for this pass. The sweep already stops the Compose stack first.
+  3. Measure, then run the empty helper (`find /persist -mindepth 1 -delete`).
+  The gate keeps a restore and a start from creating a container until the
+  deletion ends, so the helper can delete nothing that was written after the
+  check. Because nothing else writes during the deletion, the sweep empties the
+  volume and does not need the top-level names that it lists for the scratch
+  layout.
+- The volume stays, as `scratch/` stays today, so a restore needs no step
+  (docs/323 req 8). Emptying is used instead of `docker volume rm`, which fails
+  for a volume in use.
 - A layout `volume` with no volume yet (a session that never started) measures
   0 and deletes nothing.
 
+Not changed, and not part of this design: a manual reset or a rebase replaces a
+pending agent notice (`sessions.ts`), including a retention notice. That is a
+known gap of docs/323 req 9.
+
 ### Full reset
 
-`fullReset` (`services/misc.ts`) deletes the session directories but never
-touches Docker volumes, and it leaves agent containers running (runner disposal
-does not destroy them). It now lists the volumes labelled `shipit-persist-of`
-(with the stack filter), removes each one, and empties a volume that is still in
-use with the empty helper. The orphan sweep removes the object later.
+`fullReset` (`services/misc.ts`) removes project volumes only through Compose
+(`removeVolumesOnDispose`). It deletes the session directories, but runner
+disposal does not destroy the agent containers (`container-session-runner.ts`),
+and a Compose stack kept after idle reclaim has no runner to dispose. After the
+existing steps, for each persist volume of this install (found by name):
+
+1. Take the session's exclusive gate.
+2. Remove its persist helpers, destroy its containers with the same `destroy`
+   that archive uses (agent, Compose services and proxy containers), and remove
+   the volume.
+
+A removal that still fails is logged, and the orphan sweep tries again.
 
 ### Orphan volumes
 
 A volume whose session has no row leaks: `discardSpawnedChild`, a warm session
-deleted with its repository, and the leftovers of a Full reset. A sweep in
+deleted with its repository, and a failed Full reset removal. A sweep in
 `steady-state-reclaim.ts`, next to `sweepOrphanSessionDirs` and on the same
-passes, removes a volume labelled `shipit-persist-of=<id>` when:
+passes, removes a persist volume of this install when:
 
-- `<id>` has no row (`allIds()`),
-- `<id>` is not one of ShipIt's own reserved sessions (`isShipItOwnSession`; the
-  cleanup container gets a `/persist` like any session),
+- its session id has no row (`allIds()`);
+- the id is not one of ShipIt's own reserved sessions (`isShipItOwnSession`; the
+  cleanup container gets a `/persist` like any session);
 - the volume is older than the 24-hour grace that `sweepOrphanSessionDirs` uses.
 
 A volume in use fails to remove, and the next pass tries again.
@@ -309,71 +386,85 @@ docs/317 lifecycle table change only where they say *where* the files live.
 places:
 
 - "Two Docker named volumes hold everything" becomes the workspace and
-  credentials volumes **plus one `shipit-persist-<session-id>` volume per
-  session**.
-- The table row for `/persist` names that volume.
-- "A whole-volume copy catches all of it" names all three kinds.
+  credentials volumes **plus one `<workspace volume>_persist-<session-id>`
+  volume per session**.
+- The table row for `/persist` names that volume. "A whole-volume copy catches
+  all of it" names all three kinds.
 - The paragraph on project Compose volumes, and the database row in *What
   survives*, stop saying that `persist` files are in the workspace volume.
-- The backup and restore scripts add the volumes from
-  `docker volume ls -q --filter label=shipit-persist-of`. The restore keeps its
-  rule: read every archive through before it deletes anything.
+- The "travel together" rule covers the persist volumes too. Each session's
+  record says `volume`, so a workspace volume restored without its persist
+  volumes gives those sessions an empty `/persist`.
+- The backup script writes one archive per volume, named after the volume, and
+  it adds every volume whose name starts with `<workspace volume>_persist-`.
+- The restore script works from the archives, not from the destination daemon,
+  which has none of these volumes yet:
+  - It restores every `*_persist-*.tar` in the backup directory.
+  - It reads every archive through before it deletes anything, as it does today.
+  - When the destination's workspace volume has a different name (a local
+    backup restored on a VPS), it replaces the prefix, as it already
+    substitutes the two main names.
+  - Labels are not restored, and nothing needs them.
 
-A restored install is consistent only if the persist volumes come from the same
-backup as the workspace volume, because each session's record says `volume`. The
-page says so in the "travel together" paragraph.
+## Sessions still on the scratch layout
 
-## Sessions still on the old layout
+Until its agent container is created again, a session stays on the scratch
+layout, and the code for it stays:
 
-Until a session starts with no container, it stays on the scratch layout, and
-the code for it stays: the subpath mount in the agent container, the docs/317
-rewrite and its Docker Desktop refusal, the direct preparation, the scratch
-mount in the Compose helper, `scratch/replay`, and the direct retention steps.
-None of it is new. A session that is never started again stays on that layout,
-and only the retention sweep and Full reset ever touch it.
+- the subpath mount in the agent container;
+- the docs/317 rewrite and its Docker Desktop refusal;
+- the direct preparation;
+- the scratch mount in the Compose helper;
+- the direct retention steps.
 
-A later change can remove the container-facing half of that code (the mounts,
-the rewrite and the preparation) once no session on the old layout still has a
-container from before the update. ShipIt logs at boot how many such sessions it
-finds. After that removal, a failed copy fails the start with its reason instead
-of continuing on the old layout. That is a follow-up on planning#696, not part
-of this change.
+None of it is new. A later change can remove the container-facing part (the
+mounts, the rewrite and the preparation) once no such session has a container.
+From then on, a failed copy fails the start instead of continuing on the scratch
+layout. That is a follow-up on planning#696, not part of this change.
 
 ## Rejected alternatives
 
 - **Docker Desktop only.** The user chose every host (requirements, resolved
   questions). One layout means one backup procedure and one retention path.
-- **Copy every session at boot.** The user chose the next start (req 5). Also, a
-  copy at boot races with re-adopted containers that still write to `scratch/`.
+- **Copy every session at boot.** The user chose the next start (req 5).
+- **Fail the start when the copy fails**, instead of continuing on the scratch
+  layout. It removes a little code, but a defect in the copy would then stop
+  every session from starting after the update.
 - **Decide the layout by whether the volume exists**, with no record. A crash
   during the copy leaves a volume with part of the files, and the only safe
   commit point would be the removal of `scratch/`, which is not atomic. A record
-  written after the copy is.
+  written after a flushed copy is.
+- **Name the volume after the session only.** Two installs on one daemon, one
+  of them restored from the other's backup, would share every volume.
+- **Select the volumes by label.** A volume that Docker creates implicitly has
+  no labels, and a restore loses them.
 - **Remove the volume at the end of the retention period.** It fails for a
   volume in use, and it needs a step at restore. Emptying matches what the sweep
   does to `scratch/` today.
-- **The label `shipit-session=<id>`**, which other ShipIt volumes use:
-  `pruneSessionVolumes` selects it.
 - **A bind-backed or overlay volume over `scratch/`**: rejected in docs/317,
   "Docker Desktop".
-- **Replay files written into the volume through the helper**: a helper run for
-  every rewind, fork and retry, for files that are not the user's data.
+- **A separate read-only mount for replay files**: one more mount, a
+  layout-dependent path, and containers from before the update would not have
+  it. `/uploads` already exists in every container.
 
 ## Key files
 
-- New: `src/server/orchestrator/persist-volume.ts` — the name and labels,
-  `persistLayout`, `ensurePersistVolume` (single-flight, the copy), and the
-  helper scripts.
-- `container-lifecycle.ts` — `buildMounts` (volume or subpath, the
-  `/shipit-replay` mount), `createContainer` (no `scratch/` for the volume
-  layout).
+- New: `src/server/orchestrator/persist-volume.ts`:
+  - the volume name;
+  - `persistLayout`;
+  - the gate and the boot id;
+  - `ensurePersistVolume` with the copy;
+  - the helper runner and its four scripts.
+- `container-lifecycle.ts` — `buildMounts`; `createContainer` copies under the
+  gate and no longer creates `scratch/` for the volume layout.
 - `compose-generator.ts` — `rewritePersistMount`, the `external` `persist`
   declaration, `dockerDesktopRefusal` limited to the scratch layout.
 - `service-manager.ts`, `compose-persist.ts` — preparation through the helper;
   `persistVolume`.
-- `compose-helper.ts` — `projectMounts`.
-- `services/replay-detail.ts` — `replaySpillDirs`, the emptying writer.
-- `data-retention-sweep.ts` — measure, list and empty through the helper.
+- `compose-helper.ts` — `projectMounts`, and the shared gate around each run.
+- `services/replay-detail.ts` — `replaySpillDirs`.
+- `data-retention-sweep.ts` — measure and empty through the helper, under the
+  gate.
 - `services/misc.ts` — `fullReset`.
 - `steady-state-reclaim.ts` — the orphan volume sweep.
 
@@ -381,27 +472,38 @@ of this change.
 
 - **Unit tests:**
   - `persistLayout` for each row of its table.
-  - The copy for each crash point, with a fake Docker: no wipe when the record
-    says `volume`; no copy while a container exists.
-  - The single-flight between container creation and `prepareStart`.
+  - The copy with a fake Docker:
+    - each crash point;
+    - no wipe when the record says `volume`;
+    - no copy while any listed container exists;
+    - a leftover helper from an earlier boot is removed first;
+    - a running Compose stack is stopped first;
+    - the record is written only after the flush.
+  - The gate: a Compose helper run, the copy and a retention deletion exclude
+    each other in the right way.
   - The rewrite shapes for both layouts, and no Docker Desktop refusal for
     `persist/<sub>` on the volume layout.
-  - The helper arguments: capabilities, mounts, names passed as arguments.
-  - The label guard.
-  - The retention sweep, Full reset and the orphan sweep for the volume layout.
-  - The replay writer empties and does not replace its directory.
+  - The helper arguments: capabilities, mounts, labels, names passed as
+    arguments.
+  - The volume name against the boot sweep's pattern, and the label guard.
+  - The retention measure rule (symlinks counted), the deletion under the gate,
+    Full reset, and the orphan sweep.
+  - Replay files land in `uploads/.shipit-replay`, and the upload list does not
+    show them.
   - Each new test must fail without its change (a mutation pass).
 - **On a Docker Desktop host after the deploy:**
   - An existing session with files in `/persist` starts, and the files are
-    there with their owners.
-  - `docker volume ls` shows `shipit-persist-<id>`, and `sessions/<id>/scratch`
-    is gone.
-  - A service with `persist/plan:/data` starts and sees `/persist/plan`, as the
+    there with their owners, modes and setgid bits.
+  - `docker volume ls` shows the persist volume, and `sessions/<id>/scratch` is
+    gone.
+  - A service with `persist/plan:/data` starts, sees `/persist/plan` as the
     session user, and can write there.
   - Symlinks `/persist/esc → /` and `/persist/up → ../../..`, each mounted as
     `persist/<name>`, show the service nothing outside `/persist`. Docker
     either refuses the mount or resolves the link inside the volume.
+  - A rewind names `/uploads/.shipit-replay/…` files, and the agent can read
+    them.
 - **On a native Linux host:** the same checks, and every `persist` form of
   docs/317 still starts.
-- After a rewind, the replay names `/shipit-replay/…` files, and the agent can
-  read them.
+- **Backup and restore**, on a test install: back up, restore on a second
+  daemon, and check that a session's `/persist` files are there.
