@@ -33,7 +33,9 @@ Rejected alternative: an absolute `/persist:/data` source. Every absolute source
 
 ## Mechanism
 
-`parseComposeFile` records each service's `persistSubpaths` (`persistSubpathOf`). The snapshot rewrite (`rewritePersistMount`, docs/318) then:
+**Since `docs/331-persist-own-volume` (planning#696), a session's `/persist` is a Docker volume of its own**, `shipit-persist.<workspace volume>.<session-id>`. For such a session the rewrite gives every `persist` mount the long form `{type: volume, source: persist, target, volume: {nocopy: true, subpath?}, read_only?}` and declares `persist: {name: <that volume>, external: true}`. The volume's root is the session's `/persist`, so Docker confines every subpath to it, on Docker Desktop too, and before each `up` that mounts it a helper container prepares the volume (`docs/331-persist-own-volume/plan.md`, "Compose services"). The rest of this section describes the scratch layout, which a session keeps until its agent container starts again after the update.
+
+`parseComposeFile` records each service's `persistSubpaths` (`persistSubpathOf`). On the scratch layout, the snapshot rewrite (`rewritePersistMount`, docs/318) then:
 
 1. rewrites a mount of **all of `/persist`**, in the volume-backed deployment, to a subpath of the shared workspace volume at the scratch directory — `{type: volume, source: shipit-workspace, target, volume: {nocopy: true, subpath: sessions/<id>/scratch}, read_only?}`. That is how the agent container mounts its own `/persist` (`container-lifecycle.ts`), and it is safe for the reason given below;
 2. rewrites a mount of a **subdirectory**, and every `persist` mount in the bind deployment, to the long form `{type: volume, source: persist, target, volume: {nocopy: true, subpath?}, read_only?}`;
@@ -78,7 +80,7 @@ On Docker Desktop no `local` volume can have a directory of the workspace volume
 
 So on Docker Desktop ShipIt mounts all of `/persist` from the shared volume as above, and **refuses `persist/<sub>`** with a message that names the mount that works (`persist:/mnt`, then `/mnt/<sub>`). The refusal (`dockerDesktopRefusal`) comes before anything is prepared or looked up, and it is recorded as the project's compose failure, so `shipit service list` shows it. Docker is asked which daemon it is (`dockerDesktopCheck`, `docker info` OperatingSystem) only for a start that has such a mount; the answer is kept for the session. A failed lookup fails that start instead of guessing, because a wrong "no" would mount the empty directory again.
 
-Requirement 1's subdirectory form is therefore not met on Docker Desktop. Meeting it needs a volume whose own root is `/persist`, for example a per-session Docker volume that holds `/persist` instead of the scratch directory; that moves every session's data and is not done here. It is designed in `docs/331-persist-own-volume` (planning#696).
+Requirement 1's subdirectory form was therefore not met on Docker Desktop. `docs/331-persist-own-volume` (planning#696) meets it with a Docker volume of its own for each session's `/persist`, on every host. The refusal now applies only to a session still on the scratch layout, and its message says that the next start of the session's container moves `/persist` into its volume.
 
 ### Ownership (req 5)
 
@@ -92,18 +94,18 @@ A plugin fragment cannot mount `persist`. No new rule was needed: `validateFragm
 
 ## Lifecycle (req 2, req 8)
 
-Verified against the code on 2026-09-27. `/persist` is `<sessionDir>/scratch`; a `persist` mount is a view of the same directory, so it has the same lifecycle. `compose down --volumes` can remove the Docker volume *object*, but the local driver unmounts before it deletes, so the data in the scratch directory stays; Compose recreates the object on the next `up`.
+Verified against the code on 2026-09-27, and again for the volume layout of `docs/331-persist-own-volume` on 2026-10-14. `/persist` is the session's volume `shipit-persist.<workspace volume>.<session-id>` (or `<sessionDir>/scratch` until the session's next start after that change); a `persist` mount is a view of the same files, so it has the same lifecycle. Compose neither labels nor removes the `external` volume, and no removal path selects it (`docs/331-persist-own-volume/plan.md`, "The volume"). On the scratch layout, `compose down --volumes` can remove the bind-backed Docker volume *object*, but the local driver unmounts before it deletes, so the data in the scratch directory stays; Compose recreates the object on the next `up`.
 
 | Event | `/persist` and `persist` mounts | Project named volumes |
 |---|---|---|
 | Container restart, Rescue session, Restart agent | Kept | Kept |
 | Idle reclaim, memory path (agent container, then preview stack) | Kept | Kept |
 | 24 hours idle (hot → light disk tier) | Kept | Can be removed (`tier-escalation.ts`) |
-| Checkout reclaim (light → evicted), then re-clone | Kept (only `workspace/`, `overlay/`, `state/` are removed) | Kept |
+| Checkout reclaim (light → evicted), then re-clone | Kept (the volume is outside the session directory; on the scratch layout only `workspace/`, `overlay/`, `state/` are removed) | Kept |
 | Archive | Kept for the retention period of `docs/323-archived-session-data-retention`, then deleted | Can be removed (`archiveSession`, when the session is loaded) |
 | Restore (unarchive) | Kept, if the period did not end | Recreated empty if they were removed |
 | Delete — there is no separate session delete; removing a repository archives its sessions | As archive | As archive |
-| Full reset (Settings) | **Deleted** | Deleted |
+| Full reset (Settings) | **Deleted** (each session's containers by label, then its volume) | Deleted |
 
 There is no per-session reset; the old sentence in `environment.md` ("Cleared only by a full session reset") described one.
 
@@ -115,11 +117,12 @@ There is no per-session reset; the old sentence in `environment.md` ("Cleared on
 - `src/server/orchestrator/service-manager-setup.ts` — wires `persistDevicePath` and `isDockerDesktop` in the volume-backed deployment.
 - `src/server/orchestrator/plugin-compose.ts` — `selfSubdirectoryMount`, and the plugin issue in `buildPluginComposeServices`; `services/plugin-services.ts` asks `isDockerDesktop` (wired in `bootstrap-managers.ts`) only when a self fragment has such a mount.
 - `src/server/orchestrator/session-state-dir.ts` — `SESSION_SCRATCH_SUBDIR`, `sessionScratchDirForWorkspace`.
+- `src/server/orchestrator/persist-volume.ts`, `persist-gate.ts` — the session's own volume and its gate (`docs/331-persist-own-volume`).
 - Agent docs: `src/server/shipit-docs/compose.md`, `environment.md`, `plugins.md`, `plugin-authoring.md`, and the wiki pages `how-shipit-works.md`, `installing-and-updating.md`, `sessions.md`.
 
 ## Known limits
 
 - End-to-end behaviour against a real Docker daemon is not covered by the unit tests; they check the generated Compose model, the directory preparation, and the daemon-path translation.
-- On Docker Desktop a `persist/<sub>` mount is refused (see *Docker Desktop*).
+- On Docker Desktop a `persist/<sub>` mount is refused for a session still on the scratch layout, until its agent container starts again (see *Docker Desktop*).
 - Workspace subdirectory mounts (`./sub:/app`) use the same kind of bind-backed volume, rooted at the session's workspace (planning#619, docs/086-shipit-yaml-and-compose), so they fail on Docker Desktop for the same reason. ShipIt refuses a project's `./sub` or `./file` mount there in the same way, and the whole workspace (`.`) still mounts.
 - A plugin under development in its own repository (`fragment.self`) mounts a subdirectory of its fragment through that volume too. On Docker Desktop ShipIt starts none of that repository's plugin services, because a plugin's services may depend on each other, and reports why on the repository's card in the Plugins tab, with the same files under `/plugin` as the alternative. It does not fail the start, because the override holds every service of the session. A tracked plugin's subdirectory comes from its own overlay volume, which Docker Desktop mounts.

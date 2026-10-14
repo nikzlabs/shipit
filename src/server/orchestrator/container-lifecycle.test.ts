@@ -40,6 +40,7 @@ import { OVERLAY_VERIFY_FAILURE } from "./overlay-volume.js";
 import { linkSessionNpmCache } from "../shared/npm-cache.js";
 import type { HostMount } from "../shared/shipit-config.js";
 import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
+import { withPersistLease } from "./persist-gate.js";
 
 function baseConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
   return {
@@ -210,6 +211,15 @@ describe("buildMounts", () => {
     expect(scratchMount!.ReadOnly).toBe(false);
     expect(scratchMount!.Source).toBe("my-workspace-vol");
     expect(scratchMount!.VolumeOptions?.Subpath).toBe("sessions/sess-1/scratch");
+  });
+
+  it("mounts the session's own /persist volume instead of scratchDir (docs/331)", () => {
+    const config = baseConfig({ scratchDir: "/workspace/sessions/sess-1/scratch" });
+    const result = buildMounts(config, "my-workspace-vol", undefined, undefined, "shipit-persist.my-workspace-vol.sess-1");
+    expect(result.mounts.filter((m) => m.Target === "/persist")).toEqual([
+      { Type: "volume", Source: "shipit-persist.my-workspace-vol.sess-1", Target: "/persist", VolumeOptions: { NoCopy: true } },
+    ]);
+    expect(result.mounts.some((m) => m.VolumeOptions?.Subpath?.endsWith("/scratch"))).toBe(false);
   });
 
   it("adds no persist mount when scratchDir is undefined", () => {
@@ -1305,6 +1315,107 @@ describe("createContainer — an ops session's worker image (docs/128)", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe("createContainer — /persist in a volume of its own (docs/331)", () => {
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  const SID = "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d";
+  const noVolume = () => ({ volume: async () => null, prepare: async () => undefined });
+
+  async function create(forAgent: LifecycleDeps["persistVolumes"]) {
+    let mounts: { Target: string; Source: string; VolumeOptions?: { Subpath?: string } }[] = [];
+    let leaseInCreation: unknown;
+    const docker = {
+      listContainers: async () => [],
+      getContainer: () => ({
+        inspect: async () => { throw Object.assign(new Error("no such container"), { statusCode: 404 }); },
+        stop: async () => {},
+        remove: async () => {},
+      }),
+      createContainer: async (cfg: { HostConfig: { Mounts: typeof mounts } }) => {
+        mounts = cfg.HostConfig.Mounts;
+        // The creation holds the shared side, so no copy or deletion can start under it.
+        leaseInCreation = await withPersistLease(SID, "exclusive", async () => "granted").catch((err: unknown) => (err as Error).message);
+        return {
+          id: "cid-new",
+          start: async () => {},
+          inspect: async () => ({
+            Config: { Labels: {} },
+            NetworkSettings: { Networks: { "shipit-net": { IPAddress: "172.20.0.9" } } },
+          }),
+        };
+      },
+    } as unknown as Docker;
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-persist-mount-"));
+    tmpDirs.push(tmp);
+    const sessionDir = path.join(tmp, "session");
+    fs.mkdirSync(path.join(sessionDir, "workspace"), { recursive: true });
+    const restartKeptServices = vi.fn();
+    await createContainer({
+      docker,
+      containers: new Map(),
+      standbySessionIds: new Set<string>(),
+      destroyEpochs: new Map<string, number>(),
+      emitter: new EventEmitter(),
+      baseLabels: () => ({ "shipit-managed": "true" }),
+      networkName: "shipit-net",
+      workerPort: 9100,
+      imageName: "shipit-worker:test",
+      skipHealthCheck: true,
+      workspaceVolume: "ws-vol",
+      persistVolumes: forAgent,
+      restartKeptServices,
+    } as unknown as LifecycleDeps, baseConfig({
+      sessionId: SID,
+      sessionDir,
+      workspaceDir: path.join(sessionDir, "workspace"),
+      sessionStateDir: path.join(sessionDir, "state"),
+      uploadsDir: path.join(sessionDir, "uploads"),
+      scratchDir: path.join(sessionDir, "scratch"),
+    }));
+    return { mounts, leaseInCreation, restartKeptServices, scratch: path.join(sessionDir, "scratch") };
+  }
+
+  it("copies before the creation's shared lease, mounts the volume, and starts the removed services again", async () => {
+    const forAgent = vi.fn(async (sessionId: string) =>
+      // The copy takes the exclusive side; inside the creation's lease this would throw.
+      withPersistLease(sessionId, "exclusive", async () => ({ volume: "shipit-persist.ws-vol.x", restart: ["web"] })));
+    const forSession = () => ({ volume: async () => "shipit-persist.ws-vol.x", prepare: async () => undefined });
+    const { mounts, leaseInCreation, restartKeptServices, scratch } = await create({ forAgent, forSession });
+    expect(forAgent).toHaveBeenCalledTimes(1);
+    expect(mounts.filter((m) => m.Target === "/persist")).toEqual([
+      { Type: "volume", Source: "shipit-persist.ws-vol.x", Target: "/persist", VolumeOptions: { NoCopy: true } },
+    ]);
+    expect(leaseInCreation).toMatch(/held the shared one/);
+    expect(restartKeptServices).toHaveBeenCalledWith(SID, ["web"]);
+    expect(fs.existsSync(scratch)).toBe(false);
+  });
+
+  it("mounts the volume when another start copied after forAgent answered", async () => {
+    const { mounts, scratch } = await create({
+      forAgent: async () => ({ volume: null, restart: [] }),
+      forSession: () => ({ volume: async () => "shipit-persist.ws-vol.later", prepare: async () => undefined }),
+    });
+    expect(mounts.filter((m) => m.Target === "/persist").map((m) => m.Source)).toEqual(["shipit-persist.ws-vol.later"]);
+    expect(fs.existsSync(scratch)).toBe(false);
+  });
+
+  it("mounts scratch/ as before when the session stays on the scratch layout", async () => {
+    const { mounts, restartKeptServices, scratch } = await create({
+      forAgent: async () => ({ volume: null, restart: [] }),
+      forSession: noVolume,
+    });
+    const persist = mounts.filter((m) => m.Target === "/persist");
+    expect(persist).toHaveLength(1);
+    expect(persist[0].Source).toBe("ws-vol");
+    expect(persist[0].VolumeOptions?.Subpath?.endsWith("session/scratch")).toBe(true);
+    expect(restartKeptServices).not.toHaveBeenCalled();
+    expect(fs.existsSync(scratch)).toBe(true);
   });
 });
 

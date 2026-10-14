@@ -43,6 +43,8 @@ import {
   type SnapshotRewrite,
 } from "./compose-generator.js";
 import { preparePersistDir } from "./compose-persist.js";
+import { withPersistLease } from "./persist-gate.js";
+import type { SessionPersist } from "./persist-volume.js";
 import { noGpuWhy, type SessionGpu } from "./session-gpu.js";
 import { toComposeService, type PluginComposeService } from "./plugin-compose.js";
 import { PLUGIN_PORT_ENV } from "../shared/plugin-contract.js";
@@ -248,6 +250,8 @@ export interface ServiceManagerOptions {
   logStore?: LogStore;
   /** Maps the session's /persist directory to the daemon's path for it; identity when absent. */
   persistDevicePath?: (hostPath: string) => Promise<string>;
+  /** The session's own /persist volume (docs/331); absent keeps every session on `scratch/`. */
+  persist?: SessionPersist;
   /**
    * Runs the Compose commands that read project files, confined to this session
    * (docs/318-compose-remaining-escapes, Mechanism 1).
@@ -319,6 +323,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly composeStateDir: string;
   private readonly secretsInternalDir?: string;
   private readonly persistDevicePath: (hostPath: string) => Promise<string>;
+  private readonly persist?: SessionPersist;
   private readonly confined: ConfinedComposeApi;
   private readonly startRecord: ComposeStartRecord;
   private legacyOverrideRemoved = false;
@@ -425,6 +430,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.serviceEnvDir = opts.serviceEnvDir;
     this.secretsInternalDir = opts.dockerSecretsConfig?.internalDir;
     this.persistDevicePath = opts.persistDevicePath ?? ((hostPath) => Promise.resolve(hostPath));
+    this.persist = opts.persist;
     this.logStore = opts.logStore;
     this.gateWatchdogSettleMs = opts.gateWatchdogSettleMs ?? GATE_WATCHDOG_SETTLE_MS;
 
@@ -1397,9 +1403,9 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   }
 
   // Before anything is prepared or looked up; Docker is asked only for a stack that needs it.
-  private async refuseOnDockerDesktop(model: Record<string, unknown>): Promise<void> {
+  private async refuseOnDockerDesktop(model: Record<string, unknown>, persistOwnVolume: boolean): Promise<void> {
     if (!this.workspaceVolume || !this.isDockerDesktop) return;
-    const refusal = this.checked(() => dockerDesktopRefusal(model, this.workspaceDir));
+    const refusal = this.checked(() => dockerDesktopRefusal(model, this.workspaceDir, { persistOwnVolume }));
     if (!refusal) return;
     let desktop: boolean;
     try {
@@ -1556,10 +1562,15 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       }));
 
       const persistUse = this.checked(() => resolvedPersistUse(model));
-      await this.refuseOnDockerDesktop(model);
+      // The caller's lease keeps this layout until the end of `up` (docs/331).
+      const ownVolume = persistUse.used && this.persist ? await this.persist.volume() : null;
+      await this.refuseOnDockerDesktop(model, ownVolume !== null);
       let persist: PersistVolume | undefined;
-      if (persistUse.used) {
+      if (ownVolume) {
         // A volume subpath must exist when mounted, and the agent can delete one.
+        await this.persist!.prepare(ownVolume, persistUse.subpaths);
+        persist = { ownVolume };
+      } else if (persistUse.used) {
         const scratchDir = sessionScratchDirForWorkspace(this.workspaceDir);
         preparePersistDir(scratchDir, persistUse.subpaths);
         persist = await this.persistVolume(scratchDir, persistUse.subpaths);
@@ -1712,31 +1723,37 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       this.upSettled.set(name, pending);
     }
     let counted: string[] = [];
-    let start: PreparedStart | null = null;
+    // Assigned inside the lease callback, which narrowing does not follow.
+    let start = null as PreparedStart | null;
     try {
-      start = await this.prepareStart(names, opts.stops);
-      const live = names.filter((name) => !this.stoppedByUser.has(name));
-      if (live.length === 0) {
-        console.log(`[compose:${this.sessionId}] ${names.join(", ")} stopped while the start resolved — not starting`);
-        return false;
-      }
-      for (const name of live) {
-        this.upInFlight.set(name, (this.upInFlight.get(name) ?? 0) + 1);
-        // Do not publish the outgoing container's address while its replacement starts.
-        this.clearContainerIp(name);
-        this.upLastOutputAt.set(name, Date.now());
-      }
-      counted = live;
-      if (opts.removeOrphans && start.projectServiceNames) {
-        const keep = new Set([...start.projectServiceNames, ...this._overrideAdmittedPlugins.map((svc) => svc.name)]);
-        try {
-          await this.compose.removeOrphanContainers(keep);
-        } catch (err) {
-          console.warn(`[compose:${this.sessionId}] orphan removal failed:`, (err as Error).message);
+      // One shared /persist lease from the layout the snapshot names to the end of `up`: a copy
+      // between them would leave `up` a mount of a `scratch/` that is gone (docs/331).
+      return await withPersistLease(this.sessionId, "shared", async () => {
+        start = await this.prepareStart(names, opts.stops);
+        const prepared: PreparedStart = start;
+        const live = names.filter((name) => !this.stoppedByUser.has(name));
+        if (live.length === 0) {
+          console.log(`[compose:${this.sessionId}] ${names.join(", ")} stopped while the start resolved — not starting`);
+          return false;
         }
-      }
-      await fn(start, live);
-      return true;
+        for (const name of live) {
+          this.upInFlight.set(name, (this.upInFlight.get(name) ?? 0) + 1);
+          // Do not publish the outgoing container's address while its replacement starts.
+          this.clearContainerIp(name);
+          this.upLastOutputAt.set(name, Date.now());
+        }
+        counted = live;
+        if (opts.removeOrphans && prepared.projectServiceNames) {
+          const keep = new Set([...prepared.projectServiceNames, ...this._overrideAdmittedPlugins.map((svc) => svc.name)]);
+          try {
+            await this.compose.removeOrphanContainers(keep);
+          } catch (err) {
+            console.warn(`[compose:${this.sessionId}] orphan removal failed:`, (err as Error).message);
+          }
+        }
+        await fn(prepared, live);
+        return true;
+      });
     } catch (err) {
       if (!(err instanceof StartOvertakenByStop)) throw err;
       console.log(`[compose:${this.sessionId}] the stack stopped while ${names.join(", ")} was starting — not starting`);

@@ -150,7 +150,7 @@ function armReplayForClearedThread(
   opts: { ownUserText?: string; workspaceDir?: string },
 ): void {
   try {
-    // Only reached from the container path, where scratch is mounted at /persist.
+    // Only reached from the container path, where uploads are mounted at /uploads.
     const spill = opts.workspaceDir
       ? { spill: replaySpillDirs(path.dirname(opts.workspaceDir), { containerized: true }) }
       : {};

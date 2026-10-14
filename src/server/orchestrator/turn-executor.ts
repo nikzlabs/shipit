@@ -199,7 +199,7 @@ function spillFor(
   runner: SessionRunnerInterface | null,
 ): { spill?: ReplaySpillTarget } {
   if (!workspaceDir) return {};
-  // A container runner mounts the session's scratch directory at /persist; a local one
+  // A container runner mounts the session's uploads directory at /uploads; a local one
   // leaves it where it is, so the agent-visible path is the host path.
   return {
     spill: replaySpillDirs(path.dirname(workspaceDir), {

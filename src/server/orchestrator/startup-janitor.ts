@@ -304,13 +304,15 @@ async function sweepOrphanSessionLogs(
   return removed;
 }
 
+/** The project volumes of a session's Compose stack, `shipit-<12 characters of its id>_<key>`. */
+export const SESSION_VOLUME_RE = /^shipit-([a-f0-9-]{12})_/;
+
 async function sweepOrphanSessionVolumes(
   sessionManager: SessionManager,
   runDocker: (args: string[]) => Promise<string>,
   paceMs: number,
   stackFilterArgs: string[],
 ): Promise<number> {
-  const SESSION_VOLUME_RE = /^shipit-([a-f0-9-]{12})_/;
 
   // Sidebar-hidden sessions can still hold disk state and need their volumes.
   const livePrefixes = new Set(

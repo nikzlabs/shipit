@@ -156,6 +156,15 @@ describe("upload service functions", () => {
       expect(files.every((f) => f.type === "upload")).toBe(true);
       expect(files.find((f) => f.name === "a.csv")?.path).toBe("/uploads/a.csv");
     });
+
+    it("does not list the replay files ShipIt keeps beside the uploads (docs/331)", async () => {
+      fs.writeFileSync(path.join(tmpDir, "a.csv"), "data");
+      fs.mkdirSync(path.join(tmpDir, ".shipit-replay"));
+      fs.writeFileSync(path.join(tmpDir, ".shipit-replay", "001-Bash.txt"), "output");
+
+      const files = await listUploads(tmpDir);
+      expect(files.map((f) => f.name)).toEqual(["a.csv"]);
+    });
   });
 
   describe("deleteUpload", () => {
@@ -173,6 +182,23 @@ describe("upload service functions", () => {
 
     it("rejects path traversal attempts", async () => {
       await expect(deleteUpload(tmpDir, "../../etc/passwd")).rejects.toThrow(/Invalid/);
+    });
+
+    it("refuses a replay file, which is not one upload name (docs/331)", async () => {
+      fs.mkdirSync(path.join(tmpDir, ".shipit-replay"));
+      const replayFile = path.join(tmpDir, ".shipit-replay", "001-Bash.txt");
+      fs.writeFileSync(replayFile, "output");
+
+      await expect(deleteUpload(tmpDir, ".shipit-replay/001-Bash.txt")).rejects.toThrow(/Invalid/);
+      await expect(deleteUpload(tmpDir, ".shipit-replay")).rejects.toThrow(/Invalid/);
+      expect(fs.existsSync(replayFile)).toBe(true);
+    });
+
+    it("refuses a name below the uploads directory", async () => {
+      fs.mkdirSync(path.join(tmpDir, "nested"));
+      fs.writeFileSync(path.join(tmpDir, "nested", "a.txt"), "x");
+      await expect(deleteUpload(tmpDir, "nested/a.txt")).rejects.toThrow(/Invalid/);
+      expect(fs.existsSync(path.join(tmpDir, "nested", "a.txt"))).toBe(true);
     });
 
     it("frees up quota after deletion", async () => {

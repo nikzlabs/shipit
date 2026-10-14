@@ -1223,6 +1223,15 @@ describe("Docker API proxy", () => {
       expect(daemon.volumes.size).toBe(0);
     });
 
+    // docs/331: made in advance, it would carry this session's label onto another session's /persist.
+    it.each(["Name", "name"])("refuses a volume in ShipIt's persist namespace, spelled %s", async (field) => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/volumes/create", {
+        [field]: "shipit-persist.shipit_workspace.0b5e2a8c-1d2f-4c3b-9a8e-7f6d5c4b3a21",
+      });
+      expect(res.status).toBe(403);
+      expect(daemon.volumes.size).toBe(0);
+    });
+
     it("rejects a lowercase driver on volume create", async () => {
       const res = await makeRequest(proxyUrl, "POST", "/v1.41/volumes/create", {
         Name: "nfs-vol",

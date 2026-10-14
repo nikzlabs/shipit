@@ -30,7 +30,7 @@ import {
   identityForSession,
   shareTreeOnce,
 } from "./session-worker-uid.js";
-import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
+import { demultiplex, ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
 import {
   preparePluginNetns,
   unreachableDeclaredHosts,
@@ -584,24 +584,6 @@ export async function reapOrphanPluginInstalls(
 
   if (removed > 0) console.log(`[plugins] removed ${removed} orphan install artifact(s)`);
   return removed;
-}
-
-// Non-TTY Docker logs use 8-byte stream headers. Pass unframed buffers through.
-function demultiplex(raw: Buffer): string {
-  const parts: Buffer[] = [];
-  let offset = 0;
-  while (offset + 8 <= raw.length) {
-    const stream = raw[offset];
-    if (stream > 2 || raw[offset + 1] !== 0 || raw[offset + 2] !== 0 || raw[offset + 3] !== 0) {
-      return raw.toString("utf-8");
-    }
-    const size = raw.readUInt32BE(offset + 4);
-    if (offset + 8 + size > raw.length) return raw.toString("utf-8");
-    parts.push(raw.subarray(offset + 8, offset + 8 + size));
-    offset += 8 + size;
-  }
-  if (offset !== raw.length) return raw.toString("utf-8");
-  return Buffer.concat(parts).toString("utf-8");
 }
 
 function sleep(ms: number): Promise<void> {

@@ -10,29 +10,31 @@ export const INLINE_DETAIL_LIMIT = 500;
 
 /**
  * Where a replay's spilled tool payloads are written, and where the agent will see them.
- * The two differ because the orchestrator writes to the session's scratch directory on its
- * own filesystem while a containerized agent reads the same directory at `/persist`.
+ * The two differ because the orchestrator writes to the session's uploads directory on its
+ * own filesystem while a containerized agent reads the same directory at `/uploads`.
  */
 export interface ReplaySpillTarget {
   hostDir: string;
   agentDir: string;
 }
 
+export const REPLAY_SPILL_SUBDIR = ".shipit-replay";
+
 /**
- * A session's scratch directory, the sibling of its workspace that mounts at `/persist`
- * (`container-lifecycle.ts` defaults `scratchDir` to `<sessionRoot>/scratch`).
+ * In the uploads directory, which every agent container mounts read-only at `/uploads`, so the
+ * orchestrator never writes `/persist` (docs/331). The upload list shows files only, and an upload
+ * name loses its leading dots, so no upload is this directory.
  *
- * `sessionRootDir` is the session's own directory, the PARENT of its workspace — the same
- * root the uploads directory hangs off.
+ * `sessionRootDir` is the session's own directory, the PARENT of its workspace.
  */
 export function replaySpillDirs(
   sessionRootDir: string,
   opts: { containerized: boolean },
 ): ReplaySpillTarget {
-  const hostDir = path.join(sessionRootDir, "scratch", "replay");
+  const hostDir = path.join(sessionRootDir, "uploads", REPLAY_SPILL_SUBDIR);
   return {
     hostDir,
-    agentDir: opts.containerized ? "/persist/replay" : hostDir,
+    agentDir: opts.containerized ? `/uploads/${REPLAY_SPILL_SUBDIR}` : hostDir,
   };
 }
 

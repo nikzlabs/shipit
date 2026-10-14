@@ -629,6 +629,10 @@ export async function registerBootstrapRoutes(
           deps.databaseManager,
           deps.composeStopPromises,
           deps.credentialsDir,
+          {
+            ...(deps.serviceManagers ? { serviceManagers: deps.serviceManagers } : {}),
+            persistVolumes: deps.containerManager?.persistVolumes ?? null,
+          },
         );
         deps.sseBroadcast("full_reset_complete", {});
         return { success: true };

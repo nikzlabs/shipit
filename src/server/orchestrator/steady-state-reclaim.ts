@@ -12,6 +12,7 @@ import { readBasePointerByHash, withScopeLock } from "./overlay-base.js";
 import { liveOverlayBaseClaims } from "./overlay-base-claims.js";
 import { retiredSharedPnpmStoreRoot } from "./overlay-session.js";
 import { getMessage, sleep, defaultRunDocker } from "./disk-utils.js";
+import type { PersistVolumes } from "./persist-volume.js";
 
 const DEFAULT_CACHE_DAYS = 30;
 const DEFAULT_LFS_OBJECT_DAYS = 14;
@@ -35,6 +36,8 @@ export interface SteadyStateReclaimDeps {
   isSessionEvicted?: (sessionId: string) => boolean;
   /** Opening an existing session never stamps its repo row, so its own use keeps the repo live. */
   sessionRepoUse?: () => Iterable<SessionRepoUse>;
+  /** docs/331: a /persist volume whose session has no row is removed with the orphan session dirs. */
+  persistVolumes?: Pick<PersistVolumes, "sweepOrphans">;
   paceMs?: number;
 }
 
@@ -52,6 +55,7 @@ export interface SteadyStateReclaimResult {
   lfsObjectsRemoved: number;
   lfsBytesFreed: number;
   orphanSessionDirsRemoved: number;
+  orphanPersistVolumesRemoved: number;
   agentCacheDirsRemoved: number;
 }
 
@@ -73,6 +77,7 @@ export async function runSteadyStateReclaim(
     lfsObjectsRemoved: 0,
     lfsBytesFreed: 0,
     orphanSessionDirsRemoved: 0,
+    orphanPersistVolumesRemoved: 0,
     agentCacheDirsRemoved: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
@@ -157,6 +162,14 @@ export async function runSteadyStateReclaim(
     }
   }
 
+  if (deps.persistVolumes && deps.sessionIds) {
+    try {
+      result.orphanPersistVolumesRemoved = await deps.persistVolumes.sweepOrphans(deps.sessionIds(), { paceMs });
+    } catch (err) {
+      console.warn("[disk-janitor] orphan /persist volume sweep failed:", getMessage(err));
+    }
+  }
+
   if (deps.credentialsDir && deps.isSessionEvicted) {
     try {
       result.agentCacheDirsRemoved = await sweepEvictedAgentCaches(
@@ -171,7 +184,7 @@ export async function runSteadyStateReclaim(
     result.cachesRemoved || result.overlayBasesRemoved
     || result.pnpmStoresRemoved || result.repoMemoryDirsRemoved
     || result.lfsObjectsRemoved || result.orphanSessionDirsRemoved
-    || result.agentCacheDirsRemoved
+    || result.orphanPersistVolumesRemoved || result.agentCacheDirsRemoved
   ) {
     console.log(
       `[disk-janitor] steady-state reclaim: caches=${result.cachesRemoved} `
@@ -181,6 +194,7 @@ export async function runSteadyStateReclaim(
       + `lfs-objects=${result.lfsObjectsRemoved} `
       + `(${Math.round(result.lfsBytesFreed / 1_048_576)} MiB) `
       + `orphan-session-dirs=${result.orphanSessionDirsRemoved} `
+      + `orphan-persist-volumes=${result.orphanPersistVolumesRemoved} `
       + `agent-cache-dirs=${result.agentCacheDirsRemoved}`,
     );
   }

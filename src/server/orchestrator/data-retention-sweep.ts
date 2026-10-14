@@ -21,6 +21,8 @@ import {
   sleep,
 } from "./disk-utils.js";
 import { persistNoticeUnattached } from "./chat-card-persistence.js";
+import { PersistGateTimeoutError, withPersistLease } from "./persist-gate.js";
+import { persistLayout, RETENTION_GATE_WAIT_MS, type PersistVolumes } from "./persist-volume.js";
 
 const SESSION_UPLOADS_SUBDIR = "uploads";
 
@@ -36,6 +38,8 @@ export interface DataRetentionSweepDeps {
   isSessionLive: (sessionId: string) => boolean;
   /** Stops a stack that an earlier orchestrator process started; it is in no map of this one. */
   stopComposeStack?: (sessionId: string) => Promise<unknown>;
+  /** docs/331: a session on the volume layout keeps /persist in a Docker volume of its own. */
+  persistVolumes?: PersistVolumeAccess;
   onSessionsChanged?: () => void;
   now?: () => number;
   paceMs?: number;
@@ -47,7 +51,10 @@ export interface DataRetentionSweepResult {
   bytesDeleted: number;
 }
 
+type PersistVolumeAccess = Pick<PersistVolumes, "measure" | "empty" | "blockingContainer">;
+
 interface RetainedDirs {
+  sessionDir: string;
   persist: string;
   uploads: string;
   /** Empty unless the checkout is under retention too (req 10). */
@@ -69,6 +76,7 @@ export function retainedDataDirs(session: SessionInfo, sessionsRoot: string): Re
     && session.kind === "sandbox"
     && !session.remoteUrl;
   return {
+    sessionDir: root,
     persist: path.join(root, SESSION_SCRATCH_SUBDIR),
     uploads: path.join(root, SESSION_UPLOADS_SUBDIR),
     checkout: checkoutUnderRetention
@@ -87,7 +95,7 @@ async function isRealDir(dir: string): Promise<boolean> {
 }
 
 // Counts files, not directories, so a tree of empty directories has no size.
-async function treeBytes(dir: string): Promise<number> {
+export async function treeBytes(dir: string): Promise<number> {
   if (!(await isRealDir(dir))) return 0;
   let total = 0;
   const pending = [dir];
@@ -117,11 +125,21 @@ async function treeBytes(dir: string): Promise<number> {
   return total;
 }
 
-async function measure(dirs: RetainedDirs): Promise<RetainedSizes> {
+// The volume, when the session's /persist is in one; null measures and deletes `scratch/`.
+function persistVolumeOf(dirs: RetainedDirs, deps: DataRetentionSweepDeps): PersistVolumeAccess | null {
+  return deps.persistVolumes && persistLayout(dirs.sessionDir) === "volume" ? deps.persistVolumes : null;
+}
+
+async function measure(
+  id: string,
+  dirs: RetainedDirs,
+  volume: PersistVolumeAccess | null,
+): Promise<RetainedSizes> {
   let checkout = 0;
   for (const dir of dirs.checkout) checkout += await treeBytes(dir);
   return {
-    persist: await treeBytes(dirs.persist),
+    // On the volume layout a `scratch/` that a copy left is counted too, so a later pass removes it.
+    persist: volume ? await volume.measure(id) + await treeBytes(dirs.persist) : await treeBytes(dirs.persist),
     uploads: await treeBytes(dirs.uploads),
     checkout,
   };
@@ -239,9 +257,43 @@ async function deleteDueSession(
   const before = stillDue();
   if (!before) return;
 
+  const volume = persistVolumeOf(before.dirs, deps);
+  if (!volume) {
+    await deleteNow(id, deps, iso, stillDue, null, result);
+    return;
+  }
+  // The exclusive lease keeps a restore and a start from creating a container until the deletion
+  // ends, so the volume holds nothing written after the check (docs/331).
+  try {
+    await withPersistLease(id, "exclusive", async () => {
+      const blocker = await volume.blockingContainer(id);
+      if (blocker) {
+        console.log(`[data-retention] ${id}: not deleted this pass, ${blocker} can still use /persist`);
+        return;
+      }
+      await deleteNow(id, deps, iso, stillDue, volume, result);
+    }, { timeoutMs: RETENTION_GATE_WAIT_MS });
+  } catch (err) {
+    if (!(err instanceof PersistGateTimeoutError)) throw err;
+    console.log(`[data-retention] ${id}: not deleted this pass: ${err.message}`);
+  }
+}
+
+async function deleteNow(
+  id: string,
+  deps: DataRetentionSweepDeps,
+  iso: () => string,
+  stillDue: () => { session: SessionInfo; dirs: RetainedDirs } | null,
+  volume: PersistVolumeAccess | null,
+  result: DataRetentionSweepResult,
+): Promise<void> {
+  const config = deps.sessionManager.dataRetention;
+  const before = stillDue();
+  if (!before) return;
   const { dirs } = before;
-  const sizes = await measure(dirs);
-  const names = { persist: await entryNames(dirs.persist), uploads: await entryNames(dirs.uploads) };
+  const sizes = await measure(id, dirs, volume);
+  // Nothing writes the volume during the exclusive lease, so it is emptied whole.
+  const names = { persist: volume ? [] : await entryNames(dirs.persist), uploads: await entryNames(dirs.uploads) };
   // The period comes from what is on disk now, not from an earlier measurement.
   deps.sessionManager.setRetainedData(id, totalBytes(sizes), iso());
   const due = stillDue();
@@ -249,12 +301,36 @@ async function deleteDueSession(
 
   const deleted: RetainedSizes = { persist: 0, uploads: 0, checkout: 0 };
   const failures: string[] = [];
-  for (const part of ["persist", "uploads"] as const) {
+  // A restore does not take the /persist lease, so after each part that waits the decision is
+  // taken again; what was deleted until then is still reported.
+  let deletedSome = false;
+  let noLongerDue = false;
+  const mayGoOn = (): boolean => {
+    if (!deletedSome) return true;
+    noLongerDue ||= stillDue() === null;
+    return !noLongerDue;
+  };
+  if (volume) {
+    deletedSome = true;
+    try {
+      await volume.empty(id);
+      deleted.persist = sizes.persist;
+    } catch (err) {
+      failures.push(`/persist volume: ${getMessage(err)}`);
+    }
+    // Left by a copy that ended before it could remove it; the volume holds the same files.
+    await fs.rm(dirs.persist, { recursive: true, force: true }).catch((err: unknown) => {
+      failures.push(`${dirs.persist}: ${getMessage(err)}`);
+    });
+  }
+  for (const part of volume ? ["uploads"] as const : ["persist", "uploads"] as const) {
+    if (!mayGoOn()) break;
+    deletedSome = true;
     const message = await removeEntries(dirs[part], names[part]);
     if (message) failures.push(`${dirs[part]}: ${message}`);
     else deleted[part] = sizes[part];
   }
-  if (dirs.checkout.length > 0 && due.session.workspaceDir) {
+  if (dirs.checkout.length > 0 && due.session.workspaceDir && mayGoOn()) {
     const { failed } = await reclaimRegenerableSessionDirs(due.session.workspaceDir, { paceMs: deps.paceMs });
     if (failed.length > 0) failures.push(...failed.map((f) => `${f.dir}: ${f.message}`));
     else deleted.checkout = sizes.checkout;
@@ -287,10 +363,14 @@ async function deleteDueSession(
     }
   }
 
+  if (noLongerDue) {
+    console.log(`[data-retention] ${id}: the session was restored or opened during the deletion; the rest is kept`);
+    return;
+  }
   if (failures.length > 0) {
     console.warn(`[data-retention] deletion incomplete for ${id}: ${failures.join("; ")}`);
     // What is left keeps a size, so a later pass deletes it and reports it.
-    deps.sessionManager.setRetainedData(id, totalBytes(await measure(dirs)), iso());
+    deps.sessionManager.setRetainedData(id, totalBytes(await measure(id, dirs, volume)), iso());
     return;
   }
   deps.sessionManager.setRetainedData(id, 0, iso());
@@ -317,7 +397,7 @@ export async function sweepRetainedSessionData(
       if (retainedDataSizeIsStale(listed, done)) {
         // A turn that started before the merge can still write to /persist.
         if (deps.isSessionLive(listed.id)) continue;
-        const bytes = totalBytes(await measure(dirs));
+        const bytes = totalBytes(await measure(listed.id, dirs, persistVolumeOf(dirs, deps)));
         const measuredAt = new Date(now()).toISOString();
         deps.sessionManager.setRetainedData(listed.id, bytes, measuredAt);
         result.measured += 1;

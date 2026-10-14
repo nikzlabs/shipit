@@ -6,8 +6,9 @@ description: Each session's /persist moves from sessions/<id>/scratch in the wor
 
 # 331 — /persist in a Docker volume of its own: design
 
-Implements [`requirements.md`](./requirements.md). Not implemented yet; the
-work is in [`checklist.md`](./checklist.md).
+Implements [`requirements.md`](./requirements.md). Built as designed; the
+[`checklist.md`](./checklist.md) records the build, and *Implementation notes*
+records where the build adds to this design.
 
 ## Summary
 
@@ -51,7 +52,7 @@ orders every user of `/persist`.
   the daemon keeps its volumes: in `/var/lib/docker/volumes` on native Linux and
   inside the VM on Docker Desktop. No host path is looked up, so the Docker
   Desktop problem of docs/317 does not apply.
-- **Created by** `ensurePersistVolume` (dockerode `createVolume`, idempotent for
+- **Created by** `ensureVolume` (dockerode `createVolume`, idempotent for
   an existing name). Every mount site gets the name only from that function, so
   the volume exists before anything mounts it.
 
@@ -121,7 +122,7 @@ copy waits for a running `up`, including its build.
 Three rules keep the gate free of deadlocks:
 
 1. **The copy runs before the shared lease is taken.** Agent container
-   creation first calls `ensurePersistVolume`, which may take and release the
+   creation first calls `forAgent`, which may take and release the
    exclusive side, and only then takes the shared side for the creation itself.
 2. **A holder of the exclusive side runs its helpers under that lease.** The
    measure and empty runs of a retention deletion borrow it; they do not ask
@@ -132,21 +133,24 @@ Three rules keep the gate free of deadlocks:
    must never wait for the queue. The copy stops a stack directly through Docker
    (below), not through the queue.
 
-**Containers that can outlive the process.** Every persist helper container
-carries `shipit-persist-helper=<session-id>` and `shipit-boot=<boot id>`, a value
-the orchestrator picks at process start. An exclusive section first force-removes
-the session's persist helpers from an earlier boot, then checks that the session
-has no other container at all, in any state:
+**Containers that can outlive their lease.** Every persist helper container
+carries `shipit-persist-helper=<session-id>`. Helpers of this process run under
+the shared side, or borrow the exclusive one, so when an exclusive section
+begins no helper of the session runs legitimately. The section first
+force-removes every persist helper of the session that still exists, then checks
+that the session has no container at all, in any state:
 
 - `shipit-session-id=<id>`: the agent container (`container-lifecycle.ts`);
 - `shipit-parent-session=<id>`: Compose services, and containers the agent made
   through the Docker proxy (`compose-generator.ts`, `docker-proxy.ts`);
-- `shipit-compose-helper=<id>`: confined Compose helpers (`compose-helper.ts`).
+- `shipit-compose-helper=<id>`: confined Compose helpers (`compose-helper.ts`);
+- `shipit-persist-helper=<id>`: a helper that could not be removed.
 
-A persist helper of an earlier boot can still be writing, for example a copy
-that was running when ShipIt crashed. Removing it before the new section begins
-is what makes a repeated wipe and copy safe. Helpers of the current boot hold
-the shared side, so the exclusive side never meets one.
+A persist helper that still exists can still be writing: a copy that was running
+when ShipIt crashed, or one whose removal failed after a timeout. Removing it
+before the new section begins is what makes a repeated wipe and copy safe. The
+removal takes only this install's containers (the stack label); the check sees
+every install's, because it removes nothing.
 
 ## Copy at the next start (req 5)
 
@@ -277,8 +281,7 @@ same way as `runInstallContainer` (`plugin-install.ts`):
   `gosu`, a root process dropping its own privileges), memory and pid limits.
 - **Mounts:** only the volume at `/persist` (read-only unless the script
   writes), and for the copy, the scratch subpath at `/old`.
-- **Labels:** `shipit-persist-helper=<session-id>`, `shipit-boot=<boot id>` and
-  the stack label.
+- **Labels:** `shipit-persist-helper=<session-id>` and the stack label.
 - **Capabilities, per script:**
 
 | Script | Runs as | Capabilities |
@@ -474,6 +477,88 @@ mounts, the rewrite and the preparation) once no such session has a container.
 From then on, a failed copy fails the start instead of continuing on the scratch
 layout. That is a follow-up on planning#696, not part of this change.
 
+## Implementation notes
+
+What the build adds to the design above, each verified by a test:
+
+- **The gate is its own module**, `persist-gate.ts`, with no imports, so the
+  Compose helper and the service manager use it without importing the volume
+  code. The lease follows the async context (`AsyncLocalStorage`): a request
+  inside an exclusive lease borrows it (rule 2), a shared request inside a
+  shared lease is counted at once, so a waiting exclusive request cannot
+  deadlock a Compose start whose own helper run asks again, and an exclusive
+  request inside a shared lease is refused. Work started inside a lease that
+  runs after the lease ends asks again.
+- **The exclusive side has a wait limit.** A hung `up` must not hold an agent
+  start for ever. The copy waits 2 minutes and then leaves the session on the
+  scratch layout for this start; a retention deletion waits 1 minute and then
+  waits for the next pass; Full reset waits 2 minutes per session and then logs
+  the volume for the orphan sweep.
+- **The measure helper sums in the container** with `awk`, by the same rule, so
+  its output is one number and no log limit of the daemon can cut it. A test
+  runs the script on this host and compares it with `treeBytes`.
+- **The copy also sets the volume root's owner and mode** from `scratch/`
+  (`chown --reference`, `chmod --reference`), so the worker entrypoint finds the
+  root handed over and does not run `chown -R`. It prints the size (`du -sk`)
+  for the log line.
+- **The agent container mounts the volume with `NoCopy`**, as every service
+  mount does.
+- **The container check before an exclusive section uses no stack filter**: a
+  container of another install with the same session id defers the copy rather
+  than risk a writer. **Every removal does use it** — the stack, the helpers,
+  Full reset — so one install never removes another's containers.
+- **Stale helpers.** Every persist helper that exists at the start of an
+  exclusive section is stale, so the section removes all of them, whatever their
+  boot id. Outside an exclusive section helpers of this process can run, so a
+  mount (agent creation, the Compose start and every confined Compose helper
+  run) removes only the stale ones: those with another boot id, checked once
+  per session and process, and those this process could not remove at the end
+  of their run, until none is left. The check runs one at a time per session.
+  When a stale helper cannot be removed, the mount is refused: a retention
+  `empty` that was running when ShipIt stopped could otherwise delete what the
+  restored session writes. Agent creation resolves its mount under its shared
+  lease for this reason, after `forAgent`.
+- **A volume ShipIt did not make is refused.** Docker keeps the labels of an
+  existing volume, so `ensureVolume`, `measure` and `empty` inspect it, and refuse one that has
+  another driver, driver options, or a label that a removal path or the Docker
+  proxy selects by (`unsafePersistVolume`). During the copy that leaves the
+  session on `scratch/`; on the volume layout the start fails. The Docker proxy
+  also refuses to create a volume whose name starts with `shipit-persist.`, so a
+  session cannot make another session's volume in advance and own it.
+- **The record is final once renamed into place.** A failed flush of the
+  directory after the rename is logged, not thrown, so the agent cannot start on
+  `scratch/` while the record says `volume`. Agent creation asks the layout
+  again under its shared lease, so it uses the volume if another start copied in
+  between.
+- **The copy keeps its restart list** whatever fails after the stack was removed.
+- **A measure with no output is a failure**, not a size of 0.
+- **Retention decides again after each part it deleted**, because a restore
+  does not take the `/persist` lease: a session restored while its volume was
+  emptied keeps its uploads and its checkout. On the volume layout it also
+  counts and removes a `scratch/` that a finished copy left (the volume holds
+  the same files), so a failed removal is tried again.
+- **The orphan sweep removes the session's persist helpers first**, which a
+  crash can leave holding the volume.
+- **The Docker Desktop refusal for the scratch layout says what changes it**:
+  the next start of the session's container moves `/persist` into its volume.
+- `demultiplex` moved from `plugin-install.ts` to `plugin-container.ts`, which
+  the helper runner shares; the boot sweep's pattern is exported from
+  `startup-janitor.ts` (`SESSION_VOLUME_RE`) for the name test.
+- The wiki page `sessions.md` needed no change: what it says about `/persist`
+  and its retention is still true.
+
+## Known limits
+
+- Full reset takes one list of volumes. An activation that runs during the reset
+  can create a volume or a container after it; that volume then has no session
+  row, so the orphan sweep removes it a day later, when nothing uses it.
+- The tier escalation stops a session's Compose stack by project name with no
+  stack filter, as it did before this change (`startup-monitors.ts`). Two
+  installs on one daemon share a project name only for a session id that both
+  have, which happens when one is restored from the other's backup. The
+  retention sweep's teardown now passes the filter; the tier escalation is left
+  for a separate change.
+
 ## Rejected alternatives
 
 - **Docker Desktop only.** The user chose every host (requirements, resolved
@@ -506,14 +591,19 @@ layout. That is a follow-up on planning#696, not part of this change.
 - New: `src/server/orchestrator/persist-volume.ts`:
   - the volume name;
   - `persistLayout`;
-  - the gate and the boot id;
-  - `ensurePersistVolume` with the copy;
-  - the helper runner and its four scripts.
+  - `PersistVolumes`: `ensureVolume`, `forAgent` with the copy, `forSession`
+    for Compose, `measure`, `empty`, `blockingContainer`, `removeAllForReset`,
+    `sweepOrphans`;
+  - the helper runner and its four scripts;
+  - `restartKeptServices`.
+- New: `src/server/orchestrator/persist-gate.ts` — the per-session gate.
+- `session-container.ts` — creates `PersistVolumes` when a workspace volume is
+  configured, and holds the late-bound restarter.
 - `container-lifecycle.ts` — `buildMounts`; `createContainer` copies under the
   gate, restarts a kept preview after it, and no longer creates `scratch/` for
   the volume layout.
-- `bootstrap-managers.ts` — the late-bound `serviceManagers` accessor for the
-  runner factory.
+- `bootstrap-managers.ts` — sets the late-bound restarter, which reads the
+  `serviceManagers` map, on the container manager.
 - `compose-generator.ts` — `rewritePersistMount`, the `external` `persist`
   declaration, `dockerDesktopRefusal` limited to the scratch layout.
 - `service-manager.ts`, `compose-persist.ts` — preparation through the helper;
@@ -523,8 +613,10 @@ layout. That is a follow-up on planning#696, not part of this change.
 - `services/files.ts` — `deleteUpload` takes one name only.
 - `data-retention-sweep.ts` — measure and empty through the helper, under the
   gate.
-- `services/misc.ts` — `fullReset`.
-- `steady-state-reclaim.ts` — the orphan volume sweep.
+- `services/misc.ts` — `fullReset`; `api-routes-bootstrap.ts` passes it the
+  map and the volumes.
+- `steady-state-reclaim.ts` — the orphan volume sweep; `startup-monitors.ts`
+  passes the volumes to it and to the retention sweep.
 
 ## Verification
 
@@ -534,7 +626,8 @@ layout. That is a follow-up on planning#696, not part of this change.
     - each crash point;
     - no wipe when the record says `volume`;
     - no copy while any listed container exists;
-    - a leftover helper from an earlier boot is removed first;
+    - a leftover helper is removed first, and one that cannot be removed
+      defers the copy;
     - a running Compose stack is stopped first;
     - the record is written only after the flush.
   - The gate: a Compose helper run, a Compose start from layout to `up`, the

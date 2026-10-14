@@ -580,9 +580,9 @@ no durability guarantee and belong in `docker-compose.yml`.
 
 ### What survives what
 
-`/persist` is the session's `scratch` directory on the host. A Compose service
-that mounts the `persist` volume sees the same directory, so it has the same
-lifecycle. A project's own named volumes are different:
+`/persist` is a Docker volume of this session's own. A Compose service that
+mounts the `persist` volume sees the same files, so it has the same lifecycle.
+A project's own named volumes are different:
 
 | Event | `/persist`, and `persist` mounts in services | The project's named Compose volumes |
 |---|---|---|

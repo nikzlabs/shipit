@@ -15,7 +15,7 @@ A session directory is `<sessions-root>/<id>/` with these children:
 
 | Child | Mounted at | Deleted by this feature |
 |---|---|---|
-| `scratch/` | `/persist` | Its contents (req 1) |
+| `scratch/` | `/persist` | Its contents (req 1); after `docs/331-persist-own-volume`, the contents of the session's own volume instead (see below) |
 | `uploads/` | `/uploads` | Its contents (req 1) |
 | `workspace/`, `overlay/`, `state/` | `/workspace` and its caches | Only for an archived sandbox session that has no remote (req 10) |
 
@@ -121,6 +121,20 @@ The check is repeated after each step that waits (steps 3 and 4), because the
 user can restore or open the session during the wait. A file that a session
 creates after step 4 is not in the list, so it is not deleted.
 
+**A session whose `/persist` is a Docker volume of its own**
+(`docs/331-persist-own-volume`) is measured and emptied by a helper container,
+because the orchestrator cannot read the volume. The measure follows the rule of
+`treeBytes`. Steps 4 to 6 run under the session's exclusive `/persist` lease
+(`persist-gate.ts`): the decision is taken again inside the lease, the session
+must have no container that can use `/persist` (otherwise it waits for a later
+pass), and then the volume is emptied whole. The lease keeps a restore and a
+start from creating a container until the deletion ends, so nothing can be
+written after the check, and no list of entries is needed. The volume itself
+stays, as `scratch/` stays. Uploads and the sandbox checkout are deleted as
+above. A restore does not take the lease, so on both layouts the decision is
+taken again after each part that was deleted, and a session restored meanwhile
+keeps the rest; the notice names what was deleted.
+
 When a part of the deletion fails, the notice names only the parts that were
 deleted, the stored size becomes the size of what is left, and a later pass
 deletes the rest and writes a second notice.
@@ -171,6 +185,8 @@ what happens to `/persist` on archive. `environment.md` ("What survives what"),
   stale size, deletion time.
 - `src/server/orchestrator/data-retention-config.ts` — the three variables.
 - `src/server/orchestrator/data-retention-sweep.ts` — measure, delete, notify.
+- `src/server/orchestrator/persist-volume.ts` — measure and empty a session's
+  own `/persist` volume (`docs/331-persist-own-volume`).
 - `src/server/orchestrator/sessions.ts` — `archive`, `unarchive`,
   `setRetainedData`, and `dataDeletesAt` on the lists.
 - `src/server/shared/database.ts` — the migration.

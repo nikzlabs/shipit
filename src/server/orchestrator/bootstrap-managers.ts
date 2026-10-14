@@ -129,6 +129,7 @@ import {
 import { releaseSessionNetworkQueued } from "./session-network-release.js";
 import { composeRegistryLoginDir } from "./compose-helper.js";
 import { dockerDesktopCheck } from "./compose-persist.js";
+import { restartKeptServices } from "./persist-volume.js";
 import { createPluginInstallRunner, PLUGIN_INSTALL_NETWORK } from "./plugin-install.js";
 import { registerExistingPluginNetworks } from "./plugin-container.js";
 import { createGenerationDeletionLease } from "./plugin-leases.js";
@@ -249,6 +250,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const composeStopPromises = new Map<string, Promise<void>>();
   const composeWarnings = new Map<string, string>();
   const composeNotConfigured = new Set<string>();
+
+  // docs/331: a preview kept through idle reclaim runs again after its /persist is copied.
+  containerManager?.setKeptServiceRestarter((sessionId, services) => {
+    restartKeptServices(serviceManagers.get(sessionId), sessionId, services);
+  });
 
   const announcePreviewsStopped = (sessionId: string): void => {
     sseBroadcast("session_previews_stopped", { sessionId });

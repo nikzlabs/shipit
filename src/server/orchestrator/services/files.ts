@@ -232,14 +232,15 @@ export async function saveUploadedFile(
   };
 }
 
+// One upload name: no upload starts with a dot, and ShipIt keeps its replay files in a dot
+// directory beside them (docs/331).
 export async function deleteUpload(uploadsDir: string, filename: string): Promise<boolean> {
-  const safePath = path.resolve(uploadsDir, filename);
-  if (!safePath.startsWith(`${path.resolve(uploadsDir)}/`)) {
+  if (!filename || filename.includes("/") || filename.includes("\\") || filename.startsWith(".")) {
     throw new ServiceError(400, "Invalid filename");
   }
 
   try {
-    await fs.unlink(safePath);
+    await fs.unlink(path.join(uploadsDir, filename));
     return true;
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
