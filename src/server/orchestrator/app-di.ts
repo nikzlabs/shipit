@@ -100,6 +100,13 @@ export interface AppDeps {
   agentRegistry?: AgentRegistry;
   runnerFactory?: SessionRunnerFactory;
   sessionContainerManager?: SessionContainerManager;
+  /**
+   * Test seam for the planning#668 own-container API denial. Omitted in
+   * production, where it is computed from the runtime (test/local/dev stacks
+   * trust their own loopback). A test sets `false` to exercise the denial that
+   * test mode would otherwise disable.
+   */
+  trustOwnContainerLoopback?: boolean;
   databaseManager?: DatabaseManager;
   repoStore?: RepoStore;
   prStatusPoller?: PrStatusPoller;
