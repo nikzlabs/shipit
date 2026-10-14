@@ -21,3 +21,7 @@
 - [x] Verify on the WSL2 host, after the update: the built-in browser reports `D3D12 (…)` on `about:blank`, and a Chrome with no display does so with `--use-angle=gl-egl --ignore-gpu-blocklist` (req 8, 9)
 - [x] Verify after the update: the built-in browser's screenshot of a page with no WebGL is byte-identical to the screenshot from the old start command (req 11)
 - [ ] Verify after the update, in a session with GPU access off: the built-in browser reports SwiftShader, and its screenshot of a page with no WebGL is the same as with GPU access on (req 10)
+- [x] Find where the time of a WebGL 2 texture array upload goes on the GPU route (req 12)
+- [x] The C library tunable in the environment of a container that has the graphics mounts, and in the built-in browser's start command (req 12)
+- [x] Docs for req 12: environment.md, wiki, the upload probe and its measurement in plan.md
+- [ ] Verify after the update, in a new `granted` container on the WSL2 host: `echo $GLIBC_TUNABLES` prints the value, and the built-in browser uploads the texture array of the probe in less than 1 s (req 12)

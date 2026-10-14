@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { GLIBC_TUNABLES_ENV, GPU_GRAPHICS_GLIBC_TUNABLES } from "../../shared/gpu-graphics-env.js";
 
 // Auto-named screenshots land here and return image blocks; explicit filenames
 // return links and resolve relative to the MCP client's workspace, not this directory.
@@ -33,8 +34,10 @@ export function playwrightMcpArgs(gpu: boolean): readonly string[] {
   const server = `${PLAYWRIGHT_MCP_BIN} --isolated --browser chromium --headless --no-sandbox --output-dir ${PLAYWRIGHT_OUTPUT_DIR}`;
   // Pinned to Direct3D, a GPU fault ends in Chromium's own software renderer, as with no GPU.
   // Not pinned, Mesa draws on the CPU and gives a third kind of picture.
+  // The tunable is exported here like the pin: Codex gives an MCP server only the variables its config names.
+  const tunables = `${GLIBC_TUNABLES_ENV}=${shellQuote(GPU_GRAPHICS_GLIBC_TUNABLES)}`;
   const start = gpu
-    ? `export GALLIUM_DRIVER=d3d12 && exec ${server} --config ${shellQuote(GPU_CONFIG_PATH)}`
+    ? `export GALLIUM_DRIVER=d3d12 ${tunables} && exec ${server} --config ${shellQuote(GPU_CONFIG_PATH)}`
     : `exec ${server}`;
   return ["-c", `mkdir -p ${PLAYWRIGHT_OUTPUT_DIR} && cd ${PLAYWRIGHT_OUTPUT_DIR} && ${start}`];
 }

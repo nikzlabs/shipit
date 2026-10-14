@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, describe, it, expect, vi } from "vitest";
+import { GPU_GRAPHICS_GLIBC_TUNABLES } from "../../shared/gpu-graphics-env.js";
 import {
   PLAYWRIGHT_MCP_COMMAND,
   PLAYWRIGHT_OUTPUT_DIR,
@@ -48,7 +49,7 @@ describe("the built-in browser on the GPU", () => {
   const stubDir = mkdtempSync(path.join(os.tmpdir(), "playwright-mcp-stub-"));
   writeFileSync(
     path.join(stubDir, "playwright-mcp"),
-    '#!/bin/sh\necho "driver=$GALLIUM_DRIVER"\nfor arg in "$@"; do echo "arg=$arg"; done\n',
+    '#!/bin/sh\necho "driver=$GALLIUM_DRIVER"\necho "tunables=$GLIBC_TUNABLES"\nfor arg in "$@"; do echo "arg=$arg"; done\n',
   );
   chmodSync(path.join(stubDir, "playwright-mcp"), 0o755);
   afterAll(() => {
@@ -56,13 +57,14 @@ describe("the built-in browser on the GPU", () => {
   });
 
   /** What the server binary receives when a CLI starts it from these args. */
-  function serverStart(gpu: boolean): { driver: string; args: string[] } {
+  function serverStart(gpu: boolean): { driver: string; tunables: string; args: string[] } {
     const out = execFileSync(PLAYWRIGHT_MCP_COMMAND, [...playwrightMcpArgs(gpu)], {
       env: { PATH: `${stubDir}:${process.env.PATH ?? ""}` },
       encoding: "utf8",
     }).trim().split("\n");
     return {
       driver: out.find((line) => line.startsWith("driver="))?.slice("driver=".length) ?? "",
+      tunables: out.find((line) => line.startsWith("tunables="))?.slice("tunables=".length) ?? "",
       args: out.filter((line) => line.startsWith("arg=")).map((line) => line.slice("arg=".length)),
     };
   }
@@ -117,6 +119,7 @@ describe("the built-in browser on the GPU", () => {
     );
     expect(serverStart(false)).toEqual({
       driver: "",
+      tunables: "",
       args: ["--isolated", "--browser", "chromium", "--headless", "--no-sandbox", "--output-dir", PLAYWRIGHT_OUTPUT_DIR],
     });
   });
@@ -137,5 +140,9 @@ describe("the built-in browser on the GPU", () => {
     expect(flags).toContain("--ignore-gpu-blocklist");
     // Software compositing keeps the picture of a page with no WebGL as it was (req 11).
     expect(flags).toContain("--disable-gpu-compositing");
+  });
+
+  it("starts the server with the copy tunable, which its browser inherits (req 12)", () => {
+    expect(serverStart(true).tunables).toBe(GPU_GRAPHICS_GLIBC_TUNABLES);
   });
 });

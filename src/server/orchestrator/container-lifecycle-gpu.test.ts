@@ -7,7 +7,7 @@ import type Docker from "dockerode";
 
 import { createContainer, type LifecycleDeps } from "./container-lifecycle.js";
 import type { ContainerConfig } from "./session-container.js";
-import { GPU_DEVICE_REQUEST } from "./session-gpu.js";
+import { GPU_DEVICE_REQUEST, GPU_GRAPHICS_ENV } from "./session-gpu.js";
 import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 
 /** docs/325-session-gpu-access req 1, 5, 6 and 7, at the one place the request is made. */
@@ -119,6 +119,7 @@ async function create(docker: Docker, gpuAccess?: () => boolean, extraLabels?: R
 const requested = (c: Created) => c.options.HostConfig?.DeviceRequests;
 const env = (c: Created) => c.options.Env ?? [];
 const wslBinds = (c: Created) => (c.options.HostConfig?.Binds ?? []).filter((bind) => bind.startsWith("/usr/lib/wsl/"));
+const tunables = (c: Created) => env(c).filter((entry) => entry.startsWith("GLIBC_TUNABLES="));
 
 describe("createContainer — the GPU", () => {
   it("asks for nothing while the switch is off", async () => {
@@ -220,6 +221,14 @@ describe("createContainer — WSL2 graphics for a GPU container", () => {
     expect(env(created[0]).some((entry) => entry.startsWith("SHIPIT_GPU_GRAPHICS_REASON="))).toBe(false);
   });
 
+  it("gives the container with the mounts the copy tunable, for each browser it starts (req 12)", async () => {
+    const { docker, created } = fakeDocker(() => null);
+    await create(docker, () => true);
+
+    expect(tunables(created[0])).toEqual([...GPU_GRAPHICS_ENV]);
+    expect(GPU_GRAPHICS_ENV).toHaveLength(1);
+  });
+
   it("keeps the GPU, and says why, when the container starts only without the mounts", async () => {
     const { docker, created } = fakeDocker((c) => (wslBinds(c).length > 0 ? new Error("mount\nfailed") : null));
     const sc = await create(docker, () => true);
@@ -230,6 +239,7 @@ describe("createContainer — WSL2 graphics for a GPU container", () => {
     expect(wslBinds(created[1])).toEqual([]);
     expect(env(created[1])).toContain("SHIPIT_GPU=granted");
     expect(env(created[1])).toContain("SHIPIT_GPU_GRAPHICS_REASON=mount failed");
+    expect(tunables(created[1])).toEqual([]);
     expect(sc.gpu).toEqual({ state: "granted" });
     expect(sc.id).toBe("cid-2");
   });
@@ -244,6 +254,7 @@ describe("createContainer — WSL2 graphics for a GPU container", () => {
     expect(wslBinds(created[2])).toEqual([]);
     expect(env(created[2])).toContain("SHIPIT_GPU_REASON=no driver");
     expect(env(created[2]).some((entry) => entry.startsWith("SHIPIT_GPU_GRAPHICS_REASON="))).toBe(false);
+    expect(tunables(created[2])).toEqual([]);
     expect(sc.gpu).toEqual({ state: "unavailable", reason: "no driver" });
   });
 
@@ -252,6 +263,7 @@ describe("createContainer — WSL2 graphics for a GPU container", () => {
     await create(docker, () => false);
 
     expect(wslBinds(created[0])).toEqual([]);
+    expect(tunables(created[0])).toEqual([]);
   });
 
   it("mounts neither on a host that is not WSL2", async () => {
@@ -261,5 +273,6 @@ describe("createContainer — WSL2 graphics for a GPU container", () => {
 
     expect(requested(created[0])).toEqual([GPU_DEVICE_REQUEST]);
     expect(wslBinds(created[0])).toEqual([]);
+    expect(tunables(created[0])).toEqual([]);
   });
 });
