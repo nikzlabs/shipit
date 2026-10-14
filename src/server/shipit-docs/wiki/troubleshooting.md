@@ -473,7 +473,11 @@ mount of one subdirectory or one file** — `./frontend:/app`,
 cannot mount one and keep it inside the session. The refusal names the service
 and the mount. Fix the compose file yourself: mount all of the workspace
 (`.:/src`) or all of `/persist` (`persist:/data`), and point the service at the
-path inside it (`/shipit-docs/compose.md`).
+path inside it (`/shipit-docs/compose.md`). A plugin that this repository
+develops for itself (`repo: self`) has the same limit: when one of its plugin
+services mounts a subdirectory, ShipIt starts none of the repository's plugin
+services, and the repository's card in the Plugins tab gives the reason. Fix the plugin's compose fragment: remove the
+mount and use the same files under `/plugin` (`/shipit-docs/plugin-authoring.md`).
 
 ## "Dictation isn't working"
 

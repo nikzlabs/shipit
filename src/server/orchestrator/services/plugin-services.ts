@@ -9,6 +9,7 @@ import {
 import {
   buildPluginComposeServices,
   collectPluginFragments,
+  selfSubdirectoryMount,
   type PluginComposeService,
   type PluginFragmentService,
 } from "../plugin-compose.js";
@@ -28,6 +29,7 @@ export interface PluginServiceDeps {
   containEgress: boolean;
   stackName?: string;
   projectCompose?: ProjectComposeAccess;
+  isDockerDesktop?: () => Promise<boolean>;
 }
 
 /** How a plugin reader reads the session's project compose file (docs/318-compose-remaining-escapes). */
@@ -104,9 +106,24 @@ export async function resolveSessionPluginServices(
     ...(deps.workspaceVolume ? { workspaceVolume: deps.workspaceVolume } : {}),
     ...(workspaceSubpath ? { workspaceSubpath } : {}),
     pluginVolumes,
+    dockerDesktop: await dockerDesktopFor(fragments, deps),
   });
   recordPluginServiceFailures(sessionId, built.issuesByRepo);
   return built.services;
+}
+
+// Docker is asked only for the one plugin mount Docker Desktop cannot give (docs/317).
+async function dockerDesktopFor(
+  fragments: readonly PluginFragmentService[],
+  deps: PluginServiceDeps,
+): Promise<boolean | Error> {
+  if (!deps.workspaceVolume || !deps.isDockerDesktop) return false;
+  if (!fragments.some((fragment) => selfSubdirectoryMount(fragment) !== null)) return false;
+  try {
+    return await deps.isDockerDesktop();
+  } catch (err) {
+    return err instanceof Error ? err : new Error(String(err));
+  }
 }
 
 function nothingToSurface(sessionId: string): PluginComposeService[] {

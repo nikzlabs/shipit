@@ -128,6 +128,7 @@ import {
 } from "./service-manager-setup.js";
 import { releaseSessionNetworkQueued } from "./session-network-release.js";
 import { composeRegistryLoginDir } from "./compose-helper.js";
+import { dockerDesktopCheck } from "./compose-persist.js";
 import { createPluginInstallRunner, PLUGIN_INSTALL_NETWORK } from "./plugin-install.js";
 import { registerExistingPluginNetworks } from "./plugin-container.js";
 import { createGenerationDeletionLease } from "./plugin-leases.js";
@@ -490,6 +491,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       });
   };
 
+  const pluginDockerDesktop = containerManager ? dockerDesktopCheck(containerManager.dockerClient) : undefined;
   const resolvePluginServices = (
     sessionId: string,
     workspaceDir: string,
@@ -500,6 +502,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       ...(containerManager?.workspaceVolumeName
         ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
         : {}),
+      ...(pluginDockerDesktop ? { isDockerDesktop: pluginDockerDesktop } : {}),
       containEgress: containerManager?.isEgressContained(sessionId) ?? false,
       stackName: process.env.DOCKER_STACK,
       projectCompose: projectComposeAccess(sessionId, workspaceDir),

@@ -512,6 +512,16 @@ is reachable from there either, so a server that imports a dependency from the
 repository root's `node_modules` finds nothing. The whole tree is mounted as
 well, at `/plugin`, for a service that would rather run from the root.
 
+**On a Docker Desktop host, your own session cannot mount a subdirectory of the
+repository.** The mount above is `plugins/web`, not the whole repository, so in
+a `repo: self` session ShipIt starts none of the repository's plugin services,
+and the repository's card in the Plugins tab gives the reason. (It withholds
+all of them because they may depend on each other.) A consumer is not affected,
+because a tracked plugin's files come from their own volume. To run the service
+in your own session there, remove the mount and use the same files under `/plugin`:
+`working_dir: /plugin/plugins/web`. That works for a consumer too, because
+`/plugin` is the whole tree there as well.
+
 ```yaml
 # docker-compose.yml
 services:
