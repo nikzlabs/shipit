@@ -78,7 +78,7 @@ On Docker Desktop no `local` volume can have a directory of the workspace volume
 
 So on Docker Desktop ShipIt mounts all of `/persist` from the shared volume as above, and **refuses `persist/<sub>`** with a message that names the mount that works (`persist:/mnt`, then `/mnt/<sub>`). The refusal (`dockerDesktopRefusal`) comes before anything is prepared or looked up, and it is recorded as the project's compose failure, so `shipit service list` shows it. Docker is asked which daemon it is (`dockerDesktopCheck`, `docker info` OperatingSystem) only for a start that has such a mount; the answer is kept for the session. A failed lookup fails that start instead of guessing, because a wrong "no" would mount the empty directory again.
 
-Requirement 1's subdirectory form is therefore not met on Docker Desktop. Meeting it needs a volume whose own root is `/persist`, for example a per-session Docker volume that holds `/persist` instead of the scratch directory; that moves every session's data and is not done here.
+Requirement 1's subdirectory form is therefore not met on Docker Desktop. Meeting it needs a volume whose own root is `/persist`, for example a per-session Docker volume that holds `/persist` instead of the scratch directory; that moves every session's data and is not done here. It is designed in `docs/331-persist-own-volume` (planning#696).
 
 ### Ownership (req 5)
 

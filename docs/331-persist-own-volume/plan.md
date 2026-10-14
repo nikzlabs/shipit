@@ -29,16 +29,22 @@ orders every user of `/persist`.
 
 ## The volume (req 4)
 
-- **Name:** `<workspace volume>_persist-<session-id>`, for example
-  `shipit_workspace_persist-<uuid>`. The prefix is the install's own workspace
-  volume (`WORKSPACE_VOLUME`, `deployment/vps/docker-compose.yml`), so two
-  installs on one daemon never share a name. Two installs cannot share a
-  workspace volume either, so this isolation is as strong as today's, where
-  `/persist` is inside that volume.
+- **Name:** `shipit-persist.<workspace volume>.<session-id>`, for example
+  `shipit-persist.shipit_workspace.<uuid>`.
+  - The middle part is the install's own workspace volume (`WORKSPACE_VOLUME`,
+    `deployment/vps/docker-compose.yml`), so two installs on one daemon never
+    share a name. Two installs cannot share a workspace volume either, so this
+    isolation is as strong as today's, where `/persist` is inside that volume.
+  - The name starts with `shipit-p`. The boot sweep's pattern
+    `^shipit-([a-f0-9-]{12})_` needs a hexadecimal digit or `-` there, so it can
+    never match, whatever the workspace volume is called. A prefix of the
+    workspace volume name would not have that property: a custom
+    `WORKSPACE_VOLUME=shipit-abcdef123456_ws` would match the pattern.
 - **Found by name.** Full reset, the orphan sweep and the backup list persist
-  volumes by that name prefix and read the session id from the name. No code
-  selects them by label, so a volume that Docker created implicitly (a mount of
-  a missing named volume creates it, with no labels) is still found.
+  volumes by the prefix `shipit-persist.<workspace volume>.` and read the
+  session id from the rest of the name. No code selects them by label, so a
+  volume that Docker created implicitly (a mount of a missing named volume
+  creates it, with no labels) is still found.
 - **Labels:** `shipit-managed=true` and `stackLabel(DOCKER_STACK)`, by
   convention (`stack-label.ts`, planning#584). They select nothing.
 - **Driver:** `local`, with no `driver_opts`. A plain named volume lives where
@@ -54,7 +60,7 @@ No existing removal path matches the volume (verified at the source):
 | Removal path | Selects by | Matches the new volume? |
 |---|---|---|
 | `pruneSessionVolumes` (`startup-janitor.ts`), on archive, hot→light and discard | `volume prune --filter label=shipit-session=<id>` | No. The volume does not carry `shipit-session`: on an engine older than 23, `volume prune` also removes named volumes. |
-| `sweepOrphanSessionVolumes` (`startup-janitor.ts`), at boot | name `^shipit-([a-f0-9-]{12})_` | No. The name starts with the workspace volume name (`shipit_…` or `shipit-prod_…`). A test pins this for both standard names. |
+| `sweepOrphanSessionVolumes` (`startup-janitor.ts`), at boot | name `^shipit-([a-f0-9-]{12})_` | No. The character after `shipit-` is `p`. A test pins this for the two standard workspace volume names and for a custom one that starts with `shipit-<12 hex digits>_`. |
 | `removeProjectVolumes` (`compose-cli.ts`), after `down --volumes` | `com.docker.compose.project` | No. ShipIt creates the volume, and Compose neither labels nor removes an `external: true` volume (Compose's documented behaviour). |
 | `cleanupSessionDockerResources` (`container-lifecycle.ts`), on every destroy | `shipit-parent-session=<id>` | No. That label would also let the agent delete the volume through the Docker proxy (`docker-proxy-auth.ts`), so it must never be set. |
 | `reapOrphanPluginInstalls` (`plugin-install.ts`), at boot | `shipit-plugin-generation` | No. |
@@ -95,9 +101,9 @@ outlive it. Each kind is ordered differently.
 
 **Inside the process**, a per-session read-write gate in `persist-volume.ts`:
 
-- **Shared:** creating the agent container, every run of the confined Compose
-  helper (read, `config`, `build`, `up`), and the prepare and measure helper
-  runs.
+- **Shared:** creating the agent container; a Compose start, from the moment it
+  reads the layout to the end of its `up`; and every other run of the confined
+  Compose helper (a read, `config`, `build`).
 - **Exclusive:** the copy, a retention deletion, and Full reset of that session.
 
 Compose can start before the agent container exists on a cold start
@@ -105,6 +111,26 @@ Compose can start before the agent container exists on a cold start
 `service-manager-setup.ts` starts Compose), and `ServiceManager.start` reads the
 project file through the helper before `prepareStart` (`service-manager.ts`). So
 the gate wraps the helper runs themselves, not only `prepareStart`.
+
+A Compose start holds one lease across the whole sequence because its snapshot
+names the layout's mounts. With a lease per helper run, a copy could take the
+gate between `prepareStart` and a queued `up` (`buildAndUp`, `service-manager.ts`),
+and that `up` would mount a `scratch/` that no longer exists. The cost is that a
+copy waits for a running `up`, including its build.
+
+Three rules keep the gate free of deadlocks:
+
+1. **The copy runs before the shared lease is taken.** Agent container
+   creation first calls `ensurePersistVolume`, which may take and release the
+   exclusive side, and only then takes the shared side for the creation itself.
+2. **A holder of the exclusive side runs its helpers under that lease.** The
+   measure and empty runs of a retention deletion borrow it; they do not ask
+   for the shared side.
+3. **Nothing waits for the session's stack queue (`serializeStackOp`,
+   `stack-op-queue.ts`) while it holds the exclusive side.** A Compose start
+   holds that queue and then waits for the shared side, so the exclusive side
+   must never wait for the queue. The copy stops a stack directly through Docker
+   (below), not through the queue.
 
 **Containers that can outlive the process.** Every persist helper container
 carries `shipit-persist-helper=<session-id>` and `shipit-boot=<boot id>`, a value
@@ -131,11 +157,21 @@ session then has.
 
 Under the exclusive gate, when the layout is `scratch`:
 
-1. Stop the session's Compose stack through its `ServiceManager` (`stop`,
-   without volumes), if it runs. That is the case after idle reclaim, which
-   keeps the preview (`idle-enforcer.ts`, `preserveComposeOnDispose`), and after
-   a cold start in which Compose came first. The stack starts again through the
-   normal path after the gate is released, so a session's preview restarts once.
+1. If the session's Compose stack runs, note which services run, then remove
+   their containers with `downComposeStackByProject`
+   (`compose-stack-reaper.ts`), which calls Docker directly and keeps volumes.
+   The stack runs after idle reclaim, which keeps the preview
+   (`idle-enforcer.ts`, `preserveComposeOnDispose`), and after a cold start in
+   which Compose came first.
+   - `ServiceManager.stop` is not used, because it disposes the manager
+     (`_disposed`), and an adopted manager is not started again
+     (`setupServiceManager` returns it unchanged, `service-manager-setup.ts`).
+   - After the gate is released, container creation calls
+     `restartService(name)` on the session's `ServiceManager` for each noted
+     service, so the preview restarts once, with the new mounts.
+   - Container creation reaches the manager through the app's `serviceManagers`
+     map. The map is created after the runner factory (`bootstrap-managers.ts`),
+     so the factory gets a late-bound accessor.
 2. Remove leftover persist helpers and check for containers, as above. If a
    container remains, for example an agent container that ShipIt re-adopted
    after a restart, the session stays on the scratch layout for this start.
@@ -196,7 +232,7 @@ services:
         volume: { nocopy: true, subpath: plan }   # no subpath for all of /persist
 volumes:
   persist:
-    name: <workspace volume>_persist-<session-id>
+    name: shipit-persist.<workspace volume>.<session-id>
     external: true
 ```
 
@@ -290,7 +326,12 @@ replay names `/uploads/.shipit-replay/<file>`:
   (`container-lifecycle.ts`), including containers from before the update, and
   the orchestrator already writes there (`prompt-assembly.ts`).
 - The upload list shows files only and skips directories (`listUploads`,
-  `services/files.ts`).
+  `services/files.ts`). An upload cannot be called `.shipit-replay`, because the
+  upload name loses its leading dots.
+- The upload delete route (`api-routes-files.ts`, `deleteUpload`) accepts any
+  path below the uploads directory today, so
+  `.shipit-replay%2F001-Bash.txt` would delete a replay file. It is limited to
+  one name with no `/` and no leading dot.
 - A fork copies only the uploads its messages name (`copyUploadsForFork`), so it
   does not carry the parent's replay files.
 - The writer keeps replacing its own directory, which is inside the mount, so a
@@ -339,15 +380,25 @@ known gap of docs/323 req 9.
 ### Full reset
 
 `fullReset` (`services/misc.ts`) removes project volumes only through Compose
-(`removeVolumesOnDispose`). It deletes the session directories, but runner
-disposal does not destroy the agent containers (`container-session-runner.ts`),
-and a Compose stack kept after idle reclaim has no runner to dispose. After the
-existing steps, for each persist volume of this install (found by name):
+(`removeVolumesOnDispose`). Its gaps for `/persist`:
 
-1. Take the session's exclusive gate.
-2. Remove its persist helpers, destroy its containers with the same `destroy`
-   that archive uses (agent, Compose services and proxy containers), and remove
-   the volume.
+- Runner disposal does not destroy the agent containers
+  (`container-session-runner.ts`).
+- A Compose stack kept after idle reclaim has no runner to dispose.
+- `destroyContainer` returns at once when ShipIt has no record of the session's
+  agent container (`container-lifecycle.ts`), and idle reclaim removes that
+  record, so `destroy` cannot be relied on.
+
+So after `disposeAll` and before the session directories are deleted, Full
+reset does this:
+
+1. Stop every `ServiceManager` in the `serviceManagers` map, with volumes, not
+   only the managers of live runners.
+2. For each persist volume of this install (found by name):
+   - take that session's exclusive gate;
+   - remove, by label, every container of the session (the three labels listed
+     under the gate, and `shipit-persist-helper`);
+   - check that none is left, and remove the volume.
 
 A removal that still fails is logged, and the orphan sweep tries again.
 
@@ -386,7 +437,7 @@ docs/317 lifecycle table change only where they say *where* the files live.
 places:
 
 - "Two Docker named volumes hold everything" becomes the workspace and
-  credentials volumes **plus one `<workspace volume>_persist-<session-id>`
+  credentials volumes **plus one `shipit-persist.<workspace volume>.<session-id>`
   volume per session**.
 - The table row for `/persist` names that volume. "A whole-volume copy catches
   all of it" names all three kinds.
@@ -396,14 +447,15 @@ places:
   record says `volume`, so a workspace volume restored without its persist
   volumes gives those sessions an empty `/persist`.
 - The backup script writes one archive per volume, named after the volume, and
-  it adds every volume whose name starts with `<workspace volume>_persist-`.
+  it adds every volume whose name starts with
+  `shipit-persist.<workspace volume>.`.
 - The restore script works from the archives, not from the destination daemon,
   which has none of these volumes yet:
-  - It restores every `*_persist-*.tar` in the backup directory.
+  - It restores every `shipit-persist.*.tar` in the backup directory.
   - It reads every archive through before it deletes anything, as it does today.
   - When the destination's workspace volume has a different name (a local
-    backup restored on a VPS), it replaces the prefix, as it already
-    substitutes the two main names.
+    backup restored on a VPS), it replaces the middle part of each name, as it
+    already substitutes the two main names.
   - Labels are not restored, and nothing needs them.
 
 ## Sessions still on the scratch layout
@@ -436,6 +488,8 @@ layout. That is a follow-up on planning#696, not part of this change.
   written after a flushed copy is.
 - **Name the volume after the session only.** Two installs on one daemon, one
   of them restored from the other's backup, would share every volume.
+- **Start the name with the workspace volume name.** A custom workspace volume
+  name can then match the boot sweep's pattern, which would delete the volume.
 - **Select the volumes by label.** A volume that Docker creates implicitly has
   no labels, and a restore loses them.
 - **Remove the volume at the end of the retention period.** It fails for a
@@ -456,13 +510,17 @@ layout. That is a follow-up on planning#696, not part of this change.
   - `ensurePersistVolume` with the copy;
   - the helper runner and its four scripts.
 - `container-lifecycle.ts` — `buildMounts`; `createContainer` copies under the
-  gate and no longer creates `scratch/` for the volume layout.
+  gate, restarts a kept preview after it, and no longer creates `scratch/` for
+  the volume layout.
+- `bootstrap-managers.ts` — the late-bound `serviceManagers` accessor for the
+  runner factory.
 - `compose-generator.ts` — `rewritePersistMount`, the `external` `persist`
   declaration, `dockerDesktopRefusal` limited to the scratch layout.
 - `service-manager.ts`, `compose-persist.ts` — preparation through the helper;
   `persistVolume`.
 - `compose-helper.ts` — `projectMounts`, and the shared gate around each run.
 - `services/replay-detail.ts` — `replaySpillDirs`.
+- `services/files.ts` — `deleteUpload` takes one name only.
 - `data-retention-sweep.ts` — measure and empty through the helper, under the
   gate.
 - `services/misc.ts` — `fullReset`.
@@ -479,8 +537,13 @@ layout. That is a follow-up on planning#696, not part of this change.
     - a leftover helper from an earlier boot is removed first;
     - a running Compose stack is stopped first;
     - the record is written only after the flush.
-  - The gate: a Compose helper run, the copy and a retention deletion exclude
-    each other in the right way.
+  - The gate: a Compose helper run, a Compose start from layout to `up`, the
+    copy and a retention deletion exclude each other in the right way, and the
+    three rules hold (no deadlock when a start holds the stack queue).
+  - A kept preview runs again, with the new mounts, after the copy.
+  - Full reset removes a kept stack that has no agent record, and then the
+    volume.
+  - The upload delete route refuses `.shipit-replay/…`.
   - The rewrite shapes for both layouts, and no Docker Desktop refusal for
     `persist/<sub>` on the volume layout.
   - The helper arguments: capabilities, mounts, labels, names passed as
