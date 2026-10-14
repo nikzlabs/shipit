@@ -78,7 +78,6 @@ import type { PluginEgressPolicy } from "./plugin-egress.js";
 import { STACK_LABEL } from "./stack-label.js";
 import { EGRESS_DEFAULT_ALLOWLIST, type ResolvedEgressConfig } from "./egress-allowlist.js";
 import type { SessionGpu } from "./session-gpu.js";
-import { PersistVolumes } from "./persist-volume.js";
 import type { SessionCapabilities, SessionInfo } from "../shared/types.js";
 
 export {
@@ -352,8 +351,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   // One teardown at a time per session: a restart's destroy that overlapped an
   // earlier one let that earlier one remove the replacement's volumes and record.
   private teardowns = new Map<string, Promise<void>>();
-  private persist: PersistVolumes | null = null;
-  private restartKeptServices?: (sessionId: string, services: string[]) => void;
   private healthMonitorState: HealthMonitorState = createHealthMonitorState();
   private _disposed = false;
   private lastCreateErrors = new Map<string, { error: string; at: number }>();
@@ -383,24 +380,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.resolveEgressConfig = opts.resolveEgressConfig;
     this.gpuAccess = opts.gpuAccess;
     if (opts.readOwnContainerId) this.readOwnContainerId = opts.readOwnContainerId;
-    if (this.workspaceVolume) {
-      this.persist = new PersistVolumes({
-        docker: this.docker,
-        workspaceVolume: this.workspaceVolume,
-        image: this.imageName,
-        ...(this.stackName ? { stackName: this.stackName } : {}),
-      });
-    }
-  }
-
-  /** docs/331: each session's /persist in a volume of its own; null without a workspace volume. */
-  get persistVolumes(): PersistVolumes | null {
-    return this.persist;
-  }
-
-  /** Late-bound: the service managers exist only after this manager does (bootstrap-managers.ts). */
-  setKeptServiceRestarter(restart: (sessionId: string, services: string[]) => void): void {
-    this.restartKeptServices = restart;
   }
 
   /** An unclaimed standby that asked for the GPU under the other switch value; a new session must not take it. */
@@ -925,8 +904,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       readonlyRootfs: readonlyRootfsEnabled(),
       ...(this.gpuAccess ? { gpuAccess: this.gpuAccess } : {}),
       stateDir: this.stateDir,
-      ...(this.persist ? { persistVolumes: this.persist } : {}),
-      restartKeptServices: (sessionId: string, services: string[]) => this.restartKeptServices?.(sessionId, services),
       emitter: this,
       baseLabels: () => this.baseLabels(),
     };

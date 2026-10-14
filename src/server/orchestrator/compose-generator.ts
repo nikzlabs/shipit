@@ -61,8 +61,6 @@ export interface WorkspaceMountRecord {
 export const PERSIST_VOLUME = "persist";
 
 export interface PersistVolume {
-  /** The session's own /persist volume (docs/331); a mount is a subpath of it, confined to it. */
-  ownVolume?: string;
   /** The session's scratch directory (the agent's /persist) inside the workspace volume. */
   volumeSubpath?: string;
   /** Daemon-side path of that directory; only a subdirectory mount, or the bind deployment, needs it. */
@@ -1729,11 +1727,9 @@ function rewriteResolvedMount(
 }
 
 /**
- * The session's own volume holds only its /persist, so Docker confines every subpath to it
- * (docs/331). On the scratch layout, all of /persist is a subpath of the shared volume, as in the
- * agent container: the scratch directory cannot be replaced from a container, because its parent
- * is never mounted. Anything below it can be a symlink, so a subdirectory is a subpath of the
- * bind-backed `persist` volume.
+ * All of /persist is a subpath of the shared volume, as in the agent container: the scratch
+ * directory cannot be replaced from a container, because its parent is never mounted. Anything
+ * below it can be a symlink, so a subdirectory is a subpath of the bind-backed `persist` volume.
  */
 function rewritePersistMount(
   vol: Record<string, unknown>,
@@ -1749,24 +1745,20 @@ function rewritePersistMount(
 
 /**
  * The refusal for the first mount the rewrite would give a bind-backed volume — a subdirectory or
- * file of the workspace, or of /persist on the scratch layout — or null. Docker Desktop looks such
- * a volume's device up on the host, where it is missing, and a subpath of the shared volume would
- * be confined only to its root, which holds every session (docs/317, "Docker Desktop"). A session
- * with its own /persist volume mounts a subdirectory of it as a plain subpath (docs/331).
+ * file of the workspace or of /persist — or null. Docker Desktop looks such a volume's device up
+ * on the host, where it is missing, and a subpath of the shared volume would be confined only to
+ * its root, which holds every session (docs/317, "Docker Desktop").
  */
 export function dockerDesktopRefusal(
   model: Record<string, unknown>,
   workspaceDir: string,
-  opts: { persistOwnVolume?: boolean } = {},
 ): ComposeValidationError | null {
   for (const [name, svc] of Object.entries(isMapping(model.services) ? model.services : {})) {
     if (!isMapping(svc) || !Array.isArray(svc.volumes)) continue;
     for (const vol of svc.volumes) {
       if (!isMapping(vol)) continue;
       const sub = resolvedPersistSubpath(name, vol);
-      if (sub && !opts.persistOwnVolume) {
-        return dockerDesktopSubdirectoryRefusal(name, `${PERSIST_VOLUME}/${sub}`, PERSIST_VOLUME, sub);
-      }
+      if (sub) return dockerDesktopSubdirectoryRefusal(name, `${PERSIST_VOLUME}/${sub}`, PERSIST_VOLUME, sub);
       if (sub !== null || vol.type !== "bind" || typeof vol.source !== "string" || vol.source === DOCKER_SOCKET_PATH) {
         continue;
       }
@@ -1784,15 +1776,10 @@ function dockerDesktopSubdirectoryRefusal(
   subpath: string,
 ): ComposeValidationError {
   const place = whole === PERSIST_VOLUME ? "/persist" : "the workspace";
-  // docs/331: only a session that has not started since the update keeps /persist as a directory.
-  const later = whole === PERSIST_VOLUME
-    ? " At the next start of this session's container, ShipIt moves /persist into a Docker volume of "
-      + "its own, and then this mount works."
-    : "";
   return new ComposeValidationError(
     `Service \`${serviceName}\`: ShipIt cannot mount \`${source}\` on Docker Desktop. There it can mount `
     + `only all of ${place}, because Docker Desktop cannot mount one subdirectory and keep a symlink in it `
-    + `from reaching other sessions' files. Mount \`${whole}:/mnt\` instead and use \`/mnt/${subpath}\`.${later}`,
+    + `from reaching other sessions' files. Mount \`${whole}:/mnt\` instead and use \`/mnt/${subpath}\`.`,
   );
 }
 
@@ -1800,15 +1787,13 @@ function shipitVolumeLabels(sessionId: string, stackName: string | undefined): R
   return { "shipit-managed": "true", "shipit-session": sessionId, ...stackLabel(stackName) };
 }
 
-// ShipIt creates the session's own volume, and Compose neither labels nor removes an external one.
-// On the scratch layout a bind-backed volume makes Docker confine every subpath to /persist; a
-// subpath of the shared workspace volume is confined only to that volume, which holds every session.
+// A bind-backed volume makes Docker confine every subpath to /persist; a subpath of the shared
+// workspace volume is confined only to that volume, which holds every session.
 function persistVolumeDeclaration(
   sessionId: string,
   persist: PersistVolume | undefined,
   labels: Record<string, string>,
 ): Record<string, unknown> {
-  if (persist?.ownVolume) return { name: persist.ownVolume, external: true };
   if (!persist?.device) {
     throw new Error("A service mounts `persist`, but this session's /persist could not be located.");
   }

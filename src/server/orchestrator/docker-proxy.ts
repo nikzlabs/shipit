@@ -42,7 +42,6 @@ import { createDockerClient } from "./docker-client.js";
 import { NO_HOST_ADDRESS_OPTION } from "./egress-firewall.js";
 import { localBlockActive } from "./local-block.js";
 import { stackLabel } from "./stack-label.js";
-import { PERSIST_VOLUME_NAME_PREFIX } from "./persist-volume.js";
 
 export {
   respond,
@@ -568,11 +567,6 @@ function buildRoutes(getDocker: () => Docker): Route[] {
 
       if (body.Driver && body.Driver !== "local") {
         forbidden(ctx.res, `Volume driver "${body.Driver as string}" is not allowed`); return;
-      }
-
-      // A session's /persist volume made in advance would carry this session's ownership label.
-      if (typeof body.Name === "string" && body.Name.startsWith(PERSIST_VOLUME_NAME_PREFIX)) {
-        forbidden(ctx.res, `Volume names that start with "${PERSIST_VOLUME_NAME_PREFIX}" are ShipIt's own`); return;
       }
 
       body.Labels = { ...((body.Labels ?? {}) as Record<string, string>), ...ownershipLabels(ctx) };

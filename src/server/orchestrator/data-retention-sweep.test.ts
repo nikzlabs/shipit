@@ -7,7 +7,6 @@ import type { DataRetentionConfig } from "../shared/session-retention.js";
 import { SessionManager } from "./sessions.js";
 import { ChatHistoryManager, type PersistedMessage } from "./chat-history.js";
 import { sweepRetainedSessionData, type DataRetentionSweepDeps } from "./data-retention-sweep.js";
-import { withPersistLease } from "./persist-gate.js";
 
 const NOW = Date.parse("2026-10-01T00:00:00.000Z");
 const daysAgo = (n: number) => new Date(NOW - n * 86_400_000).toISOString();
@@ -478,110 +477,6 @@ describe("sweepRetainedSessionData", () => {
 
     expect(fs.readdirSync(dirs.persist)).toEqual(["nested"]);
     expect(Date.parse(listed("a").dataDeletesAt!)).toBe(archivedAgain + 60 * 86_400_000);
-  });
-
-  // docs/331: /persist in a Docker volume of its own, which only a helper container reaches.
-  describe("on the volume layout", () => {
-    interface FakeVolume {
-      bytes: number;
-      calls: string[];
-      blocker: string | null;
-      onEmpty?: () => void;
-      dirs: ReturnType<typeof seed>;
-    }
-
-    function volumeSession(id: string, bytes: number, row: Partial<Seed> = {}, keepScratch = false): FakeVolume {
-      const dirs = seed({ id, ...row });
-      if (!keepScratch) fs.rmSync(dirs.persist, { recursive: true });
-      fs.writeFileSync(path.join(dirs.root, "persist-layout"), "volume\n");
-      return { bytes, calls: [], blocker: null, dirs };
-    }
-
-    function volumeDeps(volume: FakeVolume): DataRetentionSweepDeps {
-      return {
-        ...deps(),
-        persistVolumes: {
-          measure: async (id) => {
-            volume.calls.push(`measure ${id}`);
-            return volume.bytes;
-          },
-          empty: async (id) => {
-            volume.calls.push(`empty ${id}`);
-            volume.onEmpty?.();
-            volume.bytes = 0;
-          },
-          blockingContainer: async (id) => {
-            volume.calls.push(`check ${id}`);
-            return volume.blocker;
-          },
-        },
-      };
-    }
-
-    it("measures the volume through its helper", async () => {
-      const volume = volumeSession("v", 8 * KB, { archivedAt: daysAgo(10) });
-      await sweepRetainedSessionData(volumeDeps(volume));
-      expect(volume.calls).toEqual(["measure v"]);
-      expect(listed("v").retainedDataBytes).toBe(8 * KB);
-    });
-
-    it("empties the volume once no container can use it, and says so in the notice", async () => {
-      const volume = volumeSession("v", 600 * KB, { archivedAt: daysAgo(15) });
-      await sweepRetainedSessionData(volumeDeps(volume));
-      expect(volume.calls).toEqual(["measure v", "check v", "measure v", "empty v"]);
-      expect(notices[0].message.text).toContain("`/persist` files on 2026-10-01");
-      expect(listed("v").retainedDataBytes).toBe(0);
-    });
-
-    it("removes a scratch/ that a finished copy left, which holds the same files as the volume", async () => {
-      const volume = volumeSession("v", 600 * KB, { archivedAt: daysAgo(15), persistBytes: 8 * KB }, true);
-      await sweepRetainedSessionData(volumeDeps(volume));
-      expect(volume.calls).toContain("empty v");
-      expect(fs.existsSync(volume.dirs.persist)).toBe(false);
-    });
-
-    it("counts a scratch/ that a copy left, so that it is removed even when the volume is empty", async () => {
-      const volume = volumeSession("v", 0, { archivedAt: daysAgo(61), persistBytes: 8 * KB }, true);
-      await sweepRetainedSessionData(volumeDeps(volume));
-      expect(fs.existsSync(volume.dirs.persist)).toBe(false);
-      expect(listed("v").retainedDataBytes).toBe(0);
-    });
-
-    it("keeps the uploads and the checkout of a session restored while the volume was emptied", async () => {
-      const volume = volumeSession("v", 600 * KB, {
-        archivedAt: daysAgo(15), uploadBytes: 8 * KB, kind: "sandbox", remoteUrl: null,
-      });
-      volume.onEmpty = () => { live.add("v"); };
-      await sweepRetainedSessionData(volumeDeps(volume));
-      expect(fs.readdirSync(volume.dirs.uploads)).toEqual(["photo.png"]);
-      expect(fs.existsSync(path.join(volume.dirs.workspace, "code.txt"))).toBe(true);
-      expect(notices[0].message.text).toContain("`/persist` files on");
-      expect(notices[0].message.text).not.toContain("uploads");
-    });
-
-    it("deletes nothing while a container can still use /persist", async () => {
-      const volume = volumeSession("v", 600 * KB, { archivedAt: daysAgo(15) });
-      volume.blocker = "container abc (shipit-parent-session)";
-      await sweepRetainedSessionData(volumeDeps(volume));
-      expect(volume.calls).not.toContain("empty v");
-      expect(notices).toEqual([]);
-      expect(volume.bytes).toBe(600 * KB);
-    });
-
-    it("waits for a start that holds the shared lease, then decides again", async () => {
-      const volume = volumeSession("v", 600 * KB, { archivedAt: daysAgo(15) });
-      let release!: () => void;
-      const start = withPersistLease("v", "shared", () => new Promise<void>((r) => { release = r; }));
-      const sweep = sweepRetainedSessionData(volumeDeps(volume));
-      await new Promise((r) => setTimeout(r, 10));
-      expect(volume.calls).not.toContain("check v");
-      // The start made the session live; the decision inside the lease sees it.
-      live.add("v");
-      release();
-      await Promise.all([start, sweep]);
-      expect(volume.calls).not.toContain("empty v");
-      expect(notices).toEqual([]);
-    });
   });
 
   it("tells the caller when a list changed", async () => {

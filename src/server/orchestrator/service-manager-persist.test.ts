@@ -4,7 +4,6 @@ import path from "node:path";
 import os from "node:os";
 import { parse as parseYaml } from "yaml";
 import { recordedSnapshot, testServiceManager } from "./compose-test-helpers.js";
-import { withPersistLease } from "./persist-gate.js";
 
 interface SnapshotDoc {
   services: Record<string, { volumes?: unknown[] }>;
@@ -152,114 +151,6 @@ describe("ServiceManager mounts the session's /persist into a service (docs/317)
     expect(translated).toEqual([]);
     expect(fs.existsSync(scratchDir)).toBe(false);
     expect(readSnapshot("web").volumes?.persist).toBeUndefined();
-    await mgr.stop();
-  });
-});
-
-describe("ServiceManager mounts a session's own /persist volume (docs/331)", () => {
-  const VOLUME = "shipit-persist.shipit-ws.test-session";
-  let tmpDir: string | undefined;
-
-  afterEach(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-    tmpDir = undefined;
-  });
-
-  function makeManager(compose: string, opts: { onUp?: () => Promise<void> } = {}) {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "svc-persist-volume-"));
-    const workspaceDir = path.join(tmpDir, "workspace");
-    fs.mkdirSync(workspaceDir, { recursive: true });
-    fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"), compose);
-    const prepared: { volume: string; subpaths: readonly string[] }[] = [];
-    const translated: string[] = [];
-    let desktopChecks = 0;
-    const mgr = testServiceManager({
-      sessionId: "test-session",
-      workspaceDir,
-      serviceEnvDir: path.join(tmpDir, "service-env"),
-      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
-      workspaceVolume: "shipit-ws",
-      workspaceSubpath: "sessions/test-session/workspace",
-      persistDevicePath: (hostPath) => {
-        translated.push(hostPath);
-        return Promise.resolve(`/daemon${hostPath}`);
-      },
-      resolveWorkspaceDevice: () => Promise.resolve(`/daemon${workspaceDir}`),
-      isDockerDesktop: () => {
-        desktopChecks++;
-        return Promise.resolve(true);
-      },
-      persist: {
-        volume: () => Promise.resolve(VOLUME),
-        prepare: (volume, subpaths) => {
-          prepared.push({ volume, subpaths });
-          return Promise.resolve();
-        },
-      },
-      composeRunner: async (args) => {
-        if (args.includes("up")) await opts.onUp?.();
-      },
-      composeQuery: async () => "",
-      pollIntervalMs: 0,
-    });
-    const readSnapshot = (service: string): SnapshotDoc & { volumes?: Record<string, unknown> } =>
-      parseYaml(recordedSnapshot(workspaceDir, service)) as SnapshotDoc;
-    return { mgr, prepared, translated, readSnapshot, desktopChecks: () => desktopChecks, tmp: tmpDir };
-  }
-
-  it("mounts a subdirectory as a subpath of the external volume, prepared in it, on Docker Desktop too", async () => {
-    const { mgr, prepared, translated, readSnapshot, desktopChecks, tmp } = makeManager(
-      "services:\n  api:\n    image: x\n    x-shipit-preview: manual\n"
-      + "    volumes: ['persist/verseshot:/data', 'persist:/all']\n",
-    );
-    await mgr.start();
-    await mgr.startService("api");
-
-    const doc = readSnapshot("api");
-    expect(doc.services.api.volumes).toEqual([
-      { type: "volume", source: "persist", target: "/data", volume: { nocopy: true, subpath: "verseshot" } },
-      { type: "volume", source: "persist", target: "/all", volume: { nocopy: true } },
-    ]);
-    expect(doc.volumes?.persist).toEqual({ name: VOLUME, external: true });
-    expect(prepared).toEqual([{ volume: VOLUME, subpaths: ["verseshot", ""] }]);
-    expect(translated).toEqual([]);
-    expect(desktopChecks()).toBe(0);
-    expect(fs.existsSync(path.join(tmp, "scratch"))).toBe(false);
-    await mgr.stop();
-  });
-
-  it("still refuses a workspace subdirectory on Docker Desktop", async () => {
-    const { mgr } = makeManager(
-      "services:\n  api:\n    image: x\n    x-shipit-preview: manual\n    volumes: ['./backend:/app', 'persist/a:/a']\n",
-    );
-    await mgr.start();
-    await expect(mgr.startService("api")).rejects.toThrow("ShipIt cannot mount `./backend` on Docker Desktop");
-    await mgr.stop();
-  });
-
-  it("holds the shared /persist lease from the layout to the end of `up`", async () => {
-    let releaseUp!: () => void;
-    let upStarted!: () => void;
-    const upRunning = new Promise<void>((r) => { upStarted = r; });
-    const { mgr } = makeManager(
-      "services:\n  api:\n    image: x\n    x-shipit-preview: manual\n    volumes: ['persist/a:/a']\n",
-      {
-        onUp: () => {
-          upStarted();
-          return new Promise<void>((r) => { releaseUp = r; });
-        },
-      },
-    );
-    await mgr.start();
-    const start = mgr.startService("api");
-    await upRunning;
-    const order: string[] = [];
-    const copy = withPersistLease("test-session", "exclusive", async () => { order.push("copy"); });
-    await new Promise((r) => setTimeout(r, 10));
-    expect(order).toEqual([]);
-    releaseUp();
-    await Promise.all([start, copy]);
-    expect(order).toEqual(["copy"]);
     await mgr.stop();
   });
 });

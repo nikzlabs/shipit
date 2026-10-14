@@ -15,7 +15,6 @@ import { killChild } from "../shared/kill-child.js";
 import { composeSpawnEnv, type ComposeOutputSink } from "./compose-cli.js";
 import { composeProjectName } from "./compose-stack-reaper.js";
 import { composeStateDirForWorkspace, sessionScratchDirForWorkspace } from "./session-state-dir.js";
-import { withPersistLease } from "./persist-gate.js";
 import { identityForSession } from "./session-worker-uid.js";
 import { stackLabel, stackLabelFilters } from "./stack-label.js";
 
@@ -296,11 +295,6 @@ export interface ConfinedComposeOptions {
   workspaceDir: string;
   /** Defaults to `<sessionDir>/scratch`. */
   scratchDir?: string;
-  /**
-   * The session's own /persist volume, or null on the scratch layout (docs/331). It is mounted at
-   * the scratch path, so a model's paths into /persist mean the same.
-   */
-  persistVolume?: () => Promise<string | null>;
   /** Defaults to `<sessionDir>/state/compose`. */
   composeStateDir?: string;
   /** WORKSPACE_VOLUME; absent in the bind deployment. */
@@ -331,8 +325,6 @@ interface HelperSpec extends RunOptions {
   user: string;
   groupAdd?: number;
   workdir: string;
-  /** The workspace and /persist go first, resolved under the run's lease. */
-  project?: { readOnly: boolean };
   mounts: string[];
   env: NodeJS.ProcessEnv;
   cmd: string[];
@@ -352,7 +344,6 @@ export class ConfinedCompose {
   private readonly project: string;
   private readonly workspaceDir: string;
   private readonly scratchDir: string;
-  private readonly persistVolume?: () => Promise<string | null>;
   private readonly composeStateDir: string;
   private readonly workspaceVolume?: string;
   private readonly daemonPath: (p: string) => Promise<string>;
@@ -371,7 +362,6 @@ export class ConfinedCompose {
     this.project = composeProjectName(opts.sessionId);
     this.workspaceDir = opts.workspaceDir;
     this.scratchDir = opts.scratchDir ?? sessionScratchDirForWorkspace(opts.workspaceDir);
-    this.persistVolume = opts.persistVolume;
     this.composeStateDir = opts.composeStateDir ?? composeStateDirForWorkspace(opts.workspaceDir);
     this.workspaceVolume = opts.workspaceVolume;
     this.daemonPath = opts.daemonPath;
@@ -405,8 +395,7 @@ export class ConfinedCompose {
       command: "config",
       user: this.sessionUser(),
       workdir: this.workspaceDir,
-      project: { readOnly: true },
-      mounts: [],
+      mounts: this.projectMounts(true),
       // Interpolation happens here, so the environment is exactly the one Compose had before.
       env: composeSpawnEnv(this.env()),
       cmd: ["sh", "-c", RAW_THEN_EXEC, "sh", opts.projectFile, String(MAX_FILE_BYTES), ...compose],
@@ -446,8 +435,7 @@ export class ConfinedCompose {
       command: "read",
       user: this.sessionUser(),
       workdir: this.workspaceDir,
-      project: { readOnly: true },
-      mounts: [],
+      mounts: this.projectMounts(true),
       env: composeSpawnEnv(this.env()),
       cmd: ["head", "-c", String(MAX_FILE_BYTES + 1), "--", abs],
       captureStdout: true,
@@ -474,8 +462,7 @@ export class ConfinedCompose {
       user: this.sessionUser(),
       ...(gid !== null ? { groupAdd: gid } : {}),
       workdir: this.workspaceDir,
-      project: { readOnly: false },
-      mounts: [this.socketMount()],
+      mounts: [...this.projectMounts(false), this.socketMount()],
       env: {
         ...this.socketEnv(),
         // Build tooling keeps its state here; it goes with the container.
@@ -548,15 +535,7 @@ export class ConfinedCompose {
     if (result.code !== 0) throw this.failure("up", "docker compose up", result, {});
   }
 
-  // Every run holds the session's shared /persist lease (docs/331).
-  private runHelper(spec: HelperSpec): Promise<HelperRunResult> {
-    return withPersistLease(this.sessionId, "shared", async () => this.runHelperLeased({
-      ...spec,
-      mounts: [...(spec.project ? await this.projectMounts(spec.project.readOnly) : []), ...spec.mounts],
-    }));
-  }
-
-  private async runHelperLeased(spec: HelperSpec): Promise<HelperRunResult> {
+  private async runHelper(spec: HelperSpec): Promise<HelperRunResult> {
     const image = this.image();
     if (image.status !== "ready") {
       throw new ComposeHelperError(
@@ -645,16 +624,10 @@ export class ConfinedCompose {
     return id ? `${id.uid}:${id.gid}` : "0:0";
   }
 
-  /** The workspace and /persist at their orchestrator paths, so paths in a model mean the same inside. */
-  private async projectMounts(readOnly: boolean): Promise<string[]> {
+  /** The workspace and scratch at their orchestrator paths, so paths in a model mean the same inside. */
+  private projectMounts(readOnly: boolean): string[] {
     const mounts = [this.workspaceMount(this.workspaceDir, readOnly)];
-    const volume = this.persistVolume ? await this.persistVolume() : null;
-    if (volume) {
-      assertMountable(this.scratchDir);
-      mounts.push(`type=volume,src=${volume},dst=${this.scratchDir}${readOnly ? ",readonly" : ""}`);
-    } else if (fs.existsSync(this.scratchDir)) {
-      mounts.push(this.workspaceMount(this.scratchDir, readOnly));
-    }
+    if (fs.existsSync(this.scratchDir)) mounts.push(this.workspaceMount(this.scratchDir, readOnly));
     return mounts;
   }
 

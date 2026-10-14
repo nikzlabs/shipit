@@ -28,7 +28,6 @@ import { startEventLoopLagMonitor } from "./event-loop-lag.js";
 import { createHostCpuSampler, HOST_CPU_SAMPLE_MS } from "./host-cpu.js";
 import { MODEL_LIST_REFRESH_MS, refreshPublishedModelList } from "./services/published-model-list.js";
 import { seedAndBuildAgentListPayload } from "./services/settings.js";
-import { stackLabelFilters } from "./stack-label.js";
 
 export interface StartupMonitors {
   kickDiskEscalation: (excludeSessionId?: string) => void;
@@ -257,7 +256,6 @@ export async function startStartupMonitors(
           sessionIds: () => new Set(sessionManager.allIds()),
           isSessionEvicted: (id) => sessionManager.get(id)?.diskTier === "evicted",
           sessionRepoUse: () => sessionManager.listAllIncludingWarm(),
-          ...(containerManager.persistVolumes ? { persistVolumes: containerManager.persistVolumes } : {}),
         });
       } catch (err) {
         console.error("[disk-janitor] steady-state reclaim pass failed:", err);
@@ -268,13 +266,9 @@ export async function startStartupMonitors(
           chatHistory: chatHistoryManager,
           sessionsRoot: rt.sessionsRoot,
           isSessionLive: sessionIsLive,
-          // Only this install's stack (docs/331); another install can hold the same session id.
           stopComposeStack: (sid) => serializeStackOp(
-            sid, () => downComposeStackByProject(
-              containerManager.dockerClient, sid, stackLabelFilters(process.env.DOCKER_STACK),
-            ),
+            sid, () => downComposeStackByProject(containerManager.dockerClient, sid),
           ),
-          ...(containerManager.persistVolumes ? { persistVolumes: containerManager.persistVolumes } : {}),
           onSessionsChanged: () =>
             sseBroadcast("session_list", { sessions: sessionManager.list() }),
           paceMs: escalationPaceMs,

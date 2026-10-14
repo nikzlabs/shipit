@@ -82,8 +82,6 @@ import {
 } from "./egress-proxy-install.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { readonlyRootfsTmpfs } from "./container-hardening.js";
-import { withPersistLease } from "./persist-gate.js";
-import type { PersistVolumes } from "./persist-volume.js";
 import { generateWorkerToken, setWorkerAuthToken, clearWorkerAuthToken } from "./worker-auth.js";
 import { clearEgressDecisionTokens } from "./egress-decision-auth.js";
 import { WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
@@ -147,10 +145,6 @@ export interface LifecycleDeps {
   /** The GPU switch (docs/325-session-gpu-access req 5); absent means off. */
   gpuAccess?: () => boolean;
   stateDir?: string;
-  /** docs/331: each session's /persist in a volume of its own; absent without a workspace volume. */
-  persistVolumes?: Pick<PersistVolumes, "forAgent" | "forSession">;
-  /** Starts again the Compose services the /persist copy removed (docs/331). */
-  restartKeptServices?: (sessionId: string, services: string[]) => void;
   emitter: EventEmitter<SessionContainerManagerEvents>;
   baseLabels: () => Record<string, string>;
 }
@@ -160,7 +154,7 @@ interface MountSpec {
   mounts: {
     Type: "bind" | "volume"; Source: string; Target: string; ReadOnly?: boolean;
     BindOptions?: { Propagation?: string; CreateMountpoint?: boolean };
-    VolumeOptions?: { Subpath?: string; NoCopy?: boolean };
+    VolumeOptions?: { Subpath?: string };
   }[];
   workspaceDir: string;
 }
@@ -206,13 +200,11 @@ export function ensurePnpmStoreDir(
   }
 }
 
-/** `persistVolume` is the session's own /persist volume (docs/331); without it `scratchDir` is mounted. */
 export function buildMounts(
   config: ContainerConfig,
   workspaceVolume: string | undefined,
   credentialsVolume: string | undefined,
   overlayDepSpecs?: DepDirOverlaySpec[],
-  persistVolume?: string | null,
 ): MountSpec {
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
@@ -258,9 +250,7 @@ export function buildMounts(
     }
   }
 
-  if (persistVolume) {
-    mounts.push({ Type: "volume", Source: persistVolume, Target: "/persist", VolumeOptions: { NoCopy: true } });
-  } else if (config.scratchDir) {
+  if (config.scratchDir) {
     if (workspaceVolume) {
       const scratchRelPath = config.scratchDir.replace(/^\/workspace\//, "");
       mounts.push({
@@ -664,28 +654,6 @@ export async function createContainer(
   if (refusal) throw new Error(refusal);
 
   const epochAtStart = opts?.intentEpoch ?? deps.destroyEpochs.get(config.sessionId) ?? 0;
-
-  // The copy takes the exclusive side, so it runs before the shared lease of the creation (rule 1).
-  const persist = deps.persistVolumes && deps.workspaceVolume
-    ? await deps.persistVolumes.forAgent(config.sessionId, config.sessionDir)
-    : { volume: null, restart: [] };
-  if (persist.restart.length > 0) deps.restartKeptServices?.(config.sessionId, persist.restart);
-  return withPersistLease(config.sessionId, "shared", async () => {
-    // Resolved under the lease: another start can have copied since `forAgent` answered, and a
-    // helper that can still write is found here, or the mount refused.
-    const volume = deps.persistVolumes && deps.workspaceVolume
-      ? await deps.persistVolumes.forSession(config.sessionId, config.sessionDir).volume()
-      : null;
-    return createContainerLeased(deps, config, epochAtStart, volume);
-  });
-}
-
-async function createContainerLeased(
-  deps: LifecycleDeps,
-  config: ContainerConfig,
-  epochAtStart: number,
-  persistVolume: string | null,
-): Promise<SessionContainer> {
   const abortIfTornDown = (at: string): void => {
     if ((deps.destroyEpochs.get(config.sessionId) ?? 0) !== epochAtStart) {
       throw new ContainerCreateCancelledError(config.sessionId, at);
@@ -696,7 +664,7 @@ async function createContainerLeased(
     fs.mkdirSync(config.uploadsDir, { recursive: true });
   }
 
-  if (!persistVolume && config.scratchDir) {
+  if (config.scratchDir) {
     fs.mkdirSync(config.scratchDir, { recursive: true });
   }
 
@@ -741,7 +709,6 @@ async function createContainerLeased(
     deps.workspaceVolume,
     deps.credentialsVolume,
     config.overlaySpecs,
-    persistVolume,
   );
 
   const env = buildEnv(

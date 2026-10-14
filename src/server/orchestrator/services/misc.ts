@@ -18,14 +18,6 @@ import { resolveHarnessOnboarding, listAgents, getGlobalSettings } from "./setti
 import { getGitHubStatus } from "./github.js";
 import { listRepos } from "./repos.js";
 import { sessionCredentialsRoot } from "../session-credentials.js";
-import type { PersistVolumes } from "../persist-volume.js";
-
-/** docs/331: what Full reset stops and removes outside the state directory. */
-export interface FullResetPersist {
-  /** Includes the stacks kept after idle reclaim, which have no runner to dispose. */
-  serviceManagers?: Map<string, { stop(opts?: { removeVolumes?: boolean }): Promise<void> }>;
-  persistVolumes?: Pick<PersistVolumes, "removeAllForReset"> | null;
-}
 
 export function getUsageStats(usageManager: UsageManager) {
   return usageManager.getStats();
@@ -130,7 +122,6 @@ export async function fullReset(
   databaseManager?: DatabaseManager,
   composeStopPromises?: Map<string, Promise<void>>,
   credentialsDir?: string,
-  persist: FullResetPersist = {},
 ): Promise<void> {
   for (const sid of runnerRegistry.ids()) {
     const runner = runnerRegistry.get(sid);
@@ -146,14 +137,6 @@ export async function fullReset(
   if (composeStopPromises && composeStopPromises.size > 0) {
     await Promise.allSettled([...composeStopPromises.values()]);
   }
-
-  if (persist.serviceManagers && persist.serviceManagers.size > 0) {
-    const managers = [...persist.serviceManagers.values()];
-    persist.serviceManagers.clear();
-    await Promise.allSettled(managers.map((mgr) => mgr.stop({ removeVolumes: true })));
-  }
-  // Not through the agent containers' teardown: it does nothing without a record of the container.
-  await persist.persistVolumes?.removeAllForReset();
 
   if (databaseManager) {
     databaseManager.clearAll();

@@ -51,8 +51,8 @@ describe("the replay carries the work, not only the words", () => {
       spill: spill(),
     });
     expect(replay).toContain("[result] clean");
-    expect(fs.existsSync(path.join(dir, "uploads", ".shipit-replay"))).toBe(true);
-    expect(fs.readdirSync(path.join(dir, "uploads", ".shipit-replay"))).toEqual([]);
+    expect(fs.existsSync(path.join(dir, "scratch", "replay"))).toBe(true);
+    expect(fs.readdirSync(path.join(dir, "scratch", "replay"))).toEqual([]);
   });
 
   it("writes a result over 500 characters to a file and names it", () => {
@@ -60,23 +60,13 @@ describe("the replay carries the work, not only the words", () => {
     const replay = buildConversationReplay([toolTurn("Bash", { command: "npm test" }, body)], {
       spill: spill(),
     });
-    const spillDir = path.join(dir, "uploads", ".shipit-replay");
+    const spillDir = path.join(dir, "scratch", "replay");
     const written = fs.readdirSync(spillDir);
     expect(written).toHaveLength(1);
     expect(replay).toContain(path.join(spillDir, written[0]));
     expect(replay).not.toContain(body);
     // The file holds the whole thing, so the agent can still read what the tool said.
     expect(fs.readFileSync(path.join(spillDir, written[0]), "utf8")).toBe(body);
-  });
-
-  it("names the files at /uploads for a containerized agent, which never reads /persist for them (docs/331)", () => {
-    const target = replaySpillDirs(dir, { containerized: true });
-    expect(target.hostDir).toBe(path.join(dir, "uploads", ".shipit-replay"));
-    const replay = buildConversationReplay([toolTurn("Bash", { command: "npm test" }, "w".repeat(4000))], {
-      spill: target,
-    });
-    expect(replay).toContain("/uploads/.shipit-replay/001-Bash.txt");
-    expect(replay).not.toContain("/persist");
   });
 
   it("falls back to an excerpt when no spill directory is available", () => {
@@ -92,7 +82,7 @@ describe("the replay carries the work, not only the words", () => {
     // rather than overwriting the first — which a same-name pair could never show.
     buildConversationReplay([toolTurn("Bash", { command: "a" }, long)], { spill: spill() });
     buildConversationReplay([toolTurn("Grep", { pattern: "b" }, long)], { spill: spill() });
-    expect(fs.readdirSync(path.join(dir, "uploads", ".shipit-replay"))).toEqual(["001-Grep.txt"]);
+    expect(fs.readdirSync(path.join(dir, "scratch", "replay"))).toEqual(["001-Grep.txt"]);
   });
 
   it("names attachments without carrying their contents", () => {

@@ -104,21 +104,3 @@ async function tickAfter(ms: number): Promise<typeof TICK> {
   await sleep(ms);
   return TICK;
 }
-
-// Non-TTY Docker logs use 8-byte stream headers. Pass unframed buffers through.
-export function demultiplex(raw: Buffer): string {
-  const parts: Buffer[] = [];
-  let offset = 0;
-  while (offset + 8 <= raw.length) {
-    const stream = raw[offset];
-    if (stream > 2 || raw[offset + 1] !== 0 || raw[offset + 2] !== 0 || raw[offset + 3] !== 0) {
-      return raw.toString("utf-8");
-    }
-    const size = raw.readUInt32BE(offset + 4);
-    if (offset + 8 + size > raw.length) return raw.toString("utf-8");
-    parts.push(raw.subarray(offset + 8, offset + 8 + size));
-    offset += 8 + size;
-  }
-  if (offset !== raw.length) return raw.toString("utf-8");
-  return Buffer.concat(parts).toString("utf-8");
-}

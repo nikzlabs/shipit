@@ -19,7 +19,6 @@ import {
   type HelperRunRequest,
   type HelperRunResult,
 } from "./compose-helper.js";
-import { withPersistLease } from "./persist-gate.js";
 
 const SID = "0123456789abcdef-0000";
 const PROJECT = "shipit-0123456789ab";
@@ -174,40 +173,6 @@ describe("ConfinedCompose.config", () => {
     expect(flag(calls[0]!.args, "--mount")).toContain(
       `type=volume,src=shipit_workspace,dst=${SCRATCH},volume-subpath=sessions/${SID}/scratch,readonly`,
     );
-  });
-
-  // docs/331: a model's paths into /persist mean the same with the session's own volume.
-  it.each([
-    ["config", true],
-    ["read", true],
-    ["build", false],
-  ] as const)("%s mounts the session's own /persist volume at the scratch path, under the shared lease", async (command, readOnly) => {
-    const volume = "shipit-persist.shipit_workspace.x";
-    const { calls, run } = recorder({ stdout: framed("services: {}\n", "") });
-    let leaseHeld: unknown;
-    const c = confined(async (req) => {
-      leaseHeld = await withPersistLease(SID, "exclusive", async () => "granted").catch((err: unknown) => (err as Error).message);
-      return run(req);
-    }, { persistVolume: () => Promise.resolve(volume) });
-    if (command === "config") await c.config({ projectFile: "docker-compose.yml", services: [] });
-    if (command === "read") await c.readWorkspaceFile(`${SCRATCH}/app/compose.yml`);
-    if (command === "build") await c.build({ buildModel: "services: {}", services: [] });
-    const mounts = flag(calls[0]!.args, "--mount");
-    expect(mounts).toContain(`type=volume,src=${volume},dst=${SCRATCH}${readOnly ? ",readonly" : ""}`);
-    expect(mounts.some((m) => m.includes("volume-subpath=") && m.includes("/scratch"))).toBe(false);
-    expect(leaseHeld).toMatch(/held the shared one/);
-  });
-
-  it("waits for an exclusive /persist lease of the session before it runs", async () => {
-    const { calls, run } = recorder({ stdout: framed("services: {}\n", "") });
-    let release!: () => void;
-    const copy = withPersistLease(SID, "exclusive", () => new Promise<void>((r) => { release = r; }));
-    const read = confined(run, { persistVolume: () => Promise.resolve("v") }).readWorkspaceFile("docker-compose.yml");
-    await new Promise((r) => setTimeout(r, 10));
-    expect(calls).toHaveLength(0);
-    release();
-    await Promise.all([copy, read]);
-    expect(calls).toHaveLength(1);
   });
 
   describe("the in-container script, run with sh here", () => {

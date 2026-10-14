@@ -104,10 +104,9 @@ services:
 - `persist:/data` mounts all of `/persist`, and `persist/<dir>:/data` mounts one
   subdirectory. Add `:ro` for read-only. The long form also works: `type: volume`,
   `source: persist`, and `volume: { subpath: <dir> }`.
-- It is always this session's own `/persist`: the files you read and write. It
-  is a Docker volume of this session's own, so a symlink in it cannot lead a
-  mount to anything outside it. It has the lifecycle of `/persist`
-  (environment.md, "What survives what"), and a whole-install backup includes it.
+- It is always this session's own `/persist`: the directory you read and write.
+  It has the lifecycle of `/persist` (environment.md, "What survives what"), and
+  a backup of the workspace volume includes it.
 - That lifecycle has an end. ShipIt keeps the data while the session is in use,
   and deletes it when a retention period ends after the session is archived or
   finished (environment.md, "The retention period for `/persist` and
@@ -117,11 +116,9 @@ services:
   both write the same files. Docker does not copy the image's own files into it.
 - A subdirectory must stay inside `/persist`. ShipIt refuses `..` and variable
   interpolation, and Docker refuses a symlink that leads out of it.
-- Every form works on a Docker Desktop host too. A session that is older than
-  this behaviour keeps `/persist` as a directory until its container starts
-  again; until then ShipIt refuses `persist/<dir>:` on Docker Desktop and says
-  so. Restart your container (environment.md, "Restarting your agent
-  container"), or mount `persist:/data` and use `/data/<dir>`.
+- On a Docker Desktop host, only all of `/persist` can be mounted. ShipIt
+  refuses `persist/<dir>:` there, for the same reason as a workspace
+  subdirectory. Mount `persist:/data` and use `/data/<dir>`.
 - Give each service its own subdirectory, so that it does not see your other
   files in `/persist`.
 - To run the same file outside ShipIt, also declare `volumes: { persist: {} }`

@@ -98,23 +98,6 @@ describe("runSteadyStateReclaim", () => {
     expect(fs.existsSync(path.join(tmpDir, "dep-cache", pluginBare))).toBe(true);
   });
 
-  it("asks the /persist volumes to sweep the orphans of sessions with no row (docs/331)", async () => {
-    setup();
-    const repoStore = new RepoStore(dbManager!);
-    const sweepOrphans = vi.fn(async () => 2);
-    const result = await runSteadyStateReclaim({
-      repoStore,
-      stateDir: tmpDir,
-      runDocker: () => Promise.resolve(""),
-      sessionsRoot: path.join(tmpDir, "sessions"),
-      sessionIds: () => new Set(["a", "b"]),
-      persistVolumes: { sweepOrphans },
-      paceMs: 0,
-    });
-    expect(sweepOrphans).toHaveBeenCalledWith(new Set(["a", "b"]), { paceMs: 0 });
-    expect(result.orphanPersistVolumesRemoved).toBe(2);
-  });
-
   it("skips both sweeps when plugin liveness cannot be resolved", async () => {
     setup();
     const repoStore = new RepoStore(dbManager!);

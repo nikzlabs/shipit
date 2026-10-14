@@ -2028,20 +2028,6 @@ describe("rewriteResolvedModel", () => {
         expect(declared.includes("persist") || declared.includes("shipit-session-workspace")).toBe(refused);
       });
 
-      // docs/331: a session with a /persist volume of its own mounts every form of `persist` as a
-      // subpath of that volume, confined to it; only workspace subdirectories stay refused.
-      it.each(forms)("agrees with the rewrite on %s for a session with its own /persist volume", (_label, mount, refused) => {
-        const model = stack([mount], {}, "api");
-        const source = (mount as { source?: unknown }).source;
-        const isPersist = typeof source === "string" && source.startsWith("persist");
-        expect(dockerDesktopRefusal(model, WS, { persistOwnVolume: true }) !== null).toBe(refused && !isPersist);
-        const doc = rewrite(model, { ...volumeOpts, persist: { ownVolume: "shipit-persist.shipit-ws-vol.abc" } });
-        if (isPersist) {
-          expect(doc.volumes?.persist).toEqual({ name: "shipit-persist.shipit-ws-vol.abc", external: true });
-          expect(doc.services.api.volumes?.[0]).toMatchObject({ type: "volume", source: "persist" });
-        }
-      });
-
       it("names the service, the mount, and the whole mount that works instead", () => {
         expect(dockerDesktopRefusal(stack([bind(WS, "/src"), bind(`${WS}/backend`, "/app")], {}, "api"), WS))
           .toEqual(new ComposeValidationError(
@@ -2052,8 +2038,7 @@ describe("rewriteResolvedModel", () => {
         expect(dockerDesktopRefusal(stack([persist("persist", "/data", { subpath: "plan" })], {}, "api"), WS)?.message)
           .toBe("Service `api`: ShipIt cannot mount `persist/plan` on Docker Desktop. There it can mount only all of "
             + "/persist, because Docker Desktop cannot mount one subdirectory and keep a symlink in it from reaching "
-            + "other sessions' files. Mount `persist:/mnt` instead and use `/mnt/plan`. At the next start of this "
-            + "session's container, ShipIt moves /persist into a Docker volume of its own, and then this mount works.");
+            + "other sessions' files. Mount `persist:/mnt` instead and use `/mnt/plan`.");
       });
     });
 

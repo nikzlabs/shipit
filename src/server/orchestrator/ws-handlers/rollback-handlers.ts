@@ -25,7 +25,7 @@ const sessionRoot = (workspaceDir: string | null): string | null =>
 
 /**
  * A rewind or fork leaves the replay as the only memory the next agent has, so its tool
- * payloads are spilled into the TARGET session's uploads directory — the child's own, on a
+ * payloads are spilled into the TARGET session's scratch directory — the child's own, on a
  * fork, since the parent's is not mounted there.
  */
 function replayOptsFor(sessionRootDir: string | null, containerized: boolean): ReplayOptions {

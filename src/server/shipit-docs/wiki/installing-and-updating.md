@@ -241,47 +241,37 @@ restoring a copy needs an agent with a shell on the host machine.
 
 ### What actually holds the data
 
-Two Docker named volumes hold everything that outlives a session, together with
-**one more volume for each session**, which holds its `/persist`. The install
+Two Docker named volumes hold everything that outlives a session. The install
 directory is not one of them.
 
 | Holds | Volume | Path in it |
 |---|---|---|
 | Chat history, the session list, rewind snapshots, usage, the repository list, per-project secrets | **workspace** | `.shipit.db` |
 | Every session's checkout and its branch | **workspace** | `sessions/<session-id>/workspace` |
-| A session's `/persist`, including what its services keep through a `persist` mount | **`shipit-persist.<workspace volume>.<session-id>`**, one per session | the whole volume |
+| Every session's `/persist`, including what its services keep through a `persist` mount | **workspace** | `sessions/<session-id>/scratch` |
 | Bare repository caches and dependency caches — rebuildable, just slow | **workspace** | `repo-cache/`, `dep-cache/` |
 | Which provider accounts exist, the GitHub token, agent roles, most settings | **credentials** | `shipit-credentials.json` |
 | The sign-ins themselves — each harness's own auth files, per account | **credentials** | `provider-accounts/<harness>/<account-id>/` |
 | The key that decrypts the stored secrets | **credentials** | `secret-key` |
 | The agent's per-repository memory | **credentials** | `repo-memory/` |
 
-A copy of every one of these volumes — the workspace volume, the credentials
-volume and each `shipit-persist.` volume — catches all of it. The split only
-matters if someone tries to restore selectively: `shipit-credentials.json` on its
-own lists accounts whose credential files are not there, which signs nobody in.
-
-A session that has not started since ShipIt began to keep `/persist` in a volume
-of its own still has it in the workspace volume, at
-`sessions/<session-id>/scratch`. ShipIt moves it into the session's volume at
-the session's next start.
+A whole-volume copy catches all of it. The split only matters if someone tries
+to restore selectively: `shipit-credentials.json` on its own lists accounts
+whose credential files are not there, which signs nobody in.
 
 The volume names differ by install path, because the Compose project name does:
 
 | Install | Volumes |
 |---|---|
-| Local | `shipit-prod_workspace`, `shipit-prod_credentials`, and `shipit-persist.shipit-prod_workspace.<session-id>` for each session |
-| VPS | `shipit_workspace`, `shipit_credentials`, and `shipit-persist.shipit_workspace.<session-id>` for each session |
+| Local | `shipit-prod_workspace`, `shipit-prod_credentials` |
+| VPS | `shipit_workspace`, `shipit_credentials` |
 
-**The volumes travel together or none does.** Project secrets are stored
+**The two volumes travel together or neither does.** Project secrets are stored
 encrypted in the database, which is in the *workspace* volume, under a key that
 is in the *credentials* volume by default. A copy of one without the other
 restores secrets that nothing can read. (An install given its key from the
 outside instead — `SHIPIT_SECRET_KEY` or `SHIPIT_SECRET_KEY_FILE` — keeps that
-key wherever the operator put it, and a restore needs it too.) The workspace
-volume records, for each session, that its `/persist` is in a volume of its own,
-so a workspace volume restored without the `shipit-persist.` volumes gives those
-sessions an empty `/persist`.
+key wherever the operator put it, and a restore needs it too.)
 
 **A project's own Compose volumes are not in either one.** If the user's
 `docker-compose.yml` declares a named volume — a database's data directory,
@@ -291,8 +281,7 @@ that data was never durable and a backup does not change it. If the user needs
 their development database to survive, the answer is a seed or migration script
 in the repository, not a volume copy. For files a service must keep, mount the
 `persist` volume instead (`/shipit-docs/compose.md`): the files then live in the
-session's `/persist`, in the session's `shipit-persist.` volume, and a backup
-copies them.
+session's `/persist`, inside the workspace volume, and a backup copies them.
 
 **The install directory — `~/.shipit` locally, `/opt/shipit` on a server — is a
 plain git clone of ShipIt.** The installer recreates it, so it does not need
@@ -319,7 +308,7 @@ branch tip is on the remote.
 | Their sessions | **Only in the workspace volume.** The conversation, the rewind points, and the session's own history are not on any remote. |
 | Their provider sign-ins | **Only in the credentials volume.** Lost with it — the user signs in again in Settings → Model providers. |
 | Their settings and stored secrets | **Only in the volumes.** Not recoverable, and the secrets need both. |
-| Their project's database contents | In that project's own Compose volumes, which are per-session and which ShipIt can delete when the session is archived or idles for a day. Never durable, backup or no backup. Files a service keeps through a `persist` mount are in the session's `shipit-persist.` volume instead. |
+| Their project's database contents | In that project's own Compose volumes, which are per-session and which ShipIt can delete when the session is archived or idles for a day. Never durable, backup or no backup. Files a service keeps through a `persist` mount are in the workspace volume instead. |
 
 **The push is not guaranteed, so do not promise it as one.** Auto-push does
 nothing at all when GitHub is not connected, and a push that fails leaves the
@@ -355,55 +344,26 @@ A copy that flattens it produces permission errors that read as impossible on a
 root process, and that is a genuinely expensive thing to debug.
 
 ```bash
-# Back up — substitute the two volume names for the install path. One archive
-# per volume, named after it, and one for each session's /persist volume.
-WS=shipit_workspace CRED=shipit_credentials
-set -e
-all=$(docker volume ls -q)   # on its own line, so a failure stops the backup
-persist=
-for v in $all; do
-  case "$v" in "shipit-persist.$WS."*) persist="$persist $v" ;; esac
-done
-for v in "$WS" "$CRED" $persist; do
+# Back up — substitute the volume names for the install path.
+for v in shipit_workspace shipit_credentials; do
   docker run --rm -v "$v":/src:ro -v "$PWD":/out alpine \
     tar -C /src -cpf "/out/$v.tar" --numeric-owner .
 done
-```
 
-```bash
-# Restore onto a stopped install, from the archives in this directory.
-# OLD_* are the names the backup was taken with, WS and CRED this install's.
-# Every archive is checked before anything is deleted, and any failure stops
-# the whole restore.
-OLD_WS=shipit_workspace OLD_CRED=shipit_credentials
-WS=shipit_workspace CRED=shipit_credentials
+# Restore onto a stopped install. Both archives are checked before anything
+# is deleted, and any failure stops the whole restore.
 set -e
-pairs="$OLD_WS.tar:$WS $OLD_CRED.tar:$CRED"
-for f in shipit-persist."$OLD_WS".*.tar; do
-  [ -e "$f" ] || continue
-  id=${f#"shipit-persist.$OLD_WS."}; id=${id%.tar}
-  pairs="$pairs $f:shipit-persist.$WS.$id"
+for v in shipit_workspace shipit_credentials; do
+  docker run --rm -v "$PWD":/in:ro alpine tar -tf "/in/$v.tar" >/dev/null
 done
-for p in $pairs; do
-  docker run --rm -v "$PWD":/in:ro alpine tar -tf "/in/${p%%:*}" >/dev/null
-done
-for p in $pairs; do
-  f=${p%%:*} v=${p#*:}
+for v in shipit_workspace shipit_credentials; do
   # Absent is fine; still in use is not, and must stop the restore.
   if docker volume inspect "$v" >/dev/null 2>&1; then docker volume rm "$v"; fi
   docker volume create "$v" >/dev/null
   docker run --rm -v "$v":/dst -v "$PWD":/in:ro alpine \
-    tar -C /dst -xpf "/in/$f" --numeric-owner
+    tar -C /dst -xpf "/in/$v.tar" --numeric-owner
 done
 ```
-
-The restore finds the sessions' volumes in the archives, because the new
-machine has none of them yet, and gives each the name this install uses. A
-backup taken before ShipIt kept `/persist` in volumes of its own has only the two
-archives; its sessions' `/persist` is inside the workspace archive, and ShipIt
-moves each into its own volume at the session's next start. The new install's
-own `shipit-persist.` volumes, which no restored session knows, are removed by
-ShipIt a day later.
 
 Two things in that restore are deliberate, and both are the difference between a
 migration and a data-loss incident.
@@ -413,7 +373,7 @@ already created its own session directories and its own database; extracting on
 top would overwrite the database while leaving those directories behind, so the
 result is checkouts on disk that no session row knows about.
 
-**It reads every archive through before deleting anything, and stops on the
+**It reads both archives through before deleting anything, and stops on the
 first failure.** Deleting a volume and then discovering the tar is missing or
 truncated leaves nothing to put back. The `if` around `docker volume rm` skips a
 volume that is simply absent; do not go further and soften the removal itself
@@ -428,7 +388,7 @@ them.
 
 ### Moving an install to another machine
 
-Same volumes, in this order. It works in either direction — a laptop install
+Same two volumes, in this order. It works in either direction — a laptop install
 and a server install use the same container paths inside the volume, so each can
 restore the other's.
 
@@ -442,8 +402,8 @@ restore the other's.
    there is no downgrade, so match the channel first, or update the new install
    past the old one's version before restoring.
 2. **Stop both**, with `stop.sh` and no `--purge`.
-3. **Copy the volumes across** with the commands above. The restore renames them
-   when the install paths differ.
+3. **Copy the two volumes across** with the commands above, renaming them if the
+   install paths differ.
 4. **Bring the new one up** — `/opt/shipit/deployment/vps/deploy.sh` on a server,
    `~/.shipit/deployment/local/update.sh` locally.
 
@@ -466,9 +426,8 @@ did travel.
 ### The one control that destroys this
 
 **Reset Container**, in Settings → Advanced on every install, clears the
-database and deletes the rest of the workspace volume and every session's
-`shipit-persist.` volume — every session, all chat history, every checkout,
-every `/persist` and every cache. **The user's provider sign-ins and GitHub
+database and deletes the rest of the workspace volume — every session, all chat
+history, every checkout and cache. **The user's provider sign-ins and GitHub
 token survive it**, which is the part worth saying: it empties the credentials
 volume's per-session copies but not the accounts themselves. It is the user's
 click, and the button arms on the first press and fires on the second. It cannot

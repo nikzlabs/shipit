@@ -388,12 +388,10 @@ export function buildConfinedCompose(
     serviceEnvDir: deps.serviceEnvDir,
     ...(serviceEnvHostDir ? { serviceEnvHostDir } : {}),
   });
-  const persist = deps.containerManager?.persistVolumes?.forSession(sessionId, path.dirname(workspaceDir));
   const confined = new ConfinedCompose({
     sessionId,
     workspaceDir,
     ...(workspaceVolume ? { workspaceVolume } : {}),
-    ...(persist ? { persistVolume: persist.volume } : {}),
     daemonPath,
     ...(registryLoginDir ? { registryLoginDir } : {}),
     ...(process.env.DOCKER_STACK ? { stackName: process.env.DOCKER_STACK } : {}),
@@ -506,7 +504,6 @@ export function buildServiceManager(args: {
     ? () => collectAccountAgentEnv(credentialStore)
     : undefined;
   const helper = buildConfinedCompose(sessionId, workspaceDir, deps);
-  const persist = containerManager?.persistVolumes?.forSession(sessionId, path.dirname(workspaceDir));
 
   return new ServiceManager({
     sessionId,
@@ -532,7 +529,6 @@ export function buildServiceManager(args: {
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
     confinedCompose: helper.confined,
-    ...(persist ? { persist } : {}),
     ...(logStore ? { logStore } : {}),
     networkJoinFn: containerManager
       ? (networkName: string, opts: { networkExpected: boolean }) =>

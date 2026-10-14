@@ -13,7 +13,6 @@ import {
   SESSION_CPU_SHARES,
 } from "./session-container.js";
 import type { ContainerConfig } from "./session-container.js";
-import type { LifecycleDeps } from "./container-lifecycle.js";
 import {
   PNPM_VERIFIED_NAMESPACE,
   overlayPinSegment,
@@ -87,7 +86,6 @@ function createMockDocker() {
         }
         return {
           Name: name,
-          Driver: "local",
           Mountpoint: `/var/lib/docker/volumes/${name}/_data`,
           ...(volumeSpecs.get(name) ?? {}),
         };
@@ -850,28 +848,6 @@ describe("SessionContainerManager", () => {
     it("does not touch volumes for non-overlay sessions", async () => {
       await manager.create(buildConfig());
       expect(mockDocker.createVolume).not.toHaveBeenCalled();
-    });
-  });
-
-  // docs/331: each session's /persist in a volume of its own, only with a workspace volume.
-  describe("persistVolumes", () => {
-    it("exists with a workspace volume, and forwards the restart of kept services", async () => {
-      const mgr = new SessionContainerManager({
-        docker: mockDocker as any,
-        imageName: "shipit-session-worker:test",
-        networkName: "shipit-test",
-        workspaceVolume: "shipit_workspace",
-      });
-      expect(mgr.persistVolumes?.volumeName("s1")).toBe("shipit-persist.shipit_workspace.s1");
-      const restart = vi.fn();
-      mgr.setKeptServiceRestarter(restart);
-      (mgr as unknown as { lifecycleDeps(): LifecycleDeps }).lifecycleDeps().restartKeptServices?.("s1", ["web"]);
-      expect(restart).toHaveBeenCalledWith("s1", ["web"]);
-      await mgr.dispose();
-    });
-
-    it("does not exist without a workspace volume", () => {
-      expect(manager.persistVolumes).toBeNull();
     });
   });
 
