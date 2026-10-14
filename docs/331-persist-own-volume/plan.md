@@ -1,13 +1,18 @@
 ---
 issue: planning#696
 title: /persist in a Docker volume of its own — design
-description: Each session's /persist moves from sessions/<id>/scratch in the workspace volume into a named volume of its own, on every host, so Docker confines a persist/<sub> mount to that session on Docker Desktop too.
+description: Not built — a design record. Each session's /persist would move into a named volume of its own, so Docker confines a persist/<sub> mount to that session on Docker Desktop too.
 ---
 
 # 331 — /persist in a Docker volume of its own: design
 
-Implements [`requirements.md`](./requirements.md). Not implemented yet; the
-work is in [`checklist.md`](./checklist.md).
+**Not built.** The user decided on 2026-10-14 to keep the workaround (a service
+mounts all of `/persist`), so the requirements are withdrawn
+([`requirements.md`](./requirements.md), *Decision*). An implementation of this
+design was closed without merge (PR #3210); its three review rounds found
+defects that this text does not yet answer — a volume created in advance by
+another session, helper containers that outlive their lease, and a restore
+during a retention deletion. Read that PR before building this again.
 
 ## Summary
 

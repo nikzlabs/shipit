@@ -1,7 +1,7 @@
 ---
 issue: planning#696
 title: A /persist subdirectory mount on Docker Desktop
-description: A Compose service can mount one subdirectory of /persist on Docker Desktop, because each session's /persist is kept in a Docker volume of its own on every host.
+description: Not built. On Docker Desktop a Compose service mounts all of /persist and uses a subdirectory inside it; ShipIt keeps refusing a persist/<sub> mount there.
 ---
 
 # 331 — A /persist subdirectory mount on Docker Desktop
@@ -21,7 +21,17 @@ description: A Compose service can mount one subdirectory of /persist on Docker 
   docs/317 plan, planning#618), and then decided to build it (see
   Resolved questions).
 
+## Decision
+
+**Not built** (2026-10-14). The user decided that the workaround is enough: on a
+Docker Desktop host a service mounts all of `/persist` (`persist:/data`) and
+uses `/data/<sub>`, and ShipIt keeps refusing `persist/<sub>` there with a
+message that names this form (PR #3208). The implementation of the requirements
+below (PR #3210) was closed without merge. See *Resolved questions*.
+
 ## Requirements
+
+These are withdrawn by the decision above. The numbers stay as identifiers.
 
 1. On a Docker Desktop host, a project's Compose service can mount a
    subdirectory of the session's `/persist` (`persist/<sub>:/target`), as it can
@@ -96,3 +106,12 @@ not visible to the orchestrator in the same way:
 - 2026-10-14 — Must workspace subdirectory mounts (`./sub:/app`, a self
   plugin's subdirectory) get the same fix? The user: "/persist only". Not in
   scope.
+- 2026-10-14 — After the build (PR #3210), is the change needed, or can a
+  service mount all of `/persist` as a workaround? The agent's comparison: the
+  workaround works on every host and the refusal already names it; it does not
+  give one service only its own subdirectory, and a service must be told where
+  its data is inside the mount. The change cost a copy of every session at its
+  next start, a per-session lock, helper containers and one more volume per
+  session in backups, and its gain is on Docker Desktop only. The user: "yes
+  close" — close PR #3210 and keep the workaround. Requirements 1–6 are
+  withdrawn.
