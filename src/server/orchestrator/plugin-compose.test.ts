@@ -940,6 +940,86 @@ describe("buildPluginComposeServices", () => {
     });
   });
 
+  describe("a self fragment's subdirectory mount on Docker Desktop (docs/317)", () => {
+    const inVolume = (
+      fragments: PluginFragmentService[],
+      dockerDesktop: boolean | Error,
+      pluginVolumes: ReadonlyMap<string, string> = new Map(),
+    ): ReturnType<typeof buildPluginComposeServices> => buildPluginComposeServices(fragments, {
+      sessionDir,
+      workspaceDir,
+      workspaceVolume: "shipit_workspace",
+      workspaceSubpath: "sessions/abc/workspace",
+      sessionSubpath: "sessions/abc",
+      pluginVolumes,
+      dockerDesktop,
+    });
+
+    const ROOT_MANIFEST = "\nplugins:\n  probe:\n    compose: docker-compose.yml\n";
+
+    it("leaves the service out, with an issue that names the mount and the same files under /plugin", () => {
+      const built = inVolume(collect(SELF_USE).services, true);
+
+      expect(built.services).toEqual([]);
+      const issue = built.issuesByRepo.get("mine")?.[0];
+      expect(issue).toContain("`probe`: ShipIt starts none of this repository's plugin services");
+      expect(issue).toContain("its service `probe` mounts `.` (`tools/probe` in this repository)");
+      expect(issue).toContain("use `/plugin/tools/probe`");
+      expect(fs.existsSync(path.join(sessionDir, "plugin-data", "probe", "state"))).toBe(false);
+    });
+
+    it("withholds the repository's other services too, which may depend on the one left out", () => {
+      fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"), `
+services:
+  probe:
+    image: node:22-alpine
+    volumes:
+      - ./service:/srv
+  web:
+    image: node:22-alpine
+    depends_on: [probe]
+`);
+      const built = inVolume(collect(SELF_USE, ROOT_MANIFEST).services, true);
+
+      expect(built.services).toEqual([]);
+      expect(built.issuesByRepo.get("mine")).toHaveLength(1);
+    });
+
+    it("gives Docker's failure to answer as the reason, rather than mount the empty directory", () => {
+      const built = inVolume(collect(SELF_USE).services, new Error("ShipIt could not ask Docker: boom"));
+
+      expect(built.services).toEqual([]);
+      expect(built.issuesByRepo.get("mine")).toEqual([
+        "`probe`: ShipIt starts none of this repository's plugin services: ShipIt could not ask Docker: boom",
+      ]);
+    });
+
+    it("mounts the subdirectory on any other daemon", () => {
+      const built = inVolume(collect(SELF_USE).services, false);
+
+      expect(built.issuesByRepo.size).toBe(0);
+      expect((built.services[0].definition.volumes as unknown[])[0])
+        .toMatchObject({ source: "shipit-session-workspace", volume: { subpath: "tools/probe" } });
+    });
+
+    it.each([".", "./.", "././"])("starts a fragment that mounts the whole repository as `%s`", (source) => {
+      fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"), FRAGMENT.replace("- .:/app:ro", `- ${source}:/app:ro`));
+      const built = inVolume(collect(SELF_USE, ROOT_MANIFEST).services, true);
+
+      expect(built.issuesByRepo.size).toBe(0);
+      expect((built.services[0].definition.volumes as unknown[])[0])
+        .toMatchObject({ source: "shipit-workspace", volume: { subpath: "sessions/abc/workspace" } });
+    });
+
+    it("starts a tracked fragment, whose subdirectory comes from its own overlay volume", () => {
+      const tracked = { ...collect(SELF_USE).services[0], self: false, commit: "abc123" };
+      const built = inVolume([tracked], true, new Map([["mine", "shipit-x_plugin-mine"]]));
+
+      expect(built.issuesByRepo.size).toBe(0);
+      expect(built.services).toHaveLength(1);
+    });
+  });
+
   it("drops the services with a reason when the session cannot be located in the volume", () => {
     const { services } = collect(SELF_USE);
     const built = build(services, { workspaceVolume: "shipit_workspace" });

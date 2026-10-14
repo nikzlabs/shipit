@@ -11,3 +11,4 @@
 - [x] Docker Desktop: mount all of `/persist` as a subpath of the workspace volume, on every daemon (`rewritePersistMount`)
 - [x] Docker Desktop: refuse `persist/<sub>` and a project's `./sub` before anything is prepared, with a message that names the whole mount (`dockerDesktopCheck`, `dockerDesktopRefusal`)
 - [x] Correct the daemon-namespace claim in this plan and in docs/318; compose.md and the troubleshooting wiki page
+- [x] Docker Desktop: withhold a self plugin repository's services when one mounts a subdirectory, as a plugin issue (`selfSubdirectoryMount`); plugin-authoring.md

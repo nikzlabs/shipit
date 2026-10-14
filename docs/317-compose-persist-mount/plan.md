@@ -78,7 +78,7 @@ On Docker Desktop no `local` volume can have a directory of the workspace volume
 
 So on Docker Desktop ShipIt mounts all of `/persist` from the shared volume as above, and **refuses `persist/<sub>`** with a message that names the mount that works (`persist:/mnt`, then `/mnt/<sub>`). The refusal (`dockerDesktopRefusal`) comes before anything is prepared or looked up, and it is recorded as the project's compose failure, so `shipit service list` shows it. Docker is asked which daemon it is (`dockerDesktopCheck`, `docker info` OperatingSystem) only for a start that has such a mount; the answer is kept for the session. A failed lookup fails that start instead of guessing, because a wrong "no" would mount the empty directory again.
 
-Requirement 1's subdirectory form is therefore not met on Docker Desktop. Meeting it needs a volume whose own root is `/persist`, for example a per-session Docker volume that holds `/persist` instead of the scratch directory; that moves every session's data and is not done here.
+Requirement 1's subdirectory form is therefore not met on Docker Desktop. Meeting it needs a volume whose own root is `/persist`, for example a per-session Docker volume that holds `/persist` instead of the scratch directory; that moves every session's data and is not done here. It is designed in `docs/331-persist-own-volume` (planning#696).
 
 ### Ownership (req 5)
 
@@ -113,6 +113,7 @@ There is no per-session reset; the old sentence in `environment.md` ("Cleared on
 - `src/server/orchestrator/compose-persist.ts` — `preparePersistDir`, `workspaceVolumeDaemonPath`, `dockerDesktopCheck`.
 - `src/server/orchestrator/service-manager.ts` — `prepareStart`: `refuseOnDockerDesktop`, then the directory before every `up`; `persistVolume` resolves the daemon path only for a subdirectory.
 - `src/server/orchestrator/service-manager-setup.ts` — wires `persistDevicePath` and `isDockerDesktop` in the volume-backed deployment.
+- `src/server/orchestrator/plugin-compose.ts` — `selfSubdirectoryMount`, and the plugin issue in `buildPluginComposeServices`; `services/plugin-services.ts` asks `isDockerDesktop` (wired in `bootstrap-managers.ts`) only when a self fragment has such a mount.
 - `src/server/orchestrator/session-state-dir.ts` — `SESSION_SCRATCH_SUBDIR`, `sessionScratchDirForWorkspace`.
 - Agent docs: `src/server/shipit-docs/compose.md`, `environment.md`, `plugins.md`, `plugin-authoring.md`, and the wiki pages `how-shipit-works.md`, `installing-and-updating.md`, `sessions.md`.
 
@@ -120,4 +121,5 @@ There is no per-session reset; the old sentence in `environment.md` ("Cleared on
 
 - End-to-end behaviour against a real Docker daemon is not covered by the unit tests; they check the generated Compose model, the directory preparation, and the daemon-path translation.
 - On Docker Desktop a `persist/<sub>` mount is refused (see *Docker Desktop*).
-- Workspace subdirectory mounts (`./sub:/app`) use the same kind of bind-backed volume, rooted at the session's workspace (planning#619, docs/086-shipit-yaml-and-compose), so they fail on Docker Desktop for the same reason. ShipIt refuses a project's `./sub` or `./file` mount there in the same way, and the whole workspace (`.`) still mounts. A plugin under development in its own repository (`fragment.self`, `plugin-compose.ts`) mounts a subdirectory of its fragment through that volume too; on Docker Desktop that mount still gets the empty directory, without a refusal.
+- Workspace subdirectory mounts (`./sub:/app`) use the same kind of bind-backed volume, rooted at the session's workspace (planning#619, docs/086-shipit-yaml-and-compose), so they fail on Docker Desktop for the same reason. ShipIt refuses a project's `./sub` or `./file` mount there in the same way, and the whole workspace (`.`) still mounts.
+- A plugin under development in its own repository (`fragment.self`) mounts a subdirectory of its fragment through that volume too. On Docker Desktop ShipIt starts none of that repository's plugin services, because a plugin's services may depend on each other, and reports why on the repository's card in the Plugins tab, with the same files under `/plugin` as the alternative. It does not fail the start, because the override holds every service of the session. A tracked plugin's subdirectory comes from its own overlay volume, which Docker Desktop mounts.
