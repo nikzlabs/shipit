@@ -8,3 +8,6 @@
 - [x] Tests: generator, directory preparation, daemon path, ServiceManager, plugin refusal
 - [x] Agent docs: compose.md, environment.md, plugins.md, plugin-authoring.md
 - [x] Wiki: how-shipit-works.md, installing-and-updating.md, sessions.md
+- [x] Docker Desktop: mount all of `/persist` as a subpath of the workspace volume, on every daemon (`rewritePersistMount`)
+- [x] Docker Desktop: refuse `persist/<sub>` and a project's `./sub` before anything is prepared, with a message that names the whole mount (`dockerDesktopCheck`, `dockerDesktopRefusal`)
+- [x] Correct the daemon-namespace claim in this plan and in docs/318; compose.md and the troubleshooting wiki page

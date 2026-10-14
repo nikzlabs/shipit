@@ -33,10 +33,11 @@ Rejected alternative: an absolute `/persist:/data` source. Every absolute source
 
 ## Mechanism
 
-`parseComposeFile` records each service's `persistSubpaths` (`persistSubpathOf`). `generateComposeOverride` then:
+`parseComposeFile` records each service's `persistSubpaths` (`persistSubpathOf`). The snapshot rewrite (`rewritePersistMount`, docs/318) then:
 
-1. rewrites each `persist` entry to the long form `{type: volume, source: persist, target, volume: {nocopy: true, subpath?}, read_only?}`, in both the volume-backed and the bind deployment;
-2. declares the top-level volume `persist` as a **bind-backed local volume** whose device is the session's scratch directory — the directory the agent sees at `/persist`:
+1. rewrites a mount of **all of `/persist`**, in the volume-backed deployment, to a subpath of the shared workspace volume at the scratch directory — `{type: volume, source: shipit-workspace, target, volume: {nocopy: true, subpath: sessions/<id>/scratch}, read_only?}`. That is how the agent container mounts its own `/persist` (`container-lifecycle.ts`), and it is safe for the reason given below;
+2. rewrites a mount of a **subdirectory**, and every `persist` mount in the bind deployment, to the long form `{type: volume, source: persist, target, volume: {nocopy: true, subpath?}, read_only?}`;
+3. declares the top-level volume `persist` as a **bind-backed local volume** whose device is the session's scratch directory — the directory the agent sees at `/persist` — when step 2 produced a mount:
 
 ```yaml
 volumes:
@@ -47,9 +48,9 @@ volumes:
     labels: { shipit-managed: "true", shipit-session: <id> }
 ```
 
-The definition replaces a `persist` volume the project declares. The explicit `name` differs from `<project>_persist`, a plain volume an earlier version of the file may already have created; reusing that name would make Compose keep the plain volume. The `shipit-<session12>_` prefix lets the boot janitor sweep a stale volume object.
+The definition replaces a `persist` volume the project declares; a declared `persist` that no service mounts is dropped. The explicit `name` differs from `<project>_persist`, a plain volume an earlier version of the file may already have created; reusing that name would make Compose keep the plain volume. The `shipit-<session12>_` prefix lets the boot janitor sweep a stale volume object.
 
-`ServiceManager` prepares the directory before every `up` (`preparePersistDirs`, from `withUpInFlight` and `writeOverrideFor`), because a volume subpath must exist when the daemon mounts it and the agent can delete one. It resolves the daemon path through `persistDevicePath`: in the volume-backed deployment that is the workspace volume's `Mountpoint` plus the scratch directory's path in it (`workspaceVolumeDaemonPath`); in the bind deployment the orchestrator's path already is the daemon's.
+`ServiceManager` prepares the directory before every `up` (`preparePersistDir`, in `prepareStart`), because a volume subpath must exist when the daemon mounts it and the agent can delete one. Only step 2 needs the daemon's path for the scratch directory (`persistVolume`, through `persistDevicePath`): in the volume-backed deployment that is the workspace volume's `Mountpoint` plus the scratch directory's path in it (`workspaceVolumeDaemonPath`); in the bind deployment the orchestrator's path already is the host's.
 
 ### Why a bind-backed volume and not a subpath of the workspace volume (reqs 4, 6)
 
@@ -58,6 +59,26 @@ The obvious implementation — `source: shipit-workspace` with `subpath: session
 With the bind-backed volume, the volume root **is** the session's scratch directory. Docker's same check then refuses any subpath that resolves outside `/persist` (`ErrEscapesBase`), and its final open uses `RESOLVE_NO_SYMLINKS`, so swapping a directory for a symlink after the check fails instead of escaping. The confinement is Docker's, not a ShipIt check with a race window. ShipIt's own string checks (`normalizePersistSubpath`: no `..`, no `$` interpolation) exist only to give a readable refusal.
 
 The volume's device path is ShipIt's alone: the scratch directory's parent, the 0700 session directory, is never mounted into any container (docs/270), so nothing inside the session can replace the scratch directory itself.
+
+That same fact makes a mount of **all** of `/persist` safe as a subpath of the shared volume: every component of `sessions/<id>/scratch` is ShipIt's, so Docker has no symlink to follow. Only a subdirectory below it needs the bind-backed volume.
+
+### Docker Desktop (2026-10-14)
+
+The first version of this plan said the daemon mounts a `local` volume's `driver_opts` device in its own namespace, where the workspace volume's `Mountpoint` is a real path. **That is false on Docker Desktop.** Docker Desktop looks up a bind device on the host, as it does a `--mount type=bind` source; the Mountpoint is a path inside its VM, and Docker Desktop makes and mounts an empty directory for a host path that is missing, with no error. Seen on a WSL 2 host (`docker info` OperatingSystem "Docker Desktop (containerized)", engine 29.8.2, deployment with `WORKSPACE_VOLUME`):
+
+- `persist/plan:/data` failed at start: `cannot access path /var/lib/docker/volumes/shipit-<p>_shipit-persist/_data/plan: lstat …: no such file or directory`, because the volume was the empty directory.
+- `persist:/persist` started, and the service saw an empty, root-owned directory instead of `/persist`.
+
+Overlay volumes, whose paths are in `o:` rather than in `device`, work on the same daemon (docs/183). Commit 3065ac7 fixed the same mistake for the confined `up`'s own mounts and kept the two bind-backed volumes because of the claim above.
+
+On Docker Desktop no `local` volume can have a directory of the workspace volume as its root, so **Docker cannot confine a subdirectory to `/persist` there**. The other forms were rejected:
+
+- A subpath of the shared workspace volume is confined only to that volume's root, which holds every session and `.shipit.db`: `/persist/plan → ../../..` would mount all of it. A ShipIt check before `up` does not close this, because the agent can swap a directory for a symlink between the check and the container start.
+- An overlay volume with the scratch directory as `upperdir` is rooted at `/persist`, but the agent writes that directory directly while the overlay is mounted, which overlayfs does not support: a service can keep seeing a file the agent deleted, or miss one it created.
+
+So on Docker Desktop ShipIt mounts all of `/persist` from the shared volume as above, and **refuses `persist/<sub>`** with a message that names the mount that works (`persist:/mnt`, then `/mnt/<sub>`). The refusal (`dockerDesktopRefusal`) comes before anything is prepared or looked up, and it is recorded as the project's compose failure, so `shipit service list` shows it. Docker is asked which daemon it is (`dockerDesktopCheck`, `docker info` OperatingSystem) only for a start that has such a mount; the answer is kept for the session. A failed lookup fails that start instead of guessing, because a wrong "no" would mount the empty directory again.
+
+Requirement 1's subdirectory form is therefore not met on Docker Desktop. Meeting it needs a volume whose own root is `/persist`, for example a per-session Docker volume that holds `/persist` instead of the scratch directory; that moves every session's data and is not done here.
 
 ### Ownership (req 5)
 
@@ -88,14 +109,15 @@ There is no per-session reset; the old sentence in `environment.md` ("Cleared on
 
 ## Key files
 
-- `src/server/orchestrator/compose-generator.ts` — `PERSIST_VOLUME`, `persistSubpathOf`, `rewritePersistMount`, the top-level volume.
-- `src/server/orchestrator/compose-persist.ts` — `preparePersistDir`, `workspaceVolumeDaemonPath`.
-- `src/server/orchestrator/service-manager.ts` — `preparePersistDirs` / `preparePersist`, called before every override write and every `up`.
-- `src/server/orchestrator/service-manager-setup.ts` — wires `persistDevicePath` in the volume-backed deployment.
+- `src/server/orchestrator/compose-generator.ts` — `PERSIST_VOLUME`, `persistSubpathOf`, `rewritePersistMount`, `dockerDesktopRefusal`, the top-level volume.
+- `src/server/orchestrator/compose-persist.ts` — `preparePersistDir`, `workspaceVolumeDaemonPath`, `dockerDesktopCheck`.
+- `src/server/orchestrator/service-manager.ts` — `prepareStart`: `refuseOnDockerDesktop`, then the directory before every `up`; `persistVolume` resolves the daemon path only for a subdirectory.
+- `src/server/orchestrator/service-manager-setup.ts` — wires `persistDevicePath` and `isDockerDesktop` in the volume-backed deployment.
 - `src/server/orchestrator/session-state-dir.ts` — `SESSION_SCRATCH_SUBDIR`, `sessionScratchDirForWorkspace`.
 - Agent docs: `src/server/shipit-docs/compose.md`, `environment.md`, `plugins.md`, `plugin-authoring.md`, and the wiki pages `how-shipit-works.md`, `installing-and-updating.md`, `sessions.md`.
 
 ## Known limits
 
 - End-to-end behaviour against a real Docker daemon is not covered by the unit tests; they check the generated Compose model, the directory preparation, and the daemon-path translation.
-- Workspace subdirectory mounts (`./sub:/app`) are still subpaths of the shared workspace volume and so are open to the symlink escape described above. That is a separate, pre-existing issue.
+- On Docker Desktop a `persist/<sub>` mount is refused (see *Docker Desktop*).
+- Workspace subdirectory mounts (`./sub:/app`) use the same kind of bind-backed volume, rooted at the session's workspace (planning#619, docs/086-shipit-yaml-and-compose), so they fail on Docker Desktop for the same reason. ShipIt refuses a project's `./sub` or `./file` mount there in the same way, and the whole workspace (`.`) still mounts. A plugin under development in its own repository (`fragment.self`, `plugin-compose.ts`) mounts a subdirectory of its fragment through that volume too; on Docker Desktop that mount still gets the empty directory, without a refusal.

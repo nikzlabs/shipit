@@ -233,13 +233,19 @@ orchestrator path. It is this session's own, which requirement 1 permits.
   needs service-env files is refused with a message that names it (req 6).
   ShipIt's docker-secret files (`SHIPIT_SECRETS_INTERNAL_DIR`) likewise use the
   host path the operator supplies. The agent can write none of these paths.
-- **The Mountpoint is still right where the daemon itself does the mount.**
-  The per-session workspace volume and the `persist` volume are `local`
-  volumes with `driver_opts: {type: none, o: bind, device: <Mountpoint>/…}`
-  (`workspaceVolumeDaemonPath`, `compose-persist.ts`). The daemon performs that
-  mount in its own mount namespace, where the Mountpoint is a real path, as it
-  does for the dependency overlays (`container-overlay-provisioner.ts`). These
-  are unchanged.
+- **A bind-backed volume's device is a bind source too.** The per-session
+  workspace volume and the `persist` volume are `local` volumes with
+  `driver_opts: {type: none, o: bind, device: <Mountpoint>/…}`
+  (`workspaceVolumeDaemonPath`, `compose-persist.ts`). This plan first said the
+  daemon mounts that device in its own namespace, where the Mountpoint is real.
+  That holds on a Linux daemon and is **false on Docker Desktop**, which looks
+  the device up on the host like any bind source and mounts an empty directory
+  (seen 2026-10-14). Only the dependency overlays
+  (`container-overlay-provisioner.ts`), whose paths are in `o:`, use the
+  Mountpoint there. So a mount of the whole workspace or the whole of
+  `/persist` is a subpath of the shared volume, and on Docker Desktop ShipIt
+  refuses a subdirectory of either, because no volume rooted at one can be made
+  there (docs/317-compose-persist-mount, *Docker Desktop*).
 - Nothing else is mounted: not another session, not the shared volume root
   (which holds `.shipit.db`), and no orchestrator file. The image is a minimal
   helper image, not the orchestrator's (see *How each container runs*).

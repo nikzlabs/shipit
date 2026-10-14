@@ -24,7 +24,7 @@ import { collectPluginCredentialDeclarations } from "./plugin-credentials.js";
 import type { PluginComposeService } from "./plugin-compose.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 import { releaseSessionNetworkQueued } from "./session-network-release.js";
-import { workspaceVolumeDaemonPath } from "./compose-persist.js";
+import { dockerDesktopCheck, workspaceVolumeDaemonPath } from "./compose-persist.js";
 import type { DockerSocketGrant } from "./compose-generator.js";
 import type { EgressPolicy } from "./egress-firewall-install.js";
 import { ConfinedCompose, composeHelperDaemonPath } from "./compose-helper.js";
@@ -512,8 +512,12 @@ export function buildServiceManager(args: {
     ...(shipitConfig.compose ? {} : { noProjectCompose: true }),
     workspaceVolume: wsVolume,
     workspaceSubpath: wsSubpath,
-    ...(daemonPath
-      ? { persistDevicePath: daemonPath, resolveWorkspaceDevice: () => daemonPath(workspaceDir) }
+    ...(daemonPath && containerManager
+      ? {
+          persistDevicePath: daemonPath,
+          resolveWorkspaceDevice: () => daemonPath(workspaceDir),
+          isDockerDesktop: dockerDesktopCheck(containerManager.getDockerClient()),
+        }
       : {}),
     stackName: process.env.DOCKER_STACK,
     opsSession: session?.kind === "ops",

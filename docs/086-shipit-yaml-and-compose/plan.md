@@ -393,7 +393,9 @@ root, and the shared root holds every session, so a symlinked `src` could name a
 session's files. They are subpaths of `shipit-session-workspace` instead, a bind-backed
 local volume whose root is this session's workspace (device = the workspace volume's
 `Mountpoint` + the session's subpath), so Docker's own check confines them to it
-(`workspaceVolumeMount` in `compose-generator.ts`, planning#619). Mounts with absolute or
+(`workspaceVolumeMount` in `compose-generator.ts`, planning#619). Docker Desktop looks that
+device up on the host, where it is missing, so ShipIt refuses a subdirectory mount there
+(docs/317-compose-persist-mount, *Docker Desktop*). Mounts with absolute or
 `~` source paths, paths outside the workspace (e.g., `../`), and either reserved volume
 name are rejected with a validation error.
 

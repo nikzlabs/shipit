@@ -218,9 +218,16 @@ export async function assertLoopbackOnlyWithoutBlock(
 /** Docker Desktop lets containers reach the host's loopback, so loopback alone protects nothing there. */
 export async function isDockerDesktop(docker: Docker): Promise<boolean> {
   try {
-    const info = await docker.info() as { OperatingSystem?: string };
-    return /docker desktop/i.test(info.OperatingSystem ?? "");
+    return isDockerDesktopInfo(await docker.info() as DockerInfo);
   } catch {
     return false;
   }
+}
+
+export interface DockerInfo {
+  OperatingSystem?: string;
+}
+
+export function isDockerDesktopInfo(info: DockerInfo): boolean {
+  return /docker desktop/i.test(info.OperatingSystem ?? "");
 }

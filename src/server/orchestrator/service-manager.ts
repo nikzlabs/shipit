@@ -16,6 +16,7 @@ import {
   composeBuildModel,
   ComposeValidationError,
   declaresHome,
+  dockerDesktopRefusal,
   extractContainerPort,
   generateComposeOverride,
   mountProjectFileCopies,
@@ -50,6 +51,7 @@ import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
 import {
   COMPOSE_OVERRIDE_FILE,
   composeStateDirForWorkspace,
+  SESSION_SCRATCH_SUBDIR,
   sessionScratchDirForWorkspace,
   sessionStateDirForWorkspace,
 } from "./session-state-dir.js";
@@ -207,6 +209,8 @@ export interface ServiceManagerOptions {
   workspaceSubpath?: string;
   /** Daemon-side path of the workspace, which roots the volume its subdirectory mounts use. */
   resolveWorkspaceDevice?: () => Promise<string>;
+  /** The daemon is Docker Desktop, which cannot use those daemon-side paths (`dockerDesktopCheck`). */
+  isDockerDesktop?: () => Promise<boolean>;
   stackName?: string;
   /** No project compose file is declared; missing declared files still fail. */
   noProjectCompose?: boolean;
@@ -281,6 +285,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly workspaceVolume?: string;
   private readonly workspaceSubpath?: string;
   private readonly resolveWorkspaceDevice?: () => Promise<string>;
+  private readonly isDockerDesktop?: () => Promise<boolean>;
   private overlayDepDirs: OverlayDepDirVolume[];
   private pluginServices: PluginComposeService[] = [];
   // The project parse the service-env files were last written for.
@@ -400,6 +405,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.workspaceVolume = opts.workspaceVolume;
     this.workspaceSubpath = opts.workspaceSubpath;
     this.resolveWorkspaceDevice = opts.resolveWorkspaceDevice;
+    this.isDockerDesktop = opts.isDockerDesktop;
     this.overlayDepDirs = opts.overlayDepDirs ?? [];
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
@@ -1390,6 +1396,31 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     }
   }
 
+  // Before anything is prepared or looked up; Docker is asked only for a stack that needs it.
+  private async refuseOnDockerDesktop(model: Record<string, unknown>): Promise<void> {
+    if (!this.workspaceVolume || !this.isDockerDesktop) return;
+    const refusal = this.checked(() => dockerDesktopRefusal(model, this.workspaceDir));
+    if (!refusal) return;
+    let desktop: boolean;
+    try {
+      desktop = await this.isDockerDesktop();
+    } catch (err) {
+      // `refreshSecrets` only logs a failed start; the list must still say why.
+      throw this.recordComposeFailure(err);
+    }
+    if (desktop) throw this.recordComposeFailure(refusal);
+  }
+
+  // All of /persist is mounted from the workspace volume; only a subdirectory needs the daemon-side path.
+  private async persistVolume(scratchDir: string, subpaths: readonly string[]): Promise<PersistVolume> {
+    if (!this.workspaceVolume || !this.workspaceSubpath) {
+      return { device: await this.persistDevicePath(scratchDir) };
+    }
+    const volumeSubpath = path.posix.join(path.posix.dirname(this.workspaceSubpath), SESSION_SCRATCH_SUBDIR);
+    if (subpaths.every((subpath) => subpath === "")) return { volumeSubpath };
+    return { volumeSubpath, device: await this.persistDevicePath(scratchDir) };
+  }
+
   // Share every override option across writers; resolver reads are not an atomic snapshot.
   private buildOverrideOptions(
     workspaceDevice: string | undefined,
@@ -1525,12 +1556,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       }));
 
       const persistUse = this.checked(() => resolvedPersistUse(model));
+      await this.refuseOnDockerDesktop(model);
       let persist: PersistVolume | undefined;
       if (persistUse.used) {
         // A volume subpath must exist when mounted, and the agent can delete one.
         const scratchDir = sessionScratchDirForWorkspace(this.workspaceDir);
         preparePersistDir(scratchDir, persistUse.subpaths);
-        persist = { device: await this.persistDevicePath(scratchDir) };
+        persist = await this.persistVolume(scratchDir, persistUse.subpaths);
       }
       const workspaceDevice = await this.workspaceDevice();
       const gpu = Object.values(services).some(requestsGpu) ? await this.sessionGpu() : undefined;
