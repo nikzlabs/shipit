@@ -1,7 +1,7 @@
 ---
 issue: planning#696
 title: A /persist subdirectory mount on Docker Desktop
-description: Requirements for letting a Compose service mount one subdirectory of /persist on Docker Desktop, which needs /persist in a Docker volume of its own.
+description: A Compose service can mount one subdirectory of /persist on Docker Desktop, because each session's /persist is kept in a Docker volume of its own on every host.
 ---
 
 # 331 — A /persist subdirectory mount on Docker Desktop
@@ -17,9 +17,9 @@ description: Requirements for letting a Compose service mount one subdirectory o
   `persist/<sub>` mount cannot escape the session's /persist through a planted
   symlink", and "Don't regress native Linux Docker."
 - 2026-10-14: the user approved writing requirements for keeping `/persist` in a
-  Docker volume of its own for each session. That direction is the agent's
-  proposal from the docs/317 plan; it is not yet a decision to build it
-  (planning#618).
+  Docker volume of its own for each session (the agent's proposal from the
+  docs/317 plan, planning#618), and then decided to build it (see
+  Resolved questions).
 
 ## Requirements
 
@@ -30,6 +30,19 @@ description: Requirements for letting a Compose service mount one subdirectory o
    agent or a service makes inside `/persist` cannot make the mount reach
    anything outside it.
 3. Every mount form that works on a native Linux host today still works there.
+4. On every host, native Linux and Docker Desktop alike, each session's
+   `/persist` is kept in a Docker volume of its own.
+5. The `/persist` files of a session that exists before the change are copied
+   into its own volume at the session's next start. After the copy, ShipIt
+   removes the old directory, so each session has one `/persist` only.
+6. The backup section of the wiki page `installing-and-updating.md` names the
+   per-session `/persist` volumes as part of a whole-install backup.
+
+## Not in scope
+
+- Workspace subdirectory mounts (`./sub:/app`) and the subdirectory mounts of a
+  plugin developed in its own repository (`repo: self`). ShipIt keeps refusing
+  them on Docker Desktop (PR #3208, PR #3209).
 
 ## Requirements of other features that this one touches
 
@@ -66,18 +79,20 @@ not visible to the orchestrator in the same way:
 
 ## Open questions
 
-- Should ShipIt build this at all, and on which hosts? Keep `/persist` in its
-  own Docker volume on every host, only on Docker Desktop hosts, or keep the
-  refusal of PR #3208 and build nothing?
-- What happens to the `/persist` files of sessions that exist before the change:
-  copy them into the new volume at the session's next start, keep the old layout
-  for those sessions, or something else?
-- A whole-install backup today copies two Docker volumes
-  (`src/server/shipit-docs/wiki/installing-and-updating.md`). With this change a
-  backup also needs one volume for each session. Is that acceptable?
-- Must workspace subdirectory mounts (`./sub:/app`, and a self plugin's
-  subdirectory) get the same fix, or does this feature cover `/persist` only?
+(none)
 
 ## Resolved questions
 
-(none)
+- 2026-10-14 — Build it at all, and on which hosts (every host, Docker Desktop
+  only, or keep the refusal)? The user: "Every host", so that there is one
+  storage layout. Requirement 4.
+- 2026-10-14 — What happens to the `/persist` files of existing sessions? The
+  user: "Copy at next start": ShipIt copies the scratch directory into the new
+  volume at the session's next start, then removes the old directory.
+  Requirement 5.
+- 2026-10-14 — A whole-install backup then needs one volume for each session as
+  well as the two it copies today. Is that acceptable? The user: "Acceptable";
+  document the extra volumes in the backup section. Requirement 6.
+- 2026-10-14 — Must workspace subdirectory mounts (`./sub:/app`, a self
+  plugin's subdirectory) get the same fix? The user: "/persist only". Not in
+  scope.
