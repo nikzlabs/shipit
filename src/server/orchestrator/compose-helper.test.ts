@@ -10,9 +10,13 @@ import {
   ConfinedCompose,
   SERVICE_ENV_HOST_DIR_ENV,
   composeHelperDaemonPath,
+  composeHelperImage,
   createHelperRunner,
+  pinComposeHelperImage,
   reapOrphanComposeHelpers,
+  repinComposeHelperImage,
   resolveComposeHelperImage,
+  setComposeHelperImage,
   stageRegistryLogin,
   type ComposeHelperImage,
   type ConfinedComposeOptions,
@@ -97,6 +101,130 @@ describe("ConfinedCompose — every run is a confined throwaway container", () =
     expect(args).toContain(IMAGE_ID);
     // Only the allowlisted environment reaches the container.
     expect(envOf(args).GITHUB_TOKEN).toBeUndefined();
+  });
+
+  describe("when Docker no longer has the pinned image", () => {
+    const NEW_ID = "sha256:rebuilt";
+    const gone = { code: 125, stderr: `docker: Error response from daemon: No such image: ${IMAGE_ID}\n` };
+
+    function goneThenOk() {
+      const calls: HelperRunRequest[] = [];
+      const run = vi.fn(async (req: HelperRunRequest): Promise<HelperRunResult> => {
+        calls.push(req);
+        return calls.length === 1
+          ? { stdout: Buffer.alloc(0), ...gone }
+          : { code: 0, stdout: framed("services: {}\n", "name: x\n"), stderr: "" };
+      });
+      return { calls, run };
+    }
+
+    it("re-pins by name and runs once more on the new id, still by id and never pulling", async () => {
+      const { calls, run } = goneThenOk();
+      const repinImage = vi.fn(async () => ({ ...READY, id: NEW_ID }));
+      const out = await confined(run, { repinImage }).config({ projectFile: "docker-compose.yml", services: [] });
+
+      expect(out.stdout).toBe("name: x\n");
+      expect(repinImage).toHaveBeenCalledExactlyOnceWith(IMAGE_ID);
+      expect(calls).toHaveLength(2);
+      const retry = calls[1]!.args;
+      expect(retry).toContain(NEW_ID);
+      expect(retry).not.toContain(IMAGE_ID);
+      expect(flag(retry, "--pull")).toEqual(["never"]);
+      expect(calls[1]!.containerName).not.toBe(calls[0]!.containerName);
+      expect(retry.slice(retry.indexOf(NEW_ID) + 1)).toEqual(inner(calls[0]!.args));
+    });
+
+    it("does not retry while Docker still has the pinned image, so a command that ran is not repeated", async () => {
+      const { calls, run } = goneThenOk();
+      const repinImage = vi.fn(async () => READY);
+      await expect(confined(run, { repinImage }).readWorkspaceFile("docker-compose.yml"))
+        .rejects.toMatchObject({ kind: "start", message: expect.stringMatching(/No such image/) });
+      expect(calls).toHaveLength(1);
+    });
+
+    it("flushes the first run's trailing output before the retry starts", async () => {
+      const events: string[] = [];
+      const onOutput = Object.assign((chunk: string) => { events.push(`out:${chunk.trim()}`); }, {
+        flush: () => { events.push("flush"); },
+      });
+      let runs = 0;
+      const run = vi.fn(async (req: HelperRunRequest): Promise<HelperRunResult> => {
+        events.push("run");
+        if (++runs === 1) {
+          req.onOutput?.(gone.stderr);
+          return { stdout: Buffer.alloc(0), ...gone };
+        }
+        req.onOutput?.("built\n");
+        return { code: 0, stdout: Buffer.alloc(0), stderr: "" };
+      });
+      await confined(run, { repinImage: async () => ({ ...READY, id: NEW_ID }) })
+        .build({ buildModel: "", services: [], onOutput });
+      expect(events).toEqual(["run", `out:${gone.stderr.trim()}`, "flush", "run", "out:built", "flush"]);
+    });
+
+    it("stops waiting for the re-pin when the caller cancels, and starts no second run", async () => {
+      const { calls, run } = goneThenOk();
+      const controller = new AbortController();
+      const repinImage = vi.fn(() => new Promise<ComposeHelperImage>(() => {}));
+      const pending = confined(run, { repinImage })
+        .readWorkspaceFile("docker-compose.yml", { signal: controller.signal })
+        .catch((e: unknown) => e);
+      await vi.waitFor(() => expect(repinImage).toHaveBeenCalled());
+      controller.abort();
+      expect(await pending).toMatchObject({ kind: "cancelled" });
+      expect(calls).toHaveLength(1);
+    });
+
+    it("reports a cancel that came before the re-pin, and handles the re-pin's rejection", async () => {
+      const { calls, run } = goneThenOk();
+      const controller = new AbortController();
+      controller.abort();
+      // Not vi.fn: a mock subscribes to the promises it returns, which would hide an unhandled rejection.
+      const repinImage = (): Promise<ComposeHelperImage> => Promise.reject(new Error("daemon gone"));
+      // The test setup logs unhandled rejections instead of failing on them.
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        await expect(confined(run, { repinImage }).readWorkspaceFile("docker-compose.yml", { signal: controller.signal }))
+          .rejects.toMatchObject({ kind: "cancelled" });
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+      }
+      expect(unhandled).toEqual([]);
+      expect(calls).toHaveLength(1);
+    });
+
+    it("says to rebuild ShipIt's images when the name does not resolve either", async () => {
+      const { calls, run } = goneThenOk();
+      const repinImage = vi.fn(async (): Promise<ComposeHelperImage> => ({
+        status: "missing", name: READY.name, reason: "No such image: shipit-compose-helper:test",
+      }));
+      const err = await confined(run, { repinImage }).up({ overrideFile: `${COMPOSE_DIR}/override.yml`, services: [] })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ComposeHelperError);
+      expect(err).toMatchObject({ kind: "unavailable" });
+      expect((err as Error).message).toMatch(/reported its Compose helper image \(shipit-compose-helper:test, pinned as sha256:helper\) missing/);
+      expect((err as Error).message).toMatch(/Rebuild ShipIt's images/);
+      expect((err as Error).message).not.toMatch(/Error response from daemon/);
+      expect(calls).toHaveLength(1);
+    });
+
+    it("does not re-pin for any other reason docker run fails", async () => {
+      const repinImage = vi.fn(async () => ({ ...READY, id: NEW_ID }));
+      const daemonError = recorder({ code: 125, stderr: "docker: Error response from daemon: invalid mount config" });
+      await expect(confined(daemonError.run, { repinImage }).readWorkspaceFile("x")).rejects.toMatchObject({ kind: "start" });
+      // The container's own command, not `docker run`, failed.
+      const inside = recorder({ code: 1, stderr: "Error response from daemon: No such image: postgres:16" });
+      await expect(confined(inside.run, { repinImage }).up({ overrideFile: `${COMPOSE_DIR}/override.yml`, services: [] }))
+        .rejects.toMatchObject({ kind: "failed" });
+      const timedOut = recorder({ code: 125, stderr: "No such image", interrupted: "timeout" });
+      await expect(confined(timedOut.run, { repinImage }).readWorkspaceFile("x")).rejects.toMatchObject({ kind: "timeout" });
+
+      expect(repinImage).not.toHaveBeenCalled();
+      expect([daemonError, inside, timedOut].map((r) => r.calls.length)).toEqual([1, 1, 1]);
+    });
   });
 
   it("refuses to run, naming the image, when the helper image was not resolved", async () => {
@@ -488,6 +616,138 @@ describe("resolveComposeHelperImage", () => {
   it("reports an unset image name", async () => {
     const result = await resolveComposeHelperImage(docker(async () => ({ Id: "sha256:abc" })), undefined);
     expect(result).toMatchObject({ status: "missing", reason: expect.stringMatching(/SESSION_COMPOSE_HELPER_IMAGE/) });
+  });
+});
+
+describe("repinComposeHelperImage", () => {
+  const NAME = "shipit-compose-helper:test";
+  const NEW_ID = "sha256:rebuilt";
+  const NEW: ComposeHelperImage = { ...READY, id: NEW_ID };
+  afterEach(() => {
+    vi.useRealTimers();
+    setComposeHelperImage({ status: "missing", name: undefined, reason: "reset by test" });
+  });
+
+  /** A daemon holding `images` (reference → id); each answer waits for `gate`. */
+  function fakeDocker(images: Record<string, string>, gate: Promise<void> = Promise.resolve()) {
+    const inspected: string[] = [];
+    const docker = {
+      getImage: (ref: string) => ({
+        inspect: async () => {
+          inspected.push(ref);
+          await gate;
+          const id = images[ref];
+          if (id === undefined) throw Object.assign(new Error(`No such image: ${ref}`), { statusCode: 404 });
+          return { Id: id };
+        },
+      }),
+    } as unknown as Docker;
+    return { docker, inspected };
+  }
+
+  function deferred() {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => { open = r; });
+    return { gate, open };
+  }
+
+  it("re-pins what the name resolves to once Docker confirms the pinned id gone, in one shared resolve", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { gate, open } = deferred();
+    const { docker, inspected } = fakeDocker({ [NAME]: NEW_ID }, gate);
+    setComposeHelperImage(READY, docker);
+
+    const pending = [repinComposeHelperImage(IMAGE_ID), repinComposeHelperImage(IMAGE_ID), repinComposeHelperImage(IMAGE_ID)];
+    open();
+    expect(await Promise.all(pending)).toEqual([NEW, NEW, NEW]);
+    expect(inspected).toEqual([IMAGE_ID, NAME]);
+    expect(composeHelperImage()).toEqual(NEW);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining(`${IMAGE_ID}; ${NAME} re-pinned to ${NEW_ID}`));
+
+    // A run that started on the old id and fails after the re-pin takes the new pin, without a resolve.
+    expect(await repinComposeHelperImage(IMAGE_ID)).toEqual(NEW);
+    expect(inspected).toHaveLength(2);
+  });
+
+  it("keeps the pin, and resolves nothing by name, while Docker still has the pinned image", async () => {
+    const { docker, inspected } = fakeDocker({ [IMAGE_ID]: IMAGE_ID, [NAME]: NEW_ID });
+    setComposeHelperImage(READY, docker);
+    expect(await repinComposeHelperImage(IMAGE_ID)).toEqual(READY);
+    expect(composeHelperImage()).toEqual(READY);
+    expect(inspected).toEqual([IMAGE_ID]);
+  });
+
+  it("keeps the pin when Docker cannot say whether the pinned image is gone", async () => {
+    const inspected: string[] = [];
+    const docker = {
+      getImage: (ref: string) => ({
+        inspect: async () => {
+          inspected.push(ref);
+          throw new Error("connect ECONNREFUSED /var/run/docker.sock");
+        },
+      }),
+    } as unknown as Docker;
+    setComposeHelperImage(READY, docker);
+    expect(await repinComposeHelperImage(IMAGE_ID)).toEqual(READY);
+    expect(inspected).toEqual([IMAGE_ID]);
+  });
+
+  it("keeps the pin, and resolves again next time, when the name does not resolve", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { docker, inspected } = fakeDocker({});
+    setComposeHelperImage(READY, docker);
+
+    expect(await repinComposeHelperImage(IMAGE_ID)).toMatchObject({ status: "missing", reason: `No such image: ${NAME}` });
+    expect(composeHelperImage()).toEqual(READY);
+    await repinComposeHelperImage(IMAGE_ID);
+    expect(inspected).toEqual([IMAGE_ID, NAME, IMAGE_ID, NAME]);
+  });
+
+  it("stops waiting for a daemon that does not answer", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { docker } = fakeDocker({ [NAME]: NEW_ID }, new Promise(() => {}));
+    setComposeHelperImage(READY, docker);
+
+    const pending = repinComposeHelperImage(IMAGE_ID);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await pending).toMatchObject({ status: "missing", reason: expect.stringMatching(/did not answer within 30 seconds/) });
+    expect(composeHelperImage()).toEqual(READY);
+  });
+
+  it("answers with the newer pin, and leaves its resolve shared, when the pin is replaced during a resolve", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const first = deferred();
+    setComposeHelperImage(READY, fakeDocker({ [NAME]: "sha256:stale" }, first.gate).docker);
+    const stale = repinComposeHelperImage(IMAGE_ID);
+
+    const second = deferred();
+    const later = fakeDocker({ [NAME]: NEW_ID }, second.gate);
+    const other: ComposeHelperImage = { ...READY, id: "sha256:other" };
+    setComposeHelperImage(other, later.docker);
+    const current = repinComposeHelperImage("sha256:other");
+
+    first.open();
+    expect(await stale).toEqual(other);
+    const joined = repinComposeHelperImage("sha256:other");
+    second.open();
+    expect(await Promise.all([current, joined])).toEqual([NEW, NEW]);
+    expect(later.inspected).toEqual(["sha256:other", NAME]);
+    expect(composeHelperImage()).toEqual(NEW);
+  });
+
+  it("re-pins the next run of every session's ConfinedCompose, with the Docker client startup pinned with", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const images: Record<string, string> = { [NAME]: IMAGE_ID };
+    const { docker } = fakeDocker(images);
+    expect(await pinComposeHelperImage(docker, NAME)).toEqual(READY);
+    images[NAME] = NEW_ID;
+
+    const { run } = recorder();
+    run.mockResolvedValueOnce({ code: 125, stdout: Buffer.alloc(0), stderr: `No such image: ${IMAGE_ID}` });
+    await confined(run, { image: composeHelperImage }).readWorkspaceFile("docker-compose.yml");
+    await confined(run, { image: composeHelperImage }).readWorkspaceFile("docker-compose.yml");
+    expect(run.mock.calls.map(([req]) => req.args.includes(NEW_ID))).toEqual([false, true, true]);
   });
 });
 

@@ -9,6 +9,7 @@ import { getErrorMessage } from "./validation.js";
 import { agentLogAppend } from "./log-emit.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 import { dependencyGapSummary } from "./dependency-staleness.js";
+import { unknownServiceError } from "./service-manager.js";
 
 export async function registerPreviewRoutes(
   app: FastifyInstance,
@@ -56,7 +57,7 @@ export async function registerPreviewRoutes(
       }
       const svc = mgr.getService(request.params.name);
       if (!svc) {
-        reply.code(404).send({ error: `Unknown service: ${request.params.name}` });
+        reply.code(404).send({ error: unknownServiceError(request.params.name, mgr.projectComposeFailure).message });
         return;
       }
       // Not the in-memory buffer: reconciliation clears it.

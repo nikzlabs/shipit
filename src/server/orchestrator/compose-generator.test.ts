@@ -3573,6 +3573,47 @@ networks:
     }
   });
 
+  it("refuses a project image that names the Compose helper's repository, so no build can move its tag", () => {
+    const helper = { ...ctx, composeHelperImage: "shipit-compose-helper:prod" };
+    const build = { context: WS, dockerfile: "Dockerfile" };
+    for (const web of [
+      { image: "shipit-compose-helper:prod", build },
+      { image: "docker.io/library/shipit-compose-helper", build },
+      { image: "node:20", build: { ...build, tags: ["Shipit-Compose-Helper:dev"] } },
+      { image: "shipit-compose-helper:prod" },
+    ]) {
+      expect(() => validateResolvedModel(resolved(web), helper), JSON.stringify(web))
+        .toThrow("is reserved for ShipIt's Compose helper");
+    }
+    expect(() => validateResolvedModel(resolved({ image: "shipit-compose-helper-fork:prod", build }), helper)).not.toThrow();
+    expect(() => validateResolvedModel(resolved({ image: "shipit-compose-helper:prod", build }), ctx)).not.toThrow();
+
+    // Docker Hub's implied `library/` applies to a one-part name only.
+    const nested = { ...ctx, composeHelperImage: "acme/helper:prod" };
+    expect(() => validateResolvedModel(resolved({ image: "docker.io/acme/helper:x", build }), nested))
+      .toThrow("is reserved for ShipIt's Compose helper");
+    expect(() => validateResolvedModel(resolved({ image: "library/acme/helper", build }), nested)).not.toThrow();
+  });
+
+  it("refuses an image name or build tag that Buildx Bake would expand after this check", () => {
+    const build = { context: WS, dockerfile: "Dockerfile" };
+    // Assembled at runtime: a literal Bake expression trips no-template-curly-in-string.
+    const bakeExpression = ["$", '{"shipit-compose-helper"}:prod'].join("");
+    for (const web of [
+      { image: "node:20", build: { ...build, tags: [bakeExpression] } },
+      { image: "node:20", build: { ...build, tags: ["%{ if true }shipit-compose-helper%{ endif }:prod"] } },
+      { image: bakeExpression, build },
+      { image: "node 20" },
+    ]) {
+      expect(() => validateResolvedModel(resolved(web), ctx), JSON.stringify(web))
+        .toThrow("is not a plain image reference");
+    }
+    const literal = { image: "ghcr.io:443/acme/web:1.2-rc_3@sha256:abc", build: { ...build, tags: ["localhost:5000/web:Dev"] } };
+    expect(() => validateResolvedModel(resolved(literal), ctx)).not.toThrow();
+    const ipv6 = { image: "[2001:db8::1]:5000/acme/web:Dev", build: { ...build, tags: ["[::1]:5000/web"] } };
+    expect(() => validateResolvedModel(resolved(ipv6), ctx)).not.toThrow();
+  });
+
   it("refuses a bind source that resolved outside the workspace", () => {
     for (const source of ["/", "/workspace/sessions/other/workspace", "/workspace/sessions/s1", `${WS}-b`]) {
       expect(() => validateResolvedModel(mounts(bindAt(source)), ctx), source)

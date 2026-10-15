@@ -348,7 +348,24 @@ do:
   could name. It is built with the orchestrator image, from the same Docker apt
   repository, and its reference is resolved at startup, as
   `resolveWorkerImageId` resolves the worker image (`app-lifecycle.ts`). If it
-  is missing, starts are refused with a message that says so.
+  is missing, starts are refused with a message that says so. Docker can lose
+  the pinned id while ShipIt runs (a rebuild that moves the tag, an image
+  cleanup), and then every helper run fails with "No such image". So a run that
+  fails that way asks Docker whether the pinned id is really gone. Only then
+  does it resolve the name again, pin the new id for every session
+  (`repinComposeHelperImage`, one bounded resolve shared by concurrent runs),
+  and run once more — still by id and with `--pull never`. If the name
+  resolves to nothing either, the start is refused with the rebuild message.
+  Both the startup pin and this re-pin trust the name, so no project may name
+  the helper's repository in `image:` or `build.tags`
+  (`validateComposeHelperImageUse`): a build with that name would move the tag
+  to an image the project wrote. Compose hands both fields to Buildx Bake,
+  which expands `${…}` and `%{…}` in them after ShipIt's check, so every
+  `image:` and build tag must also be a literal reference
+  (`validateLiteralImageNames`); that also keeps the ops-proxy rule's
+  name check sound. A service that is not registered because the
+  project file's read failed is reported with that failure, not as an unknown
+  service.
 - **A pinned Compose version.** This design depends on how `config` behaves:
   which services it selects, and whether it inlines `env_file` values. That has
   changed between releases (on 2.34.0, `config` keeps the `env_file` of a

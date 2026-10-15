@@ -765,6 +765,13 @@ These rules apply in Open and contained sessions alike:
 - **Ops sessions** trust `docker-socket-proxy` only as the ops template
   defines it. ShipIt always runs the proxy image at its pinned digest, and no
   other service may build or name that image.
+- **ShipIt's Compose helper image** (`SESSION_COMPOSE_HELPER_IMAGE`, for
+  example `shipit-compose-helper:prod`): no service may name its repository in
+  `image:` or `build.tags`, with any tag.
+- **`image:` and `build.tags`** must be plain image references: letters,
+  digits, and `. _ - / : @ [ ]` only. Compose's own `${VAR}` interpolation is
+  fine, because it is resolved before ShipIt checks the file; an expression
+  left for the build tool to expand (`$${…}`, `%{…}`) is refused.
 
 ### Files Compose reads, and mounts
 

@@ -19,11 +19,7 @@ import type { InProgressPersister } from "./chat-card-persistence.js";
 import type { SessionRunnerFactory, SessionRunnerRegistry } from "./session-runner.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
 import { warnIfAddressPoolIsSmall } from "./docker-address-pool.js";
-import {
-  COMPOSE_HELPER_IMAGE_ENV,
-  resolveComposeHelperImage,
-  setComposeHelperImage,
-} from "./compose-helper.js";
+import { COMPOSE_HELPER_IMAGE_ENV, pinComposeHelperImage } from "./compose-helper.js";
 import { preservePartialTurnOnWorkerLoss } from "./startup-tasks.js";
 import { workerGet } from "./worker-http.js";
 import { isOverlayEnabled } from "./overlay-session.js";
@@ -189,10 +185,9 @@ export async function setupContainerManager(
       // and refuse a non-loopback binding where they cannot.
       await initLocalBlock(containerManager.getDockerClient());
       await assertLoopbackOnlyWithoutBlock(containerManager.getDockerClient());
-      const helperImage = await resolveComposeHelperImage(
+      const helperImage = await pinComposeHelperImage(
         containerManager.getDockerClient(), process.env[COMPOSE_HELPER_IMAGE_ENV],
       );
-      setComposeHelperImage(helperImage);
       if (helperImage.status === "ready") {
         console.log(`[server] Compose helper image ${helperImage.name} pinned to ${helperImage.id}`);
       } else {
