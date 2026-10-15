@@ -821,11 +821,13 @@ Four rules, each where the fault was:
    CLIs rewrite the file's other keys.
 4. **An `authenticating` account is routed to only while it holds a credential**
    (`ProviderAccountManager.selectAccountForTurn`, asked through the login's
-   `isConfigured`). Claude's sign-in removes the credential at its start. So does
-   Codex's: `codex login --device-auth` removes `auth.json` within 0.5 s of its start,
-   before its first request is answered (measured offline on CLI 0.159.2, 2026-10-13;
-   until then this item named Codex's device flow as a sign-in that keeps the old
-   credential). A sign-in that keeps the old credential stays routable.
+   `isConfigured`). Claude's sign-in removes the credential at its start. Codex's
+   removes it after one request: `codex login --device-auth` first revokes the old
+   refresh token at the token host, keeps `auth.json` until that request has an answer
+   (at most 10 s without one), and removes it before it asks for a device code
+   (measured offline on CLI 0.160.1, 2026-10-15; docs/154-codex-oauth-refresh-readiness,
+   "The revoked line, and the account's row"). A sign-in that keeps the old credential
+   stays routable.
 
 And the announcement: `emitUnauthenticated` was latched after the first report. It now
 reports again when the account's row reads `ready`, because a sign-in's completion sets

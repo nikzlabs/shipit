@@ -590,9 +590,26 @@ export class ProviderAccountManager {
     const mgr = this.requireAuthManager(serviceId);
     const inFlight = mgr.getActiveAccountId();
     if (!inFlight || inFlight === accountId) mgr.cancel();
+    return this.setAccountStatus(serviceId, accountId, this.statusWithoutSignIn(provider, accountId, mgr));
+  }
+
+  // No login process outlives the orchestrator, so a row still signing in at start-up was interrupted (docs/150).
+  endInterruptedSignIns(loginManagers: ReadonlyMap<LoginIntegrationId, AgentAuthManager>): void {
+    for (const account of this.list()) {
+      if (account.status !== "authenticating") continue;
+      const provider = harnessFor(account.serviceId);
+      const loginId = loginIntegrationForService(account.serviceId);
+      const mgr = loginId ? loginManagers.get(loginId) : undefined;
+      if (!provider || !mgr || mgr.getActiveAccountId() === account.id) continue;
+      const status = this.statusWithoutSignIn(provider, account.id, mgr);
+      this.setAccountStatus(account.serviceId, account.id, status);
+      console.log(`[provider-accounts] ${account.id}: the sign-in did not survive a restart, status=${status}`);
+    }
+  }
+
+  private statusWithoutSignIn(provider: AgentId, accountId: string, mgr: AgentAuthManager): CredentialStatus {
     const credentialDir = this.resolveCredentialRoot(provider, accountId);
-    const status: CredentialStatus = mgr.isConfigured({ credentialDir }) ? "ready" : "unavailable";
-    return this.setAccountStatus(serviceId, accountId, status);
+    return mgr.isConfigured({ credentialDir }) ? "ready" : "unavailable";
   }
 
   submitAccountCode(serviceId: string, accountId: string, code: string): void {
