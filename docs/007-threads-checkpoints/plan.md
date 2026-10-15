@@ -52,9 +52,12 @@ assistant output the model wrote (never `synthetic` text) and the tool results a
 that group — but not past a steer the CLI has read, which a lone question or plan tool
 merged into the group would cross (`stampLastGroup`). The turn prompt's echo stamps its
 user row, found by the row id the persist returned (`turn-executor.ts`,
-`recordUserMessageAgentId`): the first matching echo of the attempt, written once that
-attempt's conversation answered (model output or a successful result), since an
-unanswered attempt's conversation is not kept. A retry's stamp replaces it. The echo may
+`recordUserMessageAgentId`): the first matching echo of the attempt, written once the
+listener keeps that attempt's conversation (`onConversationKept`, the same decision that
+stores its id), since an attempt whose conversation is not kept — unanswered, or a
+"successful" result the listener reads as a quota refusal — names a message no stored
+conversation has. A retry's stamp replaces it. The CLI echoes a prompt it reads before it
+answers it, so the echo is in hand when an idle process answers. The echo may
 carry the worker's Node runtime notice before the prompt, and still counts for the stamp;
 the turn-ownership reading stays an exact match. The id is the `agent_message_id` column
 of `messages`.
@@ -181,7 +184,9 @@ Guards: `integration_tests/conversation-replay-retry.test.ts`,
 front of it, so the CLI reads the command as text. A rewind point before a compaction
 boundary forks the full messages from before the compaction, which can be longer than the
 context window; the CLI then compacts again. A goal set through the goal control process
-while a rewind point is pending is set on the conversation before the fork.
+while a rewind point is pending is set on the conversation before the fork. A compaction
+asked for before a fork's first turn, which sends the replay instead, is still handled by
+ShipIt as a compaction turn: no live steering during it, and no status-card nudge after.
 
 ## Key files
 

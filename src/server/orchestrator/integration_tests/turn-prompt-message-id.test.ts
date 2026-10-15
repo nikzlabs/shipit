@@ -45,10 +45,12 @@ describe("the CLI's id of a turn's prompt", () => {
   const answer = (agent: FakeAgent) =>
     agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "On it." }] });
 
-  async function firstTurn(): Promise<FakeAgent> {
-    runner.dispatch(testDispatch({ text: "work" }));
-    await waitForTurn(() => agents[0]?.run.mock.calls.length === 1, "the prompt submitted");
-    return agents[0]!;
+  async function firstTurn(index = 0): Promise<FakeAgent> {
+    if (index === 0) runner.dispatch(testDispatch({ text: "work" }));
+    await waitForTurn(() => agents[index]?.run.mock.calls.length === 1, "the prompt submitted");
+    const agent = agents[index]!;
+    agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "conv-1" });
+    return agent;
   }
 
   it("stamps a dispatched prompt's row, which has no bubble id, once the conversation answered", async () => {
@@ -60,12 +62,27 @@ describe("the CLI's id of a turn's prompt", () => {
   });
 
   it("does not stamp an attempt the CLI never answered: its conversation is not kept", async () => {
+    // A stored conversation: an unanswered attempt replaces nothing (docs/007 req 2).
+    vi.mocked(deps.listenerDeps.sessionManager.get).mockReturnValue({ id: "sess-1", agentSessionId: "stored" } as never);
     const agent = await firstTurn();
     echo(agent, "work", "user-1");
     agent.emit("event", {
       type: "agent_assistant", synthetic: true, content: [{ type: "text", text: "API Error: 500" }],
     });
     agent.emit("event", { type: "agent_result", status: "error", sessionId: "never-kept" });
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it("does not stamp an attempt whose 'successful' result the listener reads as a quota refusal", async () => {
+    vi.mocked(deps.listenerDeps.sessionManager.get).mockReturnValue({ id: "sess-1", agentSessionId: "stored" } as never);
+    const agent = await firstTurn();
+    echo(agent, "work", "user-1");
+    agent.emit("event", {
+      type: "agent_assistant",
+      synthetic: true,
+      content: [{ type: "text", text: "You've hit Claude's 5h usage limit. It resets at 2099-01-01T00:00:00.000Z." }],
+    });
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "refused-attempt" });
     expect(record).not.toHaveBeenCalled();
   });
 
@@ -89,10 +106,10 @@ describe("the CLI's id of a turn's prompt", () => {
     const failed = await firstTurn();
     echo(failed, "work", "failed-attempt");
     failed.emit("done", 1);
-    await waitForTurn(() => agents[1]?.run.mock.calls.length === 1, "the retry submitted");
+    const retry = await firstTurn(1);
 
-    echo(agents[1]!, "work", "kept-attempt");
-    answer(agents[1]!);
+    echo(retry, "work", "kept-attempt");
+    answer(retry);
 
     expect(record).toHaveBeenCalledTimes(1);
     expect(record).toHaveBeenCalledWith("sess-1", 1, "kept-attempt");

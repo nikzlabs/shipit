@@ -381,7 +381,7 @@ export async function executeAgentTurn(
     noteAgentHasPrompt();
   };
 
-  // Written once this attempt's conversation answered, which is when ShipIt keeps it; a
+  // Written once the listener keeps this attempt's conversation (`onConversationKept`); a
   // retry's stamp replaces it.
   let promptMessageId: string | undefined;
   let promptAnswered = false;
@@ -1054,6 +1054,10 @@ export async function executeAgentTurn(
     willRetryOnQuotaError,
     // No kill: the CLI exits by itself, and a kill can drop the `done` that ends the turn.
     onConversationNotFound: () => { conversationNotFound = true; },
+    onConversationKept: () => {
+      promptAnswered = true;
+      stampPromptRow();
+    },
     ...(input.permissionMode !== undefined ? { requestedPermissionMode: input.permissionMode } : {}),
     // An adapter error can be terminal without a later done event, even with an empty queue.
     onError: async () => {
@@ -1503,13 +1507,6 @@ export async function executeAgentTurn(
       offerWaitingMessages();
       await beginRearm("self-wake");
       return;
-    }
-    if (
-      (event.type === "agent_assistant" && !event.synthetic && !event.parentToolUseId)
-      || (event.type === "agent_result" && event.status === "success")
-    ) {
-      promptAnswered = true;
-      stampPromptRow();
     }
     if (event.type === "agent_user_replay") {
       notePromptReadBack(event.text, event.messageId);

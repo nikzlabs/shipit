@@ -120,6 +120,8 @@ export interface WireListenersOpts {
   recoverAuth?: () => Promise<boolean>;
   /** The CLI could not resume the stored conversation and is exiting; the card is posted. */
   onConversationNotFound?: () => void;
+  /** docs/007 req 5 — this turn's conversation id was stored: the session keeps that conversation. */
+  onConversationKept?: () => void;
   /** true transfers terminal cleanup to the retry. */
   willRetryOnQuotaError?: (err: Error) => boolean;
   useStreaming?: boolean;
@@ -221,6 +223,7 @@ export function wireAgentListeners(
     if (!turnSessionId) return;
     deps.sessionManager.setAgentSessionId(turnSessionId, pendingAgentSessionId);
     agentSessionIdPersisted = true;
+    opts.onConversationKept?.();
   };
 
   // Synthetic CLI answers can race the interrupt and disable unanswered cards.
@@ -727,6 +730,7 @@ export function wireAgentListeners(
         if (!missingConversationDetected && storable) {
           deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
           agentSessionIdPersisted = true;
+          opts.onConversationKept?.();
         }
         // A PR that merged during this turn resolves the session (docs/316 req 5).
         deps.sessionManager.touchUnlessResolved(turnSessionId);
