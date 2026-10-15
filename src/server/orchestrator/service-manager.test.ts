@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import type { ChildProcess } from "node:child_process";
+import type * as childProcessModule from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -29,6 +30,18 @@ import { FakeConfinedCompose, recordedOverride, testServiceManager } from "./com
 import { joinSessionNetworkEndpoints } from "./service-manager-setup.js";
 import { releaseSessionNetworkQueued } from "./session-network-release.js";
 import { fakeNetworkDocker } from "./session-network-test-helpers.js";
+
+// A real `docker` follower exits or prints on its own, at a time fake timers do not control, and
+// only on a host that has docker (CI does). Tests that drive the follower take an inert one.
+const inertSpawn = vi.hoisted(() => ({ enabled: false }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof childProcessModule>();
+  const { EventEmitter } = await import("node:events");
+  const spawn = (...args: Parameters<typeof actual.spawn>) => inertSpawn.enabled
+    ? Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true })
+    : actual.spawn(...args);
+  return { ...actual, spawn };
+});
 
 function makeSessionDir(prefix: string): string {
   const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -4330,7 +4343,12 @@ describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
     return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
   }
 
+  beforeEach(() => {
+    inertSpawn.enabled = true;
+  });
+
   afterEach(() => {
+    inertSpawn.enabled = false;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
     vi.useRealTimers();
     vi.restoreAllMocks();
