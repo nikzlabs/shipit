@@ -402,8 +402,8 @@ export interface ResolvedModelContext extends ComposeParseOptions {
   /** Compose names a declared volume, network, secret, or config `<project>_<key>`. */
   project: string;
   workspaceDir: string;
-  /** SESSION_COMPOSE_HELPER_IMAGE, which no project image may name. */
-  composeHelperImage?: string;
+  /** The images ShipIt runs by name (`SESSION_*_IMAGE`), which no project image may name. */
+  reservedImages?: readonly string[];
 }
 
 export interface ResolvedModelCheck {
@@ -446,7 +446,7 @@ export function validateResolvedModel(model: unknown, ctx: ResolvedModelContext)
   }
   validateSocketJoins(entries);
   if (opsSession) validateOpsProxyImageUse(entries);
-  if (ctx.composeHelperImage) validateComposeHelperImageUse(entries, ctx.composeHelperImage);
+  if (ctx.reservedImages?.length) validateReservedImageUse(entries, ctx.reservedImages);
   return { trustedOpsProxies };
 }
 
@@ -1202,16 +1202,17 @@ function validateSocketJoins(services: [string, Record<string, unknown>][]): voi
   }
 }
 
-// A build tagged with this name would move the tag ShipIt pins its Compose helper from, and that
-// helper runs `up` as root with the Docker socket (docs/318-compose-remaining-escapes).
-function validateComposeHelperImageUse(services: [string, Record<string, unknown>][], helperImage: string): void {
-  const reserved = imageRepository(helperImage);
+// A build tagged with one of these names moves the tag ShipIt starts that image from: the session
+// worker of every new session, its egress sidecar, or the Compose helper, which runs `up` as root
+// with the Docker socket (docs/318-compose-remaining-escapes).
+function validateReservedImageUse(services: [string, Record<string, unknown>][], reservedImages: readonly string[]): void {
+  const reserved = new Set(reservedImages.map(imageRepository));
   for (const [name, svc] of services) {
     const named = [svc.image, ...buildTags(svc.build)]
-      .find((ref) => typeof ref === "string" && imageRepository(ref) === reserved);
+      .find((ref) => typeof ref === "string" && reserved.has(imageRepository(ref)));
     if (named === undefined) continue;
     throw new ComposeValidationError(
-      `Service \`${name}\`: image \`${showValue(named)}\` is reserved for ShipIt's Compose helper. Use another image name.`,
+      `Service \`${name}\`: image \`${showValue(named)}\` is reserved for one of ShipIt's own images. Use another image name.`,
     );
   }
 }

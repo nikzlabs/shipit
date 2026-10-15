@@ -1489,14 +1489,22 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
       expect(mgr.projectComposeFailure?.message).toContain("privileged");
     });
 
-    it("refuses a build that would tag ShipIt's Compose helper image", async () => {
-      vi.stubEnv(COMPOSE_HELPER_IMAGE_ENV, "shipit-compose-helper:test");
+    // Distinct repositories, and the other settings cleared, so one setting cannot stand in for another.
+    const IMAGE_SETTINGS: [string, string][] = [
+      ["SESSION_WORKER_IMAGE", "test-worker:prod"],
+      ["SESSION_WORKER_DOCKER_IMAGE", "test-worker-docker:prod"],
+      ["SESSION_EGRESS_SIDECAR_IMAGE", "test-sidecar:prod"],
+      [COMPOSE_HELPER_IMAGE_ENV, "test-helper:prod"],
+    ];
+    it.each(IMAGE_SETTINGS)("refuses a build that would tag the image %s names", async (env, image) => {
+      for (const [key] of IMAGE_SETTINGS) vi.stubEnv(key, "");
+      vi.stubEnv(env, image);
       try {
         const dir = setup();
-        writeCompose(dir, "services:\n  web:\n    image: shipit-compose-helper:test\n    build: .\n    ports: ['3000:3000']\n");
+        writeCompose(dir, `services:\n  web:\n    image: ${image}\n    build: .\n    ports: ['3000:3000']\n`);
         const mgr = createMockedManager(dir);
 
-        await expect(mgr.start()).rejects.toThrow("is reserved for ShipIt's Compose helper");
+        await expect(mgr.start()).rejects.toThrow("is reserved for one of ShipIt's own images");
         expect(mgr.projectComposeFailure?.kind).toBe("refused");
       } finally {
         vi.unstubAllEnvs();

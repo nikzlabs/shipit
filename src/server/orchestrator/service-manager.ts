@@ -1636,7 +1636,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         ...opts,
         project: composeProjectName(this.sessionId),
         workspaceDir: this.workspaceDir,
-        composeHelperImage: process.env[COMPOSE_HELPER_IMAGE_ENV],
+        reservedImages: SHIPIT_IMAGE_ENVS.map((key) => process.env[key]).filter((ref): ref is string => Boolean(ref)),
       }));
 
       const persistUse = this.checked(() => resolvedPersistUse(model));
@@ -2348,6 +2348,14 @@ function isMapping(value: unknown): value is Record<string, unknown> {
 
 // Compose's own rule for a secret or config key; the copy is named after it.
 const PROJECT_FILE_KEY = /^[A-Za-z0-9._-]+$/;
+
+// The images ShipIt starts by name, which a project build must not retag (docs/318-compose-remaining-escapes).
+const SHIPIT_IMAGE_ENVS = [
+  "SESSION_WORKER_IMAGE",
+  "SESSION_WORKER_DOCKER_IMAGE",
+  "SESSION_EGRESS_SIDECAR_IMAGE",
+  COMPOSE_HELPER_IMAGE_ENV,
+] as const;
 
 /** A failed read of the project file leaves its services unregistered; name that failure, not the name. */
 export function unknownServiceError(name: string, failure: ComposeFailure | null): Error {

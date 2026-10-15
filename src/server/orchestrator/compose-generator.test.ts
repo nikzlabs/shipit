@@ -3573,25 +3573,27 @@ networks:
     }
   });
 
-  it("refuses a project image that names the Compose helper's repository, so no build can move its tag", () => {
-    const helper = { ...ctx, composeHelperImage: "shipit-compose-helper:prod" };
+  it("refuses a project image that names one of ShipIt's own repositories, so no build can move its tag", () => {
+    const reserved = { ...ctx, reservedImages: ["shipit-session-worker:prod", "shipit-compose-helper:prod"] };
     const build = { context: WS, dockerfile: "Dockerfile" };
     for (const web of [
       { image: "shipit-compose-helper:prod", build },
       { image: "docker.io/library/shipit-compose-helper", build },
       { image: "node:20", build: { ...build, tags: ["Shipit-Compose-Helper:dev"] } },
       { image: "shipit-compose-helper:prod" },
+      // Any tag of a reserved repository: `:docker` is the worker image ops sessions run.
+      { image: "shipit-session-worker:docker", build },
     ]) {
-      expect(() => validateResolvedModel(resolved(web), helper), JSON.stringify(web))
-        .toThrow("is reserved for ShipIt's Compose helper");
+      expect(() => validateResolvedModel(resolved(web), reserved), JSON.stringify(web))
+        .toThrow("is reserved for one of ShipIt's own images");
     }
-    expect(() => validateResolvedModel(resolved({ image: "shipit-compose-helper-fork:prod", build }), helper)).not.toThrow();
+    expect(() => validateResolvedModel(resolved({ image: "shipit-compose-helper-fork:prod", build }), reserved)).not.toThrow();
     expect(() => validateResolvedModel(resolved({ image: "shipit-compose-helper:prod", build }), ctx)).not.toThrow();
 
     // Docker Hub's implied `library/` applies to a one-part name only.
-    const nested = { ...ctx, composeHelperImage: "acme/helper:prod" };
+    const nested = { ...ctx, reservedImages: ["acme/helper:prod"] };
     expect(() => validateResolvedModel(resolved({ image: "docker.io/acme/helper:x", build }), nested))
-      .toThrow("is reserved for ShipIt's Compose helper");
+      .toThrow("is reserved for one of ShipIt's own images");
     expect(() => validateResolvedModel(resolved({ image: "library/acme/helper", build }), nested)).not.toThrow();
   });
 
@@ -3612,6 +3614,11 @@ networks:
     expect(() => validateResolvedModel(resolved(literal), ctx)).not.toThrow();
     const ipv6 = { image: "[2001:db8::1]:5000/acme/web:Dev", build: { ...build, tags: ["[::1]:5000/web"] } };
     expect(() => validateResolvedModel(resolved(ipv6), ctx)).not.toThrow();
+
+    // Bake expands `build.network` too; only its fixed values pass.
+    const hostNetwork = ["$", '{"host"}'].join("");
+    expect(() => validateResolvedModel(resolved({ build: { ...build, network: hostNetwork } }), ctx))
+      .toThrow(`\`build.network: ${hostNetwork}\` is not allowed`);
   });
 
   it("refuses a bind source that resolved outside the workspace", () => {
