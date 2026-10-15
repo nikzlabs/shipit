@@ -250,7 +250,8 @@ inline surface, and the conditional-tab pattern makes it cheap.
 ### What we explicitly do NOT do
 
 - **No host access beyond Docker + journal.** No `/proc`, no `/sys`,
-  no `/etc`, no SSH from inside the container.
+  no `/etc` from inside the container. SSH reaches only a destination
+  the operator grants, as in any session (docs/305-ssh-hosts req 6).
 - **No mutation of Docker state.** Read-only via proxy.
 - **No automatic creation** of the ops session — the operator
   bootstraps it deliberately. We never silently provision a
