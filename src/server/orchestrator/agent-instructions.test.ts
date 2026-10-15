@@ -157,6 +157,15 @@ describe("buildAgentSystemInstructions", () => {
     }
   });
 
+  it("docs/305 req 6 — every session kind, ops included, gets the SSH destinations section", () => {
+    const fragment = fs.readFileSync(new URL("./prompts/ssh-hosts.md", import.meta.url), "utf8").trim();
+    for (const opts of [{}, { agentId: "claude" as const }, { agentId: "codex" as const }]) {
+      expect(buildAgentSystemInstructions(opts)).toContain(fragment);
+      expect(buildAgentSystemInstructions({ ...opts, isOps: true })).toContain(fragment);
+      expect(buildAgentSystemInstructions({ ...opts, isSandbox: true })).toContain(fragment);
+    }
+  });
+
   it("never tells an ops or sandbox agent that ShipIt commits for it", () => {
     const claim = fs
       .readFileSync(new URL("./prompts/git-workflow.md", import.meta.url), "utf8")
