@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildConversationReplay, armConversationReplay, replaySpillDirs } from "./replay.js";
+import {
+  boundStoredReplay,
+  buildConversationReplay,
+  REPLAY_INLINE_BUDGET_BYTES,
+  replaySpillDirs,
+} from "./replay.js";
 import type { PersistedMessage } from "../chat-history.js";
 
 /**
@@ -111,78 +116,101 @@ describe("the replay carries the work, not only the words", () => {
   });
 });
 
-describe("the replay does not carry the message that follows it", () => {
-  it("drops the turn's own user row", () => {
-    // The row is persisted before the replay is built (`turn-executor.ts`), so without
-    // this the agent reads the same message twice: once as history, once as the prompt.
-    const replay = buildConversationReplay(
-      [user("first"), toolTurn("Read", { file_path: "/a" }, "ok", "done"), user("now the webhook")],
-      { dropTrailingUserText: "now the webhook" },
-    );
-    expect(replay).not.toContain("now the webhook");
-    expect(replay).toContain("first");
-  });
+describe("the replay fits the spawn request (docs/007)", () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "replay-")); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
-  it("keeps an earlier user message that was never answered", () => {
-    // Matched on text, not position: dropping by position would discard real history.
-    const replay = buildConversationReplay([user("never answered"), user("this turn")], {
-      dropTrailingUserText: "this turn",
+  const bytes = (text: string) => Buffer.byteLength(text, "utf8");
+  // Multi-byte text, so a budget counted in characters would overshoot.
+  const conversation = (count: number, size: number): PersistedMessage[] =>
+    Array.from({ length: count }, (_, i) => ({
+      role: i % 2 === 0 ? "user" as const : "assistant" as const,
+      text: `message-${i} ${"é".repeat(size)}`,
+    }));
+
+  it("keeps the most recent messages inline under the budget and the whole transcript in a file", () => {
+    const replay = buildConversationReplay(conversation(40, 500), {
+      spill: replaySpillDirs(dir, { containerized: false }),
+      inlineBudgetBytes: 8 * 1024,
     });
-    expect(replay).toContain("never answered");
-    expect(replay).not.toContain("this turn");
+
+    expect(bytes(replay)).toBeLessThanOrEqual(8 * 1024);
+    expect(replay).toContain("message-39 ");
+    expect(replay).not.toContain("message-0 ");
+    expect(replay).toMatch(/the most recent \d+ of its 40 messages/);
+    const file = path.join(dir, "scratch", "replay", "transcript.md");
+    expect(replay).toContain(file);
+    const transcript = fs.readFileSync(file, "utf8");
+    expect(transcript).toContain("message-0 ");
+    expect(transcript).toContain("message-39 ");
   });
 
-  it("leaves history alone when no user row matches", () => {
-    const replay = buildConversationReplay([user("a"), toolTurn("Read", { f: 1 }, "ok", "b")], {
-      dropTrailingUserText: "something else",
+  it("keeps a session of thousands of messages well below the worker's 1 MiB request limit", () => {
+    const replay = buildConversationReplay(conversation(4_800, 400), {
+      spill: replaySpillDirs(dir, { containerized: true }),
     });
-    expect(replay).toContain("User: a");
-    expect(replay).toContain("Assistant: b");
+
+    expect(bytes(replay)).toBeLessThanOrEqual(REPLAY_INLINE_BUDGET_BYTES);
+    expect(bytes(JSON.stringify({ systemPrompt: replay }))).toBeLessThan(512 * 1024);
+    expect(replay).toContain("/persist/replay/transcript.md");
   });
 
-  it("drops the turn's row even when a failed attempt's output was finalized after it", () => {
-    // `recoverMissingConversation` writes the partial assistant output into history before
-    // it re-arms, so this turn's own message is no longer the last row.
-    const replay = buildConversationReplay(
-      [user("earlier"), toolTurn("Read", { f: 1 }, "ok", "ack"), user("this turn"),
-        toolTurn("Read", { f: 2 }, "partial", "starting")],
-      { dropTrailingUserText: "this turn" },
-    );
-    expect(replay).not.toContain("this turn");
-    expect(replay).toContain("earlier");
-    expect(replay).toContain("starting");
+  it("counts what JSON escaping adds, not only the UTF-8 bytes", () => {
+    // A control character is one byte of text and six in the request (\u0000).
+    const escaped: PersistedMessage[] = Array.from({ length: 20 }, (_, i) => ({
+      role: "user" as const,
+      text: `message-${i} ${"\u0000".repeat(2_000)}`,
+    }));
+
+    const replay = buildConversationReplay(escaped, { inlineBudgetBytes: 16 * 1024 });
+
+    expect(bytes(JSON.stringify(replay))).toBeLessThanOrEqual(16 * 1024 + 2);
+    expect(replay).toContain("message-19 ");
+  });
+
+  it("says the beginning is omitted when there is nowhere to write the transcript", () => {
+    const replay = buildConversationReplay(conversation(40, 500), { inlineBudgetBytes: 8 * 1024 });
+
+    expect(bytes(replay)).toBeLessThanOrEqual(8 * 1024);
+    expect(replay).toContain("Its earlier part is omitted.");
+    expect(replay).toContain("message-39 ");
+  });
+
+  it("writes no transcript file for a replay that fits", () => {
+    const replay = buildConversationReplay(conversation(4, 10), {
+      spill: replaySpillDirs(dir, { containerized: false }),
+    });
+
+    expect(replay).toContain("Here is the conversation so far.");
+    expect(replay).toContain("message-0 ");
+    expect(fs.existsSync(path.join(dir, "scratch", "replay", "transcript.md"))).toBe(false);
   });
 });
 
-describe("armConversationReplay", () => {
-  const history = (messages: PersistedMessage[]) => {
-    const stored: string[] = [];
-    const deps = {
-      chatHistoryManager: { load: () => messages },
-      sessionManager: { setConversationReplay: (_id: string, r: string) => { stored.push(r); } },
-    };
-    return { deps, stored };
-  };
-
-  it("counts a tool-only turn as a reply", () => {
-    // `requireReply` used to demand non-empty assistant text, which a turn that only
-    // called tools never has — so the transcript that most needs replaying was refused.
-    const { deps, stored } = history([
-      user("do the thing"),
-      toolTurn("Edit", { file_path: "/a" }, "Applied 1 edit"),
-      user("and again"),
-    ]);
-    expect(armConversationReplay(deps, "s1", {
-      requireReply: true,
-      dropTrailingUserText: "and again",
-    })).toBe(true);
-    expect(stored[0]).toContain("[tool] Edit");
+describe("boundStoredReplay", () => {
+  it("returns a replay within the budget unchanged", () => {
+    expect(boundStoredReplay("User: hi\nAssistant: hello", 1024)).toBe("User: hi\nAssistant: hello");
   });
 
-  it("refuses when the only message is the one being submitted", () => {
-    const { deps } = history([user("first ever message")]);
-    expect(armConversationReplay(deps, "s1", {
-      dropTrailingUserText: "first ever message",
-    })).toBe(false);
+  it("counts JSON escaping when it cuts a stored replay", () => {
+    const stored = Array.from({ length: 50 }, (_, i) => `User: turn-${i} ${"\u0001".repeat(500)}`).join("\n");
+
+    const bounded = boundStoredReplay(stored, 4 * 1024);
+
+    expect(Buffer.byteLength(JSON.stringify(bounded), "utf8")).toBeLessThanOrEqual(4 * 1024 + 2);
+    expect(bounded).toContain("turn-49 ");
+  });
+
+  it("keeps the most recent part of an oversized stored replay, from a message boundary", () => {
+    const stored = Array.from({ length: 200 }, (_, i) => `${i % 2 ? "Assistant" : "User"}: turn-${i} ${"é".repeat(40)}`)
+      .join("\n");
+
+    const bounded = boundStoredReplay(stored, 2 * 1024);
+
+    expect(Buffer.byteLength(bounded, "utf8")).toBeLessThanOrEqual(2 * 1024);
+    expect(bounded).toContain("turn-199 ");
+    expect(bounded).not.toContain("turn-0 ");
+    expect(bounded.split("\n\n")[1]).toMatch(/^(User|Assistant): turn-\d+ /);
   });
 });

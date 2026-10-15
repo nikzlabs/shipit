@@ -561,8 +561,14 @@ export class SessionManager {
     ).run(now, now, id);
   }
 
+  /**
+   * Only the CLI-reported id is written here. The conversation it names now holds any
+   * armed replay, so the replay is retired in the same write (docs/007).
+   */
   setAgentSessionId(id: string, agentSessionId: string): void {
-    this.db.prepare("UPDATE sessions SET agent_session_id = ? WHERE id = ?").run(agentSessionId, id);
+    this.db.prepare(
+      "UPDATE sessions SET agent_session_id = ?, conversation_replay = NULL WHERE id = ?",
+    ).run(agentSessionId, id);
   }
 
   /**
@@ -599,26 +605,6 @@ export class SessionManager {
 
   setConversationReplay(id: string, replay: string): void {
     this.db.prepare("UPDATE sessions SET conversation_replay = ? WHERE id = ?").run(replay, id);
-  }
-
-  /**
-   * A take: the replay is spent by the run parameters that carry it into a system prompt.
-   * An attempt that then fails without reaching the agent leaves the session threadless
-   * AND replayless, which is what `reseedConversationForRetry` (`turn-executor.ts`) puts
-   * back before a retry spawns.
-   */
-  consumeConversationReplay(id: string): string | undefined {
-    let replay: string | undefined;
-    this.db.transaction(() => {
-      const row = this.db.prepare(
-        "SELECT conversation_replay FROM sessions WHERE id = ?",
-      ).get(id) as { conversation_replay: string | null } | undefined;
-      if (row?.conversation_replay) {
-        this.db.prepare("UPDATE sessions SET conversation_replay = NULL WHERE id = ?").run(id);
-        replay = row.conversation_replay;
-      }
-    })();
-    return replay;
   }
 
   // Branch movement supersedes earlier notices, including appended ones.

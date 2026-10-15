@@ -344,6 +344,7 @@ export class ClaudeAdapter
           type: "agent_assistant",
           content: raw.message.content,
           parentToolUseId: raw.parent_tool_use_id,
+          ...(raw.is_api_error_message === true ? { synthetic: true } : {}),
         };
 
       case "user":

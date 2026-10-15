@@ -1231,6 +1231,8 @@ the orphan is named `claude-default` because that is the migration's literal
 target; it holds the real credential and a multi-megabyte conversation because
 it *is* the moved home; and "no resumable jsonl on disk (DB pointed at `<id>`)"
 happened because the jsonl moved with it. The DB pointer was always correct.
+(That verdict, and the id clear it drove, were removed in docs/007: the repair never
+judges or touches the stored id.)
 
 **Fix — three independent layers**, since any one alone still leaves a live home
 reachable:

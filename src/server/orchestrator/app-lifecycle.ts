@@ -1135,8 +1135,8 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         const opts = { repairLeakedSubtrees: !hasLiveAgent?.(session.id) };
         // An unmarked subtree may belong to another account; update only its existing flat token.
         const wrote = marked !== undefined
-          ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId, undefined, undefined, opts)
-          : repushAgentToken(credentialsDir, session.id, agentId, undefined, undefined, opts);
+          ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId, opts)
+          : repushAgentToken(credentialsDir, session.id, agentId, opts);
         if (wrote) healed++;
       } catch (err) {
         console.error(`[auth] A3 token re-push failed for session ${session.id}:`, err);

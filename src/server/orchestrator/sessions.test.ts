@@ -1673,6 +1673,26 @@ describe("session list rows", () => {
   });
 });
 
+describe("the conversation replay (docs/007)", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  it("stays stored until the CLI reports the conversation it started", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("fork");
+    mgr.setConversationReplay("fork", "User: the parent's transcript");
+
+    // Reading it for a spawn that then fails leaves it for the next spawn.
+    expect(mgr.get("fork")?.conversationReplay).toBe("User: the parent's transcript");
+    expect(mgr.get("fork")?.conversationReplay).toBe("User: the parent's transcript");
+
+    mgr.setAgentSessionId("fork", "cli-reported-id");
+    expect(mgr.get("fork")?.agentSessionId).toBe("cli-reported-id");
+    expect(mgr.get("fork")?.conversationReplay).toBeUndefined();
+  });
+});
+
 describe("onDetailsChanged", () => {
   let dbManager: DatabaseManager;
   beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });

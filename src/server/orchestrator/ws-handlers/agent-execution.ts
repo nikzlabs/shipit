@@ -608,7 +608,7 @@ async function composeAndRunAgentTurn(
       ),
     listenerDeps,
     buildRunParams: async (sessionId, id, p, turnRoute) => {
-      // Env preparation can replace agentSessionId; read it again.
+      // At spawn: the CLI may have reported its conversation since this connection read it.
       const session = ctx.sessionManager.get(sessionId);
       return buildAgentRunParams({
         deps: {
@@ -642,8 +642,6 @@ async function composeAndRunAgentTurn(
           credentialStore: ctx.credentialStore,
           sessionManager: ctx.sessionManager,
           providerAccountManager: ctx.providerAccountManager,
-          chatHistoryManager: ctx.chatHistoryManager,
-          sseBroadcast: ctx.sseBroadcast,
           ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
         },
       });

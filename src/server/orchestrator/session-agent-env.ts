@@ -5,7 +5,6 @@ import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js
 import path from "node:path";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
-import type { ChatHistoryManager } from "./chat-history.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { AgentId, SessionInfo } from "../shared/types.js";
@@ -37,7 +36,6 @@ import {
   linkAgentHomeToCredentials,
 } from "./local-agent-credentials.js";
 import { provisionSessionSshFromGrant } from "./ssh-provision.js";
-import { clearConversationThread } from "./services/session-status.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { agentHome, codexHome } from "../shared/agent-home.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
@@ -60,7 +58,6 @@ import {
   nativeServiceForHarness,
 } from "../shared/catalogue/index.js";
 import { CREDENTIAL_ROUTE_ENV_PREFIX } from "../shared/types/domain-types/credential-route.js";
-import { armConversationReplay, replaySpillDirs } from "./services/replay.js";
 import { getErrorMessage } from "./validation.js";
 
 export const MCP_OAUTH_REFRESH_TIMEOUT_MS = 8_000;
@@ -108,9 +105,6 @@ export interface SessionAgentEnvDeps {
   sessionManager: SessionManager;
   providerAccountManager?: ProviderAccountManager;
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
-  chatHistoryManager?: Pick<ChatHistoryManager, "load" | "replaceInProgress" | "append">;
-  /** Optional: without it a discarded conversation still marks the card stale, unannounced. */
-  sseBroadcast?: (event: string, data: unknown) => void;
 }
 
 type PrepareAgentEnvOpts = NonNullable<Parameters<
@@ -122,8 +116,8 @@ type PrepareAgentEnvOpts = NonNullable<Parameters<
  *
  * Both wiring sites — `runner-registry-factory.ts` for dispatched turns and
  * `ws-handlers/agent-execution.ts` for interactive ones — rebuilt this object, and they
- * drifted: `ownUserText` was added to one and silently dropped by the other, so the fix
- * reached only half the turns. Add per-turn options here, not at a call site.
+ * drifted: an option added to one was silently dropped by the other, so the fix reached
+ * only half the turns. Add per-turn options here, not at a call site.
  */
 export function agentEnvTurnArgs(envOpts: PrepareAgentEnvOpts | undefined): {
   reusingResidentAgent?: boolean;
@@ -131,7 +125,6 @@ export function agentEnvTurnArgs(envOpts: PrepareAgentEnvOpts | undefined): {
   residentRoute?: { kind: ProviderRouteKind; id: string };
   previousRouteId?: string;
   requireResidentRoute?: boolean;
-  ownUserText?: string;
 } {
   return {
     ...(envOpts?.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
@@ -139,33 +132,7 @@ export function agentEnvTurnArgs(envOpts: PrepareAgentEnvOpts | undefined): {
     ...(envOpts?.residentRoute ? { residentRoute: envOpts.residentRoute } : {}),
     ...(envOpts?.previousRouteId ? { previousRouteId: envOpts.previousRouteId } : {}),
     ...(envOpts?.requireResidentRoute ? { requireResidentRoute: true } : {}),
-    ...(envOpts?.ownUserText !== undefined ? { ownUserText: envOpts.ownUserText } : {}),
   };
-}
-
-// Run-parameter construction consumes this replay in the same turn; a retry re-arms it.
-function armReplayForClearedThread(
-  deps: SessionAgentEnvDeps,
-  sessionId: string,
-  opts: { ownUserText?: string; workspaceDir?: string },
-): void {
-  try {
-    // Only reached from the container path, where scratch is mounted at /persist.
-    const spill = opts.workspaceDir
-      ? { spill: replaySpillDirs(path.dirname(opts.workspaceDir), { containerized: true }) }
-      : {};
-    // No `requireReply` here: an earlier unanswered user message is real history, and
-    // dropping this turn's own row is what keeps the agent from reading it twice.
-    if (!armConversationReplay(deps, sessionId, {
-      ...(opts.ownUserText !== undefined ? { dropTrailingUserText: opts.ownUserText } : {}),
-      ...spill,
-    })) return;
-    console.log(
-      `[credentials] armed visible-history replay for ${sessionId} — the new agent conversation continues the transcript instead of starting empty`,
-    );
-  } catch (err) {
-    console.warn("[credentials] failed to arm conversation replay:", getErrorMessage(err));
-  }
 }
 
 // Worker pushes replace the tracked set, so include Compose and account values together.
@@ -238,8 +205,6 @@ export function refreshAgentEnvForAllSessions(
 
 export interface PrepareSessionAgentEnvironmentResult {
   turnRoute?: ProviderRoute;
-  // Undefined preserves the captured resume ID; null clears it; a string replaces it.
-  overrideAgentSessionId?: string | null;
 }
 
 function selectTurnRoute(
@@ -318,11 +283,6 @@ export async function prepareSessionAgentEnvironment(
     requireResidentRoute?: boolean;
     // Subtree repair removes files a live CLI can reread; defer repair until a fresh spawn.
     reusingResidentAgent?: boolean;
-    /**
-     * The message this turn is about to submit. Its row is already in chat history, so a
-     * replay armed here would end with the text that immediately follows it as the prompt.
-     */
-    ownUserText?: string;
   },
 ): Promise<PrepareSessionAgentEnvironmentResult> {
   const { sessionId, agentId, deps } = args;
@@ -519,43 +479,15 @@ export async function prepareSessionAgentEnvironment(
     );
   }
 
-  let overrideAgentSessionId: string | null | undefined;
   // Warm-ups have no route and must not copy the flat token over an account's subtree.
   if (isTurn && runner instanceof ContainerSessionRunner) {
     try {
-      // Update both the row and the caller's already-captured resume ID.
-      const onRecover = (recoveredOrClear: string | null): void => {
-        const current = deps.sessionManager.get(sessionId)?.agentSessionId;
-        if (recoveredOrClear === null) {
-          overrideAgentSessionId = null;
-          if (current) {
-            console.log(`[credentials] clearing agent_session_id for ${sessionId} (was ${current}; no resumable conversation found on disk)`);
-            clearConversationThread(deps, sessionId);
-            armReplayForClearedThread(deps, sessionId, {
-              ...(args.ownUserText !== undefined ? { ownUserText: args.ownUserText } : {}),
-              ...(session.workspaceDir ? { workspaceDir: session.workspaceDir } : {}),
-            });
-          }
-          return;
-        }
-        overrideAgentSessionId = recoveredOrClear;
-        if (current === recoveredOrClear) return;
-        const wasNote = current ? ` (was ${current})` : "";
-        console.log(`[credentials] recovered agent_session_id for ${sessionId}: ${recoveredOrClear}${wasNote}`);
-        deps.sessionManager.setAgentSessionId(sessionId, recoveredOrClear);
-      };
-      const currentAgentSessionId = session.agentSessionId ?? null;
+      // The CLI owns its conversations: nothing here reads them or touches the stored resume id.
       const syncOpts = { repairLeakedSubtrees: !args.reusingResidentAgent };
       if (selectedRoute?.kind === "account") {
-        syncProviderAccountTokenIn(
-          deps.credentialsDir, sessionId, agentId, selectedRoute.id,
-          onRecover, currentAgentSessionId, syncOpts,
-        );
+        syncProviderAccountTokenIn(deps.credentialsDir, sessionId, agentId, selectedRoute.id, syncOpts);
       } else if (selectedRoute?.id !== "claude-env-oauth") {
-        syncAgentTokenIn(
-          deps.credentialsDir, sessionId, agentId,
-          onRecover, currentAgentSessionId, syncOpts,
-        );
+        syncAgentTokenIn(deps.credentialsDir, sessionId, agentId, syncOpts);
       }
     } catch (err) {
       console.warn("[credentials] token sync-in failed:", getErrorMessage(err));
@@ -596,10 +528,7 @@ export async function prepareSessionAgentEnvironment(
     );
   }
 
-  return {
-    ...(selectedRoute ? { turnRoute: selectedRoute } : {}),
-    ...(overrideAgentSessionId !== undefined ? { overrideAgentSessionId } : {}),
-  };
+  return selectedRoute ? { turnRoute: selectedRoute } : {};
 }
 
 // After a 401, bypass expiry ordering: a later expiry does not prove a token is still valid.

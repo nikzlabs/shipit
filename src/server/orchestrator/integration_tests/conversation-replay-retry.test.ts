@@ -22,13 +22,11 @@ import {
 } from "./test-helpers.js";
 
 /**
- * The conversation replay belongs to the agent that runs, not to the attempt that happened
- * to build run parameters first. It is spent by the run parameters that carry it into a
- * system prompt, so an attempt that spends it and then fails without recording a
- * conversation of its own leaves the session with neither a thread nor a replay — and the
- * attempt that actually runs answers the user with an empty conversation.
+ * A replay only starts a conversation (a fork's first spawn), and it stays stored until the
+ * CLI reports the conversation it started. A stored id is always resumed and never cleared
+ * or replaced by ShipIt, including when the CLI says it cannot find it.
  */
-describe("Integration: a retried turn keeps its transcript (docs/007)", () => {
+describe("Integration: the replay and the stored conversation id (docs/007)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
@@ -95,7 +93,7 @@ describe("Integration: a retried turn keeps its transcript (docs/007)", () => {
     return first;
   };
 
-  /** What `armConversationReplay` leaves behind when the thread is gone. */
+  /** What a fork leaves on its new session: no thread yet, and the transcript to start from. */
   const armReplay = (sessionId: string): void => {
     sessionManager.clearAgentSessionId(sessionId);
     sessionManager.setConversationReplay(
@@ -104,12 +102,11 @@ describe("Integration: a retried turn keeps its transcript (docs/007)", () => {
     );
   };
 
-  it("re-arms the transcript for the attempt that runs after a quota refusal", async () => {
+  it("keeps the transcript for the attempt that runs after a quota refusal", async () => {
     const client = await TestClient.connect(port);
     client.send({ type: "send_message", text: "Add the billing routes" });
     const first = await runFirstTurn(client.sessionId);
 
-    // The container was recreated, so there is no thread to resume.
     armReplay(client.sessionId);
 
     client.send({ type: "send_message", text: "Now do the same for the webhook route" });
@@ -117,7 +114,7 @@ describe("Integration: a retried turn keeps its transcript (docs/007)", () => {
     expect(attempt.lastSystemPrompt).toContain(TURN_ONE_TEXT);
 
     // The provider refuses at request time: an adapter error, so this attempt records no
-    // conversation of its own and the replay it spent is not recoverable from anywhere.
+    // conversation of its own and the replay must still be there for the retry.
     attempt.emit("error", new Error(QUOTA_ERROR));
 
     const retry = await waitForClaude(() => lastClaude, attempt);
@@ -129,7 +126,7 @@ describe("Integration: a retried turn keeps its transcript (docs/007)", () => {
     client.close();
   }, 30_000);
 
-  it("re-arms the transcript when the CLI reports its conversation gone", async () => {
+  it("keeps the stored id, ends the turn and starts no new conversation when the CLI cannot resume", async () => {
     const client = await TestClient.connect(port);
     client.send({ type: "send_message", text: "Add the billing routes" });
     const first = await runFirstTurn(client.sessionId);
@@ -138,17 +135,92 @@ describe("Integration: a retried turn keeps its transcript (docs/007)", () => {
     const attempt = await waitForClaude(() => lastClaude, first);
     expect(attempt.lastSessionId).toBe("turn-one");
 
-    // The CLI cannot find the conversation the resume id names. ShipIt clears the pointer
-    // and re-dispatches on a fresh process, which has no history unless one is rebuilt.
     attempt.emit("log", "stderr", "No conversation found with session ID: turn-one");
     attempt.emit("event", { type: "system", subtype: "init", session_id: "doomed", tools: [] });
+    attempt.emit("done", 1);
+    await settled(client.sessionId);
 
-    const retry = await waitForClaude(() => lastClaude, attempt);
-    expect(retry.lastSessionId).toBeUndefined();
-    expect(retry.lastSystemPrompt).toContain(TURN_ONE_TEXT);
+    // Not killed: the CLI exits by itself, and a kill can drop the `done` that ends the turn.
+    expect(attempt.killed).toBe(false);
+    expect(lastClaude).toBe(attempt);
+    const session = sessionManager.get(client.sessionId);
+    expect(session?.agentSessionId).toBe("turn-one");
+    expect(session?.conversationReplay).toBeUndefined();
+    const errors = chatHistoryManager.load(client.sessionId).filter((m) => m.isError);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.text).toContain("fork the session");
 
-    retry.initSession("turn-two");
-    retry.finish("turn-two");
+    // The next turn resumes the same conversation again, with nothing replayed.
+    client.send({ type: "send_message", text: "Try again" });
+    const next = await waitForClaude(() => lastClaude, attempt);
+    expect(next.lastSessionId).toBe("turn-one");
+    expect(next.lastSystemPrompt ?? "").not.toContain(TURN_ONE_TEXT);
+    next.initSession("turn-one");
+    next.finish("turn-one");
+    client.close();
+  }, 30_000);
+
+  it("keeps the transcript for the next turn when a spawn fails before the CLI reports a conversation", async () => {
+    const client = await TestClient.connect(port);
+    client.send({ type: "send_message", text: "Add the billing routes" });
+    const first = await runFirstTurn(client.sessionId);
+
+    armReplay(client.sessionId);
+
+    client.send({ type: "send_message", text: "Now do the same for the webhook route" });
+    const failed = await waitForClaude(() => lastClaude, first);
+    expect(failed.lastSystemPrompt).toContain(TURN_ONE_TEXT);
+    // What the worker's 413 looked like: the spawn request is refused and the turn ends.
+    failed.emit("error", new Error("Payload Too Large"));
+    await settled(client.sessionId);
+    expect(sessionManager.get(client.sessionId)?.conversationReplay).toContain(TURN_ONE_TEXT);
+
+    client.send({ type: "send_message", text: "Please try once more" });
+    const next = await waitForClaude(() => lastClaude, failed);
+    expect(next.lastSessionId).toBeUndefined();
+    expect(next.lastSystemPrompt).toContain(TURN_ONE_TEXT);
+    next.initSession("turn-two");
+    next.finish("turn-two");
+    await waitFor(
+      () => sessionManager.get(client.sessionId)?.conversationReplay === undefined,
+      "the reported conversation retired the replay",
+    );
+    client.close();
+  }, 30_000);
+
+  it("keeps the transcript when the CLI itself reports the first attempt failed", async () => {
+    const client = await TestClient.connect(port);
+    client.send({ type: "send_message", text: "Add the billing routes" });
+    const first = await runFirstTurn(client.sessionId);
+
+    armReplay(client.sessionId);
+
+    client.send({ type: "send_message", text: "Now do the same for the webhook route" });
+    const refused = await waitForClaude(() => lastClaude, first);
+    expect(refused.lastSystemPrompt).toContain(TURN_ONE_TEXT);
+    // The CLI started a conversation, then the API refused: its own error text and an error
+    // result, before the model said anything.
+    refused.initSession("refused-attempt");
+    refused.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "API Error: 500 Internal server error" }] },
+      is_api_error_message: true,
+      session_id: "refused-attempt",
+    });
+    refused.emit("event", { type: "result", subtype: "success", is_error: true, session_id: "refused-attempt" });
+    refused.emit("done", 1);
+    await settled(client.sessionId);
+
+    const session = sessionManager.get(client.sessionId);
+    expect(session?.agentSessionId).toBeUndefined();
+    expect(session?.conversationReplay).toContain(TURN_ONE_TEXT);
+
+    client.send({ type: "send_message", text: "Please try once more" });
+    const next = await waitForClaude(() => lastClaude, refused);
+    expect(next.lastSessionId).toBeUndefined();
+    expect(next.lastSystemPrompt).toContain(TURN_ONE_TEXT);
+    next.initSession("turn-two");
+    next.finish("turn-two");
     client.close();
   }, 30_000);
 

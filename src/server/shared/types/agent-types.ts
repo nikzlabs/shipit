@@ -238,6 +238,8 @@ export interface AgentAssistantEvent {
   parentToolUseId?: string;
   /** Full final text for the summary; do not append again after streamed deltas. */
   isStreamCompletion?: boolean;
+  /** Text the CLI or its adapter wrote itself (a refusal, a warning), not the model's answer. */
+  synthetic?: boolean;
 }
 
 export interface AgentToolResultEvent {

@@ -89,6 +89,10 @@ export interface AgentListenerDeps {
 
 export const CONTEXT_WINDOW_TOKENS = DEFAULT_CONTEXT_WINDOW_TOKENS;
 
+// Whitespace-tolerant because the trimmed chunks it is matched across lose a split space.
+const MISSING_CONVERSATION = /No\s*conversation\s*found\s*with\s*session\s*ID/i;
+const MISSING_CONVERSATION_WINDOW = 200;
+
 export interface WireListenersOpts {
   isNewSession: boolean;
   persistUserMessage: (sessionId: string) => void;
@@ -106,7 +110,8 @@ export interface WireListenersOpts {
   willRecoverAuth?: () => boolean;
   /** true means handled, including adopted turns healed without redispatch. */
   recoverAuth?: () => Promise<boolean>;
-  recoverMissingConversation?: (agentSessionId: string) => boolean;
+  /** The CLI could not resume the stored conversation and is exiting; the card is posted. */
+  onConversationNotFound?: () => void;
   /** true transfers terminal cleanup to the retry. */
   willRetryOnQuotaError?: (err: Error) => boolean;
   useStreaming?: boolean;
@@ -156,11 +161,16 @@ export function wireAgentListeners(
 
   let hasLoggedAgentStart = false;
 
-  // Init precedes resume validation; wait for output before replacing the stored ID.
+  // Init precedes resume validation, and a fork's replay is retired with the write: an id
+  // is stored once its conversation answered (output or a successful result). See the
+  // result handler for the one unanswered case.
   let pendingAgentSessionId: string | null = null;
   let agentSessionIdPersisted = false;
   let missingConversationDetected = false;
+  let conversationAnswered = false;
   let sawTurnResult = false;
+  // Pipe chunks can split the CLI's line.
+  let recentStderr = "";
 
   const adoptCliStartedTurn = (reason: string): void => {
     if (!runner) return;
@@ -219,30 +229,25 @@ export function wireAgentListeners(
 
   agent.on("log", (source: string, text: string) => {
     deps.broadcastLog(source as "stderr" | "stdout" | "server", text);
-    const missingConversation = source === "stderr"
-      ? /No conversation found with session ID:\s*([^\s]+)/i.exec(text)
-      : null;
-    if (missingConversation) {
-      if (!missingConversationDetected) {
-        missingConversationDetected = true;
-        pendingAgentSessionId = null;
-        const invalidId = missingConversation[1];
-        const recovering = opts.recoverMissingConversation?.(invalidId) ?? false;
-        if (!recovering) {
-          const message = "Couldn't resume the previous conversation. ShipIt could not start a fresh thread automatically; resend your message, or start a new session if the problem continues.";
-          const turnSessionId = opts.capturedSessionId;
-          if (runner && turnSessionId) {
-            emitChatCard(
-              runner,
-              { type: "error", message, sessionId: turnSessionId },
-              { role: "assistant", text: `Error: ${message}`, isError: true },
-              { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
-            );
-          } else {
-            emitToViewers({ type: "error", message });
-          }
-        }
+    if (source === "stderr") recentStderr = (recentStderr + text).slice(-MISSING_CONVERSATION_WINDOW);
+    // The stored id is kept and nothing is retried: only a fork starts a new conversation.
+    if (source === "stderr" && !missingConversationDetected && MISSING_CONVERSATION.test(recentStderr)) {
+      missingConversationDetected = true;
+      pendingAgentSessionId = null;
+      const message = "The agent could not resume this session's conversation. ShipIt kept it and did not "
+        + "start a new one. To continue in a new conversation, fork the session.";
+      const turnSessionId = opts.capturedSessionId;
+      if (runner && turnSessionId) {
+        emitChatCard(
+          runner,
+          { type: "error", message, sessionId: turnSessionId },
+          { role: "assistant", text: `Error: ${message}`, isError: true },
+          { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
+        );
+      } else {
+        emitToViewers({ type: "error", message });
       }
+      opts.onConversationNotFound?.();
     }
   });
 
@@ -594,7 +599,10 @@ export function wireAgentListeners(
         adoptCliStartedTurn("post-result assistant output");
       }
 
-      persistAgentSessionIdIfReady();
+      if (!event.synthetic) {
+        conversationAnswered = true;
+        persistAgentSessionIdIfReady();
+      }
 
       const text = (event.content ?? [])
         .filter((b): b is ClaudeContentBlockText => b.type === "text")
@@ -696,7 +704,12 @@ export function wireAgentListeners(
     if (event.type === "agent_result") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId) {
-        if (!missingConversationDetected) {
+        // An unanswered failure (a refusal, a Stop) may only name a session's first
+        // conversation: never replace a stored id, nor retire a fork's replay unread.
+        const firstConversation = !sessionAtTurnStart?.agentSessionId
+          && !sessionAtTurnStart?.conversationReplay;
+        const storable = event.status === "success" || conversationAnswered || firstConversation;
+        if (!missingConversationDetected && storable) {
           deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
           agentSessionIdPersisted = true;
         }
