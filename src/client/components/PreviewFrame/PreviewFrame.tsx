@@ -191,6 +191,14 @@ export function PreviewFrame({
    * overlay. A preview no service owns (Vite) has no name and is never this.
    */
   const waitingForService = !!activePort && !!targetServiceName && activeServiceState?.status !== "running";
+  /**
+   * Waiting on a status the server reported, now or earlier for this slot. With
+   * no row yet and no outage seen — a switch back to a session whose service
+   * list has not landed — the status is unknown, not down: hiding the retained
+   * iframe then, and reading the row's arrival as a recovery, made every such
+   * return a blank pane and a reload.
+   */
+  const serviceDown = waitingForService && (!!activeServiceState || !!activeSlot?.outage);
 
   usePreviewSlot({
     activeSlotKey,
@@ -477,23 +485,22 @@ export function PreviewFrame({
     }
   }, [refreshKey, activeSlotKey, activeSlotUrl, iframeRefs]);
 
-  // The ref holds the SLOT KEY that was waiting, never a bare boolean. A key
-  // carries the session, and a boolean cannot: switching from a waiting session
-
-  const waitingSlotRef = useRef<string | null>(null);
+  // The outage is marked on the SLOT, never as a bare boolean: a slot carries
+  // the session, so a switch that ends one session's wait cannot reload another
+  // session's iframe, and a slot rebuilt meanwhile starts unmarked.
   // eslint-disable-next-line no-restricted-syntax -- reacts to a service returning to `running` over WS
   useEffect(() => {
-    const waitingSlot = waitingSlotRef.current;
-    waitingSlotRef.current = waitingForService ? activeSlotKey : null;
-    if (
-      waitingSlot
-      && waitingSlot === activeSlotKey
-      && activeServiceState?.status === "running"
-      && createdSlotsRef.current.has(activeSlotKey)
-    ) {
-      setRefreshKey((k) => k + 1);
+    if (!activeSlotKey) return;
+    const slot = getSlot(activeSlotKey);
+    if (!slot) return;
+    if (serviceDown) {
+      if (!slot.outage) setSlot(activeSlotKey, { ...slot, outage: true });
+      return;
     }
-  }, [waitingForService, activeSlotKey, activeServiceState?.status, createdSlotsRef]);
+    if (waitingForService || !slot.outage) return;
+    setSlot(activeSlotKey, { ...slot, outage: false });
+    if (activeServiceState?.status === "running") setRefreshKey((k) => k + 1);
+  }, [waitingForService, serviceDown, activeSlotKey, activeServiceState?.status, getSlot, setSlot]);
 
   const lastPortLabel = useRef<string | null>(null);
 
@@ -555,7 +562,7 @@ export function PreviewFrame({
 
   // because they have the same two consequences: the slot is given
 
-  const hideIframe = (!isRunning && !showStarting) || !paneVisible || waitingForService;
+  const hideIframe = (!isRunning && !showStarting) || !paneVisible || serviceDown;
 
   // `iframeRefs` is a ref (stable) and `drainPendingReady` is only invoked, never
   // captured — the effect must fire on slot/visibility changes, not on either
