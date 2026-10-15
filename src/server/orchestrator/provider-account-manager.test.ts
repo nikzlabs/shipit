@@ -475,6 +475,19 @@ describe("ProviderAccountManager", () => {
       expect(mgr.cancelAccountAuth("anthropic", account.id).status).toBe("ready");
     });
 
+    it("endInterruptedSignIns leaves a row whose sign-in is still running", () => {
+      const { mgr, claude, codex, account } = setup();
+      const interrupted = mgr.create("anthropic", "Interrupted");
+      mgr.setAccountStatus("anthropic", interrupted.id, "authenticating");
+      mgr.startAccountAuth("anthropic", account.id);
+
+      mgr.endInterruptedSignIns(new Map([["anthropic-oauth", claude], ["openai-chatgpt", codex]]));
+
+      expect(mgr.get("anthropic", account.id)?.status).toBe("authenticating");
+      expect(mgr.get("anthropic", interrupted.id)?.status).toBe("unavailable");
+      expect(claude.cancelCalls).toBe(0);
+    });
+
     it("submitAccountCode delegates to the manager's submitCode", () => {
       const { mgr, claude, account } = setup();
       mgr.startAccountAuth("anthropic", account.id);
