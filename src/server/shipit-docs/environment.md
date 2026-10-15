@@ -871,9 +871,14 @@ inherits it, with these conditions:
 - **To find the GPU process itself** (for a CPU reading or a sampler), look in
   that browser's process tree for the process whose `/proc/<pid>/maps` has the
   renderer's library: `libd3d12.so` on the card, `libvk_swiftshader.so` on
-  SwiftShader. In Chromium 155 as Playwright starts it, that process is forked
-  from a zygote, so its command line has `--type=zygote` and not
-  `--type=gpu-process`.
+  SwiftShader. Do not look for `--type=gpu-process` on a command line. When
+  `GLIBC_TUNABLES` is in the browser's environment, also with an empty value,
+  each process that Chromium forks from a zygote keeps the zygote's command
+  line, `--type=zygote`: the GPU process, and the renderers too. So with
+  ShipIt's value in place, no process shows `--type=gpu-process`. The same
+  Chromium with no `GLIBC_TUNABLES` shows the types. The probable cause: the
+  C library moves that variable's text away from the command line in memory,
+  and Chromium then does not write the type over the command line.
 
 Without the variable, these uploads were slow on that host, each of 36 MB when
 no size is given: the texture array in one call (11.9 s) and in one call for

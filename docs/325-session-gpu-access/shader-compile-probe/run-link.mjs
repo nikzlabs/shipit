@@ -38,7 +38,7 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 // CPU seconds of the browser's GPU process, from /proc.
 const tck = 100;
-// Chromium 155 as Playwright starts it forks the GPU process from a zygote, which hides its type: find it by the renderer's libraries.
+// With GLIBC_TUNABLES set, the GPU process keeps its zygote's command line, which hides its type: find it by the renderer's libraries.
 const RENDERER_LIBS = /libvk_swiftshader|libEGL_mesa|libGLX_mesa|libgallium|_dri\.so|libd3d12/;
 const gpuPids = () => {
   const out = [];

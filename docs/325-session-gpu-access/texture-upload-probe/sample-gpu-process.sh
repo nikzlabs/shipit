@@ -11,7 +11,7 @@ out=$1; max=$2; shift 3
 : "${GDB_ROOT:?set GDB_ROOT}"
 mkdir -p "$out"; rm -f "$out"/s*.txt
 
-# Chromium 155 as Playwright starts it forks the GPU process from a zygote, which hides its type: find it by the renderer's libraries.
+# With GLIBC_TUNABLES set, the GPU process keeps its zygote's command line, which hides its type: find it by the renderer's libraries.
 gpu_processes() {
   for p in $(pgrep -f '[c]hrome'); do
     if tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q -- '--type=gpu-process' \
