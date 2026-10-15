@@ -38,11 +38,17 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 // CPU seconds of the browser's GPU process, from /proc.
 const tck = 100;
+// Chromium 155 as Playwright starts it forks the GPU process from a zygote, which hides its type: find it by the renderer's libraries.
+const RENDERER_LIBS = /libvk_swiftshader|libEGL_mesa|libGLX_mesa|libgallium|_dri\.so|libd3d12/;
 const gpuPids = () => {
   const out = [];
   for (const d of fs.readdirSync("/proc")) {
     if (!/^\d+$/.test(d)) continue;
-    try { if (fs.readFileSync(`/proc/${d}/cmdline`, "utf8").includes("--type=gpu-process")) out.push(Number(d)); } catch { /* the process ended */ }
+    try {
+      const cmdline = fs.readFileSync(`/proc/${d}/cmdline`, "utf8");
+      if (cmdline.includes("--type=gpu-process")
+        || (cmdline.includes("chrome") && RENDERER_LIBS.test(fs.readFileSync(`/proc/${d}/maps`, "utf8")))) out.push(Number(d));
+    } catch { /* the process ended */ }
   }
   return out;
 };
