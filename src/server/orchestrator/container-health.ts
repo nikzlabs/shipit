@@ -111,8 +111,9 @@ export async function startHealthMonitor(
         const action = event.Action;
 
         if (event.Type === "network") {
-          // `connect` is the heal's own reattachment; only a loss needs repairing.
-          if (action !== "disconnect" && action !== "destroy") return;
+          // `connect` too: a recreated network has to be rejoined, and the heal is membership-gated,
+          // so our own reattachment settles rather than looping (docs/332).
+          if (action !== "connect" && action !== "disconnect" && action !== "destroy") return;
           const networkName = attrs.name ?? "";
           if (!networkName.startsWith(SESSION_NETWORK_PREFIX)) return;
           deps.emitter.emit("session_network_changed", networkName);
@@ -124,10 +125,13 @@ export async function startHealthMonitor(
           deps.onLabelledContainerStarted?.();
         }
         const containerId = event.Actor?.ID ?? "";
+        // A restart reuses the container ID, so an unclaimed OOM must not outlive the run it
+        // belongs to and be charged to the next exit of the same container.
+        if (action === "start" && containerId) state.recentOoms.delete(containerId);
         const project = attrs[DOCKER_COMPOSE_PROJECT_LABEL];
         // A project container appearing or going away changes what the stack's status should read.
         if (project && (action === "start" || action === "destroy")) {
-          deps.emitter.emit("compose_project_changed", project, { containerId, action });
+          deps.emitter.emit("compose_project_changed", project);
         }
         // Compose down removes a service without its egress sidecars, which are not in its project.
         if (action === "destroy") {
@@ -180,6 +184,12 @@ export async function startHealthMonitor(
               pruneRecentOoms(state);
               state.recentOoms.set(containerId, Date.now());
             }
+            // Kept as an operator signal: the kernel may have killed a child while PID 1 survived,
+            // in which case no `die` follows and the service correctly stays running.
+            console.warn(
+              `[container] Session ${parentSessionId} child container ${containerId.slice(0, 12)} `
+              + "reported an OOM kill",
+            );
             return;
           }
           const exitCode = Number(attrs.exitCode ?? 1);

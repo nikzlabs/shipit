@@ -232,7 +232,7 @@ export interface SessionContainerManagerEvents {
     egressSidecar: boolean;
   }];
   /** A Compose project's container appeared or went away; its status needs reconciling (docs/332). */
-  compose_project_changed: [project: string, info: { containerId: string; action: string }];
+  compose_project_changed: [project: string];
   /** A `shipit-session-*` network lost an endpoint or was removed. */
   session_network_changed: [networkName: string];
   health_monitor_resumed: [info: { gapMs: number }];

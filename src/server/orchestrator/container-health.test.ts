@@ -577,6 +577,18 @@ describe("container-health: compose service vs. ShipIt's own session children", 
     ]);
   });
 
+  // A restart reuses the container ID, so an OOM nobody claimed must not outlive its own run.
+  it("does not charge a restarted container's exit with the OOM of its previous run", () => {
+    const labels = { [PARENT]: "sess-1", "shipit-service-name": "dev" };
+    die(labels, "oom");
+    die(labels, "start");
+    die(labels);
+
+    expect(serviceExited.mock.calls).toEqual([
+      ["sess-1", { serviceName: "dev", containerId: "c1", exitCode: 137, oom: false }],
+    ]);
+  });
+
   it("does not let an earlier container's OOM make a later service exit read as one", () => {
     const labels = { [PARENT]: "sess-1", "shipit-service-name": "dev" };
     die(labels, "oom");

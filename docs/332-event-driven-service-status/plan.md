@@ -37,12 +37,24 @@ A new process-lived `service-event-router.ts` holds the `serviceManagers` map an
 
 The router owns the 5-minute backstop: one `GET /containers/json?all=1&filters=label=com.docker.compose.project` (plus the stack filter, so two ShipIt stacks on one host do not cross-talk), sliced per project and handed to each manager. One timer for the process, cost independent of the session count.
 
+**Refreshes are coalesced per session.** Events arrive in bursts — a `compose up` of a ten-service stack emits ten `start` events — and each refresh is a full listing of that project. So one runs at a time per session with at most one more queued behind it; the queued one reflects every event that arrived while it waited, which is all a reconcile needs. A listing handed down from the backstop is never coalesced away, since that would discard work already done.
+
+Two failure modes of that shared listing are handled explicitly, both found in review. A listing that **fails** must not simply be logged and dropped: each session has to reach its own Docker-unreachable grace, or a stack that died while nobody was watching keeps publishing `running` for ever — so every session is asked to list for itself, and that failure is what starts its clock. A listing that **never settles** would latch the in-flight flag and silently disable every later backstop *and* stream-resume resync, so it is bounded by a timeout.
+
+Routing by project label covers start/destroy and the backstop. Exits are routed by session, because `service_exited` is derived from the `shipit-parent-session` label upstream in `container-health.ts`; the generated override sets both labels on every service, plugin services included.
+
 ## Two entry points on the manager, because there are two different jobs
 
-- **`applyServiceExit(serviceName, containerId, exitCode, oom)`** — the crash path. The exit code and the OOM flag come from the event, which is race-free: a container with a restart policy can be replaced before any listing could observe its exit. It feeds the same `onLeftRunning` / `onExitedCleanly` / `onExitedWithError` callbacks the reconcile path uses, so install-time retry, OOM retry and post-gate retry are unchanged.
-- **`refreshServices()`** — the reconcile path. One project listing → status transitions, container addresses, the missing-container rule, the Docker-unreachable rule, the install-gate check.
+- **`applyServiceExit(serviceName, { exitCode, oomKilled })`** — the crash path. Both values come from the event, which is the only source for them: a listing carries neither, and a container with a restart policy is replaced before any listing could observe its exit. It feeds the same `onLeftRunning` / `onExitedCleanly` / `onExitedWithError` callbacks the reconcile path uses, so install-time retry, OOM retry and post-gate retry are unchanged.
+- **`refreshServices(listed?)`** — the reconcile path. A project listing → status transitions, container addresses, the missing-container rule, the Docker-unreachable rule, the install-gate check.
 
-Both already exist inside today's `pollOnce`; the exit branch is factored out so an event can reach it directly.
+Both already exist inside today's `pollOnce`; the exit branch is factored out so an event can reach it directly. **An exit is always followed by a refresh**, which is what re-reads the service's real state: the restart policy may already have replaced the container, in which case the refresh reports `restarting` or the new address, and its verdict supersedes what the exit scheduled — correctly, because the service is up again.
+
+### The ordering hazard this creates, and the generation counter
+
+A listing describes the moment it was taken, and resolving it is asynchronous. So a refresh that *started before* an exit can finish after it — and applying it then republishes a dead container as `running` and, through `onRunning` → `clearRetryState`, **cancels the crash recovery the exit just scheduled**. Reviewed and reproduced against the real `ServiceRetryManager`: zero retries, status `running`, no timers left.
+
+`ServicePoller` therefore carries a generation counter, bumped by `applyServiceExit` and by `stop()`. `pollOnce` captures it on entry, resolves addresses and exits **without publishing anything**, and discards the whole listing if the generation moved. An earlier guard that instead compared the exiting container's id against the last one seen running was removed: it dropped a *real* exit whenever a replacement container died before its own listing landed, which is the worse failure.
 
 ## One listing, no per-container inspect
 
@@ -53,13 +65,24 @@ Both already exist inside today's `pollOnce`; the exit branch is factored out so
 
 `inspect` survives for the two things a listing cannot answer, and only then: the exit code / `OOMKilled` of an exited container whose exit no event reported (a resync after a missed event), and the re-read after a repair `network connect` for a running container that shows no session network.
 
+A resolved exit is **not** cached per container, though it looks cacheable. A restart reuses the container id, so a remembered exit is charged to the wrong run: a container that exited 0, started again and was then OOM-killed would reconcile as a clean stop and could cancel a scheduled OOM retry. The same reuse is why an unclaimed `oom` attribution is dropped on that container's next `start`.
+
 ## Pending conditions get a one-shot timer, not a cadence
 
 Three of the poller's rules need a *second* observation after a delay: the missing-container grace (30 s), the Docker-unreachable grace (30 s), and the install-gate watchdog. With a cadence they came for free; with events they would never fire, because no further event arrives for a container that is simply absent.
 
 So a refresh that leaves a pending condition arms **one** follow-up at that condition's deadline, and a refresh that leaves none arms nothing. An idle, healthy session therefore holds no timer, which is req 1; a session mid-install or mid-outage holds one, which is not idle.
 
-The log follower is the fourth such case: today every `running` poll calls `ensureLogFollower`, to catch a follower that exited while its container kept running. It re-arms itself from its own `close` handler instead, guarded on the service still being `running`, so the 5-minute backstop is not the recovery path for missing logs.
+Three details are load-bearing, each a defect found in review:
+
+- **A deadline already in the past must not be re-armed.** Once the Docker-unreachable sweep has run there is nothing more that clock can decide, but every further failed listing still scheduled its past deadline — clamped to the 250 ms floor, that measured **four listings per second per session** for as long as the outage lasted. The clock stops driving follow-ups once swept; recovery arrives with the next event or the backstop.
+- **A requested follow-up outlives the arming that folded it in.** The install-gate watchdog requests one; an unrelated service exiting then re-armed with no pending clocks and cleared the gate's timer. The request is now cleared when it fires, not by a later arm.
+- **A condition that cannot be resolved is not pending.** The gate watchdog asks for a look only while it could still reopen the gate — a *failed* install holds its services for ever by design, so asking there refreshed an idle session every 60 seconds for ever.
+- **A clock's "already swept" flag resets with the clock itself.** Leaving it set meant the *first* outage disarmed every later one: a second outage would start its 30-second clock and then never arm the follow-up that fires the sweep.
+
+The network heal was a fourth case and is now simply gone from the refresh: it ran `ensureConnectedToSessionNetwork` for every manager on every tick, so a "shared" backstop still cost one network inspect per session. Docker `network` events drive it instead — including `connect`, so a *recreated* network is rejoined rather than attempted once and abandoned. The heal is membership-gated, so our own reattachment settles rather than looping.
+
+The log follower is the last such case: every `running` poll called `ensureLogFollower`, to catch a follower that exited while its container kept running. It re-arms itself from its own `close` handler instead (which also follows a spawn `error` — verified, so a failed spawn is covered), guarded on the service still being `running`. That re-arm is **bounded**: a follower that cannot attach at all would otherwise be a permanent 2-second timer on an idle session, which is the very thing req 1 forbids. Any byte of output proves attachment and restores the budget.
 
 ## Out of scope
 

@@ -25,6 +25,20 @@ export interface ServiceEventTarget {
  */
 export const BACKSTOP_INTERVAL_MS = 5 * 60_000;
 
+/** A listing that never settles would latch `backstopInFlight` and stop every later reconcile. */
+export const BACKSTOP_LISTING_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`the listing did not answer within ${ms}ms`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([work, limit]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 export interface ServiceEventRouterDeps {
   docker: Docker;
   serviceManagers: Map<string, ServiceEventTarget>;
@@ -50,6 +64,8 @@ export class ServiceEventRouter {
   private backstopTimer: ReturnType<typeof setInterval> | null = null;
   private started = false;
   private backstopInFlight = false;
+  private readonly refreshInFlight = new Set<string>();
+  private readonly refreshQueued = new Set<string>();
 
   private readonly onServiceExited = (
     sessionId: string,
@@ -58,10 +74,12 @@ export class ServiceEventRouter {
     const mgr = this.deps.serviceManagers.get(sessionId);
     if (!mgr) return;
     mgr.applyServiceExit(info.serviceName, {
-      containerId: info.containerId,
       exitCode: info.exitCode,
       oomKilled: info.oom,
     });
+    // The exit is authoritative for that container; this settles what the SERVICE is now — the
+    // restart policy may already have replaced it (`restarting`, then running at a new address).
+    void this.refresh(sessionId, `${info.serviceName} exited`);
   };
 
   private readonly onProjectChanged = (project: string): void => {
@@ -77,6 +95,9 @@ export class ServiceEventRouter {
     void mgr.healNetwork().catch((err: unknown) => {
       console.warn(`[service-events] network heal for ${sessionId} failed:`, message(err));
     });
+    // The heal covers the AGENT's attachment. A service container that lost the network needs its
+    // address re-resolved and reattached, which is the refresh's `reattach` path.
+    void this.refresh(sessionId, `network ${networkName} changed`);
   };
 
   // Events during the gap are gone, so the whole stack is reconciled rather than trusted.
@@ -127,17 +148,37 @@ export class ServiceEventRouter {
     return undefined;
   }
 
+  /**
+   * Events arrive in bursts — a `compose up` of a ten-service stack emits ten `start` events — and
+   * each refresh is a full listing of the project. So one runs at a time per session, with at most
+   * one more queued behind it: the queued one reflects every event that arrived while it waited,
+   * which is all a reconcile needs.
+   */
   private async refresh(
     sessionId: string,
     why: string,
     listed?: PollerContainer[],
   ): Promise<void> {
+    // A handed slice is a listing already taken; coalescing it would discard that work.
+    if (!listed) {
+      if (this.refreshQueued.has(sessionId)) return;
+      if (this.refreshInFlight.has(sessionId)) {
+        this.refreshQueued.add(sessionId);
+        return;
+      }
+    }
     const mgr = this.deps.serviceManagers.get(sessionId);
     if (!mgr) return;
+    this.refreshInFlight.add(sessionId);
     try {
       await mgr.refreshServices(listed);
     } catch (err) {
       console.warn(`[service-events] refresh of ${sessionId} after ${why} failed:`, message(err));
+    } finally {
+      this.refreshInFlight.delete(sessionId);
+    }
+    if (this.refreshQueued.delete(sessionId)) {
+      await this.refresh(sessionId, `${why} (coalesced)`);
     }
   }
 
@@ -154,9 +195,18 @@ export class ServiceEventRouter {
       if (sessionIds.length === 0) return;
       let byProject: Map<string, PollerContainer[]>;
       try {
-        byProject = await listAllComposeProjects(this.deps.docker, this.stackFilters);
+        byProject = await withTimeout(
+          listAllComposeProjects(this.deps.docker, this.stackFilters),
+          BACKSTOP_LISTING_TIMEOUT_MS,
+        );
       } catch (err) {
+        // Each session must now reach its OWN docker-unreachable grace, or a stack that died while
+        // nobody watched keeps publishing `running` for ever. A refresh with no slice lists for
+        // itself, and its failure is what starts that clock.
         console.warn(`[service-events] ${why}: listing Compose projects failed:`, message(err));
+        for (const sessionId of sessionIds) {
+          await this.refresh(sessionId, `${why} (shared listing failed)`);
+        }
         return;
       }
       for (const sessionId of sessionIds) {

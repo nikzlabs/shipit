@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import type Docker from "dockerode";
 
-import { ServiceEventRouter, type ServiceEventTarget } from "./service-event-router.js";
+import {
+  ServiceEventRouter,
+  BACKSTOP_LISTING_TIMEOUT_MS,
+  type ServiceEventTarget,
+} from "./service-event-router.js";
 import type { SessionContainerManagerEvents } from "./session-container.js";
 import { composeProjectName } from "./compose-stack-reaper.js";
 import type { PollerContainer } from "./service-poller.js";
@@ -49,14 +53,26 @@ describe("ServiceEventRouter", () => {
     router.start();
   });
 
+  it("settles what the service is now after an exit, since a restart policy may have replaced it", async () => {
+    emitter.emit("service_exited", SESSION, {
+      serviceName: "web", containerId: "c1", exitCode: 1, oom: false,
+    });
+
+    await vi.waitFor(() => expect(mgr.refreshServices).toHaveBeenCalled());
+  });
+
+  it("re-resolves service addresses on a network event, not only the agent's attachment", async () => {
+    emitter.emit("session_network_changed", `shipit-session-${SESSION}`);
+
+    await vi.waitFor(() => expect(mgr.refreshServices).toHaveBeenCalled());
+  });
+
   it("routes a service exit to the owning session, with the event's exit code and OOM flag", () => {
     emitter.emit("service_exited", SESSION, {
       serviceName: "web", containerId: "c1", exitCode: 137, oom: true,
     });
 
-    expect(mgr.applyServiceExit).toHaveBeenCalledWith("web", {
-      containerId: "c1", exitCode: 137, oomKilled: true,
-    });
+    expect(mgr.applyServiceExit).toHaveBeenCalledWith("web", { exitCode: 137, oomKilled: true });
   });
 
   it("ignores an exit for a session this process holds no stack for", () => {
@@ -68,16 +84,12 @@ describe("ServiceEventRouter", () => {
   });
 
   it("refreshes the session whose Compose project the changed container belongs to", async () => {
-    emitter.emit("compose_project_changed", composeProjectName(SESSION), {
-      containerId: "c1", action: "start",
-    });
+    emitter.emit("compose_project_changed", composeProjectName(SESSION));
     await vi.waitFor(() => expect(mgr.refreshServices).toHaveBeenCalled());
   });
 
   it("refreshes nothing for a project no live session owns", async () => {
-    emitter.emit("compose_project_changed", composeProjectName(OTHER), {
-      containerId: "c1", action: "start",
-    });
+    emitter.emit("compose_project_changed", composeProjectName(OTHER));
     await Promise.resolve();
     expect(mgr.refreshServices).not.toHaveBeenCalled();
   });
@@ -91,6 +103,35 @@ describe("ServiceEventRouter", () => {
     emitter.emit("session_network_changed", `shipit-session-${OTHER}`);
     await Promise.resolve();
     expect(mgr.healNetwork).not.toHaveBeenCalled();
+  });
+
+  // A `compose up` of a ten-service stack emits ten `start` events, and each refresh is a full
+  // listing of the project.
+  it("coalesces a burst of events into one refresh plus one follow-up, not one per event", async () => {
+    let release: (() => void) | undefined;
+    mgr.refreshServices.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+
+    for (let i = 0; i < 10; i++) {
+      emitter.emit("compose_project_changed", composeProjectName(SESSION));
+    }
+    await vi.waitFor(() => expect(mgr.refreshServices).toHaveBeenCalledTimes(1));
+
+    mgr.refreshServices.mockResolvedValue(undefined);
+    release?.();
+
+    await vi.waitFor(() => expect(mgr.refreshServices).toHaveBeenCalledTimes(2));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mgr.refreshServices).toHaveBeenCalledTimes(2);
+  });
+
+  it("never coalesces away a slice already listed for it, which would discard that work", async () => {
+    const second = target();
+    managers.set(OTHER, second);
+
+    await Promise.all([router.runBackstop("one"), router.runBackstop("two")]);
+    await router.runBackstop("three");
+
+    expect(mgr.refreshServices.mock.calls.every(([listed]) => Array.isArray(listed))).toBe(true);
   });
 
   // req 5: the cost of the backstop must not grow with the number of sessions.
@@ -123,12 +164,29 @@ describe("ServiceEventRouter", () => {
     expect(second.refreshServices).toHaveBeenCalledWith([]);
   });
 
-  it("reconciles nothing when the host-wide listing fails, rather than reporting an empty stack", async () => {
+  // Never an empty slice, which would read as "no containers" and walk a healthy stack to stopped.
+  it("lets each session list for itself when the shared listing fails, so outage clocks start", async () => {
     listContainers.mockRejectedValueOnce(new Error("docker unreachable"));
 
     await router.runBackstop("test");
 
-    expect(mgr.refreshServices).not.toHaveBeenCalled();
+    expect(mgr.refreshServices).toHaveBeenCalledTimes(1);
+    expect(mgr.refreshServices).toHaveBeenCalledWith(undefined);
+  });
+
+  it("does not latch on a listing that never answers, so later reconciles still run", async () => {
+    vi.useFakeTimers();
+    listContainers.mockImplementationOnce(() => new Promise(() => { /* never settles */ }));
+
+    const first = router.runBackstop("hung");
+    await vi.advanceTimersByTimeAsync(BACKSTOP_LISTING_TIMEOUT_MS + 1_000);
+    await first;
+
+    mgr.refreshServices.mockClear();
+    vi.useRealTimers();
+    await router.runBackstop("after the hang");
+
+    expect(mgr.refreshServices).toHaveBeenCalled();
   });
 
   it("resyncs the whole stack when the event stream reconnects, since events were lost", async () => {

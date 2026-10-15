@@ -159,6 +159,9 @@ export const GATE_WATCHDOG_SETTLE_MS = 60_000;
 // Long enough that a follower failing immediately cannot spin, short enough to keep logs flowing.
 export const LOG_FOLLOWER_REARM_MS = 2_000;
 
+// A follower that never attaches must not leave a timer running on an idle session.
+export const MAX_LOG_FOLLOWER_REARMS = 5;
+
 /** A timeout stops waiting without cancelling work; rejections still propagate. */
 async function settleOrTimeout(work: Promise<void>, ms: number): Promise<"settled" | "timeout"> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -294,6 +297,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private logBuffers = new Map<string, string>();
   private followerSince = new Map<string, string>();
   private followerRearmTimers = new Map<string, NodeJS.Timeout>();
+  private followerRearmAttempts = new Map<string, number>();
   private readonly logStore?: LogStore;
   private readonly gateWatchdogSettleMs: number;
   private _started = false;
@@ -520,12 +524,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       onExitedWithError: (name, exitCode, oomKilled) => {
         this.handleNonZeroExit(name, exitCode, oomKilled);
       },
-      afterPoll: async () => {
-        // A slow network heal must not delay the gate check.
+      // The network heal used to run here, on every tick. Docker `network` events drive it now
+      // (docs/332), so a healthy refresh costs no network inspect per session.
+      afterPoll: () => {
         this.checkInstallGateLiveness();
-        // A held gate is reopened by a watchdog that needs a second look; no event announces one.
-        if (this.gatedServices.size > 0) this.poller.requestFollowUp(this.gateWatchdogSettleMs);
-        await this.healSessionNetwork();
+        // Only a gate the watchdog could still reopen needs the second look. A FAILED install keeps
+        // its services held forever by design, and asking here would refresh that session for ever.
+        if (this.gateWatchdogCanAct()) this.poller.requestFollowUp(this.gateWatchdogSettleMs);
       },
     });
   }
@@ -540,10 +545,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   }
 
   /** A service container's exit, as the Docker event reported it (docs/332). */
-  applyServiceExit(
-    serviceName: string,
-    info: { containerId?: string; exitCode: number; oomKilled?: boolean },
-  ): void {
+  applyServiceExit(serviceName: string, info: { exitCode: number; oomKilled?: boolean }): void {
     if (this._disposed) return;
     this.poller.applyServiceExit(serviceName, info);
   }
@@ -1236,6 +1238,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     });
 
     const handleData = (chunk: Buffer) => {
+      this.followerRearmAttempts.delete(name);
       const text = chunk.toString();
       this.logStore?.append(this.sessionId, channel, text);
       this.bufferServiceLog(name, text);
@@ -1246,24 +1249,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
     proc.on("error", (err: Error) => {
       console.warn(`[compose:${this.sessionId}] log follower for ${name} failed to start:`, err.message);
-      if (this.logProcesses.get(name) === proc) this.logProcesses.delete(name);
+      // Leave the map entry for `close`, which follows a spawn failure and owns the re-arm.
     });
 
     proc.on("close", () => {
       if (this.logProcesses.get(name) !== proc) return;
       this.logProcesses.delete(name);
-      // No poll re-attaches it now, so a follower that died under a still-running container has to
-      // re-arm itself (docs/332). The delay is what stops a follower that fails at once from spinning.
-      if (this._disposed) return;
-      if (this.services.get(name)?.status !== "running") return;
-      const timer = setTimeout(() => {
-        this.followerRearmTimers.delete(name);
-        if (this._disposed) return;
-        if (this.services.get(name)?.status !== "running") return;
-        this.ensureLogFollower(name);
-      }, LOG_FOLLOWER_REARM_MS);
-      timer.unref?.();
-      this.followerRearmTimers.set(name, timer);
+      this.scheduleFollowerRearm(name);
     });
 
     this.logProcesses.set(name, proc);
@@ -1282,7 +1274,11 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   // Millisecond precision avoids replaying the outgoing container's final second of logs.
   private armLogFollowerSince(names: readonly string[]): void {
     const at = new Date().toISOString();
-    for (const name of names) this.followerSince.set(name, at);
+    for (const name of names) {
+      this.followerSince.set(name, at);
+      // A deliberate start is a new container to follow, so the re-arm budget starts over.
+      this.followerRearmAttempts.delete(name);
+    }
   }
 
   // Clear after polling gives replacement followers a chance to claim the anchor.
@@ -1981,13 +1977,19 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     }
   }
 
+  /**
+   * Whether a held gate is one this watchdog could still reopen. A failed install holds its
+   * services indefinitely on purpose, so it must not keep asking for another look (docs/332).
+   */
+  private gateWatchdogCanAct(): boolean {
+    return !this._disposed && this.gatedServices.size > 0 && !this._installFailed;
+  }
+
   // Recover a lost release, never an unfinished or failed install or a pending teardown.
   private checkInstallGateLiveness(now = Date.now()): void {
     const wedged =
-      !this._disposed &&
-      this.gatedServices.size > 0 &&
+      this.gateWatchdogCanAct() &&
       !this._installRunning &&
-      !this._installFailed &&
       this._gateReleasesInFlight === 0;
 
     if (!wedged) {
@@ -2199,9 +2201,39 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     // Keep settled verdicts to avoid repeating diagnostics after each reconcile.
   }
 
+  /**
+   * No poll re-attaches a follower now, so one that died under a still-running container re-arms
+   * itself (docs/332). Bounded on purpose: a follower that cannot attach at all — docker gone, the
+   * container removed while the status still reads running — must not become a permanent timer on
+   * an otherwise idle session. Any byte of output proves attachment and restores the budget.
+   */
+  private scheduleFollowerRearm(name: string): void {
+    if (this._disposed) return;
+    if (this.services.get(name)?.status !== "running") return;
+    if (this.followerRearmTimers.has(name)) return;
+    const attempt = (this.followerRearmAttempts.get(name) ?? 0) + 1;
+    if (attempt > MAX_LOG_FOLLOWER_REARMS) {
+      console.warn(
+        `[compose:${this.sessionId}] log follower for ${name} failed ${MAX_LOG_FOLLOWER_REARMS} times ` +
+        "in a row — giving up until the service is started again or Docker reports it anew",
+      );
+      return;
+    }
+    this.followerRearmAttempts.set(name, attempt);
+    const timer = setTimeout(() => {
+      this.followerRearmTimers.delete(name);
+      if (this._disposed) return;
+      if (this.services.get(name)?.status !== "running") return;
+      this.ensureLogFollower(name);
+    }, LOG_FOLLOWER_REARM_MS);
+    timer.unref?.();
+    this.followerRearmTimers.set(name, timer);
+  }
+
   private cancelFollowerRearms(): void {
     for (const timer of this.followerRearmTimers.values()) clearTimeout(timer);
     this.followerRearmTimers.clear();
+    this.followerRearmAttempts.clear();
   }
 
   private cancelStartingWatchdogs(): void {

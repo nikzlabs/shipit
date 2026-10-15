@@ -14,7 +14,7 @@ title: "Event-driven service status: checklist"
 - [x] One follow-up per pending condition, replacing the cadence the 30 s rules and the gate watchdog relied on
 - [x] Event entry point for exits (`applyServiceExit`), with the stale-container guard
 - [x] Correlate `oom` with the following `die` for Compose services, so one kill is one verdict
-- [x] Network `disconnect`/`destroy` events drive the session-network heal
+- [x] Network `connect`/`disconnect`/`destroy` events drive the session-network heal and re-resolve service addresses
 - [x] Log follower re-arms itself instead of relying on a poll
 - [x] `ServiceEventRouter`: project index, event routing, host-wide backstop, resync on stream resume
 - [x] Wire the router into the orchestrator lifecycle, disposed on close
@@ -22,5 +22,14 @@ title: "Event-driven service status: checklist"
 - [x] Mutation check — every new test fails without its change
 - [x] `npm run test:dev`, `lint:dev`, `typecheck`, orchestrator integration tests
 - [x] Update docs/121, docs/128, docs/286-install-gate-liveness-watchdog, which described mechanisms riding the old heartbeat
-- [x] Independent review
+- [x] Independent review (ShipIt's configured reviewer, Codex)
+- [x] Act on the review: the listing/exit ordering race, the per-container exit cache, the 250 ms
+      outage spin, the dropped shared-listing failure, the per-session network inspect on every
+      backstop, the never-ending refresh on a failed install gate, the consumed gate follow-up,
+      the `runningRef` guard that dropped real exits, the stale OOM attribution across a restart,
+      service addresses on a network event, and the follower spawn-error path
+- [x] Second mutation pass over the review fixes (12 mutations, all caught)
+- [x] Three more found while checking the fixes: a second Docker outage never swept (the first
+      one's flag disarmed it), a burst of events costing one full listing per event, and the
+      follower budget not resetting on a deliberate restart
 - [ ] Measure on prod after merge: orchestrator CPU and child-process share

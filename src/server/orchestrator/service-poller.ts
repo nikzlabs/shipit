@@ -153,10 +153,10 @@ export class ServicePoller {
   private psFailingSince: number | null = null;
   /** The container each service's current address was read from. */
   private readonly addressSource = new Map<string, string>();
-  /** The container each service was last listed running in, so a stale exit is ignored. */
-  private readonly runningRef = new Map<string, string>();
-  /** Resolved exits, keyed by container: a container's exit never changes. */
-  private readonly exitInfo = new Map<string, PollerInspection>();
+  /** Bumped by anything that makes an in-flight listing stale; see `pollOnce`. */
+  private generation = 0;
+  /** Set once the outage sweep has run, so a continuing outage stops re-arming for it. */
+  private unreachableSwept = false;
 
   constructor(opts: ServicePollerOptions) {
     this.sessionId = opts.sessionId;
@@ -227,6 +227,10 @@ export class ServicePoller {
    * slice is a real answer — no containers — unlike a failed listing.
    */
   async pollOnce(listed?: PollerContainer[]): Promise<void> {
+    // A listing describes the moment it was taken. Anything that changes service state while this
+    // one is in flight — a `die` event, a stop — makes it stale, and applying it anyway would
+    // republish a dead container as running and cancel the recovery that event just scheduled.
+    const generation = this.generation;
     let containers: PollerContainer[];
     if (listed) {
       containers = listed;
@@ -235,13 +239,13 @@ export class ServicePoller {
         containers = await this.listContainers();
       } catch (err) {
         console.warn(`[compose:${this.sessionId}] pollStatus failed:`, (err as Error).message);
+        if (this.generation !== generation) return;
         // Query failure is not an empty container list; expire only sustained stale claims.
         this.expireUnconfirmedStatuses();
         this.armFollowUp();
         return;
       }
     }
-    this.psFailingSince = null;
 
     const live = new Map<string, string>();
     const statusUpdates: { name: string; state: string; container: PollerContainer }[] = [];
@@ -260,25 +264,43 @@ export class ServicePoller {
       statusUpdates.push({ name: svc.name, state: container.state, container });
     }
 
-    this.pruneContainerCaches(new Set(live.keys()));
-
-    // Resolve addresses and exits before announcing running so previews can route immediately.
-    const details = live.size > 0
+    // Reads and inspects only: nothing is published before the staleness check below.
+    const resolved = live.size > 0
       ? await this.resolveContainers(statusUpdates)
-      : new Map<string, PollerInspection>();
+      : {
+          addresses: new Map<string, string | undefined>(),
+          details: new Map<string, PollerInspection>(),
+          sources: new Map<string, string>(),
+        };
+
+    if (this.generation !== generation) {
+      console.log(
+        `[compose:${this.sessionId}] discarding a listing overtaken by a newer exit or a stop`,
+      );
+      return;
+    }
+    this.psFailingSince = null;
+    // Reset with the clock it guards, or a LATER outage would never arm its sweep at all.
+    this.unreachableSwept = false;
+
+    for (const [name, ip] of resolved.addresses) {
+      const source = resolved.sources.get(name);
+      if (source) this.addressSource.set(name, source);
+      else this.addressSource.delete(name);
+      this.setContainerIp(name, ip);
+    }
 
     for (const { name, state, container } of statusUpdates) {
       const svc = this.getService(name);
       if (!svc) continue;
       const prev = svc.status;
       if (state === "running") {
-        if (container.ref) this.runningRef.set(name, container.ref);
         this.onRunning(name);
         if (prev !== "running") this.updateServiceStatus(name, "running");
       } else if (EXITED_STATES.has(state)) {
-        const resolved = details.get(container.ref);
-        const exitCode = container.exitCode ?? resolved?.exitCode ?? 1;
-        this.applyExit(name, exitCode, resolved?.oomKilled);
+        const info = resolved.details.get(container.ref);
+        const exitCode = container.exitCode ?? info?.exitCode ?? 1;
+        this.applyExit(name, exitCode, info?.oomKilled);
       } else if (state === "restarting") {
         if (prev !== "starting") this.updateServiceStatus(name, "starting");
       }
@@ -294,30 +316,24 @@ export class ServicePoller {
       }
     }
 
+    if (this.generation !== generation) return;
     this.armFollowUp();
   }
 
   /**
    * A service container's exit, from the Docker event that reported it. The event is the only
-   * race-free source: a container with a restart policy can be replaced before any listing of the
-   * project could observe that it exited at all.
+   * source for the exit code and the OOM flag: a listing carries neither, and a container with a
+   * restart policy is replaced before any listing could observe that it exited at all.
+   *
+   * The caller follows this with a refresh. That refresh is NEWER, so if Docker has already
+   * restarted the container its verdict wins and supersedes what this scheduled — which is correct,
+   * because the service really is up again.
    */
-  applyServiceExit(
-    serviceName: string,
-    info: { containerId?: string; exitCode: number; oomKilled?: boolean },
-  ): void {
+  applyServiceExit(serviceName: string, info: { exitCode: number; oomKilled?: boolean }): void {
     if (!this.getService(serviceName)) return;
     if (this.isGated(serviceName)) return;
-    const known = this.runningRef.get(serviceName);
-    // A late exit from a container we already replaced says nothing about the live one.
-    if (info.containerId && known && known !== info.containerId) {
-      console.log(
-        `[compose:${this.sessionId}] ignoring exit of ${info.containerId.slice(0, 12)} for "${serviceName}" — ` +
-        `it was replaced by ${known.slice(0, 12)}`,
-      );
-      return;
-    }
-    if (info.containerId && known === info.containerId) this.runningRef.delete(serviceName);
+    // Invalidate every listing already in flight; each described the container as it was.
+    this.generation++;
     this.applyExit(serviceName, info.exitCode, info.oomKilled);
     this.armFollowUp();
   }
@@ -333,15 +349,6 @@ export class ServicePoller {
     this.onExitedWithError(name, exitCode, oomKilled);
   }
 
-  private pruneContainerCaches(liveRefs: Set<string>): void {
-    for (const ref of this.exitInfo.keys()) {
-      if (!liveRefs.has(ref)) this.exitInfo.delete(ref);
-    }
-    for (const [name, ref] of this.runningRef) {
-      if (!liveRefs.has(ref)) this.runningRef.delete(name);
-    }
-  }
-
   private expireUnconfirmedStatuses(): void {
     const now = Date.now();
     if (this.psFailingSince === null) {
@@ -349,6 +356,7 @@ export class ServicePoller {
       return;
     }
     if (now - this.psFailingSince < DOCKER_UNREACHABLE_GRACE_MS) return;
+    this.unreachableSwept = true;
 
     // An in-flight up cannot confirm that a previously running container still exists.
     for (const svc of this.listServices()) {
@@ -412,15 +420,19 @@ export class ServicePoller {
     const at = Date.now() + Math.max(delayMs, 0);
     if (this.requestedFollowUpAt !== null && this.requestedFollowUpAt <= at) return;
     this.requestedFollowUpAt = at;
-    this.armFollowUpAt(at);
+    this.armFollowUp();
   }
 
   private armFollowUp(): void {
     const deadlines: number[] = [];
     for (const since of this.missingSince.values()) deadlines.push(since + MISSING_CONTAINER_GRACE_MS);
-    if (this.psFailingSince !== null) deadlines.push(this.psFailingSince + DOCKER_UNREACHABLE_GRACE_MS);
+    // Once the sweep has run there is nothing further this clock can decide, so a continuing outage
+    // must stop driving it; recovery arrives with the next event or the host-wide backstop.
+    if (this.psFailingSince !== null && !this.unreachableSwept) {
+      deadlines.push(this.psFailingSince + DOCKER_UNREACHABLE_GRACE_MS);
+    }
+    // A request outlives its arming: it is cleared when it fires, never by a later unrelated arm.
     if (this.requestedFollowUpAt !== null) deadlines.push(this.requestedFollowUpAt);
-    this.requestedFollowUpAt = null;
 
     if (deadlines.length === 0) {
       this.clearFollowUp();
@@ -437,6 +449,9 @@ export class ServicePoller {
     const timer = setTimeout(() => {
       this.followUpTimer = null;
       this.followUpDueAt = null;
+      if (this.requestedFollowUpAt !== null && this.requestedFollowUpAt <= Date.now()) {
+        this.requestedFollowUpAt = null;
+      }
       this.pollOnce().catch((err: unknown) => {
         console.warn(`[compose:${this.sessionId}] follow-up poll error:`, (err as Error).message);
       });
@@ -477,50 +492,55 @@ export class ServicePoller {
     this.clearPollInterval();
     this.clearFollowUp();
     this.requestedFollowUpAt = null;
+    // A listing already in flight described a stack this manager no longer owns.
+    this.generation++;
     // Reconcile replaces the registry; its old outage clocks must not carry over.
     this.missingSince.clear();
     this.psFailingSince = null;
-    this.runningRef.clear();
-    this.exitInfo.clear();
+    this.unreachableSwept = false;
   }
 
   /**
-   * Addresses and exits for the listed containers. A source that reports addresses itself (the
-   * Engine API) spares every running container an `inspect`, which is where this poller's measured
-   * CPU went; an exit still needs one, for the code or the OOM flag the listing omits.
+   * Addresses and exits for the listed containers, resolved WITHOUT publishing any of them: the
+   * caller checks for a newer exit or a stop first (`pollOnce`). A source that reports addresses
+   * itself (the Engine API) spares every running container an `inspect`, which is where this
+   * poller's measured CPU went; an exit still needs one, for what the listing omits.
    */
   private async resolveContainers(
     listed: { name: string; state: string; container: PollerContainer }[],
-  ): Promise<Map<string, PollerInspection>> {
-    const resolved = new Map<string, PollerInspection>();
+  ): Promise<{
+    addresses: Map<string, string | undefined>;
+    details: Map<string, PollerInspection>;
+    /** The container each resolved address was read from, for `addressSource`. */
+    sources: Map<string, string>;
+  }> {
+    const details = new Map<string, PollerInspection>();
     const found = new Map<string, string>();
     const unread = new Set<string>();
     const services = new Set<string>();
+    const sources = new Map<string, string>();
 
     for (const { name, state, container } of listed) {
       if (!container.ref) continue;
       services.add(name);
       const exited = EXITED_STATES.has(state);
       let networks = container.networks;
-      let info: PollerInspection | undefined = this.exitInfo.get(container.ref);
+      let info: PollerInspection | undefined;
 
       // Exit 137 is the only code whose meaning depends on the OOM flag (docs/239).
       const needsExit = exited
-        && info === undefined
         && (container.exitCode === undefined || container.exitCode === 137);
       if (networks === undefined || needsExit) {
         try {
-          const inspected = await this.inspectContainer(container.ref);
-          info = inspected;
-          if (exited) this.exitInfo.set(container.ref, inspected);
-          if (inspected.networks !== undefined) networks = inspected.networks;
+          info = await this.inspectContainer(container.ref);
+          if (info.networks !== undefined) networks = info.networks;
         } catch (err) {
           console.warn(`[compose:${this.sessionId}] docker inspect ${container.ref} failed:`, (err as Error).message);
           if (this.addressSource.get(name) === container.ref) unread.add(name);
           continue;
         }
       }
-      if (info) resolved.set(container.ref, info);
+      if (info) details.set(container.ref, info);
 
       // A running container outside the session network cannot be reached by the preview proxy.
       if (!exited && networks !== undefined && !networks[this.networkName]) {
@@ -530,23 +550,19 @@ export class ServicePoller {
       const ip = networks?.[this.networkName];
       if (ip && !found.has(name)) {
         found.set(name, ip);
-        this.addressSource.set(name, container.ref);
+        sources.set(name, container.ref);
       }
     }
 
     // One service can have several containers (replicas), so decide per service.
+    const addresses = new Map<string, string | undefined>();
     for (const name of services) {
       const ip = found.get(name);
-      if (ip) {
-        this.setContainerIp(name, ip);
-      } else if (!unread.has(name)) {
-        // A container that could not be read keeps its address; a replacement does not inherit it.
-        this.addressSource.delete(name);
-        this.setContainerIp(name, undefined);
-      }
+      // A container that could not be read keeps its address; a replacement does not inherit it.
+      if (ip || !unread.has(name)) addresses.set(name, ip);
     }
 
-    return resolved;
+    return { addresses, details, sources };
   }
 
   private async reattach(
