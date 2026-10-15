@@ -3912,7 +3912,9 @@ describe("ServiceManager stuck-starting recovery (#2044)", () => {
     const { mgr, setPsResponse } = makeManager(dir);
 
     await mgr.start();
-    setPsResponse("");
+    // A listed-but-never-running container is what the watchdog owns: a service with NO container
+    // belongs to the missing-container rule, which reaches it first (docs/332).
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "paused", ExitCode: 0 }));
     await mgr.startService("web");
     expect(mgr.getService("web")?.status).toBe("starting");
 
@@ -4141,7 +4143,8 @@ describe("ServiceManager starting-state address hygiene (#2044)", () => {
     });
 
     await mgr.start();
-    setPsResponse("");
+    // Paused, not absent: the missing-container rule would otherwise own this service (docs/332).
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "paused", ExitCode: 0 }));
     const startPromise = mgr.startService("web");
     await vi.advanceTimersByTimeAsync(0);
 

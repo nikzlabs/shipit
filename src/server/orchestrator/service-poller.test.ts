@@ -8,6 +8,7 @@ import {
   COMPOSE_QUERY_TIMEOUT_MS,
   type ServicePollerOptions,
   type PollerService,
+  type PollerContainer,
 } from "./service-poller.js";
 
 function buildPoller(overrides: Partial<ServicePollerOptions> = {}): ServicePoller {
@@ -841,5 +842,288 @@ describe("ServicePoller — containers left by `docker compose run`", () => {
     await poller.pollOnce();
     expect(updateServiceStatus).not.toHaveBeenCalled();
     expect(ips.get("web")).toBeUndefined();
+  });
+});
+
+describe("ServicePoller — no cadence, one follow-up per pending condition (docs/332)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function listingPoller(
+    svc: PollerService,
+    containers: () => PollerContainer[],
+    overrides: Partial<ServicePollerOptions> = {},
+  ) {
+    const updateServiceStatus = vi.fn((_n: string, status: PollerService["status"]) => {
+      svc.status = status;
+    });
+    const inspected: string[] = [];
+    const poller = buildPoller({
+      listContainers: async () => containers(),
+      inspectContainer: async (ref) => {
+        inspected.push(ref);
+        return { oomKilled: false, exitCode: 137, networks: {} };
+      },
+      getService: (name) => (name === svc.name ? svc : undefined),
+      listServices: () => [svc],
+      updateServiceStatus,
+      ...overrides,
+    });
+    return { poller, updateServiceStatus, inspected };
+  }
+
+  const running = (): PollerContainer[] => [{
+    ref: "c1",
+    service: "web",
+    state: "running",
+    oneOff: false,
+    networks: { "shipit-session-sess-1": "172.20.0.4" },
+  }];
+
+  it("leaves no timer behind for a healthy stack — the whole point of the change", async () => {
+    vi.useFakeTimers();
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const { poller } = listingPoller(svc, running);
+
+    await poller.pollOnce();
+
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reads a running container's address from the listing, with no inspect at all", async () => {
+    const svc: PollerService = { name: "web", preview: "auto", status: "starting" };
+    const ips = new Map<string, string | undefined>();
+    const { poller, inspected } = listingPoller(svc, running, {
+      setContainerIp: (name, ip) => ips.set(name, ip),
+    });
+
+    await poller.pollOnce();
+
+    expect(ips.get("web")).toBe("172.20.0.4");
+    expect(inspected).toEqual([]);
+  });
+
+  it("still inspects an exited container, which no listing can report an exit code for", async () => {
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const onExitedWithError = vi.fn();
+    const { poller, inspected } = listingPoller(
+      svc,
+      () => [{ ref: "c1", service: "web", state: "exited", oneOff: false, networks: {} }],
+      { onExitedWithError },
+    );
+
+    await poller.pollOnce();
+
+    expect(inspected).toEqual(["c1"]);
+    expect(onExitedWithError).toHaveBeenCalledWith("web", 137, false);
+  });
+
+  it("does not inspect the same exit twice, because a container's exit never changes", async () => {
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const { poller, inspected } = listingPoller(
+      svc,
+      () => [{ ref: "c1", service: "web", state: "exited", oneOff: false, networks: {} }],
+    );
+
+    await poller.pollOnce();
+    await poller.pollOnce();
+
+    expect(inspected).toEqual(["c1"]);
+  });
+
+  // Without the follow-up, nothing would ever take the second look this rule needs: a container
+  // that is merely absent emits no further Docker event.
+  it("resolves a vanished container on its own, with no second poll from outside", async () => {
+    vi.useFakeTimers();
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const { poller, updateServiceStatus } = listingPoller(svc, () => []);
+
+    await poller.pollOnce();
+    expect(updateServiceStatus).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(MISSING_CONTAINER_GRACE_MS + 1_000);
+
+    expect(updateServiceStatus).toHaveBeenCalledWith("web", "stopped");
+  });
+
+  it("withdraws an unconfirmable running claim on its own once docker stays silent", async () => {
+    vi.useFakeTimers();
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const { poller, updateServiceStatus } = listingPoller(svc, () => {
+      throw new Error("docker unreachable");
+    });
+
+    await poller.pollOnce();
+    expect(updateServiceStatus).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(DOCKER_UNREACHABLE_GRACE_MS + 1_000);
+
+    expect(updateServiceStatus).toHaveBeenCalledWith("web", "error", DOCKER_UNREACHABLE_MESSAGE);
+  });
+
+  it("drops its follow-up once the condition clears, rather than ticking on", async () => {
+    vi.useFakeTimers();
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    let present = false;
+    const { poller } = listingPoller(svc, () => (present ? running() : []));
+
+    await poller.pollOnce();
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    present = true;
+    await poller.pollOnce();
+
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  // `ServiceManager.start()` refreshes and THEN arms the poller, so arming must not retire the
+  // follow-up that refresh just armed: nothing else would ever set it again.
+  it("keeps a pending follow-up across start(), which arms the interval and nothing else", async () => {
+    vi.useFakeTimers();
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const { poller, updateServiceStatus } = listingPoller(svc, () => []);
+
+    await poller.pollOnce();
+    poller.start();
+
+    await vi.advanceTimersByTimeAsync(MISSING_CONTAINER_GRACE_MS + 1_000);
+
+    expect(updateServiceStatus).toHaveBeenCalledWith("web", "stopped");
+  });
+
+  it("stop() cancels a pending follow-up", async () => {
+    vi.useFakeTimers();
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const { poller, updateServiceStatus } = listingPoller(svc, () => []);
+
+    await poller.pollOnce();
+    poller.stop();
+
+    await vi.advanceTimersByTimeAsync(MISSING_CONTAINER_GRACE_MS * 2);
+
+    expect(updateServiceStatus).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a slice listed for it elsewhere without listing again itself", async () => {
+    const svc: PollerService = { name: "web", preview: "auto", status: "starting" };
+    const listContainers = vi.fn(async () => []);
+    const updateServiceStatus = vi.fn();
+    const poller = buildPoller({
+      listContainers,
+      getService: () => svc,
+      listServices: () => [svc],
+      updateServiceStatus,
+    });
+
+    await poller.pollOnce(running());
+
+    expect(listContainers).not.toHaveBeenCalled();
+    expect(updateServiceStatus).toHaveBeenCalledWith("web", "running");
+  });
+});
+
+describe("ServicePoller — exits reported by a Docker event (docs/332)", () => {
+  function exitPoller(status: PollerService["status"] = "running") {
+    const svc: PollerService = { name: "web", preview: "auto", status };
+    const onExitedWithError = vi.fn();
+    const onExitedCleanly = vi.fn();
+    const onLeftRunning = vi.fn();
+    const updateServiceStatus = vi.fn();
+    const poller = buildPoller({
+      getService: (name) => (name === svc.name ? svc : undefined),
+      listServices: () => [svc],
+      onExitedWithError,
+      onExitedCleanly,
+      onLeftRunning,
+      updateServiceStatus,
+    });
+    return { poller, svc, onExitedWithError, onExitedCleanly, onLeftRunning, updateServiceStatus };
+  }
+
+  it("carries the OOM verdict the event knows and a listing cannot", () => {
+    const { poller, onExitedWithError, onLeftRunning } = exitPoller();
+
+    poller.applyServiceExit("web", { containerId: "c1", exitCode: 137, oomKilled: true });
+
+    expect(onLeftRunning).toHaveBeenCalledWith("web");
+    expect(onExitedWithError).toHaveBeenCalledWith("web", 137, true);
+  });
+
+  it("treats a clean exit as stopped, not as a crash", () => {
+    const { poller, onExitedCleanly, onExitedWithError, updateServiceStatus } = exitPoller();
+
+    poller.applyServiceExit("web", { containerId: "c1", exitCode: 0 });
+
+    expect(onExitedCleanly).toHaveBeenCalledWith("web");
+    expect(onExitedWithError).not.toHaveBeenCalled();
+    expect(updateServiceStatus).toHaveBeenCalledWith("web", "stopped");
+  });
+
+  it("never classifies a gated service's exit — the install gate owns its status", () => {
+    const svc: PollerService = { name: "web", preview: "auto", status: "starting" };
+    const onExitedWithError = vi.fn();
+    const poller = buildPoller({
+      getService: () => svc,
+      isGated: () => true,
+      onExitedWithError,
+    });
+
+    poller.applyServiceExit("web", { containerId: "c1", exitCode: 137, oomKilled: true });
+
+    expect(onExitedWithError).not.toHaveBeenCalled();
+  });
+
+  it("ignores an exit from a container already replaced by the one now running", async () => {
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const onExitedWithError = vi.fn();
+    const poller = buildPoller({
+      listContainers: async () => [{
+        ref: "new",
+        service: "web",
+        state: "running",
+        oneOff: false,
+        networks: { "shipit-session-sess-1": "172.20.0.9" },
+      }],
+      getService: () => svc,
+      listServices: () => [svc],
+      onExitedWithError,
+    });
+
+    await poller.pollOnce();
+    poller.applyServiceExit("web", { containerId: "old", exitCode: 137, oomKilled: true });
+
+    expect(onExitedWithError).not.toHaveBeenCalled();
+  });
+
+  it("accepts the exit of the container it last saw running", async () => {
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const onExitedWithError = vi.fn();
+    const poller = buildPoller({
+      listContainers: async () => [{
+        ref: "c1",
+        service: "web",
+        state: "running",
+        oneOff: false,
+        networks: { "shipit-session-sess-1": "172.20.0.9" },
+      }],
+      getService: () => svc,
+      listServices: () => [svc],
+      onExitedWithError,
+    });
+
+    await poller.pollOnce();
+    poller.applyServiceExit("web", { containerId: "c1", exitCode: 137, oomKilled: true });
+
+    expect(onExitedWithError).toHaveBeenCalledWith("web", 137, true);
+  });
+
+  it("ignores an exit for a service the stack no longer defines", () => {
+    const onExitedWithError = vi.fn();
+    const poller = buildPoller({ getService: () => undefined, onExitedWithError });
+
+    poller.applyServiceExit("gone", { containerId: "c1", exitCode: 1 });
+
+    expect(onExitedWithError).not.toHaveBeenCalled();
   });
 });

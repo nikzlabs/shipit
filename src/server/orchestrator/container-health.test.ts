@@ -519,6 +519,7 @@ describe("container-health: compose service vs. ShipIt's own session children", 
     };
     die({ ...runLabels, exitCode: "0" });
     die(runLabels, "oom");
+    die(runLabels);
 
     expect(serviceExited).not.toHaveBeenCalled();
     expect(childExited.mock.calls).toEqual([
@@ -557,10 +558,32 @@ describe("container-health: compose service vs. ShipIt's own session children", 
   });
 
   it("does NOT route a sidecar OOM into the service path", () => {
-    die({ [PARENT]: "sess-1", "shipit-egress-service-sidecar": "true" }, "oom");
+    const labels = { [PARENT]: "sess-1", "shipit-egress-service-sidecar": "true" };
+    die(labels, "oom");
+    die(labels);
 
     expect(serviceExited).not.toHaveBeenCalled();
     expect(childExited.mock.calls[0]?.[1]).toMatchObject({ oom: true, egressSidecar: true });
+  });
+
+  // Service status acts on this flag (docs/332), so the two events must become one verdict.
+  it("reports an OOM-killed service once, with the flag the `die` event cannot carry", () => {
+    const labels = { [PARENT]: "sess-1", "shipit-service-name": "dev" };
+    die(labels, "oom");
+    die(labels);
+
+    expect(serviceExited.mock.calls).toEqual([
+      ["sess-1", { serviceName: "dev", containerId: "c1", exitCode: 137, oom: true }],
+    ]);
+  });
+
+  it("does not let an earlier container's OOM make a later service exit read as one", () => {
+    const labels = { [PARENT]: "sess-1", "shipit-service-name": "dev" };
+    die(labels, "oom");
+    die(labels);
+    die(labels);
+
+    expect(serviceExited.mock.calls.map(([, info]) => info.oom)).toEqual([true, false]);
   });
 
   it("ignores a dying container with no session parent at all", () => {
