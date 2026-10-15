@@ -24,4 +24,5 @@
 - [x] Find where the time of a WebGL 2 texture array upload goes on the GPU route (req 12)
 - [x] The C library tunable in the environment of a container that has the graphics mounts, and in the built-in browser's start command (req 12)
 - [x] Docs for req 12: environment.md, wiki, the upload probe and its measurement in plan.md
-- [ ] Verify after the update, in a new `granted` container on the WSL2 host: `echo $GLIBC_TUNABLES` prints the value, and the built-in browser uploads the texture array of the probe in less than 1 s (req 12)
+- [x] Verify after the update, in a new `granted` container on the WSL2 host: `echo $GLIBC_TUNABLES` prints the value, and the built-in browser uploads the texture array of the probe in less than 1 s (req 12)
+- [x] Probe scripts and `environment.md` find the GPU process of Chromium 155 by its libraries, not by `--type=gpu-process`
