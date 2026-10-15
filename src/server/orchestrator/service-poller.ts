@@ -155,6 +155,10 @@ export class ServicePoller {
   private readonly addressSource = new Map<string, string>();
   /** Bumped by anything that makes an in-flight listing stale; see `pollOnce`. */
   private generation = 0;
+  /** When that last happened, for judging the age of a listing taken elsewhere. */
+  private invalidatedAt = 0;
+  /** The container whose exit this service's terminal status was applied from. */
+  private readonly settledExit = new Map<string, string>();
   /** Set once the outage sweep has run, so a continuing outage stops re-arming for it. */
   private unreachableSwept = false;
 
@@ -179,10 +183,16 @@ export class ServicePoller {
           `inspect of ${ref} did not answer within ${COMPOSE_QUERY_TIMEOUT_MS}ms`,
         )
       : (ref) => this.inspectViaCli(ref);
-    this.repairNetwork = opts.repairNetwork
-      ?? (async (networkName, ref) => {
+    // Bounded like every other Docker call: this one is awaited inside a refresh, and the
+    // host-wide backstop reconciles sessions in turn, so a hung repair would stall them all.
+    const repair = opts.repairNetwork
+      ?? (async (networkName: string, ref: string) => {
         await this.composeQuery(["network", "connect", networkName, ref], this.queryCwd());
       });
+    this.repairNetwork = (networkName, ref) => withQueryTimeout(
+      repair(networkName, ref),
+      `attaching ${ref} to ${networkName} did not complete within ${COMPOSE_QUERY_TIMEOUT_MS}ms`,
+    );
     this.isGated = opts.isGated ?? (() => false);
     this.getService = opts.getService;
     this.listServices = opts.listServices;
@@ -226,13 +236,22 @@ export class ServicePoller {
    * that reconciling every session costs one Engine API call rather than one per session. An empty
    * slice is a real answer — no containers — unlike a failed listing.
    */
-  async pollOnce(listed?: PollerContainer[]): Promise<void> {
+  async pollOnce(listed?: PollerContainer[], takenAt?: number): Promise<void> {
     // A listing describes the moment it was taken. Anything that changes service state while this
     // one is in flight — a `die` event, a stop — makes it stale, and applying it anyway would
     // republish a dead container as running and cancel the recovery that event just scheduled.
     const generation = this.generation;
     let containers: PollerContainer[];
     if (listed) {
+      // A SHARED listing was taken before this call and the backstop reconciles sessions in turn,
+      // so its own age is what counts — the generation at entry is already too late to see an
+      // invalidation that happened while earlier sessions were being reconciled.
+      if (takenAt !== undefined && this.invalidatedAt >= takenAt) {
+        console.log(
+          `[compose:${this.sessionId}] discarding a shared listing older than a newer exit or stop`,
+        );
+        return;
+      }
       containers = listed;
     } else {
       try {
@@ -295,13 +314,18 @@ export class ServicePoller {
       if (!svc) continue;
       const prev = svc.status;
       if (state === "running") {
+        // Live again: whatever exit was settled for it belonged to an earlier run.
+        this.settledExit.delete(name);
         this.onRunning(name);
         if (prev !== "running") this.updateServiceStatus(name, "running");
       } else if (EXITED_STATES.has(state)) {
+        if (this.exitAlreadySettled(name, container.ref)) continue;
         const info = resolved.details.get(container.ref);
         const exitCode = container.exitCode ?? info?.exitCode ?? 1;
         this.applyExit(name, exitCode, info?.oomKilled);
+        this.settledExit.set(name, container.ref);
       } else if (state === "restarting") {
+        this.settledExit.delete(name);
         if (prev !== "starting") this.updateServiceStatus(name, "starting");
       }
     }
@@ -332,10 +356,39 @@ export class ServicePoller {
   applyServiceExit(serviceName: string, info: { exitCode: number; oomKilled?: boolean }): void {
     if (!this.getService(serviceName)) return;
     if (this.isGated(serviceName)) return;
-    // Invalidate every listing already in flight; each described the container as it was.
-    this.generation++;
+    // Invalidate every listing already in flight, and every shared one already taken: each
+    // described the container as it was before this exit.
+    this.invalidate();
     this.applyExit(serviceName, info.exitCode, info.oomKilled);
     this.armFollowUp();
+  }
+
+  /**
+   * Whether this exact container's exit has already been applied for this service, leaving a
+   * listing nothing to decide. Without this, every backstop inspected every stopped container for
+   * ever — a recurring per-container cost on an idle session, which is what req 1 and req 5 forbid.
+   *
+   * Keyed on the container, NOT merely on the service being `stopped`/`error`: a service left in
+   * `error` by the docker-unreachable sweep has a terminal status that no exit produced, and the
+   * `die` event that would have classified its crash was lost with the same outage. That one must
+   * still be read from the listing. The entry is dropped as soon as the container is seen in any
+   * live state, so a restart — which reuses the container id — is classified afresh.
+   */
+  private exitAlreadySettled(name: string, ref: string): boolean {
+    const status = this.getService(name)?.status;
+    if (status !== "stopped" && status !== "error") return false;
+    return this.settledExit.get(name) === ref;
+  }
+
+  /** A listing taken for this project elsewhere failed; the outage clock still has to run. */
+  noteListingFailed(): void {
+    this.expireUnconfirmedStatuses();
+    this.armFollowUp();
+  }
+
+  private invalidate(): void {
+    this.generation++;
+    this.invalidatedAt = Date.now();
   }
 
   private applyExit(name: string, exitCode: number, oomKilled?: boolean): void {
@@ -425,10 +478,13 @@ export class ServicePoller {
 
   private armFollowUp(): void {
     const deadlines: number[] = [];
-    for (const since of this.missingSince.values()) deadlines.push(since + MISSING_CONTAINER_GRACE_MS);
-    // Once the sweep has run there is nothing further this clock can decide, so a continuing outage
-    // must stop driving it; recovery arrives with the next event or the host-wide backstop.
-    if (this.psFailingSince !== null && !this.unreachableSwept) {
+    if (this.psFailingSince === null) {
+      for (const since of this.missingSince.values()) deadlines.push(since + MISSING_CONTAINER_GRACE_MS);
+    } else if (!this.unreachableSwept) {
+      // While listings are failing, only the outage clock can decide anything: a failed listing
+      // never reconciles, so a missing-container deadline already in the past would re-arm on
+      // every attempt — at the 250ms floor, which is a spin. And once the sweep has run, even
+      // this clock is spent; recovery arrives with the next event or the host-wide backstop.
       deadlines.push(this.psFailingSince + DOCKER_UNREACHABLE_GRACE_MS);
     }
     // A request outlives its arming: it is cleared when it fires, never by a later unrelated arm.
@@ -493,11 +549,12 @@ export class ServicePoller {
     this.clearFollowUp();
     this.requestedFollowUpAt = null;
     // A listing already in flight described a stack this manager no longer owns.
-    this.generation++;
+    this.invalidate();
     // Reconcile replaces the registry; its old outage clocks must not carry over.
     this.missingSince.clear();
     this.psFailingSince = null;
     this.unreachableSwept = false;
+    this.settledExit.clear();
   }
 
   /**
@@ -529,6 +586,7 @@ export class ServicePoller {
 
       // Exit 137 is the only code whose meaning depends on the OOM flag (docs/239).
       const needsExit = exited
+        && !this.exitAlreadySettled(name, container.ref)
         && (container.exitCode === undefined || container.exitCode === 137);
       if (networks === undefined || needsExit) {
         try {

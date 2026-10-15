@@ -16,9 +16,10 @@ const OTHER = "99999999-8888-7777-6666-555555555555";
 
 function target() {
   return {
-    refreshServices: vi.fn(async (_listed?: PollerContainer[]) => {}),
+    refreshServices: vi.fn(async (_listed?: PollerContainer[], _takenAt?: number) => {}),
     applyServiceExit: vi.fn(),
     healNetwork: vi.fn(async () => {}),
+    noteListingFailed: vi.fn(),
   } satisfies ServiceEventTarget & Record<string, unknown>;
 }
 
@@ -124,14 +125,44 @@ describe("ServiceEventRouter", () => {
     expect(mgr.refreshServices).toHaveBeenCalledTimes(2);
   });
 
-  it("never coalesces away a slice already listed for it, which would discard that work", async () => {
-    const second = target();
-    managers.set(OTHER, second);
+  it("never runs two refreshes of one session at once, even mixing a backstop with events", async () => {
+    let active = 0;
+    let peak = 0;
+    const releases: (() => void)[] = [];
+    // Every call counts, for the whole test: swapping the implementation mid-way would stop
+    // counting exactly the concurrent call this is looking for.
+    mgr.refreshServices.mockImplementation(async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => { releases.push(resolve); });
+      active--;
+    });
 
-    await Promise.all([router.runBackstop("one"), router.runBackstop("two")]);
-    await router.runBackstop("three");
+    emitter.emit("compose_project_changed", composeProjectName(SESSION));
+    await vi.waitFor(() => expect(mgr.refreshServices).toHaveBeenCalledTimes(1));
 
-    expect(mgr.refreshServices.mock.calls.every(([listed]) => Array.isArray(listed))).toBe(true);
+    const backstop = router.runBackstop("overlapping");
+    emitter.emit("compose_project_changed", composeProjectName(SESSION));
+    // Let the backstop's listing settle and reach its refresh before anything is released.
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(peak).toBe(1);
+
+    while (releases.length > 0) {
+      releases.splice(0).forEach((fn) => fn());
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await backstop;
+  });
+
+  it("stamps a shared slice with when it was taken, so its age can be judged", async () => {
+    const before = Date.now();
+
+    await router.runBackstop("test");
+
+    const takenAt = mgr.refreshServices.mock.calls[0]![1]!;
+    expect(takenAt).toBeGreaterThanOrEqual(before);
+    expect(takenAt).toBeLessThanOrEqual(Date.now());
   });
 
   // req 5: the cost of the backstop must not grow with the number of sessions.
@@ -161,17 +192,22 @@ describe("ServiceEventRouter", () => {
 
     await router.runBackstop("test");
 
-    expect(second.refreshServices).toHaveBeenCalledWith([]);
+    expect(second.refreshServices).toHaveBeenCalledWith([], expect.any(Number));
   });
 
-  // Never an empty slice, which would read as "no containers" and walk a healthy stack to stopped.
-  it("lets each session list for itself when the shared listing fails, so outage clocks start", async () => {
+  // Never an empty slice, which would read as "no containers" and walk a healthy stack to stopped;
+  // and never a relisting per session, which a hundred sessions could not get through in an hour.
+  it("reports a failed shared listing to every session, without relisting for any of them", async () => {
+    const second = target();
+    managers.set(OTHER, second);
     listContainers.mockRejectedValueOnce(new Error("docker unreachable"));
 
     await router.runBackstop("test");
 
-    expect(mgr.refreshServices).toHaveBeenCalledTimes(1);
-    expect(mgr.refreshServices).toHaveBeenCalledWith(undefined);
+    expect(mgr.noteListingFailed).toHaveBeenCalledTimes(1);
+    expect(second.noteListingFailed).toHaveBeenCalledTimes(1);
+    expect(mgr.refreshServices).not.toHaveBeenCalled();
+    expect(second.refreshServices).not.toHaveBeenCalled();
   });
 
   it("does not latch on a listing that never answers, so later reconciles still run", async () => {
@@ -192,6 +228,20 @@ describe("ServiceEventRouter", () => {
   it("resyncs the whole stack when the event stream reconnects, since events were lost", async () => {
     emitter.emit("health_monitor_resumed", { gapMs: 20_000 });
     await vi.waitFor(() => expect(mgr.refreshServices).toHaveBeenCalled());
+  });
+
+  // The agent container is not in the Compose project, so no listing can show that it was
+  // detached. A detach whose event was lost in the gap would otherwise never be repaired.
+  it("heals every session's network on a stream gap, which no listing can reveal", async () => {
+    const second = target();
+    managers.set(OTHER, second);
+
+    emitter.emit("health_monitor_resumed", { gapMs: 20_000 });
+
+    await vi.waitFor(() => {
+      expect(mgr.healNetwork).toHaveBeenCalledTimes(1);
+      expect(second.healNetwork).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("stops routing once stopped, so a closing orchestrator does no further work", () => {

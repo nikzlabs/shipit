@@ -9,12 +9,11 @@ import { stackLabelFilters } from "./stack-label.js";
 
 /** What the router needs of a `ServiceManager`; the rest of it is not its business. */
 export interface ServiceEventTarget {
-  refreshServices(listed?: PollerContainer[]): Promise<void>;
-  applyServiceExit(
-    serviceName: string,
-    info: { containerId?: string; exitCode: number; oomKilled?: boolean },
-  ): void;
+  refreshServices(listed?: PollerContainer[], takenAt?: number): Promise<void>;
+  applyServiceExit(serviceName: string, info: { exitCode: number; oomKilled?: boolean }): void;
   healNetwork(): Promise<void>;
+  /** Docker could not be listed at all, which no slice can express. */
+  noteListingFailed(): void;
 }
 
 /**
@@ -100,8 +99,18 @@ export class ServiceEventRouter {
     void this.refresh(sessionId, `network ${networkName} changed`);
   };
 
-  // Events during the gap are gone, so the whole stack is reconciled rather than trusted.
+  /**
+   * Events during the gap are gone, so the whole stack is reconciled rather than trusted — and the
+   * agent's network attachment with it. A listing cannot show that: the agent container is not in
+   * the Compose project, so a detach whose event was lost would otherwise never be repaired now
+   * that the heal no longer rides every refresh.
+   */
   private readonly onStreamResumed = (): void => {
+    for (const [sessionId, mgr] of this.deps.serviceManagers) {
+      void mgr.healNetwork().catch((err: unknown) => {
+        console.warn(`[service-events] network heal for ${sessionId} after a stream gap failed:`, message(err));
+      });
+    }
     void this.runBackstop("the Docker event stream resumed");
   };
 
@@ -158,20 +167,21 @@ export class ServiceEventRouter {
     sessionId: string,
     why: string,
     listed?: PollerContainer[],
+    takenAt?: number,
   ): Promise<void> {
-    // A handed slice is a listing already taken; coalescing it would discard that work.
-    if (!listed) {
-      if (this.refreshQueued.has(sessionId)) return;
-      if (this.refreshInFlight.has(sessionId)) {
-        this.refreshQueued.add(sessionId);
-        return;
-      }
+    if (this.refreshQueued.has(sessionId)) return;
+    if (this.refreshInFlight.has(sessionId)) {
+      // Including a backstop slice: a refresh already running is newer than that listing, so
+      // dropping it loses nothing. Marking it queued without owning the in-flight entry is what
+      // let one path clear another's marker and run two refreshes of a session at once.
+      this.refreshQueued.add(sessionId);
+      return;
     }
     const mgr = this.deps.serviceManagers.get(sessionId);
     if (!mgr) return;
     this.refreshInFlight.add(sessionId);
     try {
-      await mgr.refreshServices(listed);
+      await mgr.refreshServices(listed, takenAt);
     } catch (err) {
       console.warn(`[service-events] refresh of ${sessionId} after ${why} failed:`, message(err));
     } finally {
@@ -194,23 +204,25 @@ export class ServiceEventRouter {
       const sessionIds = [...this.deps.serviceManagers.keys()];
       if (sessionIds.length === 0) return;
       let byProject: Map<string, PollerContainer[]>;
+      const takenAt = Date.now();
       try {
         byProject = await withTimeout(
           listAllComposeProjects(this.deps.docker, this.stackFilters),
           BACKSTOP_LISTING_TIMEOUT_MS,
         );
       } catch (err) {
-        // Each session must now reach its OWN docker-unreachable grace, or a stack that died while
-        // nobody watched keeps publishing `running` for ever. A refresh with no slice lists for
-        // itself, and its failure is what starts that clock.
+        // Report the failure rather than making each session repeat it. Every session must still
+        // reach its OWN docker-unreachable grace, or a stack that died while nobody watched keeps
+        // publishing `running` for ever — but a listing per session, each awaited in turn and each
+        // able to hang to its own timeout, would take a hundred sessions the better part of an hour.
         console.warn(`[service-events] ${why}: listing Compose projects failed:`, message(err));
         for (const sessionId of sessionIds) {
-          await this.refresh(sessionId, `${why} (shared listing failed)`);
+          this.deps.serviceManagers.get(sessionId)?.noteListingFailed();
         }
         return;
       }
       for (const sessionId of sessionIds) {
-        await this.refresh(sessionId, why, byProject.get(composeProjectName(sessionId)) ?? []);
+        await this.refresh(sessionId, why, byProject.get(composeProjectName(sessionId)) ?? [], takenAt);
       }
     } finally {
       this.backstopInFlight = false;

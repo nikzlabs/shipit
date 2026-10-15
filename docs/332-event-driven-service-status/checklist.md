@@ -32,4 +32,11 @@ title: "Event-driven service status: checklist"
 - [x] Three more found while checking the fixes: a second Docker outage never swept (the first
       one's flag disarmed it), a burst of events costing one full listing per event, and the
       follower budget not resetting on a deliberate restart
+- [x] Second review round, and its 8 findings: the shared-slice age guard, the unbounded network
+      repair, the outage spin reached via a stale missing-container clock, stderr refilling the
+      follower budget, the lost recovery for a missed network event, the serial relisting fan-out,
+      every backstop inspecting every stopped container, and the coalescer's corrupted in-flight set
+- [x] Third mutation pass (12 mutations, all caught), plus the two test gaps it exposed
+- [x] `install-gate.test.ts` runs with `pollIntervalMs: 0`, so the watchdog is exercised under the
+      shipped scheduling rather than a test-only poll interval
 - [ ] Measure on prod after merge: orchestrator CPU and child-process share

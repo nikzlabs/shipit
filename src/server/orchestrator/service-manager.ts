@@ -528,9 +528,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       // (docs/332), so a healthy refresh costs no network inspect per session.
       afterPoll: () => {
         this.checkInstallGateLiveness();
-        // Only a gate the watchdog could still reopen needs the second look. A FAILED install keeps
-        // its services held forever by design, and asking here would refresh that session for ever.
-        if (this.gateWatchdogCanAct()) this.poller.requestFollowUp(this.gateWatchdogSettleMs);
+        this.armGateWatchdog();
       },
     });
   }
@@ -539,9 +537,20 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
    * Reconcile this project against Docker: the entry point for a routed Docker event, the host-wide
    * backstop and the resync after the event stream reconnects (docs/332).
    */
-  async refreshServices(listed?: PollerContainer[]): Promise<void> {
+  async refreshServices(listed?: PollerContainer[], takenAt?: number): Promise<void> {
     if (this._disposed) return;
-    await this.poller.pollOnce(listed);
+    await this.poller.pollOnce(listed, takenAt);
+  }
+
+  /**
+   * The host-wide listing failed, so this stack's state could not be confirmed. Reported rather
+   * than relisted per session: the docker-unreachable grace still has to start, but a hundred
+   * sessions each repeating a listing that can hang to its own timeout would take the better part
+   * of an hour to reach the last of them (docs/332).
+   */
+  noteListingFailed(): void {
+    if (this._disposed) return;
+    this.poller.noteListingFailed();
   }
 
   /** A service container's exit, as the Docker event reported it (docs/332). */
@@ -552,12 +561,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   /** The agent's attachment to the session network, after a network event touched it. */
   async healNetwork(): Promise<void> {
-    if (this._disposed) return;
-    await this.healSessionNetwork();
-  }
-
-  private async healSessionNetwork(): Promise<void> {
-    if (!this.networkHealFn) return;
+    if (this._disposed || !this.networkHealFn) return;
     const networkName = `shipit-session-${this.sessionId}`;
     try {
       await this.networkHealFn(networkName);
@@ -1052,6 +1056,9 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       }
     }
     this._gateHeldSince = this.gatedServices.size > 0 && !this._installFailed ? Date.now() : null;
+    // The watchdog's clock starts when the gate starts being held, not at the next refresh: a gate
+    // holds no containers, so it produces no Docker events of its own to ride (docs/332).
+    this.armGateWatchdog();
 
     try {
       // Compose starts every service when given no names; skip an empty batch.
@@ -1238,13 +1245,18 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     });
 
     const handleData = (chunk: Buffer) => {
-      this.followerRearmAttempts.delete(name);
       const text = chunk.toString();
       this.logStore?.append(this.sessionId, channel, text);
       this.bufferServiceLog(name, text);
     };
 
-    proc.stdout?.on("data", handleData);
+    // Only container output proves the follower attached, and so restores its re-arm budget. A
+    // `docker compose logs` that writes a diagnostic to stderr and exits proves the opposite, and
+    // crediting it would make the bound meaningless — one spawn every two seconds, for ever.
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      this.followerRearmAttempts.delete(name);
+      handleData(chunk);
+    });
     proc.stderr?.on("data", handleData);
 
     proc.on("error", (err: Error) => {
@@ -1978,6 +1990,15 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   }
 
   /**
+   * Ask for one look a settle window out, while the gate is one the watchdog could still reopen.
+   * A FAILED install holds its services indefinitely by design, so asking there would refresh an
+   * otherwise idle session for ever.
+   */
+  private armGateWatchdog(): void {
+    if (this.gateWatchdogCanAct()) this.poller.requestFollowUp(this.gateWatchdogSettleMs);
+  }
+
+  /**
    * Whether a held gate is one this watchdog could still reopen. A failed install holds its
    * services indefinitely on purpose, so it must not keep asking for another look (docs/332).
    */
@@ -2125,6 +2146,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       this.retry.resetOomBudget(svc.name);
     }
     this._gatedTeardownGeneration = ++this._gateGeneration;
+    this.armGateWatchdog();
     this._gatedTeardown = this.stopGatedForReinstall([...this.gatedServices]);
   }
 

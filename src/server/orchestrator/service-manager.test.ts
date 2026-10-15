@@ -4565,6 +4565,75 @@ describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
     vi.useRealTimers();
   });
 
+  // A `docker compose logs` that writes a diagnostic and exits proves the follower did NOT attach,
+  // so crediting stderr to the budget made the bound meaningless.
+  it("does not let a stderr diagnostic refill the re-arm budget", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 3; i++) {
+      const proc = logProcesses().get("web");
+      proc?.stderr?.emit("data", Buffer.from("error: no such service\n"));
+      proc?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+
+    expect(logProcesses().has("web")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("refills the budget on real container output, so later disconnects still recover", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 3; i++) {
+      const proc = logProcesses().get("web");
+      proc?.stdout?.emit("data", Buffer.from("listening on 3000\n"));
+      proc?.emit("close", 0);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+      expect(logProcesses().has("web")).toBe(true);
+    }
+    vi.useRealTimers();
+  });
+
+  it("re-attaches after the budget is spent when a refresh sees the service running", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 2; i++) {
+      logProcesses().get("web")?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+    expect(logProcesses().has("web")).toBe(false);
+
+    await poll();
+
+    expect(logProcesses().has("web")).toBe(true);
+    vi.useRealTimers();
+  });
+
   it("does not replace a follower that is still alive", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const dir = setup();
