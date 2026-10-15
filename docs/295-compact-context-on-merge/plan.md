@@ -47,7 +47,7 @@ reset does.
 - **The decision** — `compact-before-turn.ts`, `shouldCompactBeforeTurn`. Gates,
   in order: the per-send untick (req 5), the shared setting (req 11), the
   harness capability (req 10), an armed conversation replay (the next spawn
-  consumes it read-and-clear, so a compaction turn would take the seed), a
+  starts a conversation from it, which a compaction turn would pre-empt), a
   resident holding background work (docs/260 req 13), the docs/282 merge
   recheck's `unsettled` answer (the reset stands down on it, and a compaction
   without the reset's prefix loses req 7), and finally `isResetEligible` — the

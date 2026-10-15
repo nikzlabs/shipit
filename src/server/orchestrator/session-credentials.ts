@@ -28,7 +28,6 @@ export {
 } from "./session-agent-credentials.js";
 export type { RecordedResidentRoute } from "./session-agent-credentials.js";
 
-export type { AgentSessionIdRecoveryCallback } from "./token-sync-manager.js";
 export {
   readCodexTokenFreshness,
   syncAgentTokenIn,

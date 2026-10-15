@@ -5,57 +5,41 @@ import type { ReplaySpillTarget } from "./replay-detail.js";
 export { replaySpillDirs, INLINE_DETAIL_LIMIT } from "./replay-detail.js";
 export type { ReplaySpillTarget } from "./replay-detail.js";
 
+/**
+ * The most of a replay that rides inline, measured as it is serialized into the spawn
+ * request, which the session worker refuses above 1 MiB: a long session's transcript once
+ * failed every spawn with 413 (docs/007 → Size). The rest is in a file the agent can read.
+ */
+export const REPLAY_INLINE_BUDGET_BYTES = 256 * 1024;
+
 export interface ReplayOptions {
   /**
-   * Where long tool payloads are written. Without it they degrade to excerpts, so a
-   * caller that cannot resolve a directory still produces a usable replay.
+   * Where long tool payloads and an over-budget transcript are written. Without it they
+   * degrade to excerpts and an omitted beginning, so a caller that cannot resolve a
+   * directory still produces a usable replay.
    */
   spill?: ReplaySpillTarget;
-  /**
-   * The text of the message this turn is about to submit. The turn's user row is persisted
-   * before the replay is built (`turn-executor.ts`), so without this the replay ends with
-   * the very message that follows it as the prompt and the agent reads it twice.
-   */
-  dropTrailingUserText?: string;
+  /** Tests only; production uses `REPLAY_INLINE_BUDGET_BYTES`. */
+  inlineBudgetBytes?: number;
 }
 
-/** Whether a message says anything a continuing agent needs: text, or work it did. */
-export function carriesContent(m: PersistedMessage): boolean {
-  return m.text !== ""
-    || (m.toolUse?.length ?? 0) > 0
-    || (m.toolResults?.length ?? 0) > 0
-    || (m.files?.length ?? 0) > 0
-    || (m.images?.length ?? 0) > 0
-    || (m.uploadPaths?.length ?? 0) > 0;
-}
+const DETAIL_NOTE = "Lines beginning with [tool] and [result] are work already done; a result longer than"
+  + " 500 characters names a file holding the whole thing.\n";
+const FOOTER = "\nContinue from here. The user's next message follows.";
 
-function withoutOwnMessage(
-  messages: PersistedMessage[],
-  ownText: string | undefined,
-): PersistedMessage[] {
-  if (ownText === undefined) return messages;
-  // The LAST USER row, not the last row: a recovery finalizes the failed attempt's partial
-  // assistant output into history before rebuilding, so this turn's own message is no
-  // longer at the end.
-  let i = messages.length - 1;
-  while (i >= 0 && messages[i].role !== "user") i -= 1;
-  // Matched on text rather than position: on the new-session path the row is persisted
-  // after this runs, and dropping a different message would discard real history. Two user
-  // rows with identical text are indistinguishable here; the later one is dropped.
-  if (i === -1 || messages[i].text !== ownText) return messages;
-  return [...messages.slice(0, i), ...messages.slice(i + 1)];
-}
+// The size the text adds to the JSON request: an escape is up to six bytes for one character.
+const bytes = (text: string): number => Buffer.byteLength(JSON.stringify(text), "utf8") - 2;
+const SEPARATOR = bytes("\n");
 
 export function buildConversationReplay(
   messages: PersistedMessage[],
   opts: ReplayOptions = {},
 ): string {
-  const kept = withoutOwnMessage(messages, opts.dropTrailingUserText);
-  if (kept.length === 0) return "";
+  if (messages.length === 0) return "";
 
   const spill = openSpill(opts.spill);
   const blocks: string[] = [];
-  for (const m of kept) {
+  for (const m of messages) {
     const detail = detailLines(m, spill);
     if (m.text === "" && detail.length === 0) continue;
     const label = m.role === "user" ? "User" : "Assistant";
@@ -64,47 +48,50 @@ export function buildConversationReplay(
   }
   if (blocks.length === 0) return "";
 
-  return [
+  const whole = [
     "You are continuing a conversation. Here is the conversation so far.",
-    "Lines beginning with [tool] and [result] are work already done; a result longer than"
-      + " 500 characters names a file holding the whole thing.\n",
+    DETAIL_NOTE,
     ...blocks,
-    "\nContinue from here. The user's next message follows.",
+    FOOTER,
   ].join("\n");
-}
+  const budget = opts.inlineBudgetBytes ?? REPLAY_INLINE_BUDGET_BYTES;
+  if (bytes(whole) <= budget) return whole;
 
-export interface ConversationReplayDeps {
-  chatHistoryManager?: { load: (sessionId: string) => PersistedMessage[] };
-  sessionManager: { setConversationReplay: (id: string, replay: string) => void };
+  const file = spill?.writeTranscript(blocks.join("\n\n")) ?? null;
+  const where = file
+    ? `The whole conversation is in ${file}; read it when you need an earlier part.`
+    : "Its earlier part is omitted.";
+  const headerFor = (kept: number): string => (kept > 0
+    ? `You are continuing a conversation. Here are the most recent ${kept} of its ${blocks.length} messages. ${where}`
+    : `You are continuing a conversation that is too long to include here. ${where}`);
+
+  // The header's own length grows with the count, so budget against the largest it can be.
+  let used = bytes(headerFor(blocks.length)) + bytes(DETAIL_NOTE) + bytes(FOOTER) + 2 * SEPARATOR;
+  let first = blocks.length;
+  while (first > 0) {
+    const cost = bytes(blocks[first - 1]) + SEPARATOR;
+    if (used + cost > budget) break;
+    used += cost;
+    first -= 1;
+  }
+  const tail = blocks.slice(first);
+  return [headerFor(tail.length), DETAIL_NOTE, ...tail, FOOTER].join("\n");
 }
 
 /**
- * Rebuild the transcript for a session that is about to start an agent with no thread of
- * its own, so the new conversation continues the chat instead of beginning empty.
- *
- * Built from history at the moment it is called rather than copied from an earlier
- * arming: a failed attempt's partial output is finalized into history before a retry
- * re-arms, so the retry's agent sees more than the attempt that gave up, not less.
- *
- * `requireReply` is for callers that re-arm mid-turn. The turn's own user row is already
- * persisted by then, so a session with nothing else would replay that one message back as
- * history and then submit it as the prompt. A transcript with no reply in it is not a
- * conversation to continue.
+ * A replay stored before the bound existed can still exceed it, and one that is never
+ * retired would fail every spawn. Keeps its most recent part from a message boundary.
  */
-export function armConversationReplay(
-  deps: ConversationReplayDeps,
-  sessionId: string,
-  opts: { requireReply?: boolean } & ReplayOptions = {},
-): boolean {
-  const chatHistory = deps.chatHistoryManager;
-  if (!chatHistory) return false;
-  const messages = chatHistory.load(sessionId);
-  // A turn that only called tools is a reply: it persists with `text: ""` but carries the work.
-  if (opts.requireReply && !messages.some((m) => m.role === "assistant" && carriesContent(m))) {
-    return false;
+export function boundStoredReplay(
+  replay: string,
+  budget: number = REPLAY_INLINE_BUDGET_BYTES,
+): string {
+  if (bytes(replay) <= budget) return replay;
+  const header = "You are continuing a conversation. Its earlier part is omitted; here is the most recent part.\n\n";
+  let tail = replay.slice(-budget);
+  while (tail.length > 0 && bytes(header) + bytes(tail) > budget) {
+    tail = tail.slice(Math.ceil(tail.length / 10));
   }
-  const replay = buildConversationReplay(messages, opts);
-  if (!replay) return false;
-  deps.sessionManager.setConversationReplay(sessionId, replay);
-  return true;
+  const boundary = /\n(?:User|Assistant):/.exec(tail);
+  return header + (boundary ? tail.slice(boundary.index + 1) : tail);
 }

@@ -1,6 +1,6 @@
 ---
 issue: planning#610
-description: Rollback and fork, and the conversation replay that reseeds an agent whose thread is gone.
+description: Rollback and fork, the conversation replay that starts a fork's conversation, and why ShipIt never resets a stored one.
 ---
 
 # Rollback System
@@ -44,52 +44,86 @@ After each auto-commit, the server captures the parent commit hash (HEAD before 
 4. Sends `session_forked` with new session info
 5. Client shows notification in current chat
 
-### A retry re-arms the replay, because the attempt that spent it never ran
+### The CLI owns its conversations
 
-A replay is armed whenever the session has no resumable conversation — by a rollback or a
-fork above, and by `armConversationReplay` (`services/replay.ts`, called from
-`session-agent-env.ts`) when the token sync-in finds no thread on disk, which is what a
-recreated container looks like. `buildAgentRunParams` then **takes** it into the system
-prompt and clears the resume id, so the agent starts a fresh conversation holding the
-transcript.
+The rule (from the owner, 2026-10-15, after a production incident): **ShipIt never
+re-sends the conversation to the agent CLI on its own, and never clears or replaces the
+stored agent session id.** It passes the stored id to `--resume` and nothing else. The
+only id it writes is the one the CLI reports in its own events (`agent-listeners.ts`,
+init and result), and only once that conversation answered: at the model's first output
+(not text the CLI or its adapter wrote itself, which the adapters mark `synthetic`) or at a
+successful result. An unanswered failure (a refusal, a Stop) may store an id only for a
+session's first conversation — no stored id and no replay waiting — so it never replaces a
+stored id, and a refused fork attempt never retires the fork's replay. A harness cannot
+change within a session, so no agent switch justifies a reset either.
 
-A turn is dispatched once, but `executeAgentTurn` is re-entered for it by `recoverAuth`,
-`recoverMissingConversation` and `retryOnNextAccount`, and each re-entry builds run
-parameters again. So the take lands on whichever attempt got there first — including one
-that then refused on quota and read none of it. That attempt records no conversation of
-its own, which leaves the session threadless *and* replayless, and the attempt that
-actually runs answers the user with an empty conversation. Re-arming at the env-prep site
-cannot cover it: that guard fires on the transition that clears a *stored* id, which by
-then is already clear.
+The incident: a ~4,800-message Claude session lost its context after a Stop. The next
+spawn ran the docs/153 credential repair, which judged the live conversation file "not
+resumable" (it read the whole file into one string to inspect 50 lines, and a file past
+V8's string limit threw), cleared the stored id and armed a replay of the whole chat into
+the system prompt. The session worker refused that spawn request with 413 (its 1 MiB body
+limit), and the replay had already been taken, so the following turn started an empty
+conversation. `claude --resume` was never tried.
 
-So each of the three paths calls `reseedConversationForRetry` (`turn-executor.ts`) before
-it spawns. It rebuilds from history rather than carrying the spent copy — the failed
-attempt's partial output is finalized into history first, so the retry's agent sees more
-than the one that gave up, not less. Two conditions: there is no thread to resume, so a
-healthy conversation is still left to `--resume`; and the transcript holds a reply, since
-the turn's own user row is already persisted and a session with nothing else would replay
-that one message back and then submit it as the prompt.
+So these automatic paths are gone:
 
-Retirement stays in `buildAgentRunParams`, deliberately. Retiring it on the recorded
-conversation id instead looks equivalent and is not: `setAgentSessionId` also records an
-id *recovered from disk* (`session-agent-env.ts`, via `findLatestAgentSessionId`), which
-after a rollback is the pre-rollback conversation — clearing the replay there would resume
-the very turns the rollback excluded.
+- the credential repair's id verdicts (`token-sync-manager.ts`): the Claude "no resumable
+  jsonl" clear, the "recovered" id from the newest file on disk, and the Codex "no rollout
+  on disk" clear. The repair is layout only now and reads no conversation file;
+- the env-prep replay arming that followed them (`session-agent-env.ts`);
+- `recoverMissingConversation` and `reseedConversationForRetry` (`turn-executor.ts`).
 
-Guard: `integration_tests/conversation-replay-retry.test.ts`.
+**When the CLI cannot resume** (`No conversation found with session ID` on stderr — matched
+on a short rolling window, since pipe chunks can split the line), `agent-listeners.ts`
+keeps the stored id, posts one error card saying the conversation could not be resumed
+and that a fork starts a new one, and tells the executor (`onConversationNotFound`) to skip
+the no-result retry and its second card. The CLI exits by itself (verified on 2.1.293: it
+also emits an error result carrying the requested id, and exits 1); ShipIt does not kill
+it, because a kill can drop the `done` that ends the turn. Nothing is retried with a
+replay.
+
+### A replay only starts a conversation
+
+A replay is armed by a fork for its new session, and still by the in-place rewinds above
+(their redesign is a follow-up). `buildAgentRunParams` **reads** it — it no longer takes
+it — and only when there is no stored id; a stored id is always resumed and a replay never
+displaces it. The replay is retired when the CLI reports the conversation it started:
+`SessionManager.setAgentSessionId` clears it in the same write. So a spawn that fails
+before the CLI reports anything (a 413, a crash, a quota refusal) leaves it for the next
+spawn, with no restore step to forget.
+
+### Size
+
+A replay rides in the spawn request, which the worker refuses above 1 MiB. So
+`buildConversationReplay` keeps it under `REPLAY_INLINE_BUDGET_BYTES` (256 KiB, measured as
+the JSON-escaped size, since a control character is six bytes in the request): when the
+whole transcript does not fit, it writes it to `transcript.md` in the replay spill
+directory (`/persist/replay/` in a container) and inlines only the most recent messages
+that fit, with a line naming the file. `boundStoredReplay` cuts a replay stored before the
+bound existed, since an unretired over-budget replay would fail every spawn. The body
+limit itself is unchanged.
 
 `buildConversationReplay` carries each message's tool calls, results and attachments as
 indented detail lines, spilling any payload over 500 characters to a file it names instead:
 `docs/144-rewind-fork-ux` U8.
 
+Guards: `integration_tests/conversation-replay-retry.test.ts`,
+`integration_tests/claude-message-flow.test.ts`, `services/replay.test.ts`,
+`session-agent-run-params.test.ts`.
+
+**Known limit.** The replay rides in the system prompt (`--append-system-prompt-file`),
+which Claude Code does not store in its conversation file, so a fork's context is not in
+the conversation after its first process restart. The decided fix is to deliver it as the
+new conversation's first user message (follow-up work, tracked on the issue).
+
 ## Key files
 
 - `src/server/orchestrator/ws-handlers/rollback-handlers.ts` — Three server-side handlers
-- `src/server/orchestrator/services/replay.ts` — `buildConversationReplay()` and `armConversationReplay()`
-- `src/server/orchestrator/session-agent-run-params.ts` — takes the replay into the system prompt
-- `src/server/orchestrator/session-agent-env.ts` — arms it when the token sync-in finds no thread
-- `src/server/orchestrator/turn-executor.ts` — `reseedConversationForRetry()` before a retry spawns
-- `src/server/orchestrator/sessions.ts` — Replay storage/consumption on SessionManager
+- `src/server/orchestrator/services/replay.ts` — `buildConversationReplay()` (size bound) and `boundStoredReplay()`
+- `src/server/orchestrator/session-agent-run-params.ts` — reads the replay into the system prompt when there is no stored id
+- `src/server/orchestrator/sessions.ts` — replay storage; `setAgentSessionId` retires it
+- `src/server/orchestrator/ws-handlers/agent-listeners.ts` — the only writer of the agent session id; the cannot-resume card
+- `src/server/orchestrator/turn-executor.ts` — ends a turn whose conversation the CLI cannot resume
 - `src/server/shared/types/ws-server-messages.ts` — `WsCommitLinked`, `WsRollbackComplete`, `WsSessionForked`
 - `src/server/shared/types/ws-client-messages.ts` — `WsRollbackCode`, `WsRollbackCodeAndChat`, `WsForkSessionFromMessage`
 - `src/client/components/RollbackDropdown.tsx` — Dropdown UI component

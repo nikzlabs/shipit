@@ -600,7 +600,12 @@ export class CodexEventHandler {
   private noticeOnce(key: string, text: string, parentToolUseId?: string): void {
     if (this.sandboxNotices.has(key)) return;
     this.sandboxNotices.add(key);
-    this.emitAssistant([{ type: "text", text: `\n\n${text}` }], parentToolUseId);
+    this.ctx.emitEvent({
+      type: "agent_assistant",
+      content: [{ type: "text", text: `\n\n${text}` }],
+      parentToolUseId,
+      synthetic: true,
+    });
   }
 
   private handleMessageDelta(params: Record<string, unknown>, parentToolUseId?: string): void {

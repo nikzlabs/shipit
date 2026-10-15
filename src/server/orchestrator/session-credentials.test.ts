@@ -902,13 +902,11 @@ describe("session-credentials", () => {
       path.join(nested, "projects", "-workspace", `${agentSessionId}.jsonl`),
     )).toBe(true);
 
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
 
     expect(fs.existsSync(
       path.join(sessionDir, ".claude", "projects", "-workspace", `${agentSessionId}.jsonl`),
     )).toBe(true);
-    expect(recovered).toEqual([agentSessionId]);
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
   });
 
@@ -943,8 +941,7 @@ describe("session-credentials", () => {
     fs.writeFileSync(path.join(containerVisible, ".credentials.json"), claudeCreds("STALE", 1_000));
 
     syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default", undefined, undefined,
-      { repairLeakedSubtrees: false },
+      root, sid, "claude", "claude-default", { repairLeakedSubtrees: false },
     );
 
     expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(true);
@@ -963,8 +960,7 @@ describe("session-credentials", () => {
     fs.writeFileSync(path.join(containerVisible, ".credentials.json"), claudeCreds("DEAD", 99_000));
 
     const wrote = repushProviderAccountToken(
-      root, sid, "claude", "claude-default", undefined, undefined,
-      { repairLeakedSubtrees: false },
+      root, sid, "claude", "claude-default", { repairLeakedSubtrees: false },
     );
 
     expect(wrote).toBe(true);
@@ -1018,13 +1014,8 @@ describe("session-credentials", () => {
     `${JSON.stringify({ sessionId: agentSessionId, type: "summary" })}\n`
     + `${JSON.stringify({ sessionId: agentSessionId, type: "user", message: { role: "user", content: "hi" } })}\n`
     + `${JSON.stringify({ sessionId: agentSessionId, type: "assistant", message: { role: "assistant", content: "hello" } })}\n`;
-  const stubJsonl = (agentSessionId: string) =>
-    `${JSON.stringify({ sessionId: agentSessionId, type: "last-prompt", prompt: "x" })}\n`
-    + `${JSON.stringify({ sessionId: agentSessionId, type: "ai-title", title: "y" })}\n`;
 
   it("non-destructive repair: merges orphan conversation history into the rebuilt .claude/", () => {
-    const recovered: (string | null)[] = [];
-    const onRecover = (id: string | null) => { recovered.push(id); };
     const agentSessionId = "b5903553-cab6-49a9-a9c0-855a7708867d";
     const { sessionDir } = seedLeakedSessionWithOrphanHistory({
       accessTail: "FRESH",
@@ -1034,7 +1025,7 @@ describe("session-credentials", () => {
       jsonlContents: resumableJsonl(agentSessionId),
     });
 
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", onRecover);
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
 
     expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
     expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("FRESH");
@@ -1043,48 +1034,35 @@ describe("session-credentials", () => {
     const lines = fs.readFileSync(mergedJsonl, "utf-8").trim().split("\n");
     expect(lines.length).toBe(3);
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
-    expect(recovered).toEqual([agentSessionId]);
   });
 
-  it("non-destructive repair: picks the most-recently-modified jsonl when multiple exist", () => {
-    const oldSid = "11111111-1111-4111-8111-111111111111";
-    const newSid = "22222222-2222-4222-8222-222222222222";
+  it("repairs the layout without reading a conversation file (docs/007)", () => {
     const account = path.join(root, "provider-accounts", "claude", "claude-default");
     fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
     const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(sessionDir, { recursive: true });
-    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
-    const orphanProjects = path.join(sessionDir, "provider-accounts", "claude", "claude-default", ".claude", "projects", "-workspace");
-    fs.mkdirSync(orphanProjects, { recursive: true });
-    const oldJsonl = path.join(orphanProjects, `${oldSid}.jsonl`);
-    const newJsonl = path.join(orphanProjects, `${newSid}.jsonl`);
-    fs.writeFileSync(oldJsonl, resumableJsonl(oldSid));
-    fs.writeFileSync(newJsonl, resumableJsonl(newSid));
-    const past = Date.now() / 1000 - 3600;
-    const now = Date.now() / 1000;
-    fs.utimesSync(oldJsonl, past, past);
-    fs.utimesSync(newJsonl, now, now);
+    const live = path.join(sessionDir, ".claude", "projects", "-workspace");
+    fs.mkdirSync(live, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    fs.writeFileSync(path.join(live, "live.jsonl"), resumableJsonl("live"));
+    const orphan = path.join(
+      sessionDir, "provider-accounts", "claude", "claude-default", ".claude", "projects", "-workspace",
+    );
+    fs.mkdirSync(orphan, { recursive: true });
+    fs.writeFileSync(path.join(orphan, "orphaned.jsonl"), resumableJsonl("orphaned"));
 
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
-
-    expect(recovered).toEqual([newSid]);
-  });
-
-  it("non-destructive repair: no orphan present → callback fires with null (clear signal)", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(sessionDir, { recursive: true });
-    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
-
-    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
-    expect(recovered).toEqual([null]);
+    const reads = vi.spyOn(fs, "readFileSync");
+    try {
+      syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
+      const conversationReads = reads.mock.calls
+        .map(([file]) => String(file))
+        .filter((file) => file.endsWith(".jsonl"));
+      expect(conversationReads).toEqual([]);
+    } finally {
+      reads.mockRestore();
+    }
+    expect(fs.existsSync(path.join(live, "orphaned.jsonl"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
   });
 
   it("non-destructive repair: shared-source files win on filename collision with orphan", () => {
@@ -1145,14 +1123,12 @@ describe("session-credentials", () => {
       resumableJsonl(agentSessionId),
     );
 
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
 
     expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
     const mergedJsonl = path.join(sessionDir, ".claude", "projects", "-workspace", `${agentSessionId}.jsonl`);
     expect(fs.existsSync(mergedJsonl)).toBe(true);
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
-    expect(recovered).toEqual([agentSessionId]);
     expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("FRESH");
   });
 
@@ -1164,10 +1140,8 @@ describe("session-credentials", () => {
     fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("EXISTING", 5_000));
 
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
 
-    expect(recovered).toEqual([]);
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
   });
 
@@ -1219,14 +1193,12 @@ describe("session-credentials", () => {
       resumableJsonl(agentSessionId),
     );
 
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", ACCT_UUID, (id) => { recovered.push(id); });
+    syncProviderAccountTokenIn(root, sid, "claude", ACCT_UUID);
 
     expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("ORPHAN");
     expect(fs.existsSync(
       path.join(sessionDir, ".claude", "projects", "-workspace", `${agentSessionId}.jsonl`),
     )).toBe(true);
-    expect(recovered).toEqual([agentSessionId]);
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
   });
 
@@ -1256,14 +1228,12 @@ describe("session-credentials", () => {
       resumableJsonl("newer-id"),
     );
 
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", ACCT_UUID, (id) => { recovered.push(id); });
+    syncProviderAccountTokenIn(root, sid, "claude", ACCT_UUID);
 
     const merged = path.join(sessionDir, ".claude", "projects", "-workspace");
     expect(fs.existsSync(path.join(merged, "older.jsonl"))).toBe(true);
     expect(fs.existsSync(path.join(merged, "newer.jsonl"))).toBe(true);
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
-    expect(recovered).toEqual(["older-id"]);
     expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("OLDER");
   });
 
@@ -1314,225 +1284,6 @@ describe("session-credentials", () => {
     }
 
     expect(warnings.filter((line) => line.includes("has no token file"))).toEqual([]);
-  });
-
-  it("non-destructive repair (case 4): recovers when DB agent_session_id has no matching jsonl on disk", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const goodSid = "b5903553-cab6-49a9-a9c0-855a7708867d";
-    const olderSid1 = "11111111-1111-4111-8111-111111111111";
-    const olderSid2 = "22222222-2222-4222-8222-222222222222";
-    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-    fs.mkdirSync(projectsDir, { recursive: true });
-    fs.writeFileSync(path.join(projectsDir, `${olderSid1}.jsonl`), resumableJsonl(olderSid1));
-    fs.writeFileSync(path.join(projectsDir, `${olderSid2}.jsonl`), resumableJsonl(olderSid2));
-    fs.writeFileSync(path.join(projectsDir, `${goodSid}.jsonl`), resumableJsonl(goodSid));
-    const now = Date.now() / 1000;
-    fs.utimesSync(path.join(projectsDir, `${olderSid1}.jsonl`), now - 7200, now - 7200);
-    fs.utimesSync(path.join(projectsDir, `${olderSid2}.jsonl`), now - 3600, now - 3600);
-    fs.utimesSync(path.join(projectsDir, `${goodSid}.jsonl`), now, now);
-
-    const staleSid = "ffffffff-ffff-4fff-8fff-ffffffffffff";
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      staleSid,
-    );
-
-    expect(recovered).toEqual([goodSid]);
-    expect(fs.existsSync(path.join(projectsDir, `${olderSid1}.jsonl`))).toBe(true);
-    expect(fs.existsSync(path.join(projectsDir, `${olderSid2}.jsonl`))).toBe(true);
-    expect(fs.existsSync(path.join(projectsDir, `${goodSid}.jsonl`))).toBe(true);
-  });
-
-  it("non-destructive repair (case 4): no callback when the DB id already matches an on-disk jsonl", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const goodSid = "b5903553-cab6-49a9-a9c0-855a7708867d";
-    const olderSid = "11111111-1111-4111-8111-111111111111";
-    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-    fs.mkdirSync(projectsDir, { recursive: true });
-    fs.writeFileSync(path.join(projectsDir, `${goodSid}.jsonl`), resumableJsonl(goodSid));
-    fs.writeFileSync(path.join(projectsDir, `${olderSid}.jsonl`), resumableJsonl(olderSid));
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      goodSid,
-    );
-
-    expect(recovered).toEqual([]);
-  });
-
-  it("non-destructive repair (case 4): no-op when currentAgentSessionId is null (fresh session)", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      null,
-    );
-
-    expect(recovered).toEqual([]);
-  });
-
-  it("non-destructive repair (case 4): callback fires with null when DB id has no resumable jsonl on disk", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      "doesnt-matter-no-projects-exist",
-    );
-
-    expect(recovered).toEqual([null]);
-  });
-
-  it("non-destructive repair: malformed jsonl first line → no callback fired", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(sessionDir, { recursive: true });
-    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
-    const orphanProjects = path.join(sessionDir, "provider-accounts", "claude", "claude-default", ".claude", "projects", "-workspace");
-    fs.mkdirSync(orphanProjects, { recursive: true });
-    fs.writeFileSync(path.join(orphanProjects, "garbage.jsonl"), "not json at all\n");
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
-
-    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
-    expect(recovered).toEqual([null]);
-  });
-
-  it("validator: picks an older real-conversation jsonl over a newer stub-only jsonl", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-    fs.mkdirSync(projectsDir, { recursive: true });
-
-    const realSid = "11111111-1111-4111-8111-111111111111";
-    const stubSid = "22222222-2222-4222-8222-222222222222";
-    fs.writeFileSync(path.join(projectsDir, `${realSid}.jsonl`), resumableJsonl(realSid));
-    fs.writeFileSync(path.join(projectsDir, `${stubSid}.jsonl`), stubJsonl(stubSid));
-    const now = Date.now() / 1000;
-    fs.utimesSync(path.join(projectsDir, `${realSid}.jsonl`), now - 3600, now - 3600);
-    fs.utimesSync(path.join(projectsDir, `${stubSid}.jsonl`), now, now);
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      "stale-db-id-with-no-jsonl",
-    );
-
-    expect(recovered).toEqual([realSid]);
-  });
-
-  it("validator: ignores a newer resumable conversation from a different project bucket", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-
-    const workspaceSid = "11111111-1111-4111-8111-111111111111";
-    const otherProjectSid = "9ee27e97-b788-4aed-b1e0-d87c23e2eebf";
-    const workspaceDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-    const otherProjectDir = path.join(sessionDir, ".claude", "projects", "-tmp-other-project");
-    fs.mkdirSync(workspaceDir, { recursive: true });
-    fs.mkdirSync(otherProjectDir, { recursive: true });
-    fs.writeFileSync(path.join(workspaceDir, `${workspaceSid}.jsonl`), resumableJsonl(workspaceSid));
-    fs.writeFileSync(path.join(otherProjectDir, `${otherProjectSid}.jsonl`), resumableJsonl(otherProjectSid));
-    const now = Date.now() / 1000;
-    fs.utimesSync(path.join(workspaceDir, `${workspaceSid}.jsonl`), now - 60, now - 60);
-    fs.utimesSync(path.join(otherProjectDir, `${otherProjectSid}.jsonl`), now, now);
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      "stale-db-id-with-no-jsonl",
-    );
-
-    expect(recovered).toEqual([workspaceSid]);
-  });
-
-  it("validator: only-stub jsonls present → callback fires with null (clear signal)", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-    fs.mkdirSync(projectsDir, { recursive: true });
-    const stubSid1 = "11111111-1111-4111-8111-111111111111";
-    const stubSid2 = "22222222-2222-4222-8222-222222222222";
-    fs.writeFileSync(path.join(projectsDir, `${stubSid1}.jsonl`), stubJsonl(stubSid1));
-    fs.writeFileSync(path.join(projectsDir, `${stubSid2}.jsonl`), stubJsonl(stubSid2));
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      "stale-db-id-with-no-jsonl",
-    );
-
-    expect(recovered).toEqual([null]);
-  });
-
-  it("validator: DB id points at a stub-only jsonl → fires Case 4 anyway, recovers from a sibling real jsonl", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-    fs.mkdirSync(projectsDir, { recursive: true });
-
-    const stubSidInDb = "856d63e4-stub-pointer-from-prod-aaaa";
-    const realSid = "11111111-1111-4111-8111-111111111111";
-    fs.writeFileSync(path.join(projectsDir, `${stubSidInDb}.jsonl`), stubJsonl(stubSidInDb));
-    fs.writeFileSync(path.join(projectsDir, `${realSid}.jsonl`), resumableJsonl(realSid));
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      stubSidInDb,
-    );
-
-    expect(recovered).toEqual([realSid]);
   });
 
   describe("docs/274 req 13 — a rotating Grok subscription token", () => {
@@ -1708,16 +1459,10 @@ describe("session-credentials", () => {
       fs.mkdirSync(path.dirname(path.join(orphan, rolloutRel)), { recursive: true });
       fs.writeFileSync(path.join(orphan, rolloutRel), `${JSON.stringify({ id: threadId })}\n`);
 
-      const recovered: (string | null)[] = [];
-      syncProviderAccountTokenIn(
-        root, sid, "codex", "codex-default",
-        (id) => { recovered.push(id); },
-        threadId,
-      );
+      syncProviderAccountTokenIn(root, sid, "codex", "codex-default");
 
       expect(fs.existsSync(path.join(sessionDir, ".codex", rolloutRel))).toBe(true);
       expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
-      expect(recovered).toEqual([]);
     });
 
     it("keeps the orphan when preservation fails — never delete the only copy", () => {
@@ -1749,81 +1494,6 @@ describe("session-credentials", () => {
       expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
     });
 
-    it("clears a stale Codex thread pointer when no rollout exists on disk", () => {
-      const account = path.join(root, "provider-accounts", "codex", "codex-default");
-      fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
-      fs.writeFileSync(path.join(account, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
-      const sessionDir = perSessionCredentialsDir(root, sid);
-      fs.mkdirSync(path.join(sessionDir, ".codex", "sessions"), { recursive: true });
-      fs.writeFileSync(path.join(sessionDir, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
-
-      const recovered: (string | null)[] = [];
-      syncProviderAccountTokenIn(
-        root, sid, "codex", "codex-default",
-        (id) => { recovered.push(id); },
-        threadId,
-      );
-
-      expect(recovered).toEqual([null]);
-    });
-
-    it("leaves a live Codex thread pointer alone when its rollout is present", () => {
-      const account = path.join(root, "provider-accounts", "codex", "codex-default");
-      fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
-      fs.writeFileSync(path.join(account, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
-      const sessionDir = perSessionCredentialsDir(root, sid);
-      fs.mkdirSync(path.dirname(path.join(sessionDir, ".codex", rolloutRel)), { recursive: true });
-      fs.writeFileSync(path.join(sessionDir, ".codex", rolloutRel), "{}\n");
-      fs.writeFileSync(path.join(sessionDir, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
-
-      const recovered: (string | null)[] = [];
-      syncProviderAccountTokenIn(
-        root, sid, "codex", "codex-default",
-        (id) => { recovered.push(id); },
-        threadId,
-      );
-
-      expect(recovered).toEqual([]);
-    });
-
-    it("does not clear on a fresh session with no thread pointer yet", () => {
-      const account = path.join(root, "provider-accounts", "codex", "codex-default");
-      fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
-      fs.writeFileSync(path.join(account, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
-      const sessionDir = perSessionCredentialsDir(root, sid);
-      fs.mkdirSync(path.join(sessionDir, ".codex"), { recursive: true });
-      fs.writeFileSync(path.join(sessionDir, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
-
-      const recovered: (string | null)[] = [];
-      syncProviderAccountTokenIn(
-        root, sid, "codex", "codex-default",
-        (id) => { recovered.push(id); },
-        null,
-      );
-
-      expect(recovered).toEqual([]);
-    });
-
-    it("a Claude session's jsonl state is unaffected by the Codex probe", () => {
-      const account = path.join(root, "provider-accounts", "claude", "claude-default");
-      fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-      fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-      const sessionDir = perSessionCredentialsDir(root, sid);
-      const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-      fs.mkdirSync(projectsDir, { recursive: true });
-      fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-      const claudeSid = "11111111-1111-4111-8111-111111111111";
-      fs.writeFileSync(path.join(projectsDir, `${claudeSid}.jsonl`), resumableJsonl(claudeSid));
-
-      const recovered: (string | null)[] = [];
-      syncProviderAccountTokenIn(
-        root, sid, "claude", "claude-default",
-        (id) => { recovered.push(id); },
-        claudeSid,
-      );
-
-      expect(recovered).toEqual([]);
-    });
   });
 
   it("removeSessionCredentials drops the subtree and is idempotent", () => {

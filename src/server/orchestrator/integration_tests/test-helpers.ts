@@ -810,6 +810,7 @@ interface RawClaudeEvent {
   message?: { content?: unknown[] };
   subtype?: string;
   is_error?: boolean;
+  is_api_error_message?: boolean;
   total_cost_usd?: number | null;
   usage?: {
     input_tokens?: number;
@@ -848,6 +849,7 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
         type: "agent_assistant",
         content: raw.message?.content ?? [],
         parentToolUseId: raw.parent_tool_use_id,
+        ...(raw.is_api_error_message === true ? { synthetic: true } : {}),
       };
     case "user":
       if (raw.isReplay) {

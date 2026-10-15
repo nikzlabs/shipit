@@ -415,7 +415,7 @@ export function createRunnerRegistry(
               enforceAccountRouting: true,
               ...agentEnvTurnArgs(envOpts),
               deps: {
-                credentialsDir, credentialStore, sessionManager, chatHistoryManager, sseBroadcast,
+                credentialsDir, credentialStore, sessionManager,
                 ...(providerAccountManager ? { providerAccountManager } : {}),
                 ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
               },

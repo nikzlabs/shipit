@@ -543,6 +543,21 @@ describe("ClaudeAdapter", () => {
     });
   });
 
+  it("marks the CLI's own error text, so it is not taken as an answer (docs/007)", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "API Error: 500" }] },
+      is_api_error_message: true,
+    } satisfies ClaudeEvent);
+
+    expect(events[0]).toMatchObject({ type: "agent_assistant", synthetic: true });
+  });
+
   it("maps user event to agent_tool_result", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);

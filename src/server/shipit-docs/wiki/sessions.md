@@ -195,6 +195,15 @@ A fork is a real, separate session with its own branch and its own pull request,
 and ShipIt moves the browser to it as soon as it exists — the user does not go
 looking for it in the sidebar.
 
+**A fork is also the only way to a new agent conversation.** ShipIt hands the
+agent the conversation the session is in and nothing else: it never starts a new
+one on its own and never pastes the chat back in. If the agent reports that it
+cannot find that conversation, the turn ends with an error card that says so, and
+the session keeps its conversation. Sending again tries the same conversation
+again. To go on in a new conversation, the user forks from the latest point: the
+fork's agent starts with the recent chat in its context and the whole chat in a
+file it can read.
+
 ## Attention, and turning it off
 
 A session needs attention when it has **stopped** and wants something: an answer

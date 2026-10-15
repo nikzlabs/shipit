@@ -58,11 +58,7 @@ import {
   turnTakesMessages,
 } from "./turn-stop-request.js";
 import { deliverWaitingMessages } from "./dispatch-steering.js";
-import path from "node:path";
-import { armConversationReplay, replaySpillDirs } from "./services/replay.js";
-import type { ReplaySpillTarget } from "./services/replay.js";
 import {
-  clearConversationThread,
   refreshStatusContextInPrompt,
   settleSessionStatusCard,
   shouldCarryStatusNudge,
@@ -177,56 +173,6 @@ function readStatusContext(deps: SystemTurnDeps, sessionId: string): string {
   } catch (err) {
     console.error(`[turn] re-reading the status card for ${sessionId} failed:`, err);
     return "";
-  }
-}
-
-/**
- * Put the transcript back before a retry spawns an agent for this turn.
- *
- * The replay is armed when the session has no resumable conversation and is spent by the
- * run parameters that carry it into a system prompt. A turn is dispatched once but this
- * function is re-entered for it by all three recovery paths below — so an attempt that
- * spent the replay and then failed without recording a conversation of its own leaves the
- * session threadless AND replayless, and the attempt that actually runs answers the user
- * with an empty conversation. Re-arming at the env-prep site cannot cover it: that guard
- * fires on the transition that clears a STORED id, which is already clear by then.
- *
- * Only when there is no thread to resume, so a healthy conversation is left to `--resume`,
- * and only when the transcript holds a reply — see `requireReply`.
- */
-function spillFor(
-  workspaceDir: string | undefined,
-  runner: SessionRunnerInterface | null,
-): { spill?: ReplaySpillTarget } {
-  if (!workspaceDir) return {};
-  // A container runner mounts the session's scratch directory at /persist; a local one
-  // leaves it where it is, so the agent-visible path is the host path.
-  return {
-    spill: replaySpillDirs(path.dirname(workspaceDir), {
-      containerized: runner?.supportsRemoteTerminal === true,
-    }),
-  };
-}
-
-function reseedConversationForRetry(
-  deps: SystemTurnDeps,
-  input: TurnInput,
-  runner: SessionRunnerInterface | null,
-): void {
-  try {
-    const session = deps.listenerDeps.sessionManager.get(input.sessionId);
-    if (!session || session.agentSessionId || session.conversationReplay) return;
-    if (!armConversationReplay(deps.listenerDeps, input.sessionId, {
-      requireReply: true,
-      dropTrailingUserText: input.userText,
-      ...spillFor(session.workspaceDir, runner),
-    })) return;
-    console.log(
-      `[turn] re-armed the conversation replay for ${input.sessionId}; `
-      + "the retry continues the transcript rather than starting empty",
-    );
-  } catch (err) {
-    console.error(`[turn] re-arming the conversation replay for ${input.sessionId} failed:`, err);
   }
 }
 
@@ -619,6 +565,8 @@ export async function executeAgentTurn(
   };
 
   let automaticRecoveryInProgress = false;
+  // The listener already posted the card; a retry would fail the same way.
+  let conversationNotFound = false;
   const recoveryRetryUsed = input.recoveryRetryUsed ?? input.isAuthRetry ?? false;
   const canRecoverAuth = !recoveryRetryUsed && !!deps.ensureAgentTokenFresh;
   // false surfaces sign-in. Do not return false merely because recovery has already started.
@@ -736,7 +684,6 @@ export async function executeAgentTurn(
       console.warn("[turn] 401-recovery token repush failed:", err);
     }
     await finalizeAttemptOutput();
-    reseedConversationForRetry(deps, input, runner);
     const freshAgent = deps.agentFactory(agentId);
     if (runner) runner.setAgent(freshAgent);
     await executeAgentTurn(runner, deps, freshAgent, {
@@ -751,38 +698,10 @@ export async function executeAgentTurn(
     return true;
   };
 
-  // Env preparation can change both pointers; capture after it and before spawning.
-  let activeResumeSessionId: string | null = null;
+  // Env preparation chooses the route; capture after it and before spawning.
   let capturedCredentialRoute:
     | Pick<SessionInfo, "providerRouteKind" | "providerRouteId">
     | undefined;
-  const recoverMissingConversation = (invalidId: string): boolean => {
-    // eslint-disable-next-line no-restricted-syntax -- Claude-only CLI stderr/--resume recovery
-    if (agentId !== "claude" || recoveryRetryUsed || invalidId !== activeResumeSessionId) return false;
-    const current = deps.listenerDeps.sessionManager.get(sessionId)?.agentSessionId;
-    if (current !== invalidId) return false;
-    automaticRecoveryInProgress = true;
-    clearConversationThread(deps.listenerDeps, sessionId);
-    if (runner) {
-      finalizeTurnRows(deps.listenerDeps.chatHistoryManager, runner, sessionId, { skipEmpty: true });
-    }
-    agent.kill();
-    if (runner?.getAgent() === agent) runner.setAgent(null);
-    // The CLI has just told us this conversation is gone; rebuild it from the transcript
-    // rather than letting the recovery start the agent with no history at all.
-    reseedConversationForRetry(deps, input, runner);
-    const freshAgent = deps.agentFactory(agentId);
-    if (runner) runner.setAgent(freshAgent);
-    void executeAgentTurn(runner, deps, freshAgent, {
-      ...input,
-      recoveryRetryUsed: true,
-      reuseExistingAgent: false,
-      emitUserEcho: false,
-      continuesTurn: true,
-      persistGuard,
-    });
-    return true;
-  };
 
   let quotaRetryInProgress = false;
   const capturedRoutePolicy = (): CredentialFailurePolicy | undefined => {
@@ -813,7 +732,6 @@ export async function executeAgentTurn(
     } catch {
       // Already gone.
     }
-    reseedConversationForRetry(deps, input, runner);
     const freshAgent = deps.agentFactory(agentId);
     if (runner) {
       runner.setAgent(freshAgent);
@@ -1098,8 +1016,8 @@ export async function executeAgentTurn(
     isServingAdoptedTurn: () => servingCliStartedTurn(),
     ...(canRecoverAuth ? { willRecoverAuth, recoverAuth } : {}),
     willRetryOnQuotaError,
-    // eslint-disable-next-line no-restricted-syntax -- Claude-only CLI stderr/--resume recovery
-    ...(!recoveryRetryUsed && agentId === "claude" ? { recoverMissingConversation } : {}),
+    // No kill: the CLI exits by itself, and a kill can drop the `done` that ends the turn.
+    onConversationNotFound: () => { conversationNotFound = true; },
     ...(input.permissionMode !== undefined ? { requestedPermissionMode: input.permissionMode } : {}),
     // An adapter error can be terminal without a later done event, even with an empty queue.
     onError: async () => {
@@ -1744,6 +1662,7 @@ export async function executeAgentTurn(
         input.emitErrorOnNoResult
         && !receivedResult
         && !sawAuthRequired
+        && !conversationNotFound
         && !(runner?.wasInterrupted ?? false)
       ) {
         const base = code !== 0
@@ -1779,6 +1698,7 @@ export async function executeAgentTurn(
         input.onNoResultExit &&
         !receivedResult &&
         !sawAuthRequired &&
+        !conversationNotFound &&
         !(runner?.wasInterrupted ?? false)
       ) {
         let handled = false;
@@ -1899,7 +1819,6 @@ export async function executeAgentTurn(
     const previousRouteId = deps.listenerDeps.usageManager?.lastTurnCredentialRouteId?.(sessionId);
     const prep = await deps.prepareAgentEnv?.(sessionId, agentId, {
       reusingResidentAgent: input.reuseExistingAgent === true,
-      ownUserText: input.userText,
       ...(input.attemptLedger?.length
         ? { excludeRouteIds: input.attemptLedger.map((entry) => entry.routeId) }
         : {}),
@@ -1911,8 +1830,6 @@ export async function executeAgentTurn(
           || (runner?.backgroundWorkDescriptions.length ?? 0) > 0),
     });
     console.log(`[turn] env-prep for ${sessionId} took ${Date.now() - envBegan}ms`);
-    const preparedSession = deps.listenerDeps.sessionManager.get(sessionId);
-    activeResumeSessionId = preparedSession?.agentSessionId ?? null;
     const turnRoute = prep?.turnRoute;
     capturedCredentialRoute = turnRoute
       ? { providerRouteKind: turnRoute.kind, providerRouteId: turnRoute.id }

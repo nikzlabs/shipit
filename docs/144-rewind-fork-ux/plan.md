@@ -220,11 +220,10 @@ Rewinding to the gap above the first message truncates the chat to an empty arra
 
 `buildConversationReplay` (`services/replay.ts`) flattens each message to `User: …` / `Assistant: …` — tool calls, tool results, images, and file references are dropped. For tool-heavy sessions, where assistant turns can be purely tool-use with no narrative text, the replay reduces to `"Assistant: "` placeholders, which is worse than no replay at all. Any rewind/fork that resets the agent session loses that context, and Claude's continuation is markedly less informed than the pre-rewind turn was.
 
-Two further losses sit in the same builder. The replay carries **the turn's own user
-message**: `executeAgentTurn` persists the user row before `prepareAgentEnv` runs, so the
-replay ends with the text that immediately follows it as the prompt and the agent reads it
-twice. And `requireReply` demanded non-empty assistant *text*, which a tool-only turn never
-has — so the transcript that most needs replaying was the one it refused to arm.
+Two further losses sat in the automatic re-arming that docs/007 later removed: a replay
+built mid-turn carried the turn's own user message, and `requireReply` refused a
+transcript whose replies were tool-only. Neither applies to a replay built by a rewind or
+a fork, which runs before any turn.
 
 **Fix (shipped).** Each message carries indented detail lines under its `User:` /
 `Assistant:` head: `[tool] <name> <input>`, `[result] …`, and `[attached] …` naming files,
@@ -240,13 +239,9 @@ so files from an earlier build are unreachable and would otherwise accumulate. W
 usable directory a long payload degrades to a 500-character excerpt, which is still more
 than the text-only replay carried.
 
-`buildConversationReplay` also takes `dropTrailingUserText`. It removes the **last user
-row**, not the last row: a recovery finalizes the failed attempt's partial assistant output
-into history before rebuilding, so this turn's own message is no longer at the end. And it
-matches on **text** rather than position, because on the new-session path the row is
-persisted *after* the replay is built and dropping by position there would discard real
-history. Two user rows with identical text are indistinguishable to it; the later is
-dropped.
+The whole replay is bounded too: over 256 KiB it keeps the most recent messages inline
+and writes the whole transcript to `transcript.md` beside the spilled payloads (docs/007 →
+Size).
 
 The container-mode answer that picks `/persist` over a host path is read **at handler
 entry** and captured (docs/095). A fork clones before its replay is built, and a parent
@@ -254,11 +249,11 @@ whose viewer disconnected can be reclaimed during that await — re-resolving th
 afterwards reads the absent one as local and hands the child paths it cannot open.
 
 Per-turn arguments to `prepareSessionAgentEnvironment` go through `agentEnvTurnArgs`
-(`session-agent-env.ts`). Both wiring sites rebuilt that object by hand and drifted:
-`ownUserText` reached the dispatched path and not the interactive one, so the fix covered
-half the turns.
+(`session-agent-env.ts`). Both wiring sites rebuilt that object by hand and drifted: an
+option reached the dispatched path and not the interactive one, so the fix covered half
+the turns.
 
-**Key files.** `services/replay.ts` (builder, arming, own-message drop),
+**Key files.** `services/replay.ts` (builder, size bound),
 `services/replay-detail.ts` (detail lines, spill writer, `replaySpillDirs`).
 
 ## Design decisions (resolved before Landing 2)

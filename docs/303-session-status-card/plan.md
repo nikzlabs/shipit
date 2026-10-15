@@ -200,9 +200,9 @@ its card too; while the card rode the list rows, it had none.
   because that one method is what every reset and rewind reaches — nine call
   sites, of which a shared helper would only be remembered by some. The write
   reaches the open viewers like any other, so a viewer cannot keep a card that
-  reads current. The two recovery paths that discard a thread —
-  `recoverMissingConversation` and the credential-repair `onRecover` — go
-  through `clearConversationThread` (`services/session-status.ts`) too.
+  reads current. ShipIt no longer discards a thread on its own (docs/007), so
+  only user-initiated resets reach `clearConversationThread`
+  (`services/session-status.ts`).
 - Fork (`forkSession`, `session-fork-merge.ts`): copy the parent's card,
   marked stale. It is the fork's starting point.
 - Archive: the row keeps the column; restore brings the card back.
@@ -1409,8 +1409,8 @@ calls directly.
 ### The block belongs to the attempt, not to the turn
 
 A turn is submitted more than once. `executeAgentTurn` is re-entered, with the same
-`TurnInput`, by the quota failover (`retryOnNextAccount`), the auth heal, and the
-lost-conversation recovery (`recoverMissingConversation`) — and the first two can fire
+`TurnInput`, by the quota failover (`retryOnNextAccount`) and the auth heal (a third,
+lost-conversation recovery, was removed by docs/007) — and both can fire
 *after* the attempt has done real work, because the provider refuses on a later request
 in the same turn. The prompt was composed once, at the top of the turn, so the retried
 attempt read the card as it stood before any of that work: the `session_status` write
