@@ -353,7 +353,10 @@ independently.)
     live network does it force-disconnect any dangling endpoint (clearing
     `connectToNetwork`'s "already exists" swallow) and reconnect, re-opening
     egress to the recreated subnet. Wired via a new `ServicePoller.afterPoll`
-    hook → `ServiceManager.networkHealFn` → the container manager. Key files:
+    hook → `ServiceManager.networkHealFn` → the container manager. Since
+    docs/332-event-driven-service-status the heartbeat it rode is gone: Docker
+    `network` `disconnect`/`destroy` events now drive it, through
+    `ServiceEventRouter` → `ServiceManager.healNetwork`. Key files:
     `session-container.ts`, `service-poller.ts`, `service-manager.ts`,
     `service-manager-setup.ts`; tests in `session-container-network-heal.test.ts`
     and `service-poller.test.ts`.

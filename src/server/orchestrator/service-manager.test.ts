@@ -5,6 +5,8 @@ import path from "node:path";
 import os from "node:os";
 import {
   type ServiceManager,
+  LOG_FOLLOWER_REARM_MS,
+  MAX_LOG_FOLLOWER_REARMS,
   NETWORK_JOIN_TIMEOUT_MS,
   STARTING_WATCHDOG_MS,
   STARTING_TIMEOUT_MESSAGE,
@@ -1174,6 +1176,10 @@ services:
     expect(proc!.listenerCount("error")).toBeGreaterThan(0);
 
     expect(() => proc!.emit("error", new Error("spawn docker ENOENT"))).not.toThrow();
+    // `close` always follows a spawn error and owns the removal, so that it can also re-arm the
+    // follower — removing the entry here would make its identity guard skip that (docs/332).
+    expect(logProcesses.has("web")).toBe(true);
+    proc!.emit("close");
     expect(logProcesses.has("web")).toBe(false);
 
     cleanup();
@@ -3912,7 +3918,9 @@ describe("ServiceManager stuck-starting recovery (#2044)", () => {
     const { mgr, setPsResponse } = makeManager(dir);
 
     await mgr.start();
-    setPsResponse("");
+    // A listed-but-never-running container is what the watchdog owns: a service with NO container
+    // belongs to the missing-container rule, which reaches it first (docs/332).
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "paused", ExitCode: 0 }));
     await mgr.startService("web");
     expect(mgr.getService("web")?.status).toBe("starting");
 
@@ -4141,7 +4149,8 @@ describe("ServiceManager starting-state address hygiene (#2044)", () => {
     });
 
     await mgr.start();
-    setPsResponse("");
+    // Paused, not absent: the missing-container rule would otherwise own this service (docs/332).
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "paused", ExitCode: 0 }));
     const startPromise = mgr.startService("web");
     await vi.advanceTimersByTimeAsync(0);
 
@@ -4510,6 +4519,150 @@ describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
     const second = logProcesses().get("web");
     expect(second).toBeDefined();
     expect(second).not.toBe(first);
+  });
+
+  // docs/332: the re-arm replaced a poll, so an unattachable follower would otherwise leave a
+  // 2-second timer running for ever on a session nobody is watching.
+  it("re-attaches a follower that dies on its own, without a poll", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    const first = logProcesses().get("web");
+
+    first!.emit("close", 0);
+    await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+
+    const second = logProcesses().get("web");
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+    vi.useRealTimers();
+  });
+
+  it("gives up re-arming a follower that never attaches, rather than retrying for ever", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 2; i++) {
+      logProcesses().get("web")?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+
+    expect(logProcesses().has("web")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  // A `docker compose logs` that writes a diagnostic and exits proves the follower did NOT attach,
+  // so crediting stderr to the budget made the bound meaningless.
+  it("does not let a stderr diagnostic refill the re-arm budget", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 3; i++) {
+      const proc = logProcesses().get("web");
+      proc?.stderr?.emit("data", Buffer.from("error: no such service\n"));
+      proc?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+
+    expect(logProcesses().has("web")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("refills the budget on real container output, so later disconnects still recover", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 3; i++) {
+      const proc = logProcesses().get("web");
+      proc?.stdout?.emit("data", Buffer.from("listening on 3000\n"));
+      proc?.emit("close", 0);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+      expect(logProcesses().has("web")).toBe(true);
+    }
+    vi.useRealTimers();
+  });
+
+  // The budget has to cover the attempt a RECONCILE makes too: `onRunning` runs on every one, so a
+  // follower that can never attach would spawn a process on every backstop for ever (docs/332).
+  it("spawns nothing more once the budget is spent, not even from a reconcile", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 2; i++) {
+      logProcesses().get("web")?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+    expect(logProcesses().has("web")).toBe(false);
+
+    await poll();
+    await poll();
+
+    expect(logProcesses().has("web")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("follows the logs again once the user restarts the service", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 2; i++) {
+      logProcesses().get("web")?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+    expect(logProcesses().has("web")).toBe(false);
+
+    await mgr.startService("web");
+    expect(logProcesses().has("web")).toBe(true);
+
+    // And the NEW container's follower gets a fresh budget, so it can re-arm on its own again.
+    logProcesses().get("web")?.emit("close", 1);
+    await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+
+    expect(logProcesses().has("web")).toBe(true);
+    vi.useRealTimers();
   });
 
   it("does not replace a follower that is still alive", async () => {

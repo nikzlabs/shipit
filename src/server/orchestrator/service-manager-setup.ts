@@ -520,6 +520,8 @@ export function buildServiceManager(args: {
         }
       : {}),
     stackName: process.env.DOCKER_STACK,
+    // The Engine API source for status, in place of spawned Compose CLI queries (docs/332).
+    ...(containerManager ? { docker: containerManager.getDockerClient() } : {}),
     opsSession: session?.kind === "ops",
     dockerSocketGrant: () => dockerSocketGrantFor(deps.sessionManager.get(sessionId), deps.repoStore),
     ...(containerManager ? { sessionGpu: () => containerManager.gpuDecision(sessionId) } : {}),

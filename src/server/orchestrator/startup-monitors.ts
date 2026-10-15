@@ -8,6 +8,7 @@ import {
   registerShutdownHook,
 } from "./app-lifecycle.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
+import { ServiceEventRouter } from "./service-event-router.js";
 import { sweepRetainedSessionData } from "./data-retention-sweep.js";
 import { isRestoreInFlight } from "./services/session.js";
 import { runDiskJanitor, runSteadyStateReclaim, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks, COLD_ARTIFACT_RETENTION_DAYS } from "./disk-janitor.js";
@@ -397,6 +398,16 @@ export async function startStartupMonitors(
       sseBroadcast,
     );
     app.addHook("onClose", async () => keepPreviewSupervisor.dispose());
+
+    // Compose service status is event-driven; this is what replaced the per-session poll (docs/332).
+    const serviceEventRouter = new ServiceEventRouter({
+      docker: containerManager.dockerClient,
+      serviceManagers,
+      containerManager,
+      ...(process.env.DOCKER_STACK ? { stackName: process.env.DOCKER_STACK } : {}),
+    });
+    serviceEventRouter.start();
+    app.addHook("onClose", async () => serviceEventRouter.stop());
   }
 
   app.addHook("onClose", async () => {
