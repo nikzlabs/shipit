@@ -862,9 +862,23 @@ inherits it, with these conditions:
   `env: { ...process.env, MY_VARIABLE: "…" }`. A command that sets its own
   `GLIBC_TUNABLES` replaces ShipIt's value: put both tunables into the one
   variable, with a colon between them.
-- **To see what a running browser has,** read the environment of its GPU
-  process: `tr '\0' '\n' < /proc/<pid>/environ | grep GLIBC_TUNABLES`, where
-  `<pid>` is the process whose command line has `--type=gpu-process`.
+- **To see what a running browser has,** read the environment of its main
+  process: `tr '\0' '\n' < /proc/<pid>/environ | grep GLIBC_TUNABLES`. The
+  main process is the child of the program that started the browser:
+  `ps -o pid,args --ppid <pid of that program>`. For the built-in browser,
+  that program is the `playwright-mcp` server. Each process of the browser,
+  the GPU process too, had the main process's environment.
+- **To find the GPU process itself** (for a CPU reading or a sampler), look in
+  that browser's process tree for the process whose `/proc/<pid>/maps` has the
+  renderer's library: `libd3d12.so` on the card, `libvk_swiftshader.so` on
+  SwiftShader. Do not look for `--type=gpu-process` on a command line. When
+  `GLIBC_TUNABLES` is in the browser's environment, also with an empty value,
+  each process that Chromium forks from a zygote keeps the zygote's command
+  line, `--type=zygote`: the GPU process, and the renderers too. So with
+  ShipIt's value in place, no process shows `--type=gpu-process`. The same
+  Chromium with no `GLIBC_TUNABLES` shows the types. The probable cause: the
+  C library moves that variable's text away from the command line in memory,
+  and Chromium then does not write the type over the command line.
 
 Without the variable, these uploads were slow on that host, each of 36 MB when
 no size is given: the texture array in one call (11.9 s) and in one call for

@@ -56,6 +56,7 @@ describe("generateSessionName", () => {
           expect(args).toContain("-p");
           expect(args).toContain("--output-format");
           expect(args).toContain("json");
+          expect(args).toContain("--no-session-persistence");
           setImmediate(() => {
             cb(null, '{"slug": "add-login", "title": "Add Login Page"}\n', "");
           });
@@ -208,6 +209,7 @@ describe("generateSessionName", () => {
           expect(args[0]).toBe("exec");
           expect(args).toContain("--skip-git-repo-check");
           expect(args).toContain("--json");
+          expect(args).toContain("--ephemeral");
           expect(args[args.length - 1]).toContain("Add a login page");
           setImmediate(() => {
             cb(null, '{"slug": "add-login", "title": "Add Login Page"}\n', "");

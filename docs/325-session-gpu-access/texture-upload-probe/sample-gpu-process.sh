@@ -11,10 +11,28 @@ out=$1; max=$2; shift 3
 : "${GDB_ROOT:?set GDB_ROOT}"
 mkdir -p "$out"; rm -f "$out"/s*.txt
 
+# With GLIBC_TUNABLES set, the GPU process keeps its zygote's command line, which hides its type: find it by the renderer's libraries.
+gpu_processes() {
+  for p in $(pgrep -f '[c]hrome'); do
+    if tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q -- '--type=gpu-process' \
+      || grep -qE 'libvk_swiftshader|libEGL_mesa|libGLX_mesa|libgallium|_dri\.so|libd3d12' "/proc/$p/maps" 2>/dev/null; then
+      echo "$p"
+    fi
+  done
+}
+before=" $(gpu_processes | tr '\n' ' ') "
+
 "$@" > "$out/command.out" 2>&1 &
 command_pid=$!
-sleep 2
-gpu=$(pgrep -n -f -- '--type=[g]pu-process')
+gpu=
+deadline=$((SECONDS + 10))
+while [ -z "$gpu" ] && [ "$SECONDS" -lt "$deadline" ]; do
+  for p in $(gpu_processes); do
+    case "$before" in *" $p "*) ;; *) gpu=$p ;; esac
+  done
+  [ -n "$gpu" ] || sleep 0.1
+done
+[ -n "$gpu" ] || { echo "no new GPU process within 10 s" >&2; wait "$command_pid"; exit 1; }
 i=0
 while kill -0 "$command_pid" 2>/dev/null && [ "$i" -lt "$max" ]; do
   LD_LIBRARY_PATH="$GDB_ROOT/usr/lib/x86_64-linux-gnu" timeout 20 "$GDB_ROOT/usr/bin/gdb" -q -batch -p "$gpu" \

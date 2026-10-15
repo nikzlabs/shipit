@@ -217,10 +217,10 @@ function cliInvocation(agentId: AgentId, prompt: string): [string, string[]] {
   switch (agentId) {
     case "codex":
       // The working directory is /tmp, outside a trusted repository.
-      return ["codex", ["exec", "--skip-git-repo-check", prompt]];
+      return ["codex", ["exec", "--skip-git-repo-check", "--ephemeral", prompt]];
     case "claude":
     default:
-      return ["claude", ["-p", prompt, "--output-format", "text"]];
+      return ["claude", ["-p", prompt, "--output-format", "text", "--no-session-persistence"]];
   }
 }
 
