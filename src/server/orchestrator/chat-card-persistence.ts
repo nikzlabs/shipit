@@ -68,6 +68,7 @@ export function buildTurnMessages(
       toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
       toolResults: g.toolResults?.length ? g.toolResults : undefined,
       subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
+      ...(g.agentMessageId !== undefined ? { agentMessageId: g.agentMessageId } : {}),
       ...flag,
     });
   }

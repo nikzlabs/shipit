@@ -5,42 +5,101 @@ description: Rollback and fork, the conversation replay that starts a fork's con
 
 # Rollback System
 
-Replaced the old threads/checkpoints system with a simpler rollback UX. Each assistant message that created a git auto-commit gets a rollback dropdown with three options.
+Requirements: [requirements.md](requirements.md). The rewind UI — rewind points between
+turns, the confirmation, undo — is `docs/144-rewind-fork-ux`; this doc is what each action
+does to the agent's conversation.
 
-## Options
+## What each action does to the conversation
 
-1. **Rollback code** — `git reset --hard <parentCommit>`. Chat stays as-is. A visual divider + system note injected so Claude knows code was rolled back.
-2. **Rollback code + chat** — Same git reset. Old messages stay visible but dimmed/read-only above a divider. Fresh CLI session with conversation replay in system prompt.
-3. **Fork as new session** — New session (worktree) at that commit, with truncated chat history and conversation replay for Claude.
+| Action | Chat | Code | Agent conversation |
+|---|---|---|---|
+| Rewind code | kept, later rows dimmed | reset to the gap's commit | unchanged; the next prompt carries a one-line notice (req 3) |
+| Rewind chat | cut at the gap | unchanged | forked at the gap's message (req 4) |
+| Rewind chat and code | cut at the gap | reset | forked at the gap's message (req 4) |
+| Fork | copied to a new session | new branch at the gap's commit | new conversation; the replay is its first user message (req 8) |
 
-## How it works
+An undo restores what the action changed and nothing else: a code undo removes its notice
+if no turn read it yet, and a chat undo restores the rewind point that was pending before
+(normally none). An undo is only possible before the next turn starts (`docs/144-rewind-fork-ux`
+D8), so no fork has happened yet and the stored conversation still holds every message.
 
 ### Commit linking
 
 After each auto-commit, the server captures the parent commit hash (HEAD before commit) and the new commit hash. These are linked to the last assistant message via a `commit_linked` WS event and persisted in chat history.
 
-### Rollback code
+### Rewind code (req 3)
 
-1. Server runs `git reset --hard <parentCommitHash>`
-2. Refreshes file tree and git log
-3. Sends `rollback_complete` with `mode: "code"`
-4. Client inserts a divider message: "Code rolled back to \<hash\>"
-5. A system note is prepended to the next message sent to Claude
+`git reset --hard` to the gap's commit, the rows past the gap marked `rolledBack`, and
+`appendPendingAgentNotice` queues one line ("The user rolled the code back to commit
+`abc1234`; …"). The pending notice rides the next prompt the way every pending agent notice
+does (`agent-execution.ts`), so it reaches a resident process too, and a turn that never
+reaches an agent puts it back (planning#609). The stored id, the resident process and the
+conversation are not touched. The undo removes that exact line from the pending notice.
 
-### Rollback code + chat
+### Rewind chat, and chat and code (reqs 4, 5, 7)
 
-1. Server runs `git reset --hard <parentCommitHash>`
-2. Builds conversation replay from chat history up to the rollback point
-3. Stores replay on session, clears agent session ID (forces fresh CLI session)
-4. Sends `rollback_complete` with `mode: "code_and_chat"`
-5. Client marks messages after rollback point as `rolledBack: true` (dimmed/read-only)
-6. Next CLI session receives the conversation replay as system prompt
+Claude Code forks a stored conversation at one of its messages:
+`claude --resume <stored id> --resume-session-at <message uuid> --fork-session`. The new
+conversation holds the messages up to and including that one, with their uuids unchanged,
+and reports its own id in `init`; the stored file is not modified. Verified on 2.1.300 in
+`-p` and stream-json input mode. An unknown uuid is an error result, "No message found
+with message.uuid of: …", exit 1, and no new file.
 
-### Fork as new session
+**The message id of each row (req 5).** The Claude adapter passes the CLI's `uuid` on as
+`messageId` on `agent_assistant`, `agent_tool_result` and `agent_user_replay`.
+`agent-listeners.ts` writes the latest one onto the chat group it fed (`agentMessageId`):
+assistant output the model wrote (never `synthetic` text) and the tool results attached to
+that group — but not past a steer the CLI has read, which a lone question or plan tool
+merged into the group would cross (`stampLastGroup`). The turn prompt's echo stamps its
+user row, found by the row id the persist returned (`turn-executor.ts`,
+`recordUserMessageAgentId`): the first matching echo of the attempt, written once that
+attempt's conversation answered (model output or a successful result), since an
+unanswered attempt's conversation is not kept. A retry's stamp replaces it. The echo may
+carry the worker's Node runtime notice before the prompt, and still counts for the stamp;
+the turn-ownership reading stays an exact match. The id is the `agent_message_id` column
+of `messages`.
+
+Measured on 2.1.300, so some user rows have no id: a prompt the CLI reads while idle is
+stored as a user message under its echo's id, but a message it reads mid-turn — a steer,
+or a prompt that went in behind a turn of the CLI's own — is stored as a `queued_command`
+attachment under a different id. So a steer is never stamped, and the prompt is not
+stamped when the CLI started a turn of its own first. One-shot mode does not echo user
+messages at all.
+
+**The fork point.** `forkPointBefore` walks back from the gap: the first row with an id is
+the point; rows ShipIt wrote itself (notices, cards, errors) carry none and are skipped; a
+user row with no id ends the search with no point, since the conversation would lose that
+prompt. No point, or an agent without the `forksAtMessage` capability (Codex), refuses the
+in-place rewind with a reason that names fork (reqs 6, 9). The rewind preview carries the
+same reason as `unavailableReason`, and the rewind menu disables the item and shows it.
+
+**Applying it.** The rewind stores the point in `sessions.agent_resume_at` and keeps the
+stored id. `buildAgentRunParams` passes it as `resumeAt` with the stored id, and the Claude
+process adds `--resume-session-at <uuid> --fork-session` after `--resume`. The CLI reports
+the fork's id like any other, and `setAgentSessionId` retires the point in the same write,
+only when the id it writes differs from the stored one. A spawn that fails first keeps the
+point for the next spawn; an unanswered failure stores no id (`agent-listeners.ts`).
+
+**No resident holds the old conversation (req 7).** A rewind of the chat retires the idle
+resident process at once — a CLI-started turn (a background task finishing) would
+otherwise continue the old conversation — and both turn paths (`agent-execution.ts`,
+`dispatched-turn.ts`) retire a resident while a point is pending
+(`releaseResidentOnPendingRewind`). A code-only rewind keeps the resident: its
+conversation is unchanged. The rewind checks that no turn runs and then awaits file and
+git work without holding turn admission, as it did before; a turn admitted in that window
+keeps its process, and the next turn's start retires it.
+
+**A point the CLI cannot find.** `agent-listeners.ts` matches the CLI's stderr line like
+"No conversation found": it posts one card that says the conversation could not be rewound
+and that a fork continues from this point, keeps the stored id and the point, and ends the
+turn without the no-result retry.
+
+### Fork as new session (req 8)
 
 1. Truncates chat history to the rollback point
 2. Creates new session via `forkSession()` with `startPoint: parentCommitHash`
-3. Saves truncated history and conversation replay to the new session
+3. Saves truncated history and conversation replay to the new session; the copied rows
+   lose their `agentMessageId`, which names messages of the parent's conversation
 4. Sends `session_forked` with new session info
 5. Client shows notification in current chat
 
@@ -84,13 +143,18 @@ replay.
 
 ### A replay only starts a conversation
 
-A replay is armed by a fork for its new session, and still by the in-place rewinds above
-(their redesign is a follow-up). `buildAgentRunParams` **reads** it — it no longer takes
-it — and only when there is no stored id; a stored id is always resumed and a replay never
-displaces it. The replay is retired when the CLI reports the conversation it started:
+Only a fork arms a replay, for its new session. `buildAgentRunParams` **reads** it — it no
+longer takes it — and only when there is no stored id; a stored id is always resumed and a
+replay never displaces it. It puts the replay in front of the turn's prompt, so it is the
+first user message of the new conversation and the CLI stores it (req 8); the system
+prompt is not stored, and a replay there was lost at the first process restart. The
+executor still knows the prompt in the CLI's echo, which has the replay in front.
+The replay is retired when the CLI reports the conversation it started:
 `SessionManager.setAgentSessionId` clears it in the same write. So a spawn that fails
 before the CLI reports anything (a 413, a crash, a quota refusal) leaves it for the next
-spawn, with no restore step to forget.
+spawn, with no restore step to forget. A compaction asked for before the fork's first turn
+has nothing to compact, and the CLI reads `/compact` only as the whole message: that turn
+sends the replay alone, without the compaction, and so starts the conversation.
 
 ### Size
 
@@ -108,31 +172,31 @@ indented detail lines, spilling any payload over 500 characters to a file it nam
 `docs/144-rewind-fork-ux` U8.
 
 Guards: `integration_tests/conversation-replay-retry.test.ts`,
-`integration_tests/claude-message-flow.test.ts`, `services/replay.test.ts`,
+`integration_tests/claude-message-flow.test.ts`, `integration_tests/rewind-conversation.test.ts`,
+`integration_tests/turn-prompt-message-id.test.ts`,
+`services/replay.test.ts`, `services/rewind-conversation.test.ts`,
 `session-agent-run-params.test.ts`.
 
-**Known limit.** The replay rides in the system prompt (`--append-system-prompt-file`),
-which Claude Code does not store in its conversation file, so a fork's context is not in
-the conversation after its first process restart. The decided fix is to deliver it as the
-new conversation's first user message (follow-up work, tracked on the issue).
+**Known limits.** A fork whose first message is a `/goal` command sends the replay in
+front of it, so the CLI reads the command as text. A rewind point before a compaction
+boundary forks the full messages from before the compaction, which can be longer than the
+context window; the CLI then compacts again. A goal set through the goal control process
+while a rewind point is pending is set on the conversation before the fork.
 
 ## Key files
 
-- `src/server/orchestrator/ws-handlers/rollback-handlers.ts` — Three server-side handlers
+- `src/server/orchestrator/ws-handlers/rollback-handlers.ts` — rewind, preview and undo handlers
+- `src/server/orchestrator/services/rewind-conversation.ts` — the fork point, the refusal reasons, the code rewind notice
 - `src/server/orchestrator/services/replay.ts` — `buildConversationReplay()` (size bound) and `boundStoredReplay()`
-- `src/server/orchestrator/session-agent-run-params.ts` — reads the replay into the system prompt when there is no stored id
-- `src/server/orchestrator/sessions.ts` — replay storage; `setAgentSessionId` retires it
-- `src/server/orchestrator/ws-handlers/agent-listeners.ts` — the only writer of the agent session id; the cannot-resume card
-- `src/server/orchestrator/turn-executor.ts` — ends a turn whose conversation the CLI cannot resume
-- `src/server/shared/types/ws-server-messages.ts` — `WsCommitLinked`, `WsRollbackComplete`, `WsSessionForked`
-- `src/server/shared/types/ws-client-messages.ts` — `WsRollbackCode`, `WsRollbackCodeAndChat`, `WsForkSessionFromMessage`
-- `src/client/components/RollbackDropdown.tsx` — Dropdown UI component
-- `src/client/components/MessageList.tsx` — Renders rollback button on qualifying messages
-- `src/client/hooks/useMessageHandler.ts` — Handles `commit_linked`, `rollback_complete`, `session_forked`
+- `src/server/orchestrator/session-agent-run-params.ts` — puts the replay in front of the first prompt; passes the rewind point
+- `src/server/orchestrator/sessions.ts` — replay and rewind point storage; `setAgentSessionId` retires both
+- `src/server/orchestrator/ws-handlers/agent-listeners.ts` — the only writer of the agent session id; records each row's message id; the cannot-resume and cannot-rewind cards
+- `src/server/orchestrator/resident-spawn-guard.ts` — `releaseResidentOnPendingRewind`
+- `src/server/session/agents/claude/process.ts` — `--resume-session-at` and `--fork-session`
+- `src/client/components/RewindPoint.tsx` — the rewind menu; disables a chat rewind the agent cannot make
 
 ## Edge cases
 
-- **During streaming**: Rollback button disabled while any message is streaming
+- **During streaming**: rewind points are disabled while a turn runs (`docs/144-rewind-fork-ux` D3)
 - **Multiple rollbacks**: Each message tracks its own `parentCommitHash`, so sequential rollbacks work correctly
 - **Chat history safety**: `.vibe-chat-history/` must be in `.gitignore` so `git reset --hard` doesn't clobber it
-- **Stale context after code rollback**: System note injected into Claude's next prompt so it knows code was reverted

@@ -95,7 +95,8 @@ describe("Integration: the replay and the stored conversation id (docs/007)", ()
 
   /** What a fork leaves on its new session: no thread yet, and the transcript to start from. */
   const armReplay = (sessionId: string): void => {
-    sessionManager.clearAgentSessionId(sessionId);
+    // ShipIt has no way to clear a stored id (docs/007 req 2); a fork's child never had one.
+    dbManager.db.prepare("UPDATE sessions SET agent_session_id = NULL WHERE id = ?").run(sessionId);
     sessionManager.setConversationReplay(
       sessionId,
       buildConversationReplay(chatHistoryManager.load(sessionId)),
@@ -111,14 +112,19 @@ describe("Integration: the replay and the stored conversation id (docs/007)", ()
 
     client.send({ type: "send_message", text: "Now do the same for the webhook route" });
     const attempt = await waitForClaude(() => lastClaude, first);
-    expect(attempt.lastSystemPrompt).toContain(TURN_ONE_TEXT);
+    // docs/007 req 8 — the first user message, ahead of the user's own text; the CLI does
+    // not store a system prompt.
+    expect(attempt.lastPrompt.indexOf(TURN_ONE_TEXT)).toBeGreaterThanOrEqual(0);
+    expect(attempt.lastPrompt.indexOf(TURN_ONE_TEXT))
+      .toBeLessThan(attempt.lastPrompt.indexOf("Now do the same for the webhook route"));
+    expect(attempt.lastSystemPrompt ?? "").not.toContain(TURN_ONE_TEXT);
 
     // The provider refuses at request time: an adapter error, so this attempt records no
     // conversation of its own and the replay must still be there for the retry.
     attempt.emit("error", new Error(QUOTA_ERROR));
 
     const retry = await waitForClaude(() => lastClaude, attempt);
-    expect(retry.lastSystemPrompt).toContain(TURN_ONE_TEXT);
+    expect(retry.lastPrompt).toContain(TURN_ONE_TEXT);
     expect(retry.lastSessionId).toBeUndefined();
 
     retry.initSession("turn-two");
@@ -154,7 +160,7 @@ describe("Integration: the replay and the stored conversation id (docs/007)", ()
     client.send({ type: "send_message", text: "Try again" });
     const next = await waitForClaude(() => lastClaude, attempt);
     expect(next.lastSessionId).toBe("turn-one");
-    expect(next.lastSystemPrompt ?? "").not.toContain(TURN_ONE_TEXT);
+    expect(next.lastPrompt ?? "").not.toContain(TURN_ONE_TEXT);
     next.initSession("turn-one");
     next.finish("turn-one");
     client.close();
@@ -169,7 +175,7 @@ describe("Integration: the replay and the stored conversation id (docs/007)", ()
 
     client.send({ type: "send_message", text: "Now do the same for the webhook route" });
     const failed = await waitForClaude(() => lastClaude, first);
-    expect(failed.lastSystemPrompt).toContain(TURN_ONE_TEXT);
+    expect(failed.lastPrompt).toContain(TURN_ONE_TEXT);
     // What the worker's 413 looked like: the spawn request is refused and the turn ends.
     failed.emit("error", new Error("Payload Too Large"));
     await settled(client.sessionId);
@@ -178,7 +184,7 @@ describe("Integration: the replay and the stored conversation id (docs/007)", ()
     client.send({ type: "send_message", text: "Please try once more" });
     const next = await waitForClaude(() => lastClaude, failed);
     expect(next.lastSessionId).toBeUndefined();
-    expect(next.lastSystemPrompt).toContain(TURN_ONE_TEXT);
+    expect(next.lastPrompt).toContain(TURN_ONE_TEXT);
     next.initSession("turn-two");
     next.finish("turn-two");
     await waitFor(
@@ -197,7 +203,7 @@ describe("Integration: the replay and the stored conversation id (docs/007)", ()
 
     client.send({ type: "send_message", text: "Now do the same for the webhook route" });
     const refused = await waitForClaude(() => lastClaude, first);
-    expect(refused.lastSystemPrompt).toContain(TURN_ONE_TEXT);
+    expect(refused.lastPrompt).toContain(TURN_ONE_TEXT);
     // The CLI started a conversation, then the API refused: its own error text and an error
     // result, before the model said anything.
     refused.initSession("refused-attempt");
@@ -218,7 +224,7 @@ describe("Integration: the replay and the stored conversation id (docs/007)", ()
     client.send({ type: "send_message", text: "Please try once more" });
     const next = await waitForClaude(() => lastClaude, refused);
     expect(next.lastSessionId).toBeUndefined();
-    expect(next.lastSystemPrompt).toContain(TURN_ONE_TEXT);
+    expect(next.lastPrompt).toContain(TURN_ONE_TEXT);
     next.initSession("turn-two");
     next.finish("turn-two");
     client.close();
@@ -233,7 +239,7 @@ describe("Integration: the replay and the stored conversation id (docs/007)", ()
 
     client.send({ type: "send_message", text: "Now do the same for the webhook route" });
     const second = await waitForClaude(() => lastClaude, first);
-    expect(second.lastSystemPrompt).toContain(TURN_ONE_TEXT);
+    expect(second.lastPrompt).toContain(TURN_ONE_TEXT);
     second.initSession("turn-two");
     second.finish("turn-two");
     await waitFor(
@@ -247,7 +253,7 @@ describe("Integration: the replay and the stored conversation id (docs/007)", ()
     client.send({ type: "send_message", text: "And the refunds route" });
     const third = await waitForClaude(() => lastClaude, second);
     expect(third.lastSessionId).toBe("turn-two");
-    expect(third.lastSystemPrompt ?? "").not.toContain(TURN_ONE_TEXT);
+    expect(third.lastPrompt ?? "").not.toContain(TURN_ONE_TEXT);
 
     third.initSession("turn-two");
     third.finish("turn-two");

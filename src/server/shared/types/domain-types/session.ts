@@ -90,6 +90,8 @@ export interface SessionInfo {
   warm?: boolean;
   branchRenamed?: boolean;
   conversationReplay?: string;
+  /** docs/007 — a rewind's message id: the next spawn forks the stored conversation there. */
+  agentResumeAt?: string;
   mergedAt?: string;
   closedAt?: string;
   model?: string;
@@ -170,11 +172,11 @@ export interface SessionInfo {
 /**
  * A row of the session lists, which every tab receives again on each change. The
  * status card and the goal reach only the open session's viewer, on `session_details`;
- * the replay and the notice are for the agent.
+ * the replay, the rewind point and the notice are for the agent.
  */
 export type SessionListRow = Omit<
   SessionInfo,
-  "sessionStatus" | "agentGoal" | "conversationReplay" | "pendingAgentNotice"
+  "sessionStatus" | "agentGoal" | "conversationReplay" | "agentResumeAt" | "pendingAgentNotice"
 >;
 
 /**

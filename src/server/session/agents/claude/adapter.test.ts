@@ -558,6 +558,25 @@ describe("ClaudeAdapter", () => {
     expect(events[0]).toMatchObject({ type: "agent_assistant", synthetic: true });
   });
 
+  it("passes on the CLI's id of each message, so a rewind can fork at it (docs/007 req 5)", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", { type: "assistant", message: { content: [{ type: "text", text: "Hi" }] }, uuid: "a-1" } satisfies ClaudeEvent);
+    inner.emit("event", { type: "user", message: { content: [] }, uuid: "r-1" } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "user", message: { content: [{ type: "text", text: "next" }] }, isReplay: true, uuid: "u-1",
+    } satisfies ClaudeEvent);
+
+    expect(events).toEqual([
+      expect.objectContaining({ type: "agent_assistant", messageId: "a-1" }),
+      expect.objectContaining({ type: "agent_tool_result", messageId: "r-1" }),
+      { type: "agent_user_replay", text: "next", messageId: "u-1" },
+    ]);
+  });
+
   it("maps user event to agent_tool_result", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);

@@ -101,7 +101,6 @@ function makeDeps(
     listenerDeps: {
       sessionManager: {
         setAgentSessionId: vi.fn(),
-        clearAgentSessionId: vi.fn(),
         setLastTurnErrored: vi.fn(),
         get: vi.fn(),
         track: vi.fn(),
@@ -595,7 +594,6 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     let agentSessionId: string | undefined = "rejected-resume-id";
     const sessionManager = deps.listenerDeps.sessionManager as any;
     sessionManager.get = vi.fn(() => ({ id: "s1", agentId: "claude", agentSessionId }));
-    sessionManager.clearAgentSessionId = vi.fn(() => { agentSessionId = undefined; });
     sessionManager.setAgentSessionId = vi.fn((_sid: string, next: string) => { agentSessionId = next; });
     deps.buildRunParams = vi.fn(async () => ({
       prompt: "do work",
@@ -616,7 +614,6 @@ describe("runtime-401 auto-retry (docs/179)", () => {
 
     expect(agents[0]!.kill).not.toHaveBeenCalled();
     expect(agents).toHaveLength(1);
-    expect(sessionManager.clearAgentSessionId).not.toHaveBeenCalled();
     expect(sessionManager.setAgentSessionId).not.toHaveBeenCalled();
     expect(agentSessionId).toBe("rejected-resume-id");
     const errors = messages.filter((m) => m.type === "error");

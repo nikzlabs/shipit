@@ -345,17 +345,23 @@ export class ClaudeAdapter
           content: raw.message.content,
           parentToolUseId: raw.parent_tool_use_id,
           ...(raw.is_api_error_message === true ? { synthetic: true } : {}),
+          ...(raw.uuid ? { messageId: raw.uuid } : {}),
         };
 
       case "user":
         // Replay acknowledges delivery; the user message is already rendered.
         if (raw.isReplay) {
-          return { type: "agent_user_replay", text: textFromUserContent(raw.message.content) };
+          return {
+            type: "agent_user_replay",
+            text: textFromUserContent(raw.message.content),
+            ...(raw.uuid ? { messageId: raw.uuid } : {}),
+          };
         }
         return {
           type: "agent_tool_result",
           content: raw.message.content,
           parentToolUseId: raw.parent_tool_use_id,
+          ...(raw.uuid ? { messageId: raw.uuid } : {}),
         };
 
       case "result": {
@@ -469,6 +475,7 @@ export class ClaudeAdapter
     this.inner.run({
       prompt: params.prompt,
       sessionId: params.sessionId,
+      resumeAt: params.resumeAt,
       systemPrompt: params.systemPrompt,
       images: params.images,
       cwd: params.cwd,

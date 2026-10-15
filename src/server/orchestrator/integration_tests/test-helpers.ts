@@ -687,6 +687,7 @@ export class FakeClaudeProcess extends EventEmitter {
   public runCalled = false;
   public lastPrompt = "";
   public lastSessionId: string | undefined;
+  public lastResumeAt: string | undefined;
   public lastSystemPrompt: string | undefined;
   public lastImages: { data: string; mediaType: string; filename?: string }[] | undefined;
   public lastCwd: string | undefined;
@@ -730,6 +731,7 @@ export class FakeClaudeProcess extends EventEmitter {
   run(params: {
     prompt: string;
     sessionId?: string;
+    resumeAt?: string;
     systemPrompt?: string;
     images?: { data: string; mediaType: string; filename?: string }[];
     cwd?: string;
@@ -749,6 +751,7 @@ export class FakeClaudeProcess extends EventEmitter {
     this.lastCompact = params.compact;
     this.lastPrompt = params.prompt;
     this.lastSessionId = params.sessionId;
+    this.lastResumeAt = params.resumeAt;
     this.lastSystemPrompt = params.systemPrompt;
     this.lastImages = params.images;
     this.lastCwd = params.cwd;
@@ -811,6 +814,7 @@ interface RawClaudeEvent {
   subtype?: string;
   is_error?: boolean;
   is_api_error_message?: boolean;
+  uuid?: string;
   total_cost_usd?: number | null;
   usage?: {
     input_tokens?: number;
@@ -850,6 +854,7 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
         content: raw.message?.content ?? [],
         parentToolUseId: raw.parent_tool_use_id,
         ...(raw.is_api_error_message === true ? { synthetic: true } : {}),
+        ...(raw.uuid ? { messageId: raw.uuid } : {}),
       };
     case "user":
       if (raw.isReplay) {
@@ -863,12 +868,13 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
               .map((b) => b.text)
               .join("")
           : "";
-        return { type: "agent_user_replay", text };
+        return { type: "agent_user_replay", text, ...(raw.uuid ? { messageId: raw.uuid } : {}) };
       }
       return {
         type: "agent_tool_result",
         content: raw.message?.content ?? [],
         parentToolUseId: raw.parent_tool_use_id,
+        ...(raw.uuid ? { messageId: raw.uuid } : {}),
       };
     case "result": {
       const u = raw.usage;

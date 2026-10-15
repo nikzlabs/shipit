@@ -15,8 +15,8 @@ import type { AgentId } from "../../shared/types/agent-types.js";
  * `supportsReview: false` survived the probe that flipped the catalogue to
  * `true`, comment and all, and the two disagreed for a whole release.
  *
- * `startsOwnTurns` is excluded on purpose: its own doc comment says to resolve
- * it through the registry, and no adapter declares it.
+ * `startsOwnTurns` and `forksAtMessage` are excluded on purpose: their doc
+ * comments say to resolve them through the registry, and no adapter declares them.
  */
 const FLAGS = [
   "supportsResume",
@@ -38,7 +38,7 @@ const FLAGS = [
 type BooleanCapabilityKeys = {
   [K in keyof AgentCapabilities]-?: boolean extends NonNullable<AgentCapabilities[K]> ? K : never;
 }[keyof AgentCapabilities];
-type Unchecked = Exclude<BooleanCapabilityKeys, (typeof FLAGS)[number] | "startsOwnTurns">;
+type Unchecked = Exclude<BooleanCapabilityKeys, (typeof FLAGS)[number] | "startsOwnTurns" | "forksAtMessage">;
 const _everyBooleanCapabilityIsChecked: Unchecked extends never ? true : Unchecked = true;
 
 const ADAPTERS: Record<AgentId, () => { capabilities: AgentCapabilities }> = {

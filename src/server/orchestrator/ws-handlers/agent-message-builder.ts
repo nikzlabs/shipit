@@ -94,6 +94,22 @@ export function attachToolResultsToGroup(
   }
 }
 
+/**
+ * docs/007 req 5 — the group just fed holds the CLI's latest message of the conversation.
+ * Not when a steer the CLI has read sits after the group: a lone question or plan tool merged
+ * into it comes after that steer in the conversation, and a fork there would keep the steer.
+ */
+export function stampLastGroup(
+  runner: Pick<SessionRunnerInterface, "chatMessageGroups" | "steeredMessages">,
+  agentMessageId: string,
+): void {
+  const groups = runner.chatMessageGroups;
+  if (groups.length === 0) return;
+  const persistable = groups.filter((g) => g.text || g.toolUse.length > 0).length;
+  if (runner.steeredMessages.some((s) => s.delivered && s.afterGroupIndex >= persistable)) return;
+  groups[groups.length - 1].agentMessageId = agentMessageId;
+}
+
 /** Returns the steer's bubble id: `extra.clientRequestId`, or one made here. */
 export function recordSteeredMessage(
   runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[] },

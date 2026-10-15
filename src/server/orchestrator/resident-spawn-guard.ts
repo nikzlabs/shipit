@@ -38,6 +38,26 @@ export function retireResident(runner: SessionRunnerInterface): boolean {
   return true;
 }
 
+/**
+ * docs/007 req 7 — a resident holds the conversation from before a rewind, and only a spawn
+ * forks it at the rewind point. The rewind retires an idle resident itself; this catches
+ * one that was busy then, or adopted since.
+ */
+export function releaseResidentOnPendingRewind(
+  runner: SessionRunnerInterface | null | undefined,
+  agentResumeAt: string | undefined,
+): boolean {
+  if (!runner || agentResumeAt === undefined) return false;
+  const resident = resolveResidentToRetire(runner);
+  if (!resident) return false;
+  retire(runner, resident);
+  console.log(
+    `[spawn-switch] released resident agent for ${runner.sessionId}: `
+    + "a rewind point is pending, so the turn spawns and forks the conversation there",
+  );
+  return true;
+}
+
 // Model, endpoint and credentials are fixed at spawn; changes require a new process.
 export function releaseResidentOnSpawnChange(
   runner: SessionRunnerInterface | null | undefined,
