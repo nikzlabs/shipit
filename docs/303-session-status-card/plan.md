@@ -93,7 +93,7 @@ Nothing enters the transcript at all, so none of the persisted-card machinery
 | Field | Limit | Meaning |
 |---|---|---|
 | `lastTurn` | optional, plain prose, ≤ 400 chars; **not a delta** — an accepted call that omits it CLEARS the stored line (req 31) | One or two sentences on what the agent did in the turn that is ending, or the direct answer when the user asked something. |
-| `status` | optional, markdown, ≤ 1200 chars; omitted: unchanged; required while no card is stored | What the session is about, how far it got, whether it is done or ready to merge, and agent work not yet started. The whole session, not the last turn. Markdown, so it may carry a short list (req 27). |
+| `status` | optional, markdown, ≤ 2000 chars, advertised as 1800 (req 49); omitted: unchanged; required while no card is stored | What the session is about, how far it got, whether it is done or ready to merge, and agent work not yet started. The whole session, not the last turn. Markdown, so it may carry a short list (req 27). |
 | `needsYou` | optional repeated field: a list of strings, each ≤ 1000 chars (req 45), at most 10; omitted: unchanged; `[]`: cleared (req 27) | One entry per decision or hand action only the user can take. Empty when nothing. |
 | `actions` | optional list; each item `id`, `label`, `description`, `defaultChecked?`, `payload` (≤ 4000 chars), `description` ≤ 1000 chars (req 45) — the `propose_actions` item shape, validated by `validateActionItems`, extracted from `propose-actions-validation.ts` and shared. `description` is REQUIRED here (req 26) and stays optional for `propose_actions`, so the rule is `requireOfferDescriptions` (`shared/session-status-offers.ts`), applied by the tool and by the route on the validated items rather than by the shared item validator, which serves both tools | Agent work the user approves with a click. |
 | `replaceActions` | optional boolean, default false | `false`: add the given items to the offered list. `true`: the given list becomes the offered list; an empty list clears it. |
@@ -1355,7 +1355,7 @@ whole of what req 35 asks the agent to reconcile.
   card's contents, and whether it currently reads stale changes none of them.
 - **The cap is 8000 characters** (`MAX_STATUS_CONTEXT_CHARS`), and **it falls on
   the payloads, not on the offers**. The fixed part is bounded by the field
-  limits the validator enforces — `status` 1200, ten `needsYou` entries of 1000
+  limits the validator enforces — `status` 2000, ten `needsYou` entries of 1000
   (req 45) — and the offer list, which has no count limit (req 18), is the part
   that grows. Since req 45 the fixed part alone can pass 8000 on a worst-case
   card; the block then lists no offers and forbids `replaceActions`, and runs

@@ -337,11 +337,21 @@ taken inside one session, without building an agent that talks to many.
     incomplete, it says how to fetch the rest rather than telling the agent to add
     to the list, which is the one thing that removes nothing.
 
+49. The status holds up to 2000 characters, and the agent is told 1800. A
+    status that runs a little past what the agent was told is accepted on the
+    first call, not refused and retried.
+
 ## Open questions
 
 - None.
 
 ## Resolved questions
+
+- 2026-10-15 — Nik: "make the status card limit 2000 instead of 1200, but
+  advertise 1800 to the agents. Currently they sometimes make a few attempts,
+  using 1210-1270 characters." → req 49. The refusal names the advertised cap
+  too, so an agent that is refused shortens toward 1800, not toward the
+  enforced cap.
 
 - 2026-10-01 — Nik, quoting an agent's own report from a session where this bit:
   "the agent should be able to fetch the card in full. Example: *'Three done
