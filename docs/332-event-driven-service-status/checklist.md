@@ -39,4 +39,14 @@ title: "Event-driven service status: checklist"
 - [x] Third mutation pass (12 mutations, all caught), plus the two test gaps it exposed
 - [x] `install-gate.test.ts` runs with `pollIntervalMs: 0`, so the watchdog is exercised under the
       shipped scheduling rather than a test-only poll interval
+- [x] Third review round, and its 8 findings. The decisive one: every round had found a new defect
+      in the same optimization (remembering an exited container's verdict), so it was **deleted**
+      rather than hardened a fourth time — it saved one socket request per exited container per
+      five minutes against a baseline of 18 process spawns per second
+- [x] Monotonic ordering: `performance.now()` for slice age, seeded at construction, advanced on
+      every publication, plus a per-listing sequence so two overlapping refreshes cannot apply out
+      of order (follow-ups and post-`up` refreshes call in directly, bypassing the coalescer)
+- [x] Sweep bounded and concurrent; a resync requested during one is queued, not dropped
+- [x] Heal bounded and one at a time per session; follower budget covers a reconcile's attempt too
+- [x] Fourth mutation pass (9 mutations, all caught), plus the two test gaps it exposed
 - [ ] Measure on prod after merge: orchestrator CPU and child-process share

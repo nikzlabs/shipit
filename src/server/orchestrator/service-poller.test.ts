@@ -6,6 +6,7 @@ import {
   DOCKER_UNREACHABLE_GRACE_MS,
   DOCKER_UNREACHABLE_MESSAGE,
   COMPOSE_QUERY_TIMEOUT_MS,
+  monotonicNow,
   type ServicePollerOptions,
   type PollerService,
   type PollerContainer,
@@ -1034,28 +1035,25 @@ describe("ServicePoller — no cadence, one follow-up per pending condition (doc
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  // Every backstop inspected every stopped container, for ever, on an otherwise idle session.
-  it("stops inspecting an exited container once its service has settled", async () => {
+  // An exited container is re-read on every reconcile, deliberately. Three review rounds produced
+  // four distinct defects from trying to remember its exit — a container id outlives the run that
+  // produced it, so no key is sound — and the cost it saved is one socket request per exited
+  // container per five minutes, with no process spawn. Correctness wins that trade.
+  it("re-reads an exited container every time, rather than remembering a verdict", async () => {
     const svc: PollerService = { name: "web", preview: "auto", status: "running" };
     const { poller, inspected } = listingPoller(
       svc,
       () => [{ ref: "c1", service: "web", state: "exited", oneOff: false, networks: {} }],
-      // What `handleNonZeroExit` does with a crash: the service reaches a terminal status.
       { onExitedWithError: () => { svc.status = "error"; } },
     );
 
     await poller.pollOnce();
-    const afterFirst = inspected.length;
     await poller.pollOnce();
     await poller.pollOnce();
 
-    expect(afterFirst).toBe(1);
-    expect(inspected.length).toBe(afterFirst);
+    expect(inspected).toEqual(["c1", "c1", "c1"]);
   });
 
-  // The outage sweep leaves a terminal status that no exit produced, and the `die` event that
-  // would have classified the crash was lost with the same outage. Skipping on status alone would
-  // leave that crash unclassified and unretried for ever.
   it("still reads an exit for a service the outage sweep left in error", async () => {
     vi.useFakeTimers();
     const svc: PollerService = { name: "web", preview: "auto", status: "running" };
@@ -1308,6 +1306,34 @@ describe("ServicePoller — a listing must not overwrite a newer exit (docs/332)
     expect(ips.get("web")).toBeUndefined();
   });
 
+  // Follow-up timers and the manager's own post-`up` refreshes call in directly, so ordering cannot
+  // live in whichever caller happens to coalesce. Without it, the older listing's address wins.
+  it("discards an older listing that finishes after a newer one, with no exit between them", async () => {
+    const svc: PollerService = { name: "web", preview: "auto", status: "running" };
+    const ips = new Map<string, string | undefined>();
+    const releases: ((rows: PollerContainer[]) => void)[] = [];
+    const poller = buildPoller({
+      listContainers: () => new Promise<PollerContainer[]>((resolve) => { releases.push(resolve); }),
+      getService: () => svc,
+      listServices: () => [svc],
+      setContainerIp: (name, ip) => ips.set(name, ip),
+    });
+    const at = (ip: string): PollerContainer[] => [{
+      ref: "c1", service: "web", state: "running", oneOff: false,
+      networks: { "shipit-session-sess-1": ip },
+    }];
+
+    const older = poller.pollOnce();
+    const newer = poller.pollOnce();
+    // The newer listing answers first and publishes; the older one answers afterwards.
+    releases[1]!(at("172.20.0.9"));
+    await newer;
+    releases[0]!(at("172.20.0.4"));
+    await older;
+
+    expect(ips.get("web")).toBe("172.20.0.9");
+  });
+
   it("discards a listing overtaken by stop(), which no longer owns the stack", async () => {
     const { poller, running, onRunning, release } = racingPoller();
 
@@ -1343,7 +1369,7 @@ describe("ServicePoller — a listing must not overwrite a newer exit (docs/332)
       listServices: () => [svc],
       onRunning,
     });
-    const takenAt = Date.now();
+    const takenAt = monotonicNow();
     const running: PollerContainer[] = [{
       ref: "c1", service: "web", state: "running", oneOff: false,
       networks: { "shipit-session-sess-1": "172.20.0.4" },
@@ -1371,7 +1397,7 @@ describe("ServicePoller — a listing must not overwrite a newer exit (docs/332)
     await poller.pollOnce([{
       ref: "c2", service: "web", state: "running", oneOff: false,
       networks: { "shipit-session-sess-1": "172.20.0.5" },
-    }], Date.now());
+    }], monotonicNow());
 
     expect(onRunning).toHaveBeenCalledWith("web");
   });

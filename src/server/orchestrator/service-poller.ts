@@ -155,10 +155,15 @@ export class ServicePoller {
   private readonly addressSource = new Map<string, string>();
   /** Bumped by anything that makes an in-flight listing stale; see `pollOnce`. */
   private generation = 0;
-  /** When that last happened, for judging the age of a listing taken elsewhere. */
-  private invalidatedAt = 0;
-  /** The container whose exit this service's terminal status was applied from. */
-  private readonly settledExit = new Map<string, string>();
+  /**
+   * When this poller last published anything, or was invalidated — for judging the age of a listing
+   * taken elsewhere. Monotonic, so a wall-clock step backwards cannot make a newer exit look older,
+   * and seeded at construction so a replacement manager never accepts its predecessor's slice.
+   */
+  private lastAppliedAt = monotonicNow();
+  /** Orders overlapping listings of this project, whoever started them. */
+  private pollSeq = 0;
+  private appliedSeq = 0;
   /** Set once the outage sweep has run, so a continuing outage stops re-arming for it. */
   private unreachableSwept = false;
 
@@ -241,14 +246,15 @@ export class ServicePoller {
     // one is in flight — a `die` event, a stop — makes it stale, and applying it anyway would
     // republish a dead container as running and cancel the recovery that event just scheduled.
     const generation = this.generation;
+    const seq = ++this.pollSeq;
     let containers: PollerContainer[];
     if (listed) {
       // A SHARED listing was taken before this call and the backstop reconciles sessions in turn,
       // so its own age is what counts — the generation at entry is already too late to see an
       // invalidation that happened while earlier sessions were being reconciled.
-      if (takenAt !== undefined && this.invalidatedAt >= takenAt) {
+      if (takenAt !== undefined && takenAt <= this.lastAppliedAt) {
         console.log(
-          `[compose:${this.sessionId}] discarding a shared listing older than a newer exit or stop`,
+          `[compose:${this.sessionId}] discarding a shared listing older than what is already applied`,
         );
         return;
       }
@@ -258,7 +264,7 @@ export class ServicePoller {
         containers = await this.listContainers();
       } catch (err) {
         console.warn(`[compose:${this.sessionId}] pollStatus failed:`, (err as Error).message);
-        if (this.generation !== generation) return;
+        if (this.generation !== generation || this.appliedSeq > seq) return;
         // Query failure is not an empty container list; expire only sustained stale claims.
         this.expireUnconfirmedStatuses();
         this.armFollowUp();
@@ -266,7 +272,6 @@ export class ServicePoller {
       }
     }
 
-    const live = new Map<string, string>();
     const statusUpdates: { name: string; state: string; container: PollerContainer }[] = [];
     const seen = new Set<string>();
 
@@ -279,12 +284,11 @@ export class ServicePoller {
       // The install gate owns held service statuses.
       if (this.isGated(svc.name)) continue;
 
-      if (container.ref) live.set(container.ref, svc.name);
       statusUpdates.push({ name: svc.name, state: container.state, container });
     }
 
     // Reads and inspects only: nothing is published before the staleness check below.
-    const resolved = live.size > 0
+    const resolved = statusUpdates.length > 0
       ? await this.resolveContainers(statusUpdates)
       : {
           addresses: new Map<string, string | undefined>(),
@@ -298,6 +302,15 @@ export class ServicePoller {
       );
       return;
     }
+    // A later-started listing has already published; this one describes an older moment. Follow-ups
+    // and the manager's own post-`up` refreshes call in directly, so ordering cannot live in the
+    // caller that happens to coalesce.
+    if (this.appliedSeq > seq) {
+      console.log(`[compose:${this.sessionId}] discarding a listing a newer one already superseded`);
+      return;
+    }
+    this.appliedSeq = seq;
+    this.lastAppliedAt = monotonicNow();
     this.psFailingSince = null;
     // Reset with the clock it guards, or a LATER outage would never arm its sweep at all.
     this.unreachableSwept = false;
@@ -314,18 +327,13 @@ export class ServicePoller {
       if (!svc) continue;
       const prev = svc.status;
       if (state === "running") {
-        // Live again: whatever exit was settled for it belonged to an earlier run.
-        this.settledExit.delete(name);
         this.onRunning(name);
         if (prev !== "running") this.updateServiceStatus(name, "running");
       } else if (EXITED_STATES.has(state)) {
-        if (this.exitAlreadySettled(name, container.ref)) continue;
         const info = resolved.details.get(container.ref);
         const exitCode = container.exitCode ?? info?.exitCode ?? 1;
         this.applyExit(name, exitCode, info?.oomKilled);
-        this.settledExit.set(name, container.ref);
       } else if (state === "restarting") {
-        this.settledExit.delete(name);
         if (prev !== "starting") this.updateServiceStatus(name, "starting");
       }
     }
@@ -363,23 +371,6 @@ export class ServicePoller {
     this.armFollowUp();
   }
 
-  /**
-   * Whether this exact container's exit has already been applied for this service, leaving a
-   * listing nothing to decide. Without this, every backstop inspected every stopped container for
-   * ever — a recurring per-container cost on an idle session, which is what req 1 and req 5 forbid.
-   *
-   * Keyed on the container, NOT merely on the service being `stopped`/`error`: a service left in
-   * `error` by the docker-unreachable sweep has a terminal status that no exit produced, and the
-   * `die` event that would have classified its crash was lost with the same outage. That one must
-   * still be read from the listing. The entry is dropped as soon as the container is seen in any
-   * live state, so a restart — which reuses the container id — is classified afresh.
-   */
-  private exitAlreadySettled(name: string, ref: string): boolean {
-    const status = this.getService(name)?.status;
-    if (status !== "stopped" && status !== "error") return false;
-    return this.settledExit.get(name) === ref;
-  }
-
   /** A listing taken for this project elsewhere failed; the outage clock still has to run. */
   noteListingFailed(): void {
     this.expireUnconfirmedStatuses();
@@ -388,7 +379,7 @@ export class ServicePoller {
 
   private invalidate(): void {
     this.generation++;
-    this.invalidatedAt = Date.now();
+    this.lastAppliedAt = monotonicNow();
   }
 
   private applyExit(name: string, exitCode: number, oomKilled?: boolean): void {
@@ -554,7 +545,6 @@ export class ServicePoller {
     this.missingSince.clear();
     this.psFailingSince = null;
     this.unreachableSwept = false;
-    this.settledExit.clear();
   }
 
   /**
@@ -586,7 +576,6 @@ export class ServicePoller {
 
       // Exit 137 is the only code whose meaning depends on the OOM flag (docs/239).
       const needsExit = exited
-        && !this.exitAlreadySettled(name, container.ref)
         && (container.exitCode === undefined || container.exitCode === 137);
       if (networks === undefined || needsExit) {
         try {
@@ -638,6 +627,11 @@ export class ServicePoller {
       return networks;
     }
   }
+}
+
+/** Monotonic within the process, unlike `Date.now()`, which can step backwards. */
+export function monotonicNow(): number {
+  return performance.now();
 }
 
 function mapAddresses(

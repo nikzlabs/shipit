@@ -4611,7 +4611,9 @@ describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
     vi.useRealTimers();
   });
 
-  it("re-attaches after the budget is spent when a refresh sees the service running", async () => {
+  // The budget has to cover the attempt a RECONCILE makes too: `onRunning` runs on every one, so a
+  // follower that can never attach would spawn a process on every backstop for ever (docs/332).
+  it("spawns nothing more once the budget is spent, not even from a reconcile", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.useFakeTimers();
     const dir = setup();
@@ -4629,6 +4631,35 @@ describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
     expect(logProcesses().has("web")).toBe(false);
 
     await poll();
+    await poll();
+
+    expect(logProcesses().has("web")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("follows the logs again once the user restarts the service", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 2; i++) {
+      logProcesses().get("web")?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+    expect(logProcesses().has("web")).toBe(false);
+
+    await mgr.startService("web");
+    expect(logProcesses().has("web")).toBe(true);
+
+    // And the NEW container's follower gets a fresh budget, so it can re-arm on its own again.
+    logProcesses().get("web")?.emit("close", 1);
+    await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
 
     expect(logProcesses().has("web")).toBe(true);
     vi.useRealTimers();

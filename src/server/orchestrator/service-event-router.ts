@@ -4,7 +4,7 @@ import type { EventEmitter } from "node:events";
 import type { SessionContainerManagerEvents } from "./session-container.js";
 import { composeProjectName } from "./compose-stack-reaper.js";
 import { listAllComposeProjects } from "./compose-container-listing.js";
-import type { PollerContainer } from "./service-poller.js";
+import { monotonicNow, type PollerContainer } from "./service-poller.js";
 import { stackLabelFilters } from "./stack-label.js";
 
 /** What the router needs of a `ServiceManager`; the rest of it is not its business. */
@@ -26,6 +26,9 @@ export const BACKSTOP_INTERVAL_MS = 5 * 60_000;
 
 /** A listing that never settles would latch `backstopInFlight` and stop every later reconcile. */
 export const BACKSTOP_LISTING_TIMEOUT_MS = 30_000;
+
+/** A heal is one network inspect and at most one connect; it must not outlive a sweep. */
+export const HEAL_TIMEOUT_MS = 15_000;
 
 function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -63,8 +66,10 @@ export class ServiceEventRouter {
   private backstopTimer: ReturnType<typeof setInterval> | null = null;
   private started = false;
   private backstopInFlight = false;
+  private backstopRequested = false;
   private readonly refreshInFlight = new Set<string>();
   private readonly refreshQueued = new Set<string>();
+  private readonly healInFlight = new Set<string>();
 
   private readonly onServiceExited = (
     sessionId: string,
@@ -89,15 +94,27 @@ export class ServiceEventRouter {
 
   private readonly onNetworkChanged = (networkName: string): void => {
     const sessionId = networkName.replace(/^shipit-session-/, "");
-    const mgr = this.deps.serviceManagers.get(sessionId);
-    if (!mgr) return;
-    void mgr.healNetwork().catch((err: unknown) => {
-      console.warn(`[service-events] network heal for ${sessionId} failed:`, message(err));
-    });
+    if (!this.deps.serviceManagers.has(sessionId)) return;
+    void this.heal(sessionId);
     // The heal covers the AGENT's attachment. A service container that lost the network needs its
     // address re-resolved and reattached, which is the refresh's `reattach` path.
     void this.refresh(sessionId, `network ${networkName} changed`);
   };
+
+  /** Bounded, and one at a time per session: a stream resume asks for every session at once. */
+  private async heal(sessionId: string): Promise<void> {
+    if (this.healInFlight.has(sessionId)) return;
+    const mgr = this.deps.serviceManagers.get(sessionId);
+    if (!mgr) return;
+    this.healInFlight.add(sessionId);
+    try {
+      await withTimeout(mgr.healNetwork(), HEAL_TIMEOUT_MS);
+    } catch (err) {
+      console.warn(`[service-events] network heal for ${sessionId} failed:`, message(err));
+    } finally {
+      this.healInFlight.delete(sessionId);
+    }
+  }
 
   /**
    * Events during the gap are gone, so the whole stack is reconciled rather than trusted — and the
@@ -106,11 +123,7 @@ export class ServiceEventRouter {
    * that the heal no longer rides every refresh.
    */
   private readonly onStreamResumed = (): void => {
-    for (const [sessionId, mgr] of this.deps.serviceManagers) {
-      void mgr.healNetwork().catch((err: unknown) => {
-        console.warn(`[service-events] network heal for ${sessionId} after a stream gap failed:`, message(err));
-      });
-    }
+    for (const sessionId of this.deps.serviceManagers.keys()) void this.heal(sessionId);
     void this.runBackstop("the Docker event stream resumed");
   };
 
@@ -187,8 +200,15 @@ export class ServiceEventRouter {
     } finally {
       this.refreshInFlight.delete(sessionId);
     }
-    if (this.refreshQueued.delete(sessionId)) {
-      await this.refresh(sessionId, `${why} (coalesced)`);
+    while (this.refreshQueued.delete(sessionId)) {
+      this.refreshInFlight.add(sessionId);
+      try {
+        await mgr.refreshServices();
+      } catch (err) {
+        console.warn(`[service-events] coalesced refresh of ${sessionId} failed:`, message(err));
+      } finally {
+        this.refreshInFlight.delete(sessionId);
+      }
     }
   }
 
@@ -198,13 +218,17 @@ export class ServiceEventRouter {
    * state the missing-container rule exists to resolve.
    */
   async runBackstop(why: string): Promise<void> {
-    if (this.backstopInFlight) return;
+    if (this.backstopInFlight) {
+      // Its listing was taken before this request, so it cannot answer it. Queue one re-run.
+      this.backstopRequested = true;
+      return;
+    }
     this.backstopInFlight = true;
     try {
       const sessionIds = [...this.deps.serviceManagers.keys()];
       if (sessionIds.length === 0) return;
       let byProject: Map<string, PollerContainer[]>;
-      const takenAt = Date.now();
+      const takenAt = monotonicNow();
       try {
         byProject = await withTimeout(
           listAllComposeProjects(this.deps.docker, this.stackFilters),
@@ -221,11 +245,20 @@ export class ServiceEventRouter {
         }
         return;
       }
-      for (const sessionId of sessionIds) {
-        await this.refresh(sessionId, why, byProject.get(composeProjectName(sessionId)) ?? [], takenAt);
-      }
+      // Concurrent, each bounded: sessions are independent, and awaiting them in turn let one
+      // slow refresh hold the whole sweep — and with it every later backstop and resync.
+      await Promise.allSettled(sessionIds.map((sessionId) => withTimeout(
+        this.refresh(sessionId, why, byProject.get(composeProjectName(sessionId)) ?? [], takenAt),
+        BACKSTOP_LISTING_TIMEOUT_MS,
+      ).catch((err: unknown) => {
+        console.warn(`[service-events] ${why}: reconciling ${sessionId} did not finish:`, message(err));
+      })));
     } finally {
       this.backstopInFlight = false;
+    }
+    if (this.backstopRequested) {
+      this.backstopRequested = false;
+      await this.runBackstop(`${why} (re-requested)`);
     }
   }
 }

@@ -7,6 +7,7 @@ import {
   BACKSTOP_LISTING_TIMEOUT_MS,
   type ServiceEventTarget,
 } from "./service-event-router.js";
+import { monotonicNow } from "./service-poller.js";
 import type { SessionContainerManagerEvents } from "./session-container.js";
 import { composeProjectName } from "./compose-stack-reaper.js";
 import type { PollerContainer } from "./service-poller.js";
@@ -155,14 +156,66 @@ describe("ServiceEventRouter", () => {
     await backstop;
   });
 
-  it("stamps a shared slice with when it was taken, so its age can be judged", async () => {
-    const before = Date.now();
+  // Monotonic, not wall-clock: a clock step backwards would make a newer exit look older than the
+  // slice it must override.
+  it("stamps a shared slice from the monotonic clock, so its age can be judged", async () => {
+    const before = monotonicNow();
 
     await router.runBackstop("test");
 
     const takenAt = mgr.refreshServices.mock.calls[0]![1]!;
     expect(takenAt).toBeGreaterThanOrEqual(before);
-    expect(takenAt).toBeLessThanOrEqual(Date.now());
+    expect(takenAt).toBeLessThanOrEqual(monotonicNow());
+  });
+
+  // Its listing predates the gap, so it cannot answer the resync the reconnect needs.
+  it("re-runs a sweep requested while one was already in flight", async () => {
+    let release: (() => void) | undefined;
+    listContainers.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve([]);
+    }));
+
+    const first = router.runBackstop("first");
+    await vi.waitFor(() => expect(listContainers).toHaveBeenCalledTimes(1));
+    await router.runBackstop("while the first runs");
+    release?.();
+    await first;
+
+    await vi.waitFor(() => expect(listContainers).toHaveBeenCalledTimes(2));
+  });
+
+  it("does not let one slow session hold the sweep, and so every later resync", async () => {
+    vi.useFakeTimers();
+    const second = target();
+    managers.set(OTHER, second);
+    mgr.refreshServices.mockImplementationOnce(() => new Promise(() => { /* never settles */ }));
+
+    const sweep = router.runBackstop("one session hangs");
+    await vi.advanceTimersByTimeAsync(BACKSTOP_LISTING_TIMEOUT_MS + 1_000);
+    await sweep;
+
+    expect(second.refreshServices).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("heals a session once at a time, however many resumes arrive", async () => {
+    let active = 0;
+    let peak = 0;
+    const releases: (() => void)[] = [];
+    mgr.healNetwork.mockImplementation(async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => { releases.push(resolve); });
+      active--;
+    });
+
+    emitter.emit("health_monitor_resumed", { gapMs: 1_000 });
+    emitter.emit("health_monitor_resumed", { gapMs: 1_000 });
+    emitter.emit("session_network_changed", `shipit-session-${SESSION}`);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(peak).toBe(1);
+    releases.splice(0).forEach((fn) => fn());
   });
 
   // req 5: the cost of the backstop must not grow with the number of sessions.

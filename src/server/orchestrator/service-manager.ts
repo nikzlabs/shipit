@@ -1280,6 +1280,12 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   private ensureLogFollower(name: string): void {
     if (this.logProcesses.has(name)) return;
+    // The budget bounds EVERY attempt, not just the self-armed ones: `onRunning` runs on each
+    // reconcile, so a follower that can never attach would otherwise spawn a process on every
+    // backstop for ever — periodic per-session process work, which is what docs/332 removes.
+    const attempt = (this.followerRearmAttempts.get(name) ?? 0) + 1;
+    if (attempt > MAX_LOG_FOLLOWER_REARMS) return;
+    this.followerRearmAttempts.set(name, attempt);
     this.streamLogs(name);
   }
 
@@ -2233,15 +2239,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     if (this._disposed) return;
     if (this.services.get(name)?.status !== "running") return;
     if (this.followerRearmTimers.has(name)) return;
-    const attempt = (this.followerRearmAttempts.get(name) ?? 0) + 1;
-    if (attempt > MAX_LOG_FOLLOWER_REARMS) {
+    if ((this.followerRearmAttempts.get(name) ?? 0) >= MAX_LOG_FOLLOWER_REARMS) {
       console.warn(
         `[compose:${this.sessionId}] log follower for ${name} failed ${MAX_LOG_FOLLOWER_REARMS} times ` +
-        "in a row — giving up until the service is started again or Docker reports it anew",
+        "in a row — giving up until the service is started again",
       );
       return;
     }
-    this.followerRearmAttempts.set(name, attempt);
     const timer = setTimeout(() => {
       this.followerRearmTimers.delete(name);
       if (this._disposed) return;
