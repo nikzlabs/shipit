@@ -6,6 +6,7 @@ import {
   type AgentSystemInstructionOptions,
 } from "./agent-instructions.js";
 import { operationsFor } from "./services/settings-operations.js";
+import { ADVERTISED_STATUS_LEN, MAX_STATUS_LEN } from "../shared/session-status-validation.js";
 
 describe("buildAgentSystemInstructions", () => {
   it("is static — every call returns the same string as AGENT_SYSTEM_INSTRUCTIONS", () => {
@@ -190,6 +191,12 @@ describe("buildAgentSystemInstructions", () => {
       expect(on).toContain(sessionStatus);
       expect(on).not.toContain(proposeActions);
     }
+  });
+
+  it("docs/303 req 49 — the status card prompt states the advertised status cap, not the enforced one", () => {
+    const sessionStatus = fs.readFileSync(new URL("./prompts/session-status.md", import.meta.url), "utf8");
+    expect(sessionStatus).toContain(String(ADVERTISED_STATUS_LEN));
+    expect(sessionStatus).not.toContain(String(MAX_STATUS_LEN));
   });
 
   it("makes the flag-off variant the default, and keeps each variant distinct", () => {
