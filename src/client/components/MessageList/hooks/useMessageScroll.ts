@@ -2,6 +2,7 @@
 import { useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import type { SearchMatch } from "../../../hooks/useSearch.js";
 import type { ChatMessage } from "../types.js";
+import { describeMatch, locateMatch, paintCurrentMatch, scrollToCenter } from "../search-target.js";
 
 const BOTTOM_THRESHOLD_PX = 40;
 
@@ -457,26 +458,78 @@ export function useMessageScroll(
     };
   }, [messages, isLoading, sessionId, prMerged]);
 
-  // auto` sits on GROUPS of 20 rows, and a group that has never been on screen
+  // Keyed on what the match IS, not on the object: `useSearch` rebuilds every
+  // match whenever the messages change, and re-jumping on each streamed token
+  // would pull a reader who scrolled away back to the match.
+  const matchIndex = currentMatch?.messageIndex;
+  const matchStart = currentMatch?.start;
+  const described = currentMatch ? describeMatch(messages, currentMatch) : null;
+  const needle = described?.needle ?? "";
+  const ordinal = described?.ordinal ?? 0;
+  const matchTargetRef = useRef<Range | HTMLElement | null>(null);
+  // Set by a jump for one frame: long enough for a restore `CompactLayout`
+  // already had running to read it and stop, short enough that one it starts
+  // afterwards — closing the search collapses the turns it revealed — runs.
+  const searchJumpedRef = useRef(false);
 
-  // Bottom-pinning never had this problem because its ResizeObserver corrects
+  // An agent reply's markdown, a code block and a card draw no `<mark>`, so the
+  // match is found in the row's text instead. Declared before the jump, which
+  // reads what this finds.
+  // eslint-disable-next-line no-restricted-syntax -- DOM lookup + CSS Custom Highlight painting
+  useEffect(() => {
+    const container = containerRef.current;
+    matchTargetRef.current = null;
+    if (matchIndex === undefined || !container || currentMatchRef.current) return;
+    const located = locateMatch(container, matchIndex, needle ? { needle, ordinal } : null);
+    matchTargetRef.current = located;
+    return located instanceof Range ? paintCurrentMatch(located) : undefined;
+  }, [matchIndex, needle, ordinal]);
+
+  // A streamed token rewrites the text node the Range sits in, which empties it,
+  // and a row that changes group is remounted, which detaches it.
+  // eslint-disable-next-line no-restricted-syntax -- DOM lookup + CSS Custom Highlight painting
+  useEffect(() => {
+    const range = matchTargetRef.current;
+    const container = containerRef.current;
+    if (!(range instanceof Range) || !container || matchIndex === undefined) return;
+    if (!range.collapsed && range.startContainer.isConnected) return;
+    const located = locateMatch(container, matchIndex, needle ? { needle, ordinal } : null);
+    matchTargetRef.current = located;
+    // Painted under the same name, so the effect above still clears it.
+    if (located instanceof Range) paintCurrentMatch(located);
+  });
 
   // eslint-disable-next-line no-restricted-syntax -- scroll settle loop with cleanup
   useEffect(() => {
-    if (!currentMatch || !currentMatchRef.current) return;
-    currentMatchRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    const container = containerRef.current;
+    if (matchIndex === undefined || !container) return;
+
+    const jump = (): boolean => {
+      const target = currentMatchRef.current ?? matchTargetRef.current;
+      if (!target) return false;
+      scrollToCenter(container, target);
+      searchJumpedRef.current = true;
+      window.requestAnimationFrame(() => { searchJumpedRef.current = false; });
+      // The reader chose where to be, as with a scroll, and it must take effect
+      // before this frame's ResizeObserver: a jump lays out `content-visibility`
+      // groups for the first time, and the observer would otherwise pin the view
+      // back to the bottom before the jump's `scroll` event arrives.
+      openUntilRef.current = -Infinity;
+      if (renderedCountRef.current > 0) conversationShownRef.current = true;
+      autoScrollRef.current = isNearBottom(container);
+      if (!autoScrollRef.current) cancelSettleRef.current?.();
+      return true;
+    };
+    if (!jump()) return;
 
     let cancelled = false;
-    let lastHeight = -1;
+    let lastHeight = container.scrollHeight;
     let stableFrames = 0;
     const start = now();
 
     const tick = () => {
-      if (cancelled) return;
-      const container = containerRef.current;
-
-      const target = currentMatchRef.current;
-      if (!container || !target || userIsDriving(touchDraggingRef, lastGestureAtRef)) return;
+      if (cancelled || containerRef.current !== container) return;
+      if (userIsDriving(touchDraggingRef, lastGestureAtRef)) return;
 
       const height = container.scrollHeight;
       if (height === lastHeight) {
@@ -484,8 +537,7 @@ export function useMessageScroll(
       } else {
         stableFrames = 0;
         lastHeight = height;
-
-        target.scrollIntoView({ block: "center" });
+        if (!jump()) return;
       }
 
       if (stableFrames < STABLE_FRAMES && now() - start < MAX_SCROLL_SETTLE_MS) {
@@ -495,11 +547,15 @@ export function useMessageScroll(
 
     window.requestAnimationFrame(tick);
     return () => { cancelled = true; };
-  }, [currentMatch]);
+  }, [matchIndex, matchStart, needle]);
 
+  // A search jump moved the reader on, so the row `CompactLayout` would hold
+  // still is one they have left: a query that reveals collapsed turns would
+  // otherwise restore it over the jump. One `false` ends a restore for good.
   const canRestoreReadingAnchor = useCallback(() => !autoScrollRef.current
     && !hasActiveSelectionInside(containerRef.current)
-    && !userIsDriving(touchDraggingRef, lastGestureAtRef), []);
+    && !userIsDriving(touchDraggingRef, lastGestureAtRef)
+    && !searchJumpedRef.current, []);
 
   /**
    * docs/303-session-status-card req 30 — whether the status card returning to
