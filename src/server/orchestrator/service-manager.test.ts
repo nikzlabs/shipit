@@ -21,6 +21,7 @@ import {
   type SecretsStatusInternalSnapshot,
 } from "./service-manager.js";
 import { DEFAULT_STOP_GRACE_PERIOD_MS, type DockerSocketGrant } from "./compose-generator.js";
+import { COMPOSE_HELPER_IMAGE_ENV, ComposeHelperError } from "./compose-helper.js";
 import { OPS_TEMPLATE } from "./templates-ops.js";
 import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-dir.js";
 import { serializeStackOp } from "./stack-op-queue.js";
@@ -1176,6 +1177,39 @@ services:
     await expect(mgr.restartService("nonexistent")).rejects.toThrow("Unknown service");
   });
 
+  it("names the failed project-file read, not an unknown service, and registers the services once a read works", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    x-shipit-preview: manual\n");
+    const confined = new FakeConfinedCompose({ workspaceDir: dir, sessionId: "test-session" });
+    const helperFailure = "ShipIt could not start its Compose helper container for `read` (exit 125): "
+      + "docker: Error response from daemon: No such image: sha256:gone";
+    vi.spyOn(confined, "readProjectFile").mockRejectedValueOnce(new ComposeHelperError(helperFailure, "start"));
+    const mgr = testServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: () => Promise.resolve(),
+      composeQuery: emptyComposeQuery,
+      pollIntervalMs: 0,
+      confinedCompose: confined,
+    });
+
+    await expect(mgr.start()).rejects.toThrow(helperFailure);
+    expect(mgr.getServices()).toEqual([]);
+    for (const action of [mgr.startService, mgr.stopService, mgr.restartService]) {
+      const err = await action.call(mgr, "web").catch((e: unknown) => e);
+      expect((err as Error).message).toBe(
+        `ShipIt has no service "web", and its last read of this session's Compose file failed: ${helperFailure}`,
+      );
+    }
+
+    await mgr.reconcile();
+    expect(mgr.getService("web")).toBeDefined();
+    expect(mgr.projectComposeFailure).toBeNull();
+    await expect(mgr.startService("nonexistent")).rejects.toThrow("Unknown service: nonexistent");
+  });
+
   it("registers an 'error' listener on the log follower so a failed docker exec can't crash the process", () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
@@ -1453,6 +1487,28 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
       expect(mgr.projectComposeFailure?.kind).toBe("refused");
       expect(mgr.projectComposeFailure?.message).toContain("web");
       expect(mgr.projectComposeFailure?.message).toContain("privileged");
+    });
+
+    // Distinct repositories, and the other settings cleared, so one setting cannot stand in for another.
+    const IMAGE_SETTINGS: [string, string][] = [
+      ["SESSION_WORKER_IMAGE", "test-worker:prod"],
+      ["SESSION_WORKER_DOCKER_IMAGE", "test-worker-docker:prod"],
+      ["SESSION_EGRESS_SIDECAR_IMAGE", "test-sidecar:prod"],
+      [COMPOSE_HELPER_IMAGE_ENV, "test-helper:prod"],
+    ];
+    it.each(IMAGE_SETTINGS)("refuses a build that would tag the image %s names", async (env, image) => {
+      for (const [key] of IMAGE_SETTINGS) vi.stubEnv(key, "");
+      vi.stubEnv(env, image);
+      try {
+        const dir = setup();
+        writeCompose(dir, `services:\n  web:\n    image: ${image}\n    build: .\n    ports: ['3000:3000']\n`);
+        const mgr = createMockedManager(dir);
+
+        await expect(mgr.start()).rejects.toThrow("is reserved for one of ShipIt's own images");
+        expect(mgr.projectComposeFailure?.kind).toBe("refused");
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
 
     it("records a file it could not parse as MALFORMED, not refused", async () => {

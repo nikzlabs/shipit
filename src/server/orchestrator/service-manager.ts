@@ -56,7 +56,7 @@ import {
   sessionScratchDirForWorkspace,
   sessionStateDirForWorkspace,
 } from "./session-state-dir.js";
-import { ComposeHelperError, ConfinedCompose, type ConfinedComposeApi } from "./compose-helper.js";
+import { COMPOSE_HELPER_IMAGE_ENV, ComposeHelperError, ConfinedCompose, type ConfinedComposeApi } from "./compose-helper.js";
 import { ComposeStartRecord } from "./compose-start-record.js";
 import { composeProjectName } from "./compose-stack-reaper.js";
 import { stackLabelFilters } from "./stack-label.js";
@@ -1120,7 +1120,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   async startService(name: string): Promise<void> {
     const svc = this.services.get(name);
-    if (!svc) throw new Error(`Unknown service: ${name}`);
+    if (!svc) throw unknownServiceError(name, this._projectComposeFailure);
     this.refusePluginPortStart(name);
 
     this.retry.resetOomBudget(name);
@@ -1149,7 +1149,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   async restartService(name: string): Promise<void> {
     const svc = this.services.get(name);
-    if (!svc) throw new Error(`Unknown service: ${name}`);
+    if (!svc) throw unknownServiceError(name, this._projectComposeFailure);
     this.refusePluginPortStart(name);
 
     this.retry.resetOomBudget(name);
@@ -1180,7 +1180,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   // Stop now, then stop anything a racing up creates after this call returns.
   async stopService(name: string): Promise<void> {
     const svc = this.services.get(name);
-    if (!svc) throw new Error(`Unknown service: ${name}`);
+    if (!svc) throw unknownServiceError(name, this._projectComposeFailure);
 
     this.stoppedByUser.add(name);
     this.retry.clearRetryState(name);
@@ -1636,6 +1636,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         ...opts,
         project: composeProjectName(this.sessionId),
         workspaceDir: this.workspaceDir,
+        reservedImages: SHIPIT_IMAGE_ENVS.map((key) => process.env[key]).filter((ref): ref is string => Boolean(ref)),
       }));
 
       const persistUse = this.checked(() => resolvedPersistUse(model));
@@ -2347,6 +2348,22 @@ function isMapping(value: unknown): value is Record<string, unknown> {
 
 // Compose's own rule for a secret or config key; the copy is named after it.
 const PROJECT_FILE_KEY = /^[A-Za-z0-9._-]+$/;
+
+// The images ShipIt starts by name, which a project build must not retag (docs/318-compose-remaining-escapes).
+const SHIPIT_IMAGE_ENVS = [
+  "SESSION_WORKER_IMAGE",
+  "SESSION_WORKER_DOCKER_IMAGE",
+  "SESSION_EGRESS_SIDECAR_IMAGE",
+  COMPOSE_HELPER_IMAGE_ENV,
+] as const;
+
+/** A failed read of the project file leaves its services unregistered; name that failure, not the name. */
+export function unknownServiceError(name: string, failure: ComposeFailure | null): Error {
+  if (!failure) return new Error(`Unknown service: ${name}`);
+  return new Error(
+    `ShipIt has no service "${name}", and its last read of this session's Compose file failed: ${failure.message}`,
+  );
+}
 
 // Compose could not read or resolve the project file: the start is refused with its message (req 6).
 function projectFileError(err: unknown): unknown {

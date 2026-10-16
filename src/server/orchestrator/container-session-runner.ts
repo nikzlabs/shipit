@@ -21,7 +21,7 @@ import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 import { adoptInFlightTurn, type InFlightTurnInfo } from "./turn-adoption.js";
 import { reconcilePermissionCards } from "./permission-cards.js";
 import { workerReportsNoTurn } from "./restart-turn-reattach.js";
-import { originView, type ServiceManager, type ManagedService, type SecretsStatusInternalSnapshot } from "./service-manager.js";
+import { originView, unknownServiceError, type ServiceManager, type ManagedService, type SecretsStatusInternalSnapshot } from "./service-manager.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
 import { BackgroundTaskTracker, type BackgroundTaskInfo } from "./background-task-tracker.js";
@@ -2015,7 +2015,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
         case "logs": {
           if (!name) throw new Error("Service name is required");
-          if (!mgr.getService(name)) throw new Error(`Unknown service: ${name}`);
+          if (!mgr.getService(name)) throw unknownServiceError(name, mgr.projectComposeFailure);
           const logs = stripAnsi(await mgr.snapshotLogs(name, lines));
           result = { name, logs };
           break;

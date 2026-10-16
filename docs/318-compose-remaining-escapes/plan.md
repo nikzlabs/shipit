@@ -348,7 +348,38 @@ do:
   could name. It is built with the orchestrator image, from the same Docker apt
   repository, and its reference is resolved at startup, as
   `resolveWorkerImageId` resolves the worker image (`app-lifecycle.ts`). If it
-  is missing, starts are refused with a message that says so.
+  is missing, starts are refused with a message that says so. Docker can lose
+  the pinned id while ShipIt runs (a rebuild that moves the tag, an image
+  cleanup), and then every helper run fails with "No such image". So a run that
+  fails that way asks Docker whether the pinned id is really gone. Only then
+  does it resolve the name again, pin the new id for every session
+  (`repinComposeHelperImage`, one bounded resolve shared by concurrent runs),
+  and run once more — still by id and with `--pull never`. If the name
+  resolves to nothing either, the start is refused with the rebuild message.
+  Both the startup pin and this re-pin trust the name, so no project may name
+  the helper's repository in `image:` or `build.tags`: a build with that name
+  would move the tag to an image the project wrote. The same holds for every
+  image ShipIt starts by name — the session worker (`SESSION_WORKER_IMAGE`,
+  `SESSION_WORKER_DOCKER_IMAGE`), which every new session container runs, and
+  the egress sidecar (`SESSION_EGRESS_SIDECAR_IMAGE`) — so
+  `validateReservedImageUse` refuses all four repositories, with any tag. The
+  orchestrator's own image is not on the list: no setting names it, and ShipIt
+  never starts it. Compose hands both fields to Buildx Bake,
+  which expands `${…}` and `%{…}` in them after ShipIt's check, so every
+  `image:` and build tag must also be a literal reference
+  (`validateLiteralImageNames`); that also keeps the ops-proxy rule's
+  name check sound. Compose 5.5.1 (`pkg/compose/build_bake.go`) escapes `${`
+  only in build args and `dockerfile_inline`, so Bake expands the other build
+  strings too. None of them needs its own rule: `build.network`,
+  `build.privileged`, and `build.entitlements` accept only fixed values, which
+  a template is not; every path (context, extra contexts, Dockerfile, secret
+  and SSH sources, local caches) still resolves inside the helper container;
+  Compose grants Bake's `fs.read` and `security.insecure` from the
+  unexpanded values; and Bake's template functions read no file or
+  environment variable (`homedir()` is the one system lookup). Checked
+  2026-10-15. A service that is not registered because the
+  project file's read failed is reported with that failure, not as an unknown
+  service.
 - **A pinned Compose version.** This design depends on how `config` behaves:
   which services it selects, and whether it inlines `env_file` values. That has
   changed between releases (on 2.34.0, `config` keeps the `env_file` of a

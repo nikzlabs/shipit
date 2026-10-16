@@ -402,6 +402,8 @@ export interface ResolvedModelContext extends ComposeParseOptions {
   /** Compose names a declared volume, network, secret, or config `<project>_<key>`. */
   project: string;
   workspaceDir: string;
+  /** The images ShipIt runs by name (`SESSION_*_IMAGE`), which no project image may name. */
+  reservedImages?: readonly string[];
 }
 
 export interface ResolvedModelCheck {
@@ -437,12 +439,14 @@ export function validateResolvedModel(model: unknown, ctx: ResolvedModelContext)
     entries.push([name, svc]);
     validateClassifiedFields(name, svc);
     validateServiceSettings(name, svc, socket, containEgress, opsSession, isolateNetwork);
+    validateLiteralImageNames(name, svc);
     validateResolvedServiceFiles(name, svc);
     validateResolvedMounts(name, svc.volumes, declaredVolumes, ctx.workspaceDir);
     if (isTrustedOpsProxyService(name, svc, opsSession)) trustedOpsProxies.add(name);
   }
   validateSocketJoins(entries);
   if (opsSession) validateOpsProxyImageUse(entries);
+  if (ctx.reservedImages?.length) validateReservedImageUse(entries, ctx.reservedImages);
   return { trustedOpsProxies };
 }
 
@@ -850,13 +854,31 @@ function buildTags(build: unknown): unknown[] {
 
 function namesOpsProxyImage(ref: unknown): boolean {
   if (typeof ref !== "string") return false;
-  const lower = ref.trim().toLowerCase();
-  if (lower.includes(OPS_PROXY_DIGEST.slice("sha256:".length))) return true;
-  const withoutDigest = lower.split("@", 1)[0];
+  if (ref.trim().toLowerCase().includes(OPS_PROXY_DIGEST.slice("sha256:".length))) return true;
+  return imageRepository(ref) === OPS_PROXY_REPOSITORY;
+}
+
+/** The repository an image reference names, without tag, digest, or Docker Hub's implied prefixes. */
+function imageRepository(ref: string): string {
+  const withoutDigest = ref.trim().toLowerCase().split("@", 1)[0];
   const tagAt = withoutDigest.indexOf(":", withoutDigest.lastIndexOf("/") + 1);
   const repository = tagAt === -1 ? withoutDigest : withoutDigest.slice(0, tagAt);
-  return repository.replace(/^(docker\.io|index\.docker\.io|registry-1\.docker\.io)\//, "")
-    === OPS_PROXY_REPOSITORY;
+  const hubPath = repository.replace(/^(docker\.io|index\.docker\.io|registry-1\.docker\.io)\//, "");
+  return /^library\/[^/]+$/.test(hubPath) ? hubPath.slice("library/".length) : hubPath;
+}
+
+// Compose hands `image` and `build.tags` to Buildx Bake, which expands `${…}` and `%{…}` in them
+// after this check, so the name-based rules below hold only for a literal reference.
+const LITERAL_IMAGE_REFERENCE = /^[A-Za-z0-9._\-/:@[\]]+$/;
+
+function validateLiteralImageNames(name: string, svc: Record<string, unknown>): void {
+  for (const ref of [svc.image, ...buildTags(svc.build)]) {
+    if (ref === undefined || (typeof ref === "string" && LITERAL_IMAGE_REFERENCE.test(ref))) continue;
+    throw new ComposeValidationError(
+      `Service \`${name}\`: image \`${showValue(ref)}\` is not a plain image reference. Write the name `
+      + "and tag literally, without `$`, `{`, `%`, quotes, or spaces.",
+    );
+  }
 }
 
 // The ops template's keys only: this container holds the socket.
@@ -1177,6 +1199,21 @@ function validateSocketJoins(services: [string, Record<string, unknown>][]): voi
         + "Docker socket. Give the service its own namespace.",
       );
     }
+  }
+}
+
+// A build tagged with one of these names moves the tag ShipIt starts that image from: the session
+// worker of every new session, its egress sidecar, or the Compose helper, which runs `up` as root
+// with the Docker socket (docs/318-compose-remaining-escapes).
+function validateReservedImageUse(services: [string, Record<string, unknown>][], reservedImages: readonly string[]): void {
+  const reserved = new Set(reservedImages.map(imageRepository));
+  for (const [name, svc] of services) {
+    const named = [svc.image, ...buildTags(svc.build)]
+      .find((ref) => typeof ref === "string" && reserved.has(imageRepository(ref)));
+    if (named === undefined) continue;
+    throw new ComposeValidationError(
+      `Service \`${name}\`: image \`${showValue(named)}\` is reserved for one of ShipIt's own images. Use another image name.`,
+    );
   }
 }
 

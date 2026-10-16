@@ -3573,6 +3573,54 @@ networks:
     }
   });
 
+  it("refuses a project image that names one of ShipIt's own repositories, so no build can move its tag", () => {
+    const reserved = { ...ctx, reservedImages: ["shipit-session-worker:prod", "shipit-compose-helper:prod"] };
+    const build = { context: WS, dockerfile: "Dockerfile" };
+    for (const web of [
+      { image: "shipit-compose-helper:prod", build },
+      { image: "docker.io/library/shipit-compose-helper", build },
+      { image: "node:20", build: { ...build, tags: ["Shipit-Compose-Helper:dev"] } },
+      { image: "shipit-compose-helper:prod" },
+      // Any tag of a reserved repository: `:docker` is the worker image ops sessions run.
+      { image: "shipit-session-worker:docker", build },
+    ]) {
+      expect(() => validateResolvedModel(resolved(web), reserved), JSON.stringify(web))
+        .toThrow("is reserved for one of ShipIt's own images");
+    }
+    expect(() => validateResolvedModel(resolved({ image: "shipit-compose-helper-fork:prod", build }), reserved)).not.toThrow();
+    expect(() => validateResolvedModel(resolved({ image: "shipit-compose-helper:prod", build }), ctx)).not.toThrow();
+
+    // Docker Hub's implied `library/` applies to a one-part name only.
+    const nested = { ...ctx, reservedImages: ["acme/helper:prod"] };
+    expect(() => validateResolvedModel(resolved({ image: "docker.io/acme/helper:x", build }), nested))
+      .toThrow("is reserved for one of ShipIt's own images");
+    expect(() => validateResolvedModel(resolved({ image: "library/acme/helper", build }), nested)).not.toThrow();
+  });
+
+  it("refuses an image name or build tag that Buildx Bake would expand after this check", () => {
+    const build = { context: WS, dockerfile: "Dockerfile" };
+    // Assembled at runtime: a literal Bake expression trips no-template-curly-in-string.
+    const bakeExpression = ["$", '{"shipit-compose-helper"}:prod'].join("");
+    for (const web of [
+      { image: "node:20", build: { ...build, tags: [bakeExpression] } },
+      { image: "node:20", build: { ...build, tags: ["%{ if true }shipit-compose-helper%{ endif }:prod"] } },
+      { image: bakeExpression, build },
+      { image: "node 20" },
+    ]) {
+      expect(() => validateResolvedModel(resolved(web), ctx), JSON.stringify(web))
+        .toThrow("is not a plain image reference");
+    }
+    const literal = { image: "ghcr.io:443/acme/web:1.2-rc_3@sha256:abc", build: { ...build, tags: ["localhost:5000/web:Dev"] } };
+    expect(() => validateResolvedModel(resolved(literal), ctx)).not.toThrow();
+    const ipv6 = { image: "[2001:db8::1]:5000/acme/web:Dev", build: { ...build, tags: ["[::1]:5000/web"] } };
+    expect(() => validateResolvedModel(resolved(ipv6), ctx)).not.toThrow();
+
+    // Bake expands `build.network` too; only its fixed values pass.
+    const hostNetwork = ["$", '{"host"}'].join("");
+    expect(() => validateResolvedModel(resolved({ build: { ...build, network: hostNetwork } }), ctx))
+      .toThrow(`\`build.network: ${hostNetwork}\` is not allowed`);
+  });
+
   it("refuses a bind source that resolved outside the workspace", () => {
     for (const source of ["/", "/workspace/sessions/other/workspace", "/workspace/sessions/s1", `${WS}-b`]) {
       expect(() => validateResolvedModel(mounts(bindAt(source)), ctx), source)
