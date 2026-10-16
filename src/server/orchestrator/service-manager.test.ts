@@ -31,15 +31,20 @@ import { joinSessionNetworkEndpoints } from "./service-manager-setup.js";
 import { releaseSessionNetworkQueued } from "./session-network-release.js";
 import { fakeNetworkDocker } from "./session-network-test-helpers.js";
 
-// A real `docker` follower exits or prints on its own, at a time fake timers do not control, and
-// only on a host that has docker (CI does). Tests that drive the follower take an inert one.
-const inertSpawn = vi.hoisted(() => ({ enabled: false }));
+// A real `docker` exits or prints on its own, at a time the test does not control, and only on a
+// host that has docker (CI does). Tests that follow or snapshot logs take a fake: a follower stays
+// open and silent, and a one-shot `logs` closes with no output so a snapshot can finish.
+const fakeDocker = vi.hoisted(() => ({ enabled: false }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof childProcessModule>();
   const { EventEmitter } = await import("node:events");
-  const spawn = (...args: Parameters<typeof actual.spawn>) => inertSpawn.enabled
-    ? Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true })
-    : actual.spawn(...args);
+  const spawn = (...args: Parameters<typeof actual.spawn>) => {
+    if (!fakeDocker.enabled) return actual.spawn(...args);
+    const proc = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true });
+    const argv = Array.isArray(args[1]) ? args[1] : [];
+    if (argv.includes("logs") && !argv.includes("-f")) queueMicrotask(() => proc.emit("close", 0, null));
+    return proc;
+  };
   return { ...actual, spawn };
 });
 
@@ -4208,7 +4213,12 @@ describe("ServiceManager starting-state address hygiene (#2044)", () => {
 describe("ServiceManager — compose up output reaches the service log", () => {
   let tmpDir: string;
 
+  beforeEach(() => {
+    fakeDocker.enabled = true;
+  });
+
   afterEach(() => {
+    fakeDocker.enabled = false;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -4344,11 +4354,11 @@ describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
   }
 
   beforeEach(() => {
-    inertSpawn.enabled = true;
+    fakeDocker.enabled = true;
   });
 
   afterEach(() => {
-    inertSpawn.enabled = false;
+    fakeDocker.enabled = false;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
     vi.useRealTimers();
     vi.restoreAllMocks();
