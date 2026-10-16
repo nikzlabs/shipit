@@ -120,13 +120,24 @@ function materializeCredentialDestination(dest: string): void {
   );
 }
 
-export function copyCredentialPath(srcRoot: string, destRoot: string, rel: string): void {
+export function copyCredentialPath(
+  srcRoot: string,
+  destRoot: string,
+  rel: string,
+  exclude: readonly string[] = [],
+): void {
   const src = path.join(srcRoot, rel);
   if (!fs.existsSync(src)) return;
   const dest = path.join(destRoot, rel);
   materializeCredentialDestination(dest);
+  const excluded = new Set(exclude.map((sub) => path.join(src, sub)));
   // Absolute source links would resolve to different files inside the session's subpath mount.
-  fs.cpSync(src, dest, { recursive: true, force: true, dereference: true });
+  fs.cpSync(src, dest, {
+    recursive: true,
+    force: true,
+    dereference: true,
+    filter: (source) => !excluded.has(source),
+  });
 }
 
 export function ensureSessionCredentialsScaffold(credentialsRoot: string, sessionId: string): void {
