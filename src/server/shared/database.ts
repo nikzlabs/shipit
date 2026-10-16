@@ -1208,6 +1208,15 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "quota_resume");
   },
+  // docs/007-threads-checkpoints reqs 4, 5 — the CLI's id of each chat message, and the message
+  // a rewind left for the next spawn to fork the stored conversation at.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "agent_message_id")) {
+      db.exec("ALTER TABLE messages ADD COLUMN agent_message_id TEXT");
+    }
+    addSessionColumnIfMissing(db, "agent_resume_at");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

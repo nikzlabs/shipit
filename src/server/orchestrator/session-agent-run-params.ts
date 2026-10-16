@@ -63,6 +63,7 @@ export async function buildAgentRunParams(
   // for the next spawn. A stored id is always resumed; a replay only starts a conversation.
   const storedReplay = agentSessionId === undefined ? sessionInfo?.conversationReplay : undefined;
   const replay = storedReplay ? boundStoredReplay(storedReplay) : undefined;
+  const resumeAt = agentSessionId !== undefined ? sessionInfo?.agentResumeAt : undefined;
   // Prefer the session row: another viewer may have changed the connection's selection.
   const selectedModel = sessionInfo?.model ?? deps.getSelectedModel();
   const reasoningEffort = sessionInfo?.reasoningEffort ?? deps.getSelectedReasoning?.();
@@ -99,17 +100,18 @@ export async function buildAgentRunParams(
   const agentInstructions = agentInstructionsEnabled
     ? buildAgentSystemInstructions({ agentId, isOps, isSandbox, sessionStatusCard })
     : undefined;
-  let systemPrompt: string | undefined =
+  const systemPrompt: string | undefined =
     [agentInstructions, userSystemPrompt].filter(Boolean).join("\n\n") || undefined;
 
-  if (replay) {
-    systemPrompt = systemPrompt ? `${systemPrompt}\n\n${replay}` : replay;
-  }
-
+  // A compaction before a fork's first turn has nothing to compact, and the CLI reads
+  // `/compact` only as the whole message: the replay goes alone and starts the conversation.
+  const compactsNothing = compact === true && replay !== undefined;
   const baseParams: AgentRunParams = {
-    prompt,
+    // docs/007 req 8 — the first user message, which the CLI stores; a system prompt it does not.
+    prompt: replay ? (compactsNothing ? replay : `${replay}\n\n${prompt}`) : prompt,
     cwd: sessionDir,
     ...(agentSessionId !== undefined ? { sessionId: agentSessionId } : {}),
+    ...(resumeAt ? { resumeAt } : {}),
     ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(selectedModel !== undefined ? { model: selectedModel } : {}),
@@ -119,7 +121,7 @@ export async function buildAgentRunParams(
     ...(serviceMcpServers.length > 0 ? { serviceMcpServers } : {}),
     ...(serviceMcpCandidates.length > 0 ? { serviceMcpCandidates } : {}),
     ...(sessionStatusCard ? { sessionStatusCard: true } : {}),
-    ...(compact ? { compact: true } : {}),
+    ...(compact && !compactsNothing ? { compact: true } : {}),
   };
   const prepare = getPrepareRunParams(deps.runParamsPreps, agentId);
   return prepare(baseParams, {

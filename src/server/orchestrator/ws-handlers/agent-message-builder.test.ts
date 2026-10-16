@@ -6,6 +6,7 @@ import {
   findGroupContainingTool,
   recordSteeredMessage,
   requeueUndeliveredSteers,
+  stampLastGroup,
 } from "./agent-message-builder.js";
 import type { ChatMessageGroup } from "../session-runner.js";
 import type { ClaudeContentBlockToolUse, WsServerMessage } from "../../shared/types.js";
@@ -40,6 +41,30 @@ describe("accumulateAssistantGroups", () => {
     expect(r.chatMessageGroups).toHaveLength(1);
     expect(r.chatMessageGroups[0].toolUse.map((t) => t.name)).toEqual(["ExitPlanMode"]);
     expect(r.needsNewMessageGroup).toBe(true);
+    r.dispose({ force: true });
+  });
+});
+
+describe("stampLastGroup (docs/007 req 5)", () => {
+  it("keeps a group's point before a steer the CLI has read", () => {
+    const r = runner();
+    accumulateAssistantGroups(r, "", [tool("t1", "Bash")]);
+    stampLastGroup(r, "tool-use");
+    recordSteeredMessage(r, "also do this");
+    // The tool result comes before the steer in the CLI's conversation.
+    stampLastGroup(r, "tool-result");
+    expect(r.chatMessageGroups[0].agentMessageId).toBe("tool-result");
+
+    r.steeredMessages = r.steeredMessages.map((s) => ({ ...s, delivered: true }));
+    r.needsNewMessageGroup = true;
+    accumulateAssistantGroups(r, "", [tool("q1", "AskUserQuestion")]);
+    stampLastGroup(r, "question-after-steer");
+    expect(r.chatMessageGroups).toHaveLength(1);
+    expect(r.chatMessageGroups[0].agentMessageId).toBe("tool-result");
+
+    accumulateAssistantGroups(r, "on it", []);
+    stampLastGroup(r, "reply-after-steer");
+    expect(r.chatMessageGroups.map((g) => g.agentMessageId)).toEqual(["tool-result", "reply-after-steer"]);
     r.dispose({ force: true });
   });
 });

@@ -110,6 +110,8 @@ export interface ChatMessageGroup {
   toolUse: ClaudeContentBlockToolUse[];
   toolResults?: ToolResultEntry[];
   subagentEvents?: SubagentEvent[];
+  /** docs/007 req 5 — the CLI's id of the latest message that fed this group. */
+  agentMessageId?: string;
 }
 
 export interface SteeredMessage {

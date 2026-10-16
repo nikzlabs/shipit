@@ -38,6 +38,7 @@ import {
   attachSubagentToolResults,
   attachToolResultsToGroup,
   requeueUndeliveredSteers,
+  stampLastGroup,
   steerToQueuedMessage,
 } from "./agent-message-builder.js";
 import { observeVoiceNotes } from "./agent-voice-handler.js";
@@ -91,7 +92,14 @@ export const CONTEXT_WINDOW_TOKENS = DEFAULT_CONTEXT_WINDOW_TOKENS;
 
 // Whitespace-tolerant because the trimmed chunks it is matched across lose a split space.
 const MISSING_CONVERSATION = /No\s*conversation\s*found\s*with\s*session\s*ID/i;
+// docs/007 — the rewind point is not in the stored conversation, or a CLI bump dropped the flag.
+const MISSING_REWIND_POINT = /No\s*message\s*found\s*with\s*message\.uuid|unknown\s*option\s*'--resume-session-at'/i;
 const MISSING_CONVERSATION_WINDOW = 200;
+
+const CANNOT_RESUME_MESSAGE = "The agent could not resume this session's conversation. ShipIt kept it and did not "
+  + "start a new one. To continue in a new conversation, fork the session.";
+const CANNOT_REWIND_MESSAGE = "The agent could not rewind this session's conversation to the point you chose. "
+  + "ShipIt kept the conversation and did not start a new one. To continue from that point, fork the session there.";
 
 export interface WireListenersOpts {
   isNewSession: boolean;
@@ -112,6 +120,8 @@ export interface WireListenersOpts {
   recoverAuth?: () => Promise<boolean>;
   /** The CLI could not resume the stored conversation and is exiting; the card is posted. */
   onConversationNotFound?: () => void;
+  /** docs/007 req 5 — this turn's conversation id was stored: the session keeps that conversation. */
+  onConversationKept?: () => void;
   /** true transfers terminal cleanup to the retry. */
   willRetryOnQuotaError?: (err: Error) => boolean;
   useStreaming?: boolean;
@@ -213,6 +223,7 @@ export function wireAgentListeners(
     if (!turnSessionId) return;
     deps.sessionManager.setAgentSessionId(turnSessionId, pendingAgentSessionId);
     agentSessionIdPersisted = true;
+    opts.onConversationKept?.();
   };
 
   // Synthetic CLI answers can race the interrupt and disable unanswered cards.
@@ -231,11 +242,14 @@ export function wireAgentListeners(
     deps.broadcastLog(source as "stderr" | "stdout" | "server", text);
     if (source === "stderr") recentStderr = (recentStderr + text).slice(-MISSING_CONVERSATION_WINDOW);
     // The stored id is kept and nothing is retried: only a fork starts a new conversation.
-    if (source === "stderr" && !missingConversationDetected && MISSING_CONVERSATION.test(recentStderr)) {
+    const message = source === "stderr" && !missingConversationDetected
+      ? MISSING_CONVERSATION.test(recentStderr)
+        ? CANNOT_RESUME_MESSAGE
+        : MISSING_REWIND_POINT.test(recentStderr) ? CANNOT_REWIND_MESSAGE : null
+      : null;
+    if (message) {
       missingConversationDetected = true;
       pendingAgentSessionId = null;
-      const message = "The agent could not resume this session's conversation. ShipIt kept it and did not "
-        + "start a new one. To continue in a new conversation, fork the session.";
       const turnSessionId = opts.capturedSessionId;
       if (runner && turnSessionId) {
         emitChatCard(
@@ -321,6 +335,7 @@ export function wireAgentListeners(
         );
         if (idx >= 0) {
           const next = steers.slice();
+          // Not stamped: a steer is stored as a queued command under another id (docs/007).
           next[idx] = { ...next[idx], delivered: true };
           runner.steeredMessages = next;
         }
@@ -640,6 +655,8 @@ export function wireAgentListeners(
 
       if ((text || toolBlocks.length > 0) && runner) {
         accumulateAssistantGroups(runner, text, toolBlocks);
+        // Text the CLI wrote itself may sit in a conversation that is never stored.
+        if (!event.synthetic && event.messageId) stampLastGroup(runner, event.messageId);
       }
 
       if (runner) {
@@ -690,6 +707,7 @@ export function wireAgentListeners(
 
       if (toolResults.length > 0 && runner) {
         attachToolResultsToGroup(runner, toolResults);
+        if (event.messageId) stampLastGroup(runner, event.messageId);
       }
 
       const usageSessionId = opts.capturedSessionId;
@@ -712,6 +730,7 @@ export function wireAgentListeners(
         if (!missingConversationDetected && storable) {
           deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
           agentSessionIdPersisted = true;
+          opts.onConversationKept?.();
         }
         // A PR that merged during this turn resolves the session (docs/316 req 5).
         deps.sessionManager.touchUnlessResolved(turnSessionId);

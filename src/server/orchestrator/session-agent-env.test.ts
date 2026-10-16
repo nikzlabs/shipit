@@ -111,7 +111,6 @@ function makeFakeSessionManager(opts: {
     setAgentPinnedCalls: number;
     agentSessionId: string | undefined;
     setAgentSessionIdCalls: { id: string; value: string }[];
-    clearAgentSessionIdCalls: string[];
     conversationReplay: string | undefined;
     setProviderRouteCalls: { id: string; kind: string; routeId: string }[];
     modelSelection: ModelSelection | undefined;
@@ -124,7 +123,6 @@ function makeFakeSessionManager(opts: {
     setAgentPinnedCalls: 0,
     agentSessionId: opts.agentSessionId,
     setAgentSessionIdCalls: [] as { id: string; value: string }[],
-    clearAgentSessionIdCalls: [] as string[],
     conversationReplay: undefined as string | undefined,
     setProviderRouteCalls: [] as { id: string; kind: string; routeId: string }[],
     modelSelection: undefined as ModelSelection | undefined,
@@ -160,10 +158,6 @@ function makeFakeSessionManager(opts: {
     setAgentSessionId: (id: string, value: string) => {
       state.setAgentSessionIdCalls.push({ id, value });
       state.agentSessionId = value;
-    },
-    clearAgentSessionId: (id: string) => {
-      state.clearAgentSessionIdCalls.push(id);
-      state.agentSessionId = undefined;
     },
     setConversationReplay: (_id: string, replay: string) => {
       state.conversationReplay = replay;
@@ -302,7 +296,6 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(fs.existsSync(path.join(sessionDir, ".claude", "projects", "-workspace", `${recoveredId}.jsonl`)))
       .toBe(true);
     expect(state.setAgentSessionIdCalls).toHaveLength(0);
-    expect(state.clearAgentSessionIdCalls).toHaveLength(0);
     expect(state.agentSessionId).toBe(storedId);
   });
 
@@ -830,9 +823,8 @@ describe("prepareSessionAgentEnvironment", () => {
       },
     });
 
-    expect(state.clearAgentSessionIdCalls).toHaveLength(0);
-    expect(state.setAgentSessionIdCalls).toHaveLength(0);
     expect(state.agentSessionId).toBe(storedId);
+    expect(state.setAgentSessionIdCalls).toHaveLength(0);
     expect(state.conversationReplay).toBeUndefined();
   });
 
@@ -889,9 +881,8 @@ describe("prepareSessionAgentEnvironment", () => {
       },
     });
 
-    expect(state.clearAgentSessionIdCalls).toHaveLength(0);
-    expect(state.setAgentSessionIdCalls).toHaveLength(0);
     expect(state.agentSessionId).toBe(codexThreadId);
+    expect(state.setAgentSessionIdCalls).toHaveLength(0);
     expect(fs.lstatSync(path.join(sessionDir, ".codex")).isSymbolicLink()).toBe(false);
     expect(fs.existsSync(path.join(sessionDir, ".codex", codexRolloutRel))).toBe(true);
   });
@@ -920,9 +911,8 @@ describe("prepareSessionAgentEnvironment", () => {
       },
     });
 
-    expect(state.clearAgentSessionIdCalls).toHaveLength(0);
-    expect(state.setAgentSessionIdCalls).toHaveLength(0);
     expect(state.agentSessionId).toBe(codexThreadId);
+    expect(state.setAgentSessionIdCalls).toHaveLength(0);
     expect(state.conversationReplay).toBeUndefined();
   });
 
@@ -1569,7 +1559,6 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
 
     await prepare(sm);
     expect(state.setAgentSessionIdCalls).toHaveLength(0);
-    expect(state.clearAgentSessionIdCalls).toHaveLength(0);
     expect(state.agentSessionId).toBe(CONVERSATION_ID);
   });
 

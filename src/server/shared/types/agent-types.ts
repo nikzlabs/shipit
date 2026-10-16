@@ -180,6 +180,11 @@ export interface AgentCapabilities {
   /** Resolve through the registry, not proxy defaults. Absent is false; late output alone is not a new turn. */
   startsOwnTurns?: boolean;
   supportsCompaction: boolean;
+  /**
+   * docs/007 — the CLI can start a conversation from a message of a stored one (`resumeAt`).
+   * Resolve through the registry; no adapter declares it. Absent is false.
+   */
+  forksAtMessage?: boolean;
   /** docs/154 — the CLI owns a goal ShipIt can read and change. Absent is false. */
   supportsGoals?: boolean;
   /** docs/154 — how ShipIt handles each `/goal` action for this harness: "control"
@@ -240,12 +245,15 @@ export interface AgentAssistantEvent {
   isStreamCompletion?: boolean;
   /** Text the CLI or its adapter wrote itself (a refusal, a warning), not the model's answer. */
   synthetic?: boolean;
+  /** docs/007 — the CLI's id of this message in its stored conversation (Claude's `uuid`). */
+  messageId?: string;
 }
 
 export interface AgentToolResultEvent {
   type: "agent_tool_result";
   content: unknown[];
   parentToolUseId?: string;
+  messageId?: string;
 }
 
 export interface AgentResultEvent {
@@ -301,6 +309,7 @@ export interface AgentSteerRejectedEvent {
 export interface AgentUserReplayEvent {
   type: "agent_user_replay";
   text: string;
+  messageId?: string;
 }
 
 export interface AgentCompactionStartedEvent {
@@ -424,6 +433,11 @@ export type ServiceRouting = StringServiceRouting | OpenAIAccountRouting;
 export interface AgentRunParams {
   prompt: string;
   sessionId?: string;
+  /**
+   * docs/007 — with `sessionId`: start a new conversation from this message of the stored
+   * one. The CLI reports the new conversation's id like any other.
+   */
+  resumeAt?: string;
   systemPrompt?: string;
   images?: ImageAttachment[];
   cwd: string;

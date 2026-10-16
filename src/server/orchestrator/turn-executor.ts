@@ -107,7 +107,8 @@ export interface TurnInput {
     uploadPaths?: string[];
     userReview?: { filePaths: string[]; commentCount: number };
   };
-  persistUserMessage: (sessionId: string) => void;
+  /** A number returned is the row it wrote, which the CLI's echo of the prompt stamps (docs/007 req 5). */
+  persistUserMessage: (sessionId: string) => unknown;
   afterUserMessagePersisted?: (sessionId: string) => void;
   isNewSession: boolean;
   isAuthRetry?: boolean;
@@ -117,7 +118,8 @@ export interface TurnInput {
   continuesTurn?: boolean;
   // Retries exclude every recorded route; use only actual provider refusals.
   attemptLedger?: readonly RefusedAttempt[];
-  persistGuard?: { done: boolean };
+  /** Shared by a turn's attempts; `rowId` is the user row the first one wrote (docs/007 req 5). */
+  persistGuard?: { done: boolean; rowId?: number };
   fallbackTitle: string;
   // Initial turn only. Adopted turns resample into the executor's mutable value.
   turnStartHeadHash: string | null;
@@ -176,6 +178,11 @@ function readStatusContext(deps: SystemTurnDeps, sessionId: string): string {
   }
 }
 
+/** The worker can put a Node runtime notice before the prompt, or after a slash command (`prefixPromptWithNotice`). */
+function wrapsPrompt(echoed: string, sent: string): boolean {
+  return echoed.endsWith(`\n\n${sent}`) || echoed.startsWith(`${sent}\n\n`);
+}
+
 // A timer can fire a little early, which would read the hold as still open.
 const COMMIT_HOLD_EXPIRY_MARGIN_MS = 1_000;
 
@@ -205,6 +212,8 @@ export async function executeAgentTurn(
     input.statusContext,
     readStatusContext(deps, sessionId),
   );
+  // The prompt as spawned: a fork's replay leads its first one (docs/007 req 8).
+  let submittedPrompt = prompt;
   if (input.continuesTurn) deps.listenerDeps.sessionManager.touchUnlessResolved(sessionId);
   else deps.listenerDeps.sessionManager.track(sessionId);
   if (deps.listenerDeps.sessionManager.setMuted(sessionId, null)) {
@@ -356,11 +365,34 @@ export async function executeAgentTurn(
    * stronger than the worker's own answer to the submission, and it can arrive
    * first, so it does not wait for one. Only a turn already ended stays ended.
    */
-  const notePromptReadBack = (text: string): void => {
-    if (text.trim() !== prompt.trim()) return;
+  const notePromptReadBack = (text: string, messageId: string | undefined): void => {
+    const echoed = text.trim();
+    const exact = echoed === prompt.trim() || echoed === submittedPrompt.trim();
+    if (!exact && !wrapsPrompt(echoed, submittedPrompt.trim())) return;
+    // docs/007 req 5 — the prompt's own echo comes first. Read behind a turn of the CLI's own,
+    // the prompt is stored as a queued command under another id (measured on 2.1.300).
+    if (messageId && !cliTurnPending && promptMessageId === undefined) {
+      promptMessageId = messageId;
+      stampPromptRow();
+    }
+    if (!exact) return;
     if (ownTurn === "ended") return;
     ownTurn = "running";
     noteAgentHasPrompt();
+  };
+
+  // Written once the listener keeps this attempt's conversation (`onConversationKept`); a
+  // retry's stamp replaces it.
+  let promptMessageId: string | undefined;
+  let promptAnswered = false;
+  const stampPromptRow = (): void => {
+    const rowId = persistGuard.rowId;
+    if (rowId === undefined || promptMessageId === undefined || !promptAnswered) return;
+    try {
+      deps.listenerDeps.chatHistoryManager.recordUserMessageAgentId(sessionId, rowId, promptMessageId);
+    } catch (err) {
+      console.error(`[turn] recording the prompt's message id for ${sessionId} failed:`, err);
+    }
   };
 
   // Only the running turn is this prompt's. A queued one stays queued: the
@@ -540,11 +572,15 @@ export async function executeAgentTurn(
   const turnIsCurrent = (): boolean =>
     !runner || thisTurnEpoch === undefined || runner.turnEpoch === thisTurnEpoch;
 
-  const persistGuard = input.persistGuard ?? { done: false };
+  const persistGuard: { done: boolean; rowId?: number } = input.persistGuard ?? { done: false };
   const persistUserMessageOnce = (sid: string): boolean => {
     if (persistGuard.done) return false;
     persistGuard.done = true;
-    input.persistUserMessage(sid);
+    const rowId = input.persistUserMessage(sid);
+    if (typeof rowId === "number") {
+      persistGuard.rowId = rowId;
+      stampPromptRow();
+    }
     // Echo image URLs need the persisted row; the shared retry latch also prevents duplicate echoes.
     if (input.emitUserEcho) {
       emit({
@@ -1018,6 +1054,10 @@ export async function executeAgentTurn(
     willRetryOnQuotaError,
     // No kill: the CLI exits by itself, and a kill can drop the `done` that ends the turn.
     onConversationNotFound: () => { conversationNotFound = true; },
+    onConversationKept: () => {
+      promptAnswered = true;
+      stampPromptRow();
+    },
     ...(input.permissionMode !== undefined ? { requestedPermissionMode: input.permissionMode } : {}),
     // An adapter error can be terminal without a later done event, even with an empty queue.
     onError: async () => {
@@ -1469,7 +1509,7 @@ export async function executeAgentTurn(
       return;
     }
     if (event.type === "agent_user_replay") {
-      notePromptReadBack(event.text);
+      notePromptReadBack(event.text, event.messageId);
       return;
     }
     if (event.type === "agent_assistant") {
@@ -1903,6 +1943,7 @@ export async function executeAgentTurn(
         input.compact ? { compact: true } : undefined,
       );
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
+      submittedPrompt = runParams.prompt;
       if (stoppedDuringSetup() || settledDuringSetup()) return;
       agent.run(input.useStreaming !== undefined ? { ...runParams, useStreaming: input.useStreaming } : runParams);
       noteSubmitted();

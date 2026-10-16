@@ -227,20 +227,6 @@ export function takeOfferedActions(
 }
 
 /**
- * A user-initiated conversation reset or rewind. ShipIt never discards a thread on its own.
- *
- * docs/303 — the card is kept and marked stale rather than cleared: after a rewind it may
- * describe work that is gone, and "Stale" is how it says so. The mark itself lives in
- * `clearAgentSessionId`, beside the goal's clear, so no caller can forget it.
- */
-export function clearConversationThread(
-  deps: { sessionManager: Pick<SessionManager, "clearAgentSessionId"> },
-  sessionId: string,
-): void {
-  deps.sessionManager.clearAgentSessionId(sessionId);
-}
-
-/**
  * docs/303 — what a settling turn knew about itself, taken before its drain step: the
  * drained successor resets the runner state these three come from, and it starts before
  * the network post-turn work and `idle`.

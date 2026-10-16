@@ -41,6 +41,7 @@ import { buildPostTurnReleaseFlow } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
 import { createPromptRepark, createPromptTakeLedger, type PromptTakeLedger } from "../turn-settlement.js";
 import {
+  releaseResidentOnPendingRewind,
   releaseResidentOnSpawnChange,
   releaseResidentOnStatusCardChange,
   releaseResidentOnServiceMcpChange,
@@ -352,6 +353,7 @@ async function composeAndRunAgentTurn(
       runner,
       desiredSpawnIdentity(ctx.sessionManager, capturedSessionId, agentId),
     );
+    releaseResidentOnPendingRewind(runner, ctx.sessionManager.get(capturedSessionId)?.agentResumeAt);
   }
   if (useStreaming) {
     releaseResidentOnStatusCardChange(runner, ctx.credentialStore.getSessionStatusCard());
@@ -380,9 +382,9 @@ async function composeAndRunAgentTurn(
         endLine: f.endLine,
       }))
     : undefined;
-  const persistUserMessage = (sessionId: string): void => {
-    if (opts.silent) return;
-    ctx.chatHistoryManager.append(sessionId, {
+  const persistUserMessage = (sessionId: string): number | undefined => {
+    if (opts.silent) return undefined;
+    return ctx.chatHistoryManager.append(sessionId, {
       role: "user",
       text: userText,
       images: historyImages,

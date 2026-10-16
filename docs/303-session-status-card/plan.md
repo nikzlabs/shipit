@@ -180,7 +180,7 @@ runner's attach frames, because clients (the integration tests above all) read t
 first frame on connect as the runner being ready, and also on the failed-restore
 and archived paths, which attach no runner, so a lost workspace does not hide the
 card — and again each
-time `SessionManager.setSessionStatus`, `setAgentGoal` or `clearAgentSessionId`
+time `SessionManager.setSessionStatus`, `setAgentGoal` or `markRewound`
 reports a write through `onDetailsChanged` for the connection's active session.
 Each send reads the record when it is sent, on one socket, so the last frame to
 arrive is the newest; the attach send and the change sends cannot reorder the way
@@ -194,15 +194,13 @@ its card too; while the card rode the list rows, it had none.
 **Lifecycle.**
 
 - New session: no card until the first write (req 22).
-- Conversation reset and rewind: keep status and offers, mark stale. After a
-  rewind the card may describe work that is gone; "Stale" says so. The mark
-  lives inside `SessionManager.clearAgentSessionId`, beside the goal's clear,
-  because that one method is what every reset and rewind reaches — nine call
-  sites, of which a shared helper would only be remembered by some. The write
-  reaches the open viewers like any other, so a viewer cannot keep a card that
-  reads current. ShipIt no longer discards a thread on its own (docs/007), so
-  only user-initiated resets reach `clearConversationThread`
-  (`services/session-status.ts`).
+- Rewind: keep status and offers, mark stale. After a rewind the card may
+  describe work that is gone; "Stale" says so. The mark lives inside
+  `SessionManager.markRewound`, beside the shown goal's clear on a chat rewind,
+  which every in-place rewind calls. The write reaches the open viewers like any
+  other, so a viewer cannot keep a card that reads current. ShipIt never clears
+  the stored conversation (`docs/007-threads-checkpoints` req 2), so there is no
+  reset left to mark.
 - Fork (`forkSession`, `session-fork-merge.ts`): copy the parent's card,
   marked stale. It is the fork's starting point.
 - Archive: the row keeps the column; restore brings the card back.
@@ -1422,7 +1420,7 @@ finished investigation and told the user about it twice.
 The stored card was never wrong — `sessions.session_status` held the newer write and the
 `takenAt` throughout. Every write that *merges* anything runs inside `runStatusExclusive`
 against a row it reads under the lock, with no await between the read and the write; the
-two writes outside that chain lose nothing — `clearAgentSessionId` reads the row itself to
+two writes outside that chain lose nothing — `markRewound` reads the row itself to
 flip one flag, and the fork copy writes the **new** session's row. Only what reached the
 agent had rewound. So the durability the tool promises is not a property of the store
 alone: it is a property of what the *next submission* shows, and a frozen prompt breaks it

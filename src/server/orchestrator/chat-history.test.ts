@@ -18,6 +18,7 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   parentCommitHash: "def456",
   uploadPaths: ["/uploads/x.png"],
   clientRequestId: "req-1",
+  agentMessageId: "msg-1",
   notice: true,
   noticeLevel: "warn",
   rolledBack: true,
@@ -1096,6 +1097,22 @@ describe("ChatHistoryManager", () => {
           `add it to EVERY_OPTIONAL_FIELD_MESSAGE and wire its column + toRow/fromRow so it survives a reload.`,
       ).toBeDefined();
     }
+  });
+
+  describe("recordUserMessageAgentId (docs/007 req 5)", () => {
+    it("stamps the user row it names, and a retry's echo replaces the first", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "user", text: "same text" });
+      const prompt = mgr.append("sess-1", { role: "user", text: "same text" });
+      const reply = mgr.append("sess-1", { role: "assistant", text: "reply" });
+
+      mgr.recordUserMessageAgentId("sess-1", prompt, "failed-attempt");
+      mgr.recordUserMessageAgentId("sess-1", prompt, "kept-attempt");
+      mgr.recordUserMessageAgentId("sess-1", reply, "not-a-prompt");
+      mgr.recordUserMessageAgentId("other-session", prompt, "elsewhere");
+
+      expect(mgr.load("sess-1").map((m) => m.agentMessageId)).toEqual([undefined, "kept-attempt", undefined]);
+    });
   });
 
   describe("settings proposal card persistence (docs/299-agent-settings-access)", () => {
