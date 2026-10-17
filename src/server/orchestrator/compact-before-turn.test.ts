@@ -135,6 +135,18 @@ describe("shouldCompactBeforeTurn", () => {
     expect(marked).toHaveLength(1);
   });
 
+  it("says no on every path when the user turned it off for the session (reqs 5, 17)", async () => {
+    const off = makeSession({ compactAfterMergeOff: true });
+    const marked: string[] = [];
+    expect(await ask({ session: off, marked })).toBe(false);
+    expect(await ask({ session: off, unattended: true, context: 200_000 })).toBe(false);
+    expect(marked).toHaveLength(1);
+  });
+
+  it("follows a re-tick the send carried before its write reached the session", async () => {
+    expect(await ask({ session: makeSession({ compactAfterMergeOff: true }), intent: true })).toBe(true);
+  });
+
   it("records nothing for an untick on a session with no offer", async () => {
     const marked: string[] = [];
     const notMerged = makeSession({ mergedAt: undefined });

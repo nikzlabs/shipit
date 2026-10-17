@@ -85,6 +85,7 @@ interface SessionRow {
   merged_head_sha: string | null;
   merge_continue_declined_anchor: string | null;
   merge_continue_compacted_anchor: string | null;
+  compact_after_merge_off: number;
   pending_agent_notice: string | null;
   pr_repo_id: string | null;
   pr_number: number | null;
@@ -326,7 +327,7 @@ export class SessionManager {
     }
   }
 
-  /** Runs after each write of a session's status card or goal; returns the unsubscribe. */
+  /** Runs after each write of a session's status card, goal or compaction choice; returns the unsubscribe. */
   onDetailsChanged(listener: (sessionId: string) => void): () => void {
     this.detailsListeners.add(listener);
     return () => {
@@ -349,6 +350,7 @@ export class SessionManager {
     if (row.conversation_replay) info.conversationReplay = row.conversation_replay;
     if (row.agent_resume_at) info.agentResumeAt = row.agent_resume_at;
     if (row.pending_agent_notice) info.pendingAgentNotice = row.pending_agent_notice;
+    if (row.compact_after_merge_off) info.compactAfterMergeOff = true;
     if (row.agent_goal) {
       const goal = parseAgentGoal(row.agent_goal);
       if (goal) info.agentGoal = goal;
@@ -1125,6 +1127,11 @@ export class SessionManager {
 
   setAutoFixCiPaused(id: string, paused: boolean): void {
     this.db.prepare("UPDATE sessions SET auto_fix_ci_paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
+  }
+
+  setCompactAfterMergeOff(id: string, off: boolean): void {
+    this.db.prepare("UPDATE sessions SET compact_after_merge_off = ? WHERE id = ?").run(off ? 1 : 0, id);
+    this.detailsChanged(id);
   }
 
   /** docs/322 — the agent's last turn ended waiting for the user, so automatic turns wait too. */

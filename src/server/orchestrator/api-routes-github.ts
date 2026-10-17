@@ -1417,6 +1417,25 @@ export async function registerGitHubRoutes(
     },
   );
 
+  // docs/295-compact-context-on-merge reqs 5, 16 — the composer control and the PR card menu both
+  // write here; the session's viewers get the new value on `session_details`.
+  app.post<{ Params: { id: string }; Body: { enabled: boolean } }>(
+    "/api/sessions/:id/pr/compact-after-merge",
+    async (request, reply) => {
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      if (typeof request.body?.enabled !== "boolean") {
+        reply.code(400).send({ error: "\"enabled\" field is required (boolean)" });
+        return;
+      }
+      sessionManager.setCompactAfterMergeOff(request.params.id, !request.body.enabled);
+      return { enabled: request.body.enabled };
+    },
+  );
+
   app.post<{ Params: { id: string }; Body: { enabled: boolean } }>(
     "/api/sessions/:id/pr/auto-merge",
     async (request, reply) => {

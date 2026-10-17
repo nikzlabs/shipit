@@ -1,5 +1,5 @@
 import { usePrStore } from "../stores/pr-store.js";
-import { useSessionStore } from "../stores/session-store.js";
+import { compactAfterMergeEnabled, useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { isCompactCommand } from "../../server/shared/compact-command.js";
@@ -38,6 +38,13 @@ import { getSavedMergeContinueOptOut, readOptOutSessionKey } from "./local-stora
  * authority over state the composer and the sender now share: with the control
  * shown and ticked it said `true`, and an omitted field means the same thing to
  * the server. One reader, one rule.
+ *
+ * The compaction half is different: the choice is kept for the session on the
+ * server (docs/295 req 5), which reads it for itself. The frame carries it only
+ * while the user's last click is still being saved, in either direction, so a
+ * send made right after a click cannot overtake the write that records it. A
+ * message that waits in the queue then follows the saved choice at its drain,
+ * including a change made in the PR card menu meanwhile.
  */
 export interface MergeContinueFrameFields {
   resetMergedBranch?: boolean;
@@ -47,13 +54,13 @@ export interface MergeContinueFrameFields {
 export function mergeContinueFrameFields(
   sessionId: string | undefined,
 ): MergeContinueFrameFields {
-  const optOut = sessionId
-    ? usePrStore.getState().mergeContinueOptOutBySession[sessionId]
-      ?? getSavedMergeContinueOptOut(sessionId)
-    : {};
+  if (!sessionId) return {};
+  const optOut = usePrStore.getState().mergeContinueOptOutBySession[sessionId]
+    ?? getSavedMergeContinueOptOut(sessionId);
+  const unsavedCompact = useSessionStore.getState().pendingCompactAfterMerge[sessionId];
   return {
     ...(optOut.reset ? { resetMergedBranch: false } : {}),
-    ...(optOut.compact ? { compactContext: false } : {}),
+    ...(unsavedCompact !== undefined ? { compactContext: unsavedCompact } : {}),
   };
 }
 
@@ -67,8 +74,8 @@ export function mergeContinueFrameFields(
  * It answers from the only evidence the user has — the state of the controls
  * they are looking at — so it is true exactly when the composer is offering the
  * compaction control (`MessageInput`'s `showCompactControl`) with its box still
- * ticked. It reads that tick through `mergeContinueFrameFields` rather than the
- * store, so the prediction and the frame cannot disagree about it.
+ * ticked. It reads that tick through `compactAfterMergeEnabled`, which is what
+ * the box itself shows.
  *
  * The server decides for real, in `shouldCompactBeforeTurn`, and the clauses it
  * adds are invisible here: a replay seed, background work the resident process
@@ -101,13 +108,15 @@ export function compactRunsBeforeTurn(sessionId: string | undefined, text: strin
   const supportsCompaction =
     ui.agentList.find((a) => a.id === ui.activeAgentId)?.supportsCompaction ?? false;
   if (!supportsCompaction) return false;
-  return mergeContinueFrameFields(sessionId).compactContext !== false;
+  return compactAfterMergeEnabled(useSessionStore.getState(), sessionId);
 }
 
 /**
- * The untick applied to ONE message (req 5), and this is where that message is
- * declared gone. Called only on a send that actually reached the wire, so a
- * refused or dropped send leaves the user's choice intact for their retry.
+ * The reset untick applied to ONE message (docs/218), and this is where that
+ * message is declared gone. Called only on a send that actually reached the
+ * wire, so a refused or dropped send leaves the user's choice intact for their
+ * retry. The compaction untick is the session's kept choice (docs/295 req 5),
+ * so a send never spends it.
  *
  * Paired with `mergeContinueFrameFields` on purpose: read and consume live in
  * one module, and `sendUserTurn` / `dispatchAgentMessage` are the only callers,
@@ -124,9 +133,7 @@ export function consumeMergeContinueIntent(
   // path snapshots the intent, awaits a response, and would otherwise delete an
   // untick the user made WHILE the request was in flight — a choice that send
   // never carried, for a message that has not gone yet.
-  const store = usePrStore.getState();
-  if (carried.resetMergedBranch === false) store.setMergeContinueOptOut(sessionId, "reset", false);
-  if (carried.compactContext === false) store.setMergeContinueOptOut(sessionId, "compact", false);
+  if (carried.resetMergedBranch === false) usePrStore.getState().setMergeContinueOptOut(sessionId, "reset", false);
 }
 
 /**
