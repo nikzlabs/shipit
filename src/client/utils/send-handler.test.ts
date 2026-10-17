@@ -8,6 +8,7 @@ import { usePrStore } from "../stores/pr-store.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { SendPayload } from "../components/MessageInput/MessageInput.js";
+import type { SessionListRow } from "../../server/shared/types.js";
 import { REVIEW_NEEDS_SUB_AGENTS } from "./review-command.js";
 
 function deps(over: Partial<SendDeps> = {}): SendDeps {
@@ -41,6 +42,8 @@ beforeEach(() => {
     pendingWsMessage: undefined,
     activity: undefined,
     activeRunnerSessions: new Set<string>(),
+    sessions: [],
+    allSessions: [],
   });
   useSettingsStore.setState({ pendingFiles: [], enableSubAgents: true });
   useFileStore.setState({ previewFile: null, sessionUploads: [] });
@@ -209,7 +212,7 @@ describe("an accepted /review carries its attachments and cleans up after itself
     // share one authority, so the control cannot display one thing and the
     // frame carry another.
     usePrStore.getState().setMergeContinueOptOut("s1", "reset", true);
-    usePrStore.getState().setMergeContinueOptOut("s1", "compact", true);
+    useSessionStore.setState({ sessions: [{ id: "s1", title: "", createdAt: "", lastUsedAt: "", remoteUrl: "", compactAfterMergeOff: true } as SessionListRow] });
     useFileStore.setState({ previewFile: "src/a.ts" });
     const d = deps();
 
@@ -218,8 +221,10 @@ describe("an accepted /review carries its attachments and cleans up after itself
     const [frame] = framesFrom(d);
     expect(frame.resetMergedBranch).toBe(false);
     expect(frame.compactContext).toBe(false);
-    // …and spent, so it governs that message only (req 5).
+    // The reset untick is spent, so it governs that message only (docs/218); the
+    // compaction choice is kept for the session (docs/295 req 5).
     expect(usePrStore.getState().mergeContinueOptOutBySession.s1).toEqual({});
+    expect(useSessionStore.getState().sessions[0]?.compactAfterMergeOff).toBe(true);
   });
 
   it("leaves the tick boxes off the frame when the user unticked nothing", () => {

@@ -134,6 +134,8 @@ export interface SessionInfo {
   mergeContinueDeclinedAnchor?: string;
   /** docs/218 req 6 — the merge whose compaction offer is spent (started, or unticked); same identity as above. */
   mergeContinueCompactedAnchor?: string;
+  /** docs/295-compact-context-on-merge req 5 — the user turned the post-merge compaction off for this session. */
+  compactAfterMergeOff?: boolean;
   /** Durable, last-write-wins notice consumed atomically by the next interactive turn. */
   pendingAgentNotice?: string;
   /** Pair witnessed by ShipIt opening the PR; never derive from general PR status. */

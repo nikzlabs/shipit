@@ -61,7 +61,8 @@ export interface CompactBeforeTurnArgs {
 export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Promise<boolean> {
   const { deps, runner, agentId, sessionId, sessionDir, intent, unattended } = args;
   // An untick answers this merge's compaction offer too, so it still reaches the record below.
-  const unticked = intent === false;
+  // The session's own choice is that untick, kept for every turn (docs/295 reqs 5, 17).
+  const unticked = intent === false || deps.getSession(sessionId)?.compactAfterMergeOff === true;
 
   if (!deps.getAutoResetMergedBranch()) return false;
   if (!(getAgentCapabilities(agentId)?.supportsCompaction ?? false)) return false;

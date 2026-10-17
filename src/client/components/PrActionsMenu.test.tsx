@@ -7,6 +7,7 @@ import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 import { dispatchMessage } from "../hooks/message-handlers/index.js";
 import type { HandlerContext } from "../hooks/message-handlers/types.js";
 import type { RepoInfo, SessionInfo, WsServerMessage } from "../../server/shared/types.js";
@@ -136,6 +137,71 @@ describe("PrActionsMenu", () => {
     await user.click(screen.getByLabelText("Pull request actions"));
     const toggle = screen.getByRole("button", { name: /Auto-fix CI/ });
     expect(toggle).toHaveAttribute("title", "Resume CI auto-fixing for this session");
+  });
+
+  describe("docs/295 req 16: the Compact after merge toggle", () => {
+    const compactingAgent = (supportsCompaction: boolean) => [{
+      id: "claude" as const, name: "Claude Code", installed: true, hasRunnableModels: true,
+      models: [], supportsReview: true, supportsCompaction,
+    }];
+
+    beforeEach(() => {
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      useUiStore.setState({ agentList: compactingAgent(true), activeAgentId: "claude" });
+      usePrStore.setState({ cardBySession: { s1: openCard } });
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("shows the session's choice and keeps a change for the session", async () => {
+      const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+      render(<PrActionsMenu sessionId="s1" />);
+
+      await user.click(screen.getByLabelText("Pull request actions"));
+      const toggle = screen.getByRole("button", { name: /Compact after merge/ });
+      expect(toggle).toHaveAttribute("title", "Stop compacting the context when this session continues after a merge");
+
+      await user.click(toggle);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/sessions/s1/pr/compact-after-merge",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ enabled: false }) }),
+      );
+      expect(useSessionStore.getState().sessions[0]?.compactAfterMergeOff).toBe(true);
+      expect(screen.getByRole("button", { name: /Compact after merge/ }))
+        .toHaveAttribute("title", "Compact the context when this session continues after a merge");
+    });
+
+    it("puts the choice back when the server refuses it", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 500 })));
+      const user = userEvent.setup();
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1", compactAfterMergeOff: true })] });
+      render(<PrActionsMenu sessionId="s1" />);
+
+      await user.click(screen.getByLabelText("Pull request actions"));
+      await user.click(screen.getByRole("button", { name: /Compact after merge/ }));
+      expect(useSessionStore.getState().sessions[0]?.compactAfterMergeOff).toBe(true);
+    });
+
+    it("is hidden where the composer control could never show (reqs 10, 11)", async () => {
+      const user = userEvent.setup();
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+      useSettingsStore.setState({ autoResetMergedBranch: false });
+      const { unmount } = render(<PrActionsMenu sessionId="s1" />);
+      await user.click(screen.getByLabelText("Pull request actions"));
+      expect(screen.queryByRole("button", { name: /Compact after merge/ })).toBeNull();
+      unmount();
+
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      useUiStore.setState({ agentList: compactingAgent(false) });
+      render(<PrActionsMenu sessionId="s1" />);
+      await user.click(screen.getByLabelText("Pull request actions"));
+      expect(screen.queryByRole("button", { name: /Compact after merge/ })).toBeNull();
+    });
   });
 
   it("omits Close when the PR is not open", async () => {

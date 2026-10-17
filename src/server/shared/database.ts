@@ -1217,13 +1217,17 @@ const MIGRATIONS: Migration[] = [
     }
     addSessionColumnIfMissing(db, "agent_resume_at");
   },
+  // docs/295-compact-context-on-merge req 5 — the user's compaction choice, kept for the session.
+  (db) => {
+    addSessionColumnIfMissing(db, "compact_after_merge_off", "INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
-function addSessionColumnIfMissing(db: DatabaseInstance, column: string): void {
+function addSessionColumnIfMissing(db: DatabaseInstance, column: string, type = "TEXT"): void {
   const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
   if (columns.some((c) => c.name === column)) return;
-  db.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
+  db.exec(`ALTER TABLE sessions ADD COLUMN ${column} ${type}`);
 }
 
 /** Frozen zero-based indices; tests must not count backward from the changing tip. */

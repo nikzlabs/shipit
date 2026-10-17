@@ -216,6 +216,8 @@ interface SessionState {
   bumpModelSelectionEcho: (sessionId: string) => void;
 
   setAutoFixCiPaused: (sessionId: string, paused: boolean) => Promise<void>;
+  /** docs/295-compact-context-on-merge reqs 5, 16 — the post-merge compaction, kept for the session. */
+  setCompactAfterMerge: (sessionId: string, enabled: boolean) => Promise<void>;
 
   setPinned: (sessionId: string, pinned: boolean) => Promise<void>;
 
@@ -324,6 +326,15 @@ const initialResettableState = {
 
 const initialTurnUsage: Record<string, TurnUsage[]> = {};
 
+/** docs/295-compact-context-on-merge req 5 — the user turned the post-merge compaction off for this session. */
+export function isCompactAfterMergeOff(
+  state: Pick<SessionState, "sessions" | "allSessions">,
+  sessionId: string,
+): boolean {
+  return (state.sessions.find((s) => s.id === sessionId)
+    ?? state.allSessions.find((s) => s.id === sessionId))?.compactAfterMergeOff === true;
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessionId: undefined,
   ...initialResettableState,
@@ -429,7 +440,35 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       console.error("[session-store] Auto-fix pause toggle failed:", err);
-      patch(prev);          
+      patch(prev);
+    }
+  },
+
+  setCompactAfterMerge: async (sessionId, enabled) => {
+    const patch = (off: boolean) => {
+      const apply = (rows: SessionListRow[]) => rows.map((s) =>
+        s.id === sessionId ? { ...s, compactAfterMergeOff: off || undefined } : s);
+      set((state) => ({ sessions: apply(state.sessions), allSessions: apply(state.allSessions) }));
+    };
+    const prev = isCompactAfterMergeOff(get(), sessionId);
+    patch(!enabled);
+    const fail = (error?: string) => {
+      patch(prev);
+      useUiStore.getState().setToast({ message: error ?? "Failed to change the compaction after a merge" });
+    };
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pr/compact-after-merge`, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        fail(data.error);
+      }
+    } catch (err) {
+      console.error("[session-store] Compact-after-merge toggle failed:", err);
+      fail();
     }
   },
 

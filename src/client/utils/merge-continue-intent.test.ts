@@ -3,14 +3,24 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { usePrStore } from "../stores/pr-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 import { saveMergeContinueOptOut } from "./local-storage.js";
+import type { SessionListRow } from "../../server/shared/types.js";
 import {
+  consumeMergeContinueIntent,
   mergeContinueFrameFields,
   syncMergeContinueOptOutAcrossTabs,
 } from "./merge-continue-intent.js";
 
+function compactOffFor(sessionId: string): void {
+  useSessionStore.setState({
+    sessions: [{ id: sessionId, title: "", createdAt: "", lastUsedAt: "", remoteUrl: "", compactAfterMergeOff: true } as SessionListRow],
+  });
+}
+
 beforeEach(() => {
   usePrStore.setState({ mergeContinueOptOutBySession: {} });
+  useSessionStore.setState({ sessions: [], allSessions: [] });
   localStorage.clear();
 });
 
@@ -22,25 +32,33 @@ describe("mergeContinueFrameFields (docs/218 + docs/295)", () => {
   });
 
   it("carries `false` for a control the user unticked", () => {
-    usePrStore.getState().setMergeContinueOptOut("s1", "compact", true);
+    usePrStore.getState().setMergeContinueOptOut("s1", "reset", true);
+    expect(mergeContinueFrameFields("s1")).toEqual({ resetMergedBranch: false });
+  });
+
+  it("carries `false` for the compaction the user turned off for the session (docs/295 req 5)", () => {
+    compactOffFor("s1");
     expect(mergeContinueFrameFields("s1")).toEqual({ compactContext: false });
   });
 
   it("reads the durable mirror when the store has nothing (after a reload)", () => {
-    saveMergeContinueOptOut("s1", { reset: true, compact: true });
-    expect(mergeContinueFrameFields("s1")).toEqual({
-      resetMergedBranch: false,
-      compactContext: false,
-    });
+    saveMergeContinueOptOut("s1", { reset: true });
+    expect(mergeContinueFrameFields("s1")).toEqual({ resetMergedBranch: false });
+  });
+
+  it("drops a compaction untick saved in the per-message mirror by an older build", () => {
+    localStorage.setItem("shipit-merge-continue-optout:s1", JSON.stringify(["reset", "compact"]));
+    expect(mergeContinueFrameFields("s1")).toEqual({ resetMergedBranch: false });
   });
 
   it("keeps sessions apart", () => {
-    usePrStore.getState().setMergeContinueOptOut("s1", "compact", true);
+    usePrStore.getState().setMergeContinueOptOut("s1", "reset", true);
+    compactOffFor("s1");
     expect(mergeContinueFrameFields("s2")).toEqual({});
   });
 
   it("carries nothing with no session", () => {
-    usePrStore.getState().setMergeContinueOptOut("s1", "compact", true);
+    usePrStore.getState().setMergeContinueOptOut("s1", "reset", true);
     expect(mergeContinueFrameFields(undefined)).toEqual({});
   });
 
@@ -52,6 +70,15 @@ describe("mergeContinueFrameFields (docs/218 + docs/295)", () => {
   });
 });
 
+describe("consumeMergeContinueIntent", () => {
+  it("spends the reset untick and keeps the session's compaction choice (docs/295 req 5)", () => {
+    usePrStore.getState().setMergeContinueOptOut("s1", "reset", true);
+    compactOffFor("s1");
+    consumeMergeContinueIntent("s1", mergeContinueFrameFields("s1"));
+    expect(mergeContinueFrameFields("s1")).toEqual({ compactContext: false });
+  });
+});
+
 describe("cross-tab sync", () => {
   /**
    * The composer memoises what it read while a send reads afresh, so without
@@ -60,7 +87,7 @@ describe("cross-tab sync", () => {
    * is the defect class this whole feature keeps hitting.
    */
   it("pulls another tab's write into the store, so display and wire agree", () => {
-    usePrStore.getState().setMergeContinueOptOut("s1", "compact", true);
+    usePrStore.getState().setMergeContinueOptOut("s1", "reset", true);
     const stop = syncMergeContinueOptOutAcrossTabs();
     // The other tab sent, which cleared the shared key.
     saveMergeContinueOptOut("s1", {});
@@ -73,21 +100,21 @@ describe("cross-tab sync", () => {
   });
 
   it("ignores storage keys that are not ours", () => {
-    usePrStore.getState().setMergeContinueOptOut("s1", "compact", true);
+    usePrStore.getState().setMergeContinueOptOut("s1", "reset", true);
     const stop = syncMergeContinueOptOutAcrossTabs();
     window.dispatchEvent(new StorageEvent("storage", { key: "shipit-draft-message:s1" }));
-    expect(usePrStore.getState().mergeContinueOptOutBySession.s1).toMatchObject({ compact: true });
+    expect(usePrStore.getState().mergeContinueOptOutBySession.s1).toMatchObject({ reset: true });
     stop();
   });
 
   it("stops listening when disposed", () => {
-    usePrStore.getState().setMergeContinueOptOut("s1", "compact", true);
+    usePrStore.getState().setMergeContinueOptOut("s1", "reset", true);
     syncMergeContinueOptOutAcrossTabs()();
     saveMergeContinueOptOut("s1", {});
     window.dispatchEvent(new StorageEvent("storage", {
       key: "shipit-merge-continue-optout:s1",
     }));
-    expect(usePrStore.getState().mergeContinueOptOutBySession.s1).toMatchObject({ compact: true });
+    expect(usePrStore.getState().mergeContinueOptOutBySession.s1).toMatchObject({ reset: true });
   });
 });
 

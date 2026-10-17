@@ -6,6 +6,8 @@ description: A merged session compacts its context before the next turn — offe
 
 # 295 — Compact the context when a merged session continues
 
+> **Changed 2026-10-17:** the compaction untick is kept for the session, not spent by one message (req 5), the PR card menu shows and changes it (req 16), and it also stops a continuation that has no checkbox (req 17) — see [The compaction choice is kept for the session](#the-compaction-choice-is-kept-for-the-session-req-5-req-16-req-17). Where the sections below say an untick applies to one message, that now holds for the reset control only.
+
 > **Changed 2026-10-12 by [docs/329-user-steers-every-turn](../329-user-steers-every-turn/plan.md) part 3.** The compaction ahead of a turn is no longer a system turn and holds no flag: it runs on the process a typed turn would use, the claim on `running` keeps other turns out from the decision to the compaction, and the rule of docs/329 part 2 keeps messages out of it.
 
 Implements [requirements.md](./requirements.md). Extends
@@ -224,7 +226,8 @@ row had no top padding, so the apparent breathing room above its checkbox was a
 live hit target for the reset control; a near-miss would have shown as exactly
 one `false` on the wire, and none was sent. Both are fixed; neither is the cause.
 
-So the tick state is `mergeContinueOptOutBySession` in the PR store, mirrored to
+So the reset's tick state is `mergeContinueOptOutBySession` in the PR store
+(until 2026-10-17 the compaction's too), mirrored to
 `shipit-merge-continue-optout:{sessionId}` in localStorage — the third durable
 half of a draft, beside its text and its upload chips — and it holds only what
 the user turned **off**. Nothing keys on a visibility transition. The payload
@@ -326,8 +329,9 @@ Offered whenever the reset control is, so req 11's single setting governs both
 with no second gate. Nothing gates on context size (req 3). Placed as a
 subordinate second line inside the existing control block — one line, no
 description — so the block that appears at the moment the user wants to type
-does not double in weight. Both tick states re-tick on send, and are keyed by
-session, so an untick never rides a later message or another session.
+does not double in weight. Both tick states are keyed by session, so an untick
+never reaches another session. The reset re-ticks on send; the compaction keeps
+the user's choice (below).
 
 **`!isLoading` — the controls are hidden while a turn runs.** The intent is
 read and spent when a frame goes (`sendUserTurn`), so a tick changed after that
@@ -500,10 +504,49 @@ The floor does not gate the composer control. Req 3 forbids that, and there the
 user has the box: a typed message, a card button and a page message (req 14)
 compact whatever the size, unless unticked.
 
+## The compaction choice is kept for the session (req 5, req 16, req 17)
+
+The user unticked "Compact the context", the PR merged, and on the next merge
+the box was ticked again. They asked for the choice to stay with the session
+and to be changeable from the PR card's menu as well.
+
+**One record, on the session row.** `sessions.compact_after_merge_off`
+(`SessionInfo.compactAfterMergeOff`), the same shape as the docs/186
+`auto_fix_ci_paused` pause beside it. `POST /api/sessions/:id/pr/compact-after-merge
+{ enabled }` writes it and re-broadcasts `session_list`, so every tab and both
+controls redraw from the one row. The composer box and the menu's **Compact
+after merge** switch both call `setCompactAfterMerge` in the session store
+(optimistic, put back on a refusal). The route is not on the container
+allowlist (docs/201-container-api-trust-boundary), so the agent cannot change
+the user's choice.
+
+**The server reads it for every turn.** `shouldCompactBeforeTurn` treats the
+flag as an untick: no compaction, and the merge's offer is recorded as answered,
+as an untick records it. Both callers — the interactive takeover and the
+dispatched one in `runner-registry-factory.ts` — build their deps from
+`sessionManager.get`, so a wake turn and a message from another session stand
+down too (req 17). The req 15 floor needs no change: an off session compacts
+nothing whatever the size.
+
+**The frame still carries it.** `mergeContinueFrameFields` puts
+`compactContext: false` on the frame while the client's row says off, and
+`consumeMergeContinueIntent` no longer spends it. Without the field a send made
+just after an untick could reach the server before the write that records it.
+The other direction — a re-tick and an immediate send — can lose that one
+compaction, because only an opt-out is carried; carrying `true` would let a
+stale tab compact against a choice made elsewhere.
+
+**Not migrated.** A compaction untick saved in the old per-message localStorage
+record is dropped on read, so a draft that had one outstanding when this
+shipped comes back ticked once.
+
 ## The shared setting (req 11)
 
 No new setting. `autoResetMergedBranch` governs both actions; the Settings →
-Advanced description names both.
+Advanced description names both. The per-session choice above is not a
+setting in Settings: it is shown only where the composer control could show —
+the menu switch is hidden while the global setting is off or the harness cannot
+compact (reqs 10, 11).
 
 ## Key files
 
@@ -522,7 +565,9 @@ Advanced description names both.
 | `orchestrator/turn-executor.ts` | `TurnInput.compact`, passed to `buildRunParams` for the dispatched path. |
 | `shared/types/ws-client-messages.ts` | `compactContext?: boolean`. |
 | `client/components/MessageInput/MessageInput.tsx` | The control, its tick state, the payload flag. |
-| `client/stores/pr-store.ts`, `client/utils/local-storage.ts` | `mergeContinueOptOutBySession` and its durable mirror: the untick outlives the composer. |
+| `client/stores/pr-store.ts`, `client/utils/local-storage.ts` | `mergeContinueOptOutBySession` and its durable mirror: the reset untick outlives the composer. |
+| `orchestrator/sessions.ts`, `shared/database.ts`, `api-routes-github.ts` | `compact_after_merge_off` and `POST /pr/compact-after-merge`: the compaction choice, kept for the session (reqs 5, 16). |
+| `client/stores/session-store.ts`, `client/components/PrStatusControls.tsx`, `PrActionsMenu.tsx` | `isCompactAfterMergeOff`, `setCompactAfterMerge`, and the menu's **Compact after merge** switch (req 16). |
 | `client/utils/send-user-turn.ts` | `sendUserTurn` / `sendControlFrame` — the ONLY place a `send_message` frame is built. |
 | `client/utils/merge-continue-intent.ts` | Read, consume, the cross-tab sync, and `compactRunsBeforeTurn`. |
 | `client/utils/predicted-queue.ts` | The predicted queue row and every exit from it; `send-user-message.ts` writes it, and `message-queued` / `queue-updated` / `system-user-message` / `message-steered` / `error` reconcile it. |

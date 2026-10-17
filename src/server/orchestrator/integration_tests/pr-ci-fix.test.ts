@@ -185,6 +185,42 @@ describe("POST /api/sessions/:id/pr/auto-fix-pause (docs/186)", () => {
   });
 });
 
+describe("POST /api/sessions/:id/pr/compact-after-merge (docs/295 reqs 5, 16)", () => {
+  it("keeps the session's choice on the session row", async () => {
+    const off = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/compact-after-merge`,
+      payload: { enabled: false },
+    });
+    expect(off.statusCode).toBe(200);
+    expect(off.json()).toEqual({ enabled: false });
+    expect(sessionManager.get(sessionId)!.compactAfterMergeOff).toBe(true);
+    expect(sessionManager.list().find((s) => s.id === sessionId)?.compactAfterMergeOff).toBe(true);
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/compact-after-merge`,
+      payload: { enabled: true },
+    });
+    expect(sessionManager.get(sessionId)!.compactAfterMergeOff).toBeUndefined();
+  });
+
+  it("returns 404 for an unknown session and 400 for a missing field", async () => {
+    const unknown = await app.inject({
+      method: "POST",
+      url: "/api/sessions/does-not-exist/pr/compact-after-merge",
+      payload: { enabled: false },
+    });
+    expect(unknown.statusCode).toBe(404);
+    const missing = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/compact-after-merge`,
+      payload: {},
+    });
+    expect(missing.statusCode).toBe(400);
+  });
+});
+
 describe("PrStatusPoller auto-fix state", () => {
   it("getAutoFixState returns undefined when not set", () => {
     expect(prStatusPoller.getAutoFixState(sessionId)).toBeUndefined();

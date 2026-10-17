@@ -33,9 +33,11 @@ later turn, and the agent reads them as live work in progress.
 4. When the control is ticked and the user sends the message, the agent's
    context is compacted before the turn runs.
 
-5. The user can untick the control. The untick applies to that one message. The
-   next merged session that continues shows the control ticked again. This
-   matches the sibling control in docs/218.
+5. The user can untick the control. The choice is kept for the session: after
+   the session's next pull request merges, the control shows the choice that
+   the user made last, and it does not tick itself again. A new session starts
+   ticked (requirement 2). The sibling control of docs/218 is not changed by
+   this: its untick still applies to one message.
 
 6. The two controls are independent. Each one governs only its own action, and
    the state of one does not change what the other does.
@@ -73,7 +75,8 @@ later turn, and the agent reads them as live work in progress.
 14. A message that a page built by the agent sends to the agent, from the
     Preview or the Present tab, obeys the two composer controls as a typed
     message does. When the user unticked a control, that message does not do
-    that action, and the untick is used up by that message. A continuation that
+    that action. An untick of "Start from the latest base" is used up by that
+    message; an untick of the compaction stays (requirement 5). A continuation that
     starts with no ShipIt view in front of the user — a wake turn after a
     merge, a message from another session — stays under requirement 13.
 
@@ -82,9 +85,16 @@ later turn, and the agent reads them as live work in progress.
     reset. The control of requirements 1 to 3 is not changed by this: it is
     offered whatever the size of the context.
 
+16. The user can also see and change the session's compaction choice of
+    requirement 5 in the pull request card's menu. The menu and the composer
+    control show the same choice, and a change in one shows in the other.
+
+17. When the user turned the compaction off for the session, a continuation
+    that has no checkbox (requirement 13) does not compact either.
+
 ## Requirement provenance
 
-Requirements 1 to 6, 11 and 13 to 15 come from what the user asked for and decided.
+Requirements 1 to 6, 11 and 13 to 17 come from what the user asked for and decided.
 Requirements 7 to 10 and 12 were not asked for: each one keeps a guarantee that
 already ships (docs/218 for the merge notice, docs/178 for how a compaction
 appears and for the `/compact` boundary) from becoming weaker. They are recorded
@@ -146,3 +156,15 @@ None.
   because a percentage is model-dependent; this is an absolute floor, and it
   does not gate the control, so requirement 3 stands. Whether the floor must
   also apply where the checkbox is shown was not asked.
+
+- **2026-10-17 — Must an untick of the compaction apply to one message, as
+  requirement 5 said?** No. The user: "make 'compact context' setting
+  persistent per session, i.e. not toggle back to 'yes' when a new pr is
+  merged. Should be also editable via the PR card menu." Requirement 5 now
+  keeps the choice for the session, requirement 14 no longer uses up the
+  compaction untick, and requirement 16 adds the menu. Only the compaction
+  control was named, so the branch-reset untick still applies to one message.
+  A setting that is kept for the session governs every turn of that session,
+  so it also stops the compaction of a continuation that has no checkbox
+  (requirement 17); that is the case the 2026-10-12 answer above describes as
+  one that "nothing can turn off".

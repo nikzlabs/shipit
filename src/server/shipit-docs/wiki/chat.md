@@ -337,7 +337,9 @@ ways it happens:
   next message will reset the branch to the latest base, the composer offers
   *Compact the context* beside that choice — shipped work is summarised down to
   what it changed, keeping their standing preferences and anything unresolved.
-  Offered only where the harness supports compaction, and the user can untick it.
+  Offered only where the harness supports compaction. The user can untick it,
+  and the choice is kept for the session — the pull request's **⋮** menu shows
+  it as **Compact after merge**.
 
 Whichever way it happened, a **Context compacted** card is left in the
 transcript — with the before and after token counts where the harness reports
