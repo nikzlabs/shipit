@@ -5,22 +5,21 @@ import { fileURLToPath } from "node:url";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { saveMergeContinueOptOut } from "./local-storage.js";
-import type { SessionListRow } from "../../server/shared/types.js";
 import {
   consumeMergeContinueIntent,
   mergeContinueFrameFields,
   syncMergeContinueOptOutAcrossTabs,
 } from "./merge-continue-intent.js";
 
-function compactOffFor(sessionId: string): void {
+/** The server's saved choice, as `session_details` delivers it. */
+const savedCompactOff = (sessionId: string) =>
   useSessionStore.setState({
-    sessions: [{ id: sessionId, title: "", createdAt: "", lastUsedAt: "", remoteUrl: "", compactAfterMergeOff: true } as SessionListRow],
+    sessionDetails: { [sessionId]: { sessionStatus: null, agentGoal: null, compactAfterMergeOff: true } },
   });
-}
 
 beforeEach(() => {
   usePrStore.setState({ mergeContinueOptOutBySession: {} });
-  useSessionStore.setState({ sessions: [], allSessions: [] });
+  useSessionStore.setState({ sessionDetails: {}, pendingCompactAfterMerge: {} });
   localStorage.clear();
 });
 
@@ -36,8 +35,16 @@ describe("mergeContinueFrameFields (docs/218 + docs/295)", () => {
     expect(mergeContinueFrameFields("s1")).toEqual({ resetMergedBranch: false });
   });
 
-  it("carries `false` for the compaction the user turned off for the session (docs/295 req 5)", () => {
-    compactOffFor("s1");
+  it("leaves a saved compaction choice to the server, which reads it itself (docs/295 req 5)", () => {
+    savedCompactOff("s1");
+    expect(mergeContinueFrameFields("s1")).toEqual({});
+  });
+
+  it("carries a compaction click that is not saved yet, in either direction", () => {
+    savedCompactOff("s1");
+    useSessionStore.setState({ pendingCompactAfterMerge: { s1: true } });
+    expect(mergeContinueFrameFields("s1")).toEqual({ compactContext: true });
+    useSessionStore.setState({ pendingCompactAfterMerge: { s1: false } });
     expect(mergeContinueFrameFields("s1")).toEqual({ compactContext: false });
   });
 
@@ -53,7 +60,7 @@ describe("mergeContinueFrameFields (docs/218 + docs/295)", () => {
 
   it("keeps sessions apart", () => {
     usePrStore.getState().setMergeContinueOptOut("s1", "reset", true);
-    compactOffFor("s1");
+    useSessionStore.setState({ pendingCompactAfterMerge: { s1: false } });
     expect(mergeContinueFrameFields("s2")).toEqual({});
   });
 
@@ -71,9 +78,9 @@ describe("mergeContinueFrameFields (docs/218 + docs/295)", () => {
 });
 
 describe("consumeMergeContinueIntent", () => {
-  it("spends the reset untick and keeps the session's compaction choice (docs/295 req 5)", () => {
+  it("spends the reset untick and leaves the compaction choice alone (docs/295 req 5)", () => {
     usePrStore.getState().setMergeContinueOptOut("s1", "reset", true);
-    compactOffFor("s1");
+    useSessionStore.setState({ pendingCompactAfterMerge: { s1: false } });
     consumeMergeContinueIntent("s1", mergeContinueFrameFields("s1"));
     expect(mergeContinueFrameFields("s1")).toEqual({ compactContext: false });
   });

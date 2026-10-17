@@ -195,7 +195,6 @@ describe("POST /api/sessions/:id/pr/compact-after-merge (docs/295 reqs 5, 16)", 
     expect(off.statusCode).toBe(200);
     expect(off.json()).toEqual({ enabled: false });
     expect(sessionManager.get(sessionId)!.compactAfterMergeOff).toBe(true);
-    expect(sessionManager.list().find((s) => s.id === sessionId)?.compactAfterMergeOff).toBe(true);
 
     await app.inject({
       method: "POST",

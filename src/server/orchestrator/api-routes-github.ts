@@ -1417,7 +1417,8 @@ export async function registerGitHubRoutes(
     },
   );
 
-  // docs/295-compact-context-on-merge reqs 5, 16 — the composer control and the PR card menu both write here.
+  // docs/295-compact-context-on-merge reqs 5, 16 — the composer control and the PR card menu both
+  // write here; the session's viewers get the new value on `session_details`.
   app.post<{ Params: { id: string }; Body: { enabled: boolean } }>(
     "/api/sessions/:id/pr/compact-after-merge",
     async (request, reply) => {
@@ -1431,7 +1432,6 @@ export async function registerGitHubRoutes(
         return;
       }
       sessionManager.setCompactAfterMergeOff(request.params.id, !request.body.enabled);
-      deps.sseBroadcast("session_list", { sessions: sessionManager.list() });
       return { enabled: request.body.enabled };
     },
   );

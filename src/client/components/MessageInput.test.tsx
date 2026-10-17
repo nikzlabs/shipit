@@ -1,12 +1,13 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import { MessageInput } from "./MessageInput.js";
-import type { PermissionMode, SessionListRow } from "../../server/shared/types.js";
+import type { PermissionMode } from "../../server/shared/types.js";
 import type { AgentOption } from "../agent-types.js";
-import { isCompactAfterMergeOff, useSessionStore } from "../stores/session-store.js";
+import { compactAfterMergeEnabled, useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { handleResetEligible } from "../hooks/message-handlers/reset-eligible.js";
+import { dispatchMessage } from "../hooks/message-handlers/index.js";
 import { getSavedMergeContinueOptOut } from "../utils/local-storage.js";
 import { INSET_FOCUS_RING } from "../design-tokens.js";
 
@@ -861,16 +862,24 @@ describe("MessageInput", () => {
     const optOut = (sessionId = "s1") =>
       usePrStore.getState().mergeContinueOptOutBySession[sessionId] ?? {};
 
-    /** The compaction choice is kept on the session row instead (req 5). */
-    const compactOff = (sessionId = "s1") => isCompactAfterMergeOff(useSessionStore.getState(), sessionId);
-    const row = (id: string, over: Partial<SessionListRow> = {}) =>
-      ({ id, title: "", createdAt: "", lastUsedAt: "", remoteUrl: "", ...over }) as SessionListRow;
+    /** The compaction choice is kept for the session on the server instead (req 5). */
+    const compactOff = (sessionId = "s1") => !compactAfterMergeEnabled(useSessionStore.getState(), sessionId);
+    const serverDetails = (sessionId: string, compactAfterMergeOff: boolean) => {
+      act(() => {
+        dispatchMessage(
+          { terminalRef: { current: null }, queuedMessageStash: new Map() },
+          { type: "session_details", sessionId, sessionStatus: null, agentGoal: null, compactAfterMergeOff },
+        );
+      });
+    };
     const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
 
     beforeEach(() => {
       fetchMock.mockClear();
       vi.stubGlobal("fetch", fetchMock);
-      useSessionStore.setState({ sessions: [row("s1"), row("s2")], allSessions: [] });
+      useSessionStore.setState({ sessionDetails: {}, pendingCompactAfterMerge: {} });
+      serverDetails("s1", false);
+      serverDetails("s2", false);
     });
 
     const serverSaysEligible = (eligible: boolean, sessionId = "s1") => {
@@ -885,7 +894,7 @@ describe("MessageInput", () => {
     afterEach(() => {
       usePrStore.setState({ resetEligibleBySession: {}, mergeContinueOptOutBySession: {} });
       useSettingsStore.setState({ autoResetMergedBranch: true });
-      useSessionStore.setState({ sessions: [], allSessions: [] });
+      useSessionStore.setState({ sessionDetails: {}, pendingCompactAfterMerge: {} });
       vi.unstubAllGlobals();
       localStorage.clear();
     });
@@ -964,7 +973,7 @@ describe("MessageInput", () => {
       usePrStore.setState({ compactionSpentBySession: {} });
     });
 
-    it("keeps the untick for the session, through the same route as the PR card menu (reqs 5, 16)", () => {
+    it("keeps the untick for the session, through the same route as the PR card menu (reqs 5, 16)", async () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
       const onSend = renderComposer();
@@ -972,10 +981,10 @@ describe("MessageInput", () => {
       typeAndSend();
       expect(onSend).toHaveBeenCalled();
       expect(compactOff()).toBe(true);
-      expect(fetchMock).toHaveBeenCalledWith(
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
         "/api/sessions/s1/pr/compact-after-merge",
         expect.objectContaining({ method: "POST", body: JSON.stringify({ enabled: false }) }),
-      );
+      ));
     });
 
     it("shows a change made in the PR card menu (req 16)", () => {
@@ -983,7 +992,7 @@ describe("MessageInput", () => {
       useSettingsStore.setState({ autoResetMergedBranch: true });
       renderComposer();
       expect(screen.getByTestId("compact-context-control")).toHaveAttribute("aria-pressed", "true");
-      act(() => { useSessionStore.setState({ sessions: [row("s1", { compactAfterMergeOff: true })] }); });
+      serverDetails("s1", true);
       expect(screen.getByTestId("compact-context-control")).toHaveAttribute("aria-pressed", "false");
     });
 
@@ -1188,7 +1197,7 @@ describe("MessageInput", () => {
       expect(compactOff()).toBe(true);
     });
 
-    it("keeps the untick across a remount (reconnect or reload)", () => {
+    it("keeps the untick across a remount (reconnect or reload)", async () => {
       usePrStore.setState({ resetEligibleBySession: { s1: true } });
       useSettingsStore.setState({ autoResetMergedBranch: true });
       renderComposer();
@@ -1197,12 +1206,15 @@ describe("MessageInput", () => {
       // still being there, with the user's choice on it.
       fireEvent.click(screen.getByTestId("reset-merged-branch-control"));
       fireEvent.click(screen.getByTestId("compact-context-control"));
-      // A reload remounts the composer AND empties the store, leaving
-      // localStorage as the only record of the choice.
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      // A reload remounts the composer AND empties both stores. The reset's
+      // choice is then only in localStorage; the compaction's is only on the
+      // server, which sends it to the session's viewer again.
       cleanup();
       usePrStore.setState({ mergeContinueOptOutBySession: {} });
+      useSessionStore.setState({ sessionDetails: {}, pendingCompactAfterMerge: {} });
       renderComposer(vi.fn().mockReturnValue(true));
-      // Restored from the durable mirror, which is all a reload leaves.
+      serverDetails("s1", true);
       expect(screen.getByTestId("compact-context-control")).toHaveAttribute("aria-pressed", "false");
       expect(screen.getByTestId("reset-merged-branch-control")).toHaveAttribute("aria-pressed", "false");
       expect(getSavedMergeContinueOptOut("s1")).toEqual({ reset: true });

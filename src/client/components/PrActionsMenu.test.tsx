@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PrActionsMenu } from "./PrActionsMenu.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
 import { useGitStore } from "../stores/git-store.js";
-import { useSessionStore } from "../stores/session-store.js";
+import { compactAfterMergeEnabled, useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -145,10 +145,18 @@ describe("PrActionsMenu", () => {
       models: [], supportsReview: true, supportsCompaction,
     }];
 
+    /** The server's saved choice, as `session_details` delivers it to the open session. */
+    const saved = (compactAfterMergeOff: boolean) => useSessionStore.setState({
+      sessionDetails: { s1: { sessionStatus: null, agentGoal: null, compactAfterMergeOff } },
+      pendingCompactAfterMerge: {},
+    });
+
     beforeEach(() => {
       useSettingsStore.setState({ autoResetMergedBranch: true });
       useUiStore.setState({ agentList: compactingAgent(true), activeAgentId: "claude" });
       usePrStore.setState({ cardBySession: { s1: openCard } });
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+      saved(false);
     });
 
     afterEach(() => {
@@ -159,7 +167,6 @@ describe("PrActionsMenu", () => {
       const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
       vi.stubGlobal("fetch", fetchMock);
       const user = userEvent.setup();
-      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
       render(<PrActionsMenu sessionId="s1" />);
 
       await user.click(screen.getByLabelText("Pull request actions"));
@@ -171,7 +178,8 @@ describe("PrActionsMenu", () => {
         "/api/sessions/s1/pr/compact-after-merge",
         expect.objectContaining({ method: "POST", body: JSON.stringify({ enabled: false }) }),
       );
-      expect(useSessionStore.getState().sessions[0]?.compactAfterMergeOff).toBe(true);
+      await waitFor(() => expect(useSessionStore.getState().sessionDetails.s1?.compactAfterMergeOff).toBe(true));
+      expect(useSessionStore.getState().pendingCompactAfterMerge).toEqual({});
       expect(screen.getByRole("button", { name: /Compact after merge/ }))
         .toHaveAttribute("title", "Compact the context when this session continues after a merge");
     });
@@ -179,17 +187,17 @@ describe("PrActionsMenu", () => {
     it("puts the choice back when the server refuses it", async () => {
       vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 500 })));
       const user = userEvent.setup();
-      useSessionStore.setState({ sessions: [makeSession({ id: "s1", compactAfterMergeOff: true })] });
+      saved(true);
       render(<PrActionsMenu sessionId="s1" />);
 
       await user.click(screen.getByLabelText("Pull request actions"));
       await user.click(screen.getByRole("button", { name: /Compact after merge/ }));
-      expect(useSessionStore.getState().sessions[0]?.compactAfterMergeOff).toBe(true);
+      await waitFor(() => expect(useSessionStore.getState().pendingCompactAfterMerge).toEqual({}));
+      expect(compactAfterMergeEnabled(useSessionStore.getState(), "s1")).toBe(false);
     });
 
     it("is hidden where the composer control could never show (reqs 10, 11)", async () => {
       const user = userEvent.setup();
-      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
       useSettingsStore.setState({ autoResetMergedBranch: false });
       const { unmount } = render(<PrActionsMenu sessionId="s1" />);
       await user.click(screen.getByLabelText("Pull request actions"));

@@ -4,7 +4,6 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { AgentOption } from "../agent-types.js";
-import type { SessionListRow } from "../../server/shared/types.js";
 import { handleError } from "../hooks/message-handlers/error.js";
 import { handleMessageQueued } from "../hooks/message-handlers/message-queued.js";
 import { handleMessageSteered } from "../hooks/message-handlers/message-steered.js";
@@ -60,7 +59,8 @@ beforeEach(() => {
   useSettingsStore.setState({ autoResetMergedBranch: true });
   useUiStore.setState({ agentList: [agent()], activeAgentId: "claude" });
   useSessionStore.setState({
-    sessionId: "s1", messages: [], queuedMessages: [], isLoading: false, sessions: [], allSessions: [],
+    sessionId: "s1", messages: [], queuedMessages: [], isLoading: false,
+    sessionDetails: {}, pendingCompactAfterMerge: {},
   });
   localStorage.clear();
 });
@@ -97,7 +97,9 @@ describe("compactRunsBeforeTurn", () => {
 
   it("is false once the user turns the compaction off for the session (docs/295 req 5)", () => {
     offeringCompaction();
-    useSessionStore.setState({ sessions: [{ id: "s1", title: "", createdAt: "", lastUsedAt: "", remoteUrl: "", compactAfterMergeOff: true } as SessionListRow] });
+    useSessionStore.setState({
+      sessionDetails: { s1: { sessionStatus: null, agentGoal: null, compactAfterMergeOff: true } },
+    });
     expect(compactRunsBeforeTurn("s1", "next slice")).toBe(false);
   });
 

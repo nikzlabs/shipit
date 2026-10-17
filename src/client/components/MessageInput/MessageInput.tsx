@@ -1,7 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: consume prefill text from external store on mount
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useEventListener } from "../../hooks/useEventListener.js";
-import { isCompactAfterMergeOff, useSessionStore } from "../../stores/session-store.js";
+import { compactAfterMergeEnabled, useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useIsMobile } from "../../hooks/useMediaQuery.js";
 import { useNarrowContainer } from "../../hooks/useNarrowContainer.js";
@@ -368,7 +368,7 @@ export function MessageInput({
    * the reload case where localStorage is the only record.
    *
    * The compaction control is the session's kept choice instead (docs/295 req
-   * 5), on the session row, which the PR card menu also writes (req 16).
+   * 5), saved on the server, which the PR card menu also writes (req 16).
    */
   const storedOptOut = usePrStore((s) => (sessionId ? s.mergeContinueOptOutBySession[sessionId] : undefined));
   const mergeOptOut = useMemo(
@@ -376,8 +376,7 @@ export function MessageInput({
     [storedOptOut, sessionId],
   );
   const resetChecked = !mergeOptOut.reset;
-  const compactOff = useSessionStore((s) => (sessionId ? isCompactAfterMergeOff(s, sessionId) : false));
-  const compactChecked = !compactOff;
+  const compactChecked = useSessionStore((s) => (sessionId ? compactAfterMergeEnabled(s, sessionId) : true));
   const toggleResetControl = () => {
     if (!sessionId) return;
     usePrStore.getState().setMergeContinueOptOut(sessionId, "reset", resetChecked);

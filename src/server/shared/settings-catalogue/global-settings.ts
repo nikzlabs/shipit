@@ -186,7 +186,8 @@ export const GLOBAL_SETTINGS = {
       "When you continue a session whose PR already merged and the branch hasn't moved since, "
       + "this does two things before the next turn: resets the branch to the latest base, so the "
       + "agent builds on current code, and compacts the agent's context, so the shipped work stops "
-      + "filling it. A per-message checkbox lets you skip either one for any one send.",
+      + "filling it. A checkbox in the composer skips the reset for one message, and another "
+      + "turns the compaction off for that session until you turn it on again.",
     type: bool({ default: true }),
     store: { kind: "credential-store", field: "autoResetMergedBranch" },
     wire: "autoResetMergedBranch",

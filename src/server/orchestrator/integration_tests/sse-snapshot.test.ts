@@ -228,6 +228,7 @@ describe("Integration: /api/events initial snapshot is authoritative", () => {
         sessionId: "open-1",
         sessionStatus: card,
         agentGoal: goal,
+        compactAfterMergeOff: false,
       });
 
       sessionManager.setSessionStatus("other-1", { ...card, status: "Not this one." });
@@ -240,6 +241,10 @@ describe("Integration: /api/events initial snapshot is authoritative", () => {
 
       sessionManager.setAgentGoal("open-1", null);
       expect(await ws.receiveType("session_details")).toMatchObject({ sessionId: "open-1", agentGoal: null });
+
+      // docs/295-compact-context-on-merge reqs 5, 16 — the list rows do not carry it.
+      sessionManager.setCompactAfterMergeOff("open-1", true);
+      expect(await ws.receiveType("session_details")).toMatchObject({ sessionId: "open-1", compactAfterMergeOff: true });
     });
 
     // Neither path attaches a runner; the card needs no workspace.

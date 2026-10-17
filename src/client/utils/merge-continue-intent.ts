@@ -1,5 +1,5 @@
 import { usePrStore } from "../stores/pr-store.js";
-import { isCompactAfterMergeOff, useSessionStore } from "../stores/session-store.js";
+import { compactAfterMergeEnabled, useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { isCompactCommand } from "../../server/shared/compact-command.js";
@@ -39,9 +39,12 @@ import { getSavedMergeContinueOptOut, readOptOutSessionKey } from "./local-stora
  * shown and ticked it said `true`, and an omitted field means the same thing to
  * the server. One reader, one rule.
  *
- * The compaction half is the session's kept choice (req 5), which the server
- * also reads for itself. It still rides the frame, so a send made right after
- * an untick cannot overtake the write that records it.
+ * The compaction half is different: the choice is kept for the session on the
+ * server (docs/295 req 5), which reads it for itself. The frame carries it only
+ * while the user's last click is still being saved, in either direction, so a
+ * send made right after a click cannot overtake the write that records it. A
+ * message that waits in the queue then follows the saved choice at its drain,
+ * including a change made in the PR card menu meanwhile.
  */
 export interface MergeContinueFrameFields {
   resetMergedBranch?: boolean;
@@ -54,9 +57,10 @@ export function mergeContinueFrameFields(
   if (!sessionId) return {};
   const optOut = usePrStore.getState().mergeContinueOptOutBySession[sessionId]
     ?? getSavedMergeContinueOptOut(sessionId);
+  const unsavedCompact = useSessionStore.getState().pendingCompactAfterMerge[sessionId];
   return {
     ...(optOut.reset ? { resetMergedBranch: false } : {}),
-    ...(isCompactAfterMergeOff(useSessionStore.getState(), sessionId) ? { compactContext: false } : {}),
+    ...(unsavedCompact !== undefined ? { compactContext: unsavedCompact } : {}),
   };
 }
 
@@ -70,8 +74,8 @@ export function mergeContinueFrameFields(
  * It answers from the only evidence the user has — the state of the controls
  * they are looking at — so it is true exactly when the composer is offering the
  * compaction control (`MessageInput`'s `showCompactControl`) with its box still
- * ticked. It reads that tick through `mergeContinueFrameFields` rather than the
- * store, so the prediction and the frame cannot disagree about it.
+ * ticked. It reads that tick through `compactAfterMergeEnabled`, which is what
+ * the box itself shows.
  *
  * The server decides for real, in `shouldCompactBeforeTurn`, and the clauses it
  * adds are invisible here: a replay seed, background work the resident process
@@ -104,7 +108,7 @@ export function compactRunsBeforeTurn(sessionId: string | undefined, text: strin
   const supportsCompaction =
     ui.agentList.find((a) => a.id === ui.activeAgentId)?.supportsCompaction ?? false;
   if (!supportsCompaction) return false;
-  return mergeContinueFrameFields(sessionId).compactContext !== false;
+  return compactAfterMergeEnabled(useSessionStore.getState(), sessionId);
 }
 
 /**

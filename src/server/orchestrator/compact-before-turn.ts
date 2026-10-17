@@ -52,7 +52,7 @@ export interface CompactBeforeTurnArgs {
   agentId: AgentId;
   sessionId: string;
   sessionDir: string;
-  /** Requeued messages use false to prevent a second compaction. */
+  /** Requeued messages use false to prevent a second compaction. Absent: the session's own choice. */
   intent?: boolean;
   /** docs/295 req 15 — no user is at the composer for this turn, so none could untick it. */
   unattended?: boolean;
@@ -61,8 +61,11 @@ export interface CompactBeforeTurnArgs {
 export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Promise<boolean> {
   const { deps, runner, agentId, sessionId, sessionDir, intent, unattended } = args;
   // An untick answers this merge's compaction offer too, so it still reaches the record below.
-  // The session's own choice is that untick, kept for every turn (docs/295 reqs 5, 17).
-  const unticked = intent === false || deps.getSession(sessionId)?.compactAfterMergeOff === true;
+  // The session's own choice is that untick, kept for every turn (docs/295 reqs 5, 17). A send
+  // carries a value only while the user's last click is still being saved, so that value wins.
+  const unticked = intent === undefined
+    ? deps.getSession(sessionId)?.compactAfterMergeOff === true
+    : !intent;
 
   if (!deps.getAutoResetMergedBranch()) return false;
   if (!(getAgentCapabilities(agentId)?.supportsCompaction ?? false)) return false;

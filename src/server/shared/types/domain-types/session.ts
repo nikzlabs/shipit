@@ -173,12 +173,13 @@ export interface SessionInfo {
 
 /**
  * A row of the session lists, which every tab receives again on each change. The
- * status card and the goal reach only the open session's viewer, on `session_details`;
+ * status card, the goal and the compaction choice reach only the open session's viewer,
+ * on `session_details` (the lists are filtered, so they can lack the open session);
  * the replay, the rewind point and the notice are for the agent.
  */
 export type SessionListRow = Omit<
   SessionInfo,
-  "sessionStatus" | "agentGoal" | "conversationReplay" | "agentResumeAt" | "pendingAgentNotice"
+  "sessionStatus" | "agentGoal" | "conversationReplay" | "agentResumeAt" | "pendingAgentNotice" | "compactAfterMergeOff"
 >;
 
 /**

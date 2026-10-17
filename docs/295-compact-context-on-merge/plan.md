@@ -510,31 +510,43 @@ The user unticked "Compact the context", the PR merged, and on the next merge
 the box was ticked again. They asked for the choice to stay with the session
 and to be changeable from the PR card's menu as well.
 
-**One record, on the session row.** `sessions.compact_after_merge_off`
-(`SessionInfo.compactAfterMergeOff`), the same shape as the docs/186
-`auto_fix_ci_paused` pause beside it. `POST /api/sessions/:id/pr/compact-after-merge
-{ enabled }` writes it and re-broadcasts `session_list`, so every tab and both
-controls redraw from the one row. The composer box and the menu's **Compact
-after merge** switch both call `setCompactAfterMerge` in the session store
-(optimistic, put back on a refusal). The route is not on the container
-allowlist (docs/201-container-api-trust-boundary), so the agent cannot change
-the user's choice.
+**One record, on the session row, sent to the open session.**
+`sessions.compact_after_merge_off` (`SessionInfo.compactAfterMergeOff`), the same
+column shape as the docs/186 `auto_fix_ci_paused` pause beside it.
+`POST /api/sessions/:id/pr/compact-after-merge { enabled }` writes it. The value
+reaches the browser on `session_details`, not on the session list:
+`filterVisibleInSidebar` caps the list, so an older merged session opened
+directly can be missing from it, and a choice read from the list then showed
+ticked while the server had it off. `session_details` reaches every viewer of
+the open session, on attach and after each write (`SessionManager.detailsChanged`).
+The route is not on the container allowlist
+(docs/201-container-api-trust-boundary), so the agent cannot change the user's
+choice.
+
+**What the controls show.** The composer box and the menu's **Compact after
+merge** switch read `compactAfterMergeEnabled`: the user's last click while its
+write is still in flight (`pendingCompactAfterMerge`), and the server's value
+after. Both call `setCompactAfterMerge`, which sends one session's writes one
+after another, so the saved choice is always the last click, and an older
+`session_details` that lands mid-write cannot show the old value. A refused
+write puts the server's value back and shows a toast.
 
 **The server reads it for every turn.** `shouldCompactBeforeTurn` treats the
-flag as an untick: no compaction, and the merge's offer is recorded as answered,
-as an untick records it. Both callers — the interactive takeover and the
-dispatched one in `runner-registry-factory.ts` — build their deps from
+saved off as an untick: no compaction, and the merge's offer is recorded as
+answered, as an untick records it. Both callers — the interactive takeover and
+the dispatched one in `runner-registry-factory.ts` — build their deps from
 `sessionManager.get`, so a wake turn and a message from another session stand
 down too (req 17). The req 15 floor needs no change: an off session compacts
 nothing whatever the size.
 
-**The frame still carries it.** `mergeContinueFrameFields` puts
-`compactContext: false` on the frame while the client's row says off, and
-`consumeMergeContinueIntent` no longer spends it. Without the field a send made
-just after an untick could reach the server before the write that records it.
-The other direction — a re-tick and an immediate send — can lose that one
-compaction, because only an opt-out is carried; carrying `true` would let a
-stale tab compact against a choice made elsewhere.
+**The frame carries only a click that is not saved yet.**
+`mergeContinueFrameFields` puts `compactContext` on the frame — `true` or
+`false` — only while a write is in flight, and the server lets that value win
+over the saved one. Without it, a send made right after a click (in either
+direction) could reach the server before the write. Otherwise the field is
+absent and the server reads the saved choice at decision time, so a message
+that waits in the queue follows a change made in the PR card menu meanwhile.
+`consumeMergeContinueIntent` never spends it.
 
 **Not migrated.** A compaction untick saved in the old per-message localStorage
 record is dropped on read, so a draft that had one outstanding when this
@@ -566,8 +578,8 @@ compact (reqs 10, 11).
 | `shared/types/ws-client-messages.ts` | `compactContext?: boolean`. |
 | `client/components/MessageInput/MessageInput.tsx` | The control, its tick state, the payload flag. |
 | `client/stores/pr-store.ts`, `client/utils/local-storage.ts` | `mergeContinueOptOutBySession` and its durable mirror: the reset untick outlives the composer. |
-| `orchestrator/sessions.ts`, `shared/database.ts`, `api-routes-github.ts` | `compact_after_merge_off` and `POST /pr/compact-after-merge`: the compaction choice, kept for the session (reqs 5, 16). |
-| `client/stores/session-store.ts`, `client/components/PrStatusControls.tsx`, `PrActionsMenu.tsx` | `isCompactAfterMergeOff`, `setCompactAfterMerge`, and the menu's **Compact after merge** switch (req 16). |
+| `orchestrator/sessions.ts`, `shared/database.ts`, `api-routes-github.ts`, `route-registry.ts` | `compact_after_merge_off`, `POST /pr/compact-after-merge`, and the value on `session_details`: the compaction choice, kept for the session (reqs 5, 16). |
+| `client/stores/session-store.ts`, `client/components/PrStatusControls.tsx`, `PrActionsMenu.tsx` | `compactAfterMergeEnabled`, `pendingCompactAfterMerge`, the ordered `setCompactAfterMerge`, and the menu's **Compact after merge** switch (req 16). |
 | `client/utils/send-user-turn.ts` | `sendUserTurn` / `sendControlFrame` — the ONLY place a `send_message` frame is built. |
 | `client/utils/merge-continue-intent.ts` | Read, consume, the cross-tab sync, and `compactRunsBeforeTurn`. |
 | `client/utils/predicted-queue.ts` | The predicted queue row and every exit from it; `send-user-message.ts` writes it, and `message-queued` / `queue-updated` / `system-user-message` / `message-steered` / `error` reconcile it. |

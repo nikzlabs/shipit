@@ -143,6 +143,10 @@ describe("shouldCompactBeforeTurn", () => {
     expect(marked).toHaveLength(1);
   });
 
+  it("follows a re-tick the send carried before its write reached the session", async () => {
+    expect(await ask({ session: makeSession({ compactAfterMergeOff: true }), intent: true })).toBe(true);
+  });
+
   it("records nothing for an untick on a session with no offer", async () => {
     const marked: string[] = [];
     const notMerged = makeSession({ mergedAt: undefined });

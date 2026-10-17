@@ -3,16 +3,16 @@ import { usePrStore } from "../stores/pr-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { saveMergeContinueOptOut, getSavedMergeContinueOptOut } from "./local-storage.js";
 import { sendGoalControlFrame, sendUserTurn } from "./send-user-turn.js";
-import type { SessionListRow } from "../../server/shared/types.js";
 
 const untick = (sessionId: string) => {
-  useSessionStore.setState({ sessions: [{ id: sessionId, title: "", createdAt: "", lastUsedAt: "", remoteUrl: "", compactAfterMergeOff: true } as SessionListRow] });
+  // A compaction untick whose write has not landed yet; a saved one the server reads itself.
+  useSessionStore.setState({ pendingCompactAfterMerge: { [sessionId]: false } });
   usePrStore.getState().setMergeContinueOptOut(sessionId, "reset", true);
 };
 
 beforeEach(() => {
   usePrStore.setState({ mergeContinueOptOutBySession: {} });
-  useSessionStore.setState({ sessionId: "s1", messages: [], isLoading: false, sessions: [], allSessions: [] });
+  useSessionStore.setState({ sessionId: "s1", messages: [], isLoading: false, pendingCompactAfterMerge: {} });
   localStorage.clear();
 });
 

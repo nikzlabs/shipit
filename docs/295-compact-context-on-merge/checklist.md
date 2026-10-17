@@ -78,17 +78,21 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 ## The compaction choice is kept for the session (reqs 5, 16, 17)
 
 - [x] `sessions.compact_after_merge_off` and `SessionInfo.compactAfterMergeOff`;
-      `POST /api/sessions/:id/pr/compact-after-merge` writes it and re-broadcasts
-      the session list.
+      `POST /api/sessions/:id/pr/compact-after-merge` writes it, and
+      `session_details` carries it to the open session (the session list is
+      capped and can lack it).
 - [x] `shouldCompactBeforeTurn` treats the flag as an untick on every path,
       wake turns included (req 17).
-- [x] The composer box reads and writes the session row; the per-message
-      localStorage opt-out holds the reset only; a send no longer spends the
-      compaction untick, and the frame still carries it.
+- [x] The composer box and the menu switch show the last click until its
+      write settles, then the server's value; one session's writes go out in
+      order. The per-message localStorage opt-out holds the reset only; a send
+      never spends the compaction choice, and the frame carries it only while a
+      write is in flight, where the server lets it win.
 - [x] A **Compact after merge** switch in the PR card menu, hidden where the
       composer control could never show (reqs 10, 11, 16).
 - [x] Tests: the decision, the route, the intent module, the composer, the menu.
-- [x] The wiki pages that describe the controls and the menu.
+- [x] The wiki pages that describe the controls and the menu, and the
+      Settings → Advanced description.
 
 ## Tests
 

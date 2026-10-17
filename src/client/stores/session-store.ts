@@ -49,6 +49,8 @@ export interface RescueState {
 export interface SessionDetails {
   sessionStatus: SessionStatus | null;
   agentGoal: AgentGoal | null;
+  /** docs/295-compact-context-on-merge req 5 — the server's saved choice. Absent means on. */
+  compactAfterMergeOff?: boolean;
 }
 
 export interface RewindRecovery {
@@ -82,6 +84,8 @@ interface SessionState {
   sessions: SessionListRow[];
   /** By session id; not on the rows, which every tab receives again on each change. */
   sessionDetails: Record<string, SessionDetails>;
+  /** docs/295-compact-context-on-merge req 5 — a compaction choice clicked and not yet saved, by session. */
+  pendingCompactAfterMerge: Record<string, boolean>;
   /**
    * docs/252 phase 4 — how many times the server has answered a selection change
    * for a session, keyed by session id.
@@ -326,18 +330,41 @@ const initialResettableState = {
 
 const initialTurnUsage: Record<string, TurnUsage[]> = {};
 
-/** docs/295-compact-context-on-merge req 5 — the user turned the post-merge compaction off for this session. */
-export function isCompactAfterMergeOff(
-  state: Pick<SessionState, "sessions" | "allSessions">,
+/**
+ * docs/295-compact-context-on-merge reqs 5, 16 — what the composer box and the PR menu switch
+ * show: the user's last click until its write settles, then the server's value.
+ */
+export function compactAfterMergeEnabled(
+  state: Pick<SessionState, "pendingCompactAfterMerge" | "sessionDetails">,
   sessionId: string,
 ): boolean {
-  return (state.sessions.find((s) => s.id === sessionId)
-    ?? state.allSessions.find((s) => s.id === sessionId))?.compactAfterMergeOff === true;
+  return state.pendingCompactAfterMerge[sessionId] ?? !state.sessionDetails[sessionId]?.compactAfterMergeOff;
+}
+
+// One session's writes go out one after another, so the saved choice is the last click.
+const compactAfterMergeWrites = new Map<string, { seq: number; tail: Promise<void> }>();
+
+async function postCompactAfterMerge(sessionId: string, enabled: boolean): Promise<string | undefined> {
+  const failed = "Failed to change the compaction after a merge";
+  try {
+    const res = await fetch(`/api/sessions/${sessionId}/pr/compact-after-merge`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (res.ok) return undefined;
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    return data.error ?? failed;
+  } catch (err) {
+    console.error("[session-store] Compact-after-merge toggle failed:", err);
+    return failed;
+  }
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessionId: undefined,
   ...initialResettableState,
+  pendingCompactAfterMerge: {},
   sessions: [] as SessionListRow[],
   modelSelectionEcho: {},
   activeRunnerSessions: new Set<string>(),
@@ -444,32 +471,37 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  setCompactAfterMerge: async (sessionId, enabled) => {
-    const patch = (off: boolean) => {
-      const apply = (rows: SessionListRow[]) => rows.map((s) =>
-        s.id === sessionId ? { ...s, compactAfterMergeOff: off || undefined } : s);
-      set((state) => ({ sessions: apply(state.sessions), allSessions: apply(state.allSessions) }));
-    };
-    const prev = isCompactAfterMergeOff(get(), sessionId);
-    patch(!enabled);
-    const fail = (error?: string) => {
-      patch(prev);
-      useUiStore.getState().setToast({ message: error ?? "Failed to change the compaction after a merge" });
-    };
-    try {
-      const res = await fetch(`/api/sessions/${sessionId}/pr/compact-after-merge`, {
-        method: "POST",
-        headers: { Accept: "application/json", "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({})) as { error?: string };
-        fail(data.error);
+  setCompactAfterMerge: (sessionId, enabled) => {
+    set((state) => ({ pendingCompactAfterMerge: { ...state.pendingCompactAfterMerge, [sessionId]: enabled } }));
+    const previous = compactAfterMergeWrites.get(sessionId);
+    const seq = (previous?.seq ?? 0) + 1;
+    const write = async () => {
+      const error = await postCompactAfterMerge(sessionId, enabled);
+      if (error) {
+        useUiStore.getState().setToast({ message: error });
+      } else {
+        // The response can beat the `session_details` that confirms it.
+        set((state) => {
+          const details = state.sessionDetails[sessionId];
+          if (!details) return {};
+          return { sessionDetails: { ...state.sessionDetails, [sessionId]: { ...details, compactAfterMergeOff: !enabled } } };
+        });
       }
-    } catch (err) {
-      console.error("[session-store] Compact-after-merge toggle failed:", err);
-      fail();
-    }
+      if (compactAfterMergeWrites.get(sessionId)?.seq !== seq) return;
+      compactAfterMergeWrites.delete(sessionId);
+      set((state) => {
+        const pending = { ...state.pendingCompactAfterMerge };
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete pending[sessionId];
+        return { pendingCompactAfterMerge: pending };
+      });
+    };
+    const tail = (async () => {
+      await previous?.tail;
+      await write();
+    })();
+    compactAfterMergeWrites.set(sessionId, { seq, tail });
+    return tail;
   },
 
   setPinned: async (sessionId, pinned) => {
