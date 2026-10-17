@@ -135,7 +135,7 @@ describe("shouldCompactBeforeTurn", () => {
     expect(marked).toHaveLength(1);
   });
 
-  it("says no on every path when the user turned it off for the session (req 5)", async () => {
+  it("says no on every path when the user turned it off for the session (reqs 5, 17)", async () => {
     const off = makeSession({ compactAfterMergeOff: true });
     const marked: string[] = [];
     expect(await ask({ session: off, marked })).toBe(false);

@@ -6,7 +6,7 @@ description: A merged session compacts its context before the next turn — offe
 
 # 295 — Compact the context when a merged session continues
 
-> **Changed 2026-10-17:** the compaction untick is kept for the session, not spent by one message (req 5), the PR card menu shows and changes it (req 16), and it also stops a continuation that has no checkbox (built ahead of an open question in requirements.md) — see [The compaction choice is kept for the session](#the-compaction-choice-is-kept-for-the-session-req-5-req-16). Where the sections below say an untick applies to one message, that now holds for the reset control only.
+> **Changed 2026-10-17:** the compaction untick is kept for the session, not spent by one message (req 5), the PR card menu shows and changes it (req 16), and it also stops a continuation that has no checkbox (req 17) — see [The compaction choice is kept for the session](#the-compaction-choice-is-kept-for-the-session-req-5-req-16-req-17). Where the sections below say an untick applies to one message, that now holds for the reset control only.
 
 > **Changed 2026-10-12 by [docs/329-user-steers-every-turn](../329-user-steers-every-turn/plan.md) part 3.** The compaction ahead of a turn is no longer a system turn and holds no flag: it runs on the process a typed turn would use, the claim on `running` keeps other turns out from the decision to the compaction, and the rule of docs/329 part 2 keeps messages out of it.
 
@@ -504,7 +504,7 @@ The floor does not gate the composer control. Req 3 forbids that, and there the
 user has the box: a typed message, a card button and a page message (req 14)
 compact whatever the size, unless unticked.
 
-## The compaction choice is kept for the session (req 5, req 16)
+## The compaction choice is kept for the session (req 5, req 16, req 17)
 
 The user unticked "Compact the context", the PR merged, and on the next merge
 the box was ticked again. They asked for the choice to stay with the session
@@ -536,8 +536,7 @@ saved off as an untick: no compaction, and the merge's offer is recorded as
 answered, as an untick records it. Both callers — the interactive takeover and
 the dispatched one in `runner-registry-factory.ts` — build their deps from
 `sessionManager.get`, so a wake turn and a message from another session stand
-down too — the agent's reading of the request, built ahead of the open question
-in requirements.md. The req 15 floor needs no change: an off session compacts
+down too (req 17). The req 15 floor needs no change: an off session compacts
 nothing whatever the size.
 
 **The frame carries only a click that is not saved yet.**
