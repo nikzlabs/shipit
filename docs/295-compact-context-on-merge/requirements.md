@@ -69,9 +69,8 @@ later turn, and the agent reads them as live work in progress.
 
 13. A continuation that the user did not type also compacts, under the same
     setting and in the same conditions in which its branch is reset. It has no
-    checkbox, so the setting decides, together with the session's own choice
-    (requirement 17). Requirement 14 takes a message from an agent-built page
-    out of this rule.
+    checkbox, so the setting alone decides. Requirement 14 takes a message from
+    an agent-built page out of this rule.
 
 14. A message that a page built by the agent sends to the agent, from the
     Preview or the Present tab, obeys the two composer controls as a typed
@@ -90,14 +89,9 @@ later turn, and the agent reads them as live work in progress.
     requirement 5 in the pull request card's menu. The menu and the composer
     control show the same choice, and a change in one shows in the other.
 
-17. When the user turned the compaction off for the session, a continuation
-    that has no checkbox (requirement 13) does not compact either.
-
 ## Requirement provenance
 
 Requirements 1 to 6, 11 and 13 to 16 come from what the user asked for and decided.
-Requirement 17 is the agent's reading of the user's 2026-10-17 request (see the
-receipt of that date).
 Requirements 7 to 10 and 12 were not asked for: each one keeps a guarantee that
 already ships (docs/218 for the merge notice, docs/178 for how a compaction
 appears and for the `/compact` boundary) from becoming weaker. They are recorded
@@ -105,7 +99,14 @@ apart from the user's own requirements so that the difference stays visible.
 
 ## Open questions
 
-None.
+- Does the session's compaction choice of requirement 5 also govern a
+  continuation that has no checkbox (requirement 13) — a wake turn after a
+  merge, a message from another session? The agent read "setting persistent per
+  session" as yes, and that is what is built: with the choice off, such a turn
+  does not compact, so for that session requirement 13's "the setting alone
+  decides" does not hold. The alternative is that those turns keep following
+  the global setting alone. The 2026-10-12 answer below describes the wake turn
+  as one that "nothing can turn off". The user has not answered yet.
 
 ## Resolved questions
 
@@ -167,10 +168,5 @@ None.
   keeps the choice for the session, requirement 14 no longer uses up the
   compaction untick, and requirement 16 adds the menu. Only the compaction
   control was named, so the branch-reset untick still applies to one message.
-  Requirement 17, and the matching change to requirement 13, are the agent's
-  reading of "setting persistent per session", not words the user said: a
-  setting that is kept for the session governs every turn of that session, so
-  it also stops the compaction of a continuation that has no checkbox. That is
-  the case the 2026-10-12 answer above describes as one that "nothing can turn
-  off". The user was told this reading when the change was made, so that they
-  can correct it.
+  Whether the choice also governs a continuation that has no checkbox is under
+  Open questions.

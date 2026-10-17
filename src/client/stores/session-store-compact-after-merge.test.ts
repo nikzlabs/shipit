@@ -48,6 +48,14 @@ describe("setCompactAfterMerge (docs/295-compact-context-on-merge reqs 5, 16)", 
     expect(compactAfterMergeEnabled(useSessionStore.getState(), "s1")).toBe(false);
   });
 
+  it("keeps a saved click when a session switch emptied the details before the answer", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    const write = useSessionStore.getState().setCompactAfterMerge("s1", false);
+    useSessionStore.setState({ sessionDetails: {} });
+    await write;
+    expect(compactAfterMergeEnabled(useSessionStore.getState(), "s1")).toBe(false);
+  });
+
   it("goes back to the server's value when the write is refused", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 500 })));
     await useSessionStore.getState().setCompactAfterMerge("s1", false);

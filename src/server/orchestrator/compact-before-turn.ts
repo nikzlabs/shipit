@@ -61,7 +61,7 @@ export interface CompactBeforeTurnArgs {
 export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Promise<boolean> {
   const { deps, runner, agentId, sessionId, sessionDir, intent, unattended } = args;
   // An untick answers this merge's compaction offer too, so it still reaches the record below.
-  // The session's own choice is that untick, kept for every turn (docs/295 reqs 5, 17). A send
+  // The session's own choice is that untick, kept for every turn (docs/295 req 5). A send
   // carries a value only while the user's last click is still being saved, so that value wins.
   const unticked = intent === undefined
     ? deps.getSession(sessionId)?.compactAfterMergeOff === true

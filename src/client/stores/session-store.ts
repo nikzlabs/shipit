@@ -342,7 +342,7 @@ export function compactAfterMergeEnabled(
 }
 
 // One session's writes go out one after another, so the saved choice is the last click.
-const compactAfterMergeWrites = new Map<string, { seq: number; tail: Promise<void> }>();
+const compactAfterMergeWrites = new Map<string, Promise<void>>();
 
 async function postCompactAfterMerge(sessionId: string, enabled: boolean): Promise<string | undefined> {
   const failed = "Failed to change the compaction after a merge";
@@ -474,20 +474,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setCompactAfterMerge: (sessionId, enabled) => {
     set((state) => ({ pendingCompactAfterMerge: { ...state.pendingCompactAfterMerge, [sessionId]: enabled } }));
     const previous = compactAfterMergeWrites.get(sessionId);
-    const seq = (previous?.seq ?? 0) + 1;
-    const write = async () => {
+    let tail: Promise<void> | undefined = undefined;
+    tail = (async () => {
+      await previous;
       const error = await postCompactAfterMerge(sessionId, enabled);
       if (error) {
         useUiStore.getState().setToast({ message: error });
       } else {
-        // The response can beat the `session_details` that confirms it.
+        // The response can beat the `session_details` that confirms it, also after a switch
+        // emptied `sessionDetails`; the next one replaces this entry whole.
         set((state) => {
-          const details = state.sessionDetails[sessionId];
-          if (!details) return {};
+          const details = state.sessionDetails[sessionId] ?? { sessionStatus: null, agentGoal: null };
           return { sessionDetails: { ...state.sessionDetails, [sessionId]: { ...details, compactAfterMergeOff: !enabled } } };
         });
       }
-      if (compactAfterMergeWrites.get(sessionId)?.seq !== seq) return;
+      if (compactAfterMergeWrites.get(sessionId) !== tail) return;
       compactAfterMergeWrites.delete(sessionId);
       set((state) => {
         const pending = { ...state.pendingCompactAfterMerge };
@@ -495,12 +496,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         delete pending[sessionId];
         return { pendingCompactAfterMerge: pending };
       });
-    };
-    const tail = (async () => {
-      await previous?.tail;
-      await write();
     })();
-    compactAfterMergeWrites.set(sessionId, { seq, tail });
+    compactAfterMergeWrites.set(sessionId, tail);
     return tail;
   },
 
