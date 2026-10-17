@@ -1,0 +1,99 @@
+{
+  "$comment": "docs/296 plan §6: scenario 1, the habit tracker, against the phase-2 demo instance (plan §9). `repo.commit` pins `main` of the demo app: the template scaffold plus the demo-specific files (`.claude/settings.json` redirect — `ANTHROPIC_BASE_URL` only, no key — `agent.install: npm ci`, and a `docker-compose.yml` with the `dev` preview service and the `demo-proxy` service, `image: demo-proxy:current`, built on the demo host by `host/demo-proxy-image.sh`) — the driver refuses a take whose `git ls-remote HEAD` differs. `proxy` names that service and its port: it is a `manual` service (so the Preview pane never picks it), the driver starts it on the repo's warm session during setup, the session's Claude CLI reaches it as `http://demo-proxy:8787` (the address in the repo's settings file), and the driver asks it for its mode and counters through the instance's preview address for the port. No `model` pin: the demo instance has one harness (Claude) and its default route is the one to record. `permissionMode: auto` is the only mode whose allowlisted tools never prompt; it is the composer's default and the driver verifies the control reads it after the claim, and aborts any wait on a pending permission prompt (the CLI's sensitive-file gate is outside every ShipIt mode). `pace.typingCharsPerSecond` is the driver's typing rate; `pace.textCharsPerSecond` is the replay pace, given to `demo-proxy-image.sh` as `DEMO_PROXY_PACE` when the image is built (its default is the same 120). Kept time: Σ(lead + hold) = 36 s.",
+  "proxy": {
+    "service": "demo-proxy",
+    "port": 8787
+  },
+  "repo": {
+    "url": "https://github.com/nicolasalt-shipit/shipit-demo-app",
+    "commit": "7d7a525705af05f994042d1854c5e7d24e0a6b24"
+  },
+  "settings": {
+    "autoCreatePr": true
+  },
+  "permissionMode": "auto",
+  "waitCeilingSeconds": 1800,
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "pace": {
+    "textCharsPerSecond": 120,
+    "typingCharsPerSecond": 30
+  },
+  "cursor": true,
+  "beats": [
+    {
+      "id": "new-session",
+      "click": "new-session",
+      "pane": "transcript",
+      "wait": [
+        {
+          "composer": "ready"
+        },
+        {
+          "preview_text": "Hello React"
+        }
+      ],
+      "lead": 0,
+      "hold": 1
+    },
+    {
+      "id": "build",
+      "type": "Build a habit tracker with a light theme: a list of daily habits, a check button on each, and a streak counter that goes up when you check one. Seed three example habits with streaks of 4, 2 and 0.",
+      "pane": "transcript",
+      "wait": [
+        {
+          "turn": "running"
+        }
+      ],
+      "lead": 4,
+      "hold": 1
+    },
+    {
+      "id": "agent-works",
+      "pane": "files",
+      "wait": [
+        {
+          "preview_text": "habit"
+        },
+        {
+          "pr_card": "open"
+        }
+      ],
+      "lead": 6,
+      "hold": 6,
+      "holdPane": "preview"
+    },
+    {
+      "id": "dark-mode",
+      "type": "Switch it to dark mode with a violet accent, and retitle the page 'Streaks'.",
+      "pane": "preview",
+      "wait": [
+        {
+          "turn": "finished"
+        },
+        {
+          "preview_text": "Streaks"
+        },
+        {
+          "merge_button": "visible"
+        }
+      ],
+      "lead": 5,
+      "hold": 6
+    },
+    {
+      "id": "merge",
+      "click": "merge",
+      "pane": "pr-card",
+      "wait": [
+        {
+          "pr_card": "merged"
+        }
+      ],
+      "lead": 3,
+      "hold": 4
+    }
+  ]
+}

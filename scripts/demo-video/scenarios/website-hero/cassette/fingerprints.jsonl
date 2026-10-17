@@ -1,0 +1,12 @@
+{"lane":"bearer","n":1,"model":"claude-opus-5-5","messages":2,"tools":59,"bodyBytes":192260,"stream":true}
+{"lane":"bearer","n":2,"model":"claude-opus-5-5","messages":5,"tools":59,"bodyBytes":200279,"stream":true}
+{"lane":"bearer","n":3,"model":"claude-opus-5-5","messages":8,"tools":59,"bodyBytes":202221,"stream":true}
+{"lane":"bearer","n":4,"model":"claude-opus-5-5","messages":11,"tools":59,"bodyBytes":208447,"stream":true}
+{"lane":"bearer","n":5,"model":"claude-opus-5-5","messages":14,"tools":59,"bodyBytes":209216,"stream":true}
+{"lane":"bearer","n":6,"model":"claude-opus-5-5","messages":17,"tools":59,"bodyBytes":210511,"stream":true}
+{"lane":"bearer","n":7,"model":"claude-opus-5-5","messages":20,"tools":59,"bodyBytes":249967,"stream":true}
+{"lane":"bearer","n":8,"model":"claude-opus-5-5","messages":23,"tools":59,"bodyBytes":251816,"stream":true}
+{"lane":"bearer","n":9,"model":"claude-opus-5-5","messages":26,"tools":59,"bodyBytes":254362,"stream":true}
+{"lane":"bearer","n":10,"model":"claude-opus-5-5","messages":29,"tools":59,"bodyBytes":259012,"stream":true}
+{"lane":"bearer","n":11,"model":"claude-opus-5-5","messages":32,"tools":59,"bodyBytes":300077,"stream":true}
+{"lane":"bearer","n":12,"model":"claude-opus-5-5","messages":35,"tools":59,"bodyBytes":302196,"stream":true}
