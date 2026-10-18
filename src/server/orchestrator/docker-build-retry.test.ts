@@ -13,6 +13,16 @@ const RESOLVE_FAILURE = [
   "failed to resolve source metadata for ghcr.io/astral-sh/uv:0.12.5: not found",
 ].join(" ");
 
+// The compose-helper keyring stage on shipit-prod, 2026-10-18.
+const APT_DNS_FAILURE = [
+  "#47 17.22 Err:1 http://deb.debian.org/debian bookworm InRelease",
+  "#47 17.22   Could not resolve 'deb.debian.org'",
+  "#47 17.23 W: Failed to fetch http://deb.debian.org/debian/dists/bookworm/InRelease  Could not resolve 'deb.debian.org'",
+  "#47 17.25 E: Package 'ca-certificates' has no installation candidate",
+  "#47 17.25 E: Unable to locate package curl",
+  "#47 ERROR: process \"/bin/sh -c apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg\" did not complete successfully: exit code: 100",
+].join("\n");
+
 let dir: string;
 
 beforeEach(() => {
@@ -95,6 +105,31 @@ describe("shipit_docker_build_with_retry", () => {
     fakeDocker(output, { succeedOnAttempt: 2 });
     expect(runHelper().status).toBe(0);
     expect(calls()).toBe(2);
+  });
+
+  it.each([
+    ["apt", APT_DNS_FAILURE],
+    ["apt (temporary)", "W: Failed to fetch http://deb.debian.org/...  Temporary failure resolving 'deb.debian.org'"],
+    ["glibc", "socket.gaierror: [Errno -3] Temporary failure in name resolution"],
+    ["curl", "curl: (6) Could not resolve host: download.docker.com"],
+    ["Go", "lookup proxy.golang.org on 1.1.1.1:53: no such host"],
+    ["Node", "npm error request to https://registry.npmjs.org/x failed, reason: getaddrinfo EAI_AGAIN registry.npmjs.org"],
+  ])("retries a name-resolution failure from %s", (_label, output) => {
+    fakeDocker(output, { succeedOnAttempt: 2 });
+    expect(runHelper().status).toBe(0);
+    expect(calls()).toBe(2);
+  });
+
+  it("does not retry npm's ERESOLVE, which also says 'could not resolve'", () => {
+    fakeDocker("npm error code ERESOLVE\nnpm error ERESOLVE could not resolve\nnpm error Could not resolve dependency:");
+    expect(runHelper().status).not.toBe(0);
+    expect(calls()).toBe(1);
+  });
+
+  it("does not retry a DNS failure on a full disk", () => {
+    fakeDocker(`${APT_DNS_FAILURE}\nfailed to solve: write /var/lib/docker/tmp/x: no space left on device`);
+    expect(runHelper().status).not.toBe(0);
+    expect(calls()).toBe(1);
   });
 
   it("does not retry a deterministic build failure, and preserves its exit status", () => {
