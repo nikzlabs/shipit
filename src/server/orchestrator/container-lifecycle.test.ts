@@ -1221,6 +1221,32 @@ describe("createContainer — overlay volume re-verification (nikzlabs/shipit#24
     expect(deps.containers.has("3f6d1497-c466-4b2c-b9af-0f1800fbf759")).toBe(false);
   });
 
+  // "running" hands a claiming runner the worker, which may start an install; a stamp landing
+  // after that install dropped the marker would survive its failure.
+  it("is not running until the install-marker pre-stamp has finished", async () => {
+    const daemon = fakeDaemon();
+    const deps = { ...makeDeps(daemon.docker), stateDir: tmpDir() } as LifecycleDeps;
+    const tmp = tmpDir();
+    const sessionId = "3f6d1497-c466-4b2c-b9af-0f1800fbf759";
+    const spec = {
+      ...overlaySpec("node_modules", NODE_MODULES_VOL),
+      scope: { repoUrl: "r", runtimeKey: "rt", depDir: "node_modules" },
+    } as DepDirOverlaySpec;
+    const statusAtStamp: (string | undefined)[] = [];
+    const realExists = fs.existsSync.bind(fs);
+    const exists = vi.spyOn(fs, "existsSync").mockImplementation((p) => {
+      if (String(p).endsWith(".install-done")) statusAtStamp.push(deps.containers.get(sessionId)?.status);
+      return realExists(p);
+    });
+    try {
+      const sc = await createContainer(deps, configWithSpecs(tmp, [spec]));
+      expect(statusAtStamp).toEqual(["starting"]);
+      expect(sc.status).toBe("running");
+    } finally {
+      exists.mockRestore();
+    }
+  });
+
   it("leaves a non-overlay session's create path untouched", async () => {
     const daemon = fakeDaemon();
     const deps = makeDeps(daemon.docker);

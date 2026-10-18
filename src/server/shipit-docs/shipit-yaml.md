@@ -122,7 +122,9 @@ sizing is fully automatic.
   it holds locked packages but no `.package-lock.json`, the record npm deletes
   first and writes last, which is what an npm run killed part-way leaves; or that
   record lists packages that are not on disk. The install log names the
-  directory and why.
+  directory and why. An install that failed or was stopped part-way also runs
+  again on the next start, even when a published dependency base matches the
+  commit.
 - **A skipped install guarantees `dep-dirs`, and nothing else it wrote.** The
   stamp can match a checkout that never ran the install — a workspace reclaimed
   for disk and re-cloned, or a session that mounted an already-published

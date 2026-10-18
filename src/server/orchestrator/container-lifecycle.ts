@@ -1012,9 +1012,10 @@ export async function createContainer(
     if (!deps.skipHealthCheck) {
       await waitForWorkerHealth(sc.workerUrl);
     }
-    sc.status = "running";
 
-    // Stamp after start pins the lower layer, but before returning lets the worker run install.
+    // Stamp after start pins the lower layer, and before "running" hands a claiming runner the
+    // worker: an install started meanwhile would delete the marker, and a stamp landing after that
+    // survives the install's failure.
     if (config.overlaySpecs && config.overlaySpecs.length > 0 && deps.stateDir) {
       try {
         const stamped = await preStampInstallMarker({
@@ -1032,6 +1033,7 @@ export async function createContainer(
         );
       }
     }
+    sc.status = "running";
 
     abortIfTornDown("before returning a ready container");
 

@@ -478,6 +478,17 @@ export async function preStampInstallMarker(args: {
   }
   if (!runtimeKey) return false;
 
+  // The install controller drops the marker before every install, so a missing marker over a used
+  // upper is usually an install that failed or was killed, and its partial files shadow the base.
+  const used = specs.filter((s) => !upperIsEmpty(s)).map((s) => s.depDir);
+  if (used.length > 0) {
+    console.warn(
+      `[overlay] not pre-stamping the install marker: this session's own layer for ${used.join(", ")} ` +
+        "already holds files that no finished install vouches for, so agent.install runs over it.",
+    );
+    return false;
+  }
+
   const marker = makeMarker(
     { sourceCommit: head, runtimeKey, installCommands, depsHash },
     new Date().toISOString(),
@@ -489,4 +500,14 @@ export async function preStampInstallMarker(args: {
   chown(markerDir);
   chown(markerFile);
   return true;
+}
+
+// Unreadable counts as used: a wrong refusal costs one install, a wrong stamp a broken tree.
+function upperIsEmpty(spec: DepDirOverlaySpec): boolean {
+  if (!spec.orchDirs) return false;
+  try {
+    return fs.readdirSync(spec.orchDirs.upperdir).length === 0;
+  } catch {
+    return false;
+  }
 }
