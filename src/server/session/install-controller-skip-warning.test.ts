@@ -110,4 +110,58 @@ describe("install skip warning — controller wiring", () => {
     expect(res.json()).toEqual({ skipped: true, reason: "marker" });
     expect(logText()).toBe("");
   });
+
+  // nikzlabs/shipit#3234: the shape an npm run killed part-way leaves behind.
+  function writeNpmProject(workspaceDir: string, opts: { recorded: boolean }): void {
+    const lockfile = JSON.stringify({
+      name: "fixture",
+      lockfileVersion: 3,
+      packages: { "": { version: "0.0.0" }, "node_modules/vite": { version: "5.4.10" } },
+    });
+    fs.writeFileSync(path.join(workspaceDir, "web", "package-lock.json"), lockfile);
+    fs.mkdirSync(path.join(workspaceDir, "web", "node_modules", "vite"), { recursive: true });
+    if (opts.recorded) {
+      fs.writeFileSync(path.join(workspaceDir, "web", "node_modules", ".package-lock.json"), lockfile);
+    }
+  }
+
+  it("reinstalls when the marker matches but a restored npm tree is incomplete", async () => {
+    const commands = ["true"];
+    const { workspaceDir, stateDir } = makeWorkspace(
+      "  install:\n    - \"true\"\n  dep-dirs:\n    - web/node_modules\n",
+    );
+    fs.mkdirSync(path.join(workspaceDir, "web"));
+    writeNpmProject(workspaceDir, { recorded: false });
+    writeMatchingMarker(workspaceDir, stateDir, commands);
+    register(workspaceDir, stateDir);
+
+    const res = await app.inject({ method: "POST", url: "/install", payload: { commands } });
+
+    expect(res.json()).toEqual({ started: true });
+    expect(logText()).toContain("web/node_modules");
+    expect(logText()).toContain("reinstalling");
+    for (let i = 0; i < 200; i++) {
+      const status = (await app.inject({ method: "GET", url: "/install/status" })).json() as {
+        running: boolean;
+      };
+      if (!status.running) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  });
+
+  it("still skips when the restored npm tree holds everything npm recorded", async () => {
+    const commands = ["true"];
+    const { workspaceDir, stateDir } = makeWorkspace(
+      "  install:\n    - \"true\"\n  dep-dirs:\n    - web/node_modules\n",
+    );
+    fs.mkdirSync(path.join(workspaceDir, "web"));
+    writeNpmProject(workspaceDir, { recorded: true });
+    writeMatchingMarker(workspaceDir, stateDir, commands);
+    register(workspaceDir, stateDir);
+
+    const res = await app.inject({ method: "POST", url: "/install", payload: { commands } });
+
+    expect(res.json()).toEqual({ skipped: true, reason: "marker" });
+    expect(logText()).toBe("");
+  });
 });

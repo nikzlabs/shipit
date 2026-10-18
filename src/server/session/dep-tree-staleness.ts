@@ -139,6 +139,132 @@ export function unreconciledPnpmDepDirs(workspaceRoot: string): string[] {
   return out;
 }
 
+export interface IncompleteDepDir {
+  depDir: string;
+  /** Recorded packages absent from disk; empty when npm left no record at all. */
+  missing: string[];
+}
+
+// npm's linked strategy records paths under node_modules that it never creates there.
+const NPM_LINKED_STORE = ".store";
+const OTHER_PM_LOCKFILES = ["yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb"];
+const TOP_LEVEL_PACKAGE_KEY = /^node_modules\/((?:@[^/]+\/)?[^/@][^/]*)$/;
+
+/**
+ * Declared npm dep dirs the install marker can no longer vouch for (nikzlabs/shipit#3234). npm
+ * deletes its record (`.package-lock.json`) and `.bin` first and writes them back last, so a run
+ * killed part-way leaves a non-empty tree with no record; a tree WITH a record is whole only if
+ * every package it lists is on disk. For the marker-skip path only: the post-install check
+ * deliberately accepts an unrecorded tree (`staleDepDirs`). A path it cannot inspect is never
+ * read as missing, so no healthy tree reinstalls on every start.
+ */
+export function incompleteNpmDepDirs(workspaceRoot: string): IncompleteDepDir[] {
+  let depDirs: string[];
+  try {
+    depDirs = resolveShipitConfig(workspaceRoot).agent.depDirs;
+  } catch {
+    return [];
+  }
+
+  const incomplete: IncompleteDepDir[] = [];
+  for (const depDir of depDirs) {
+    if (path.posix.basename(depDir) !== "node_modules") continue;
+    const projectDir = path.join(workspaceRoot, path.dirname(depDir));
+    const treeDir = path.join(workspaceRoot, depDir);
+    let lockText: string;
+    let entries: string[];
+    try {
+      lockText = fs.readFileSync(path.join(projectDir, NPM_LOCKFILE), "utf8");
+      entries = fs.readdirSync(treeDir);
+    } catch {
+      continue;
+    }
+    // An empty dir is classifyEmptyDepDirs' to judge.
+    if (entries.length === 0 || entries.includes(NPM_LINKED_STORE)) continue;
+    // A workspace member's tree is recorded, and reinstalled, at the workspace root.
+    if (isWorkspaceMember(workspaceRoot, projectDir)) continue;
+
+    let hiddenText: string;
+    try {
+      hiddenText = fs.readFileSync(path.join(treeDir, HIDDEN_LOCKFILE), "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") continue;
+      if (npmLeftTreeUnrecorded(lockText, treeDir, projectDir)) incomplete.push({ depDir, missing: [] });
+      continue;
+    }
+    const installed = parsePackages(hiddenText);
+    if (installed === null) continue;
+    const missing: string[] = [];
+    let inspectable = true;
+    for (const key of Object.keys(installed)) {
+      if (!key.startsWith("node_modules/")) continue;
+      const state = pathState(path.join(projectDir, key));
+      if (state === "unknown") inspectable = false;
+      if (state === "absent") missing.push(key);
+    }
+    if (inspectable && missing.length > 0) incomplete.push({ depDir, missing });
+  }
+  return incomplete;
+}
+
+function isWorkspaceMember(workspaceRoot: string, projectDir: string): boolean {
+  const root = path.resolve(workspaceRoot);
+  let dir = path.resolve(projectDir);
+  while (dir !== root && dir.startsWith(root)) {
+    dir = path.dirname(dir);
+    let packages: Record<string, LockEntry> | null;
+    try {
+      packages = parsePackages(fs.readFileSync(path.join(dir, NPM_LOCKFILE), "utf8"));
+    } catch {
+      continue;
+    }
+    const rel = path.relative(dir, projectDir).split(path.sep).join("/");
+    if (packages?.[rel] !== undefined) return true;
+  }
+  return false;
+}
+
+// A tree with locked packages and no record, unless an installer that never writes one made it.
+function npmLeftTreeUnrecorded(lockText: string, treeDir: string, projectDir: string): boolean {
+  if (OTHER_PM_LOCKFILES.some((name) => fs.existsSync(path.join(projectDir, name)))) return false;
+  const packages = parsePackages(lockText);
+  if (packages === null) return false;
+  const present: string[] = [];
+  for (const key of Object.keys(packages)) {
+    const name = TOP_LEVEL_PACKAGE_KEY.exec(key)?.[1];
+    if (name === undefined) continue;
+    const state = pathState(path.join(treeDir, name));
+    if (state === "unknown") return false;
+    if (state === "present") present.push(name);
+  }
+  if (present.length === 0) return false;
+  return !installedByNpm6(treeDir, present);
+}
+
+// npm 6 writes no record but stamps `_from`/`_resolved` into each package.json; npm 7+ never does.
+function installedByNpm6(treeDir: string, names: string[]): boolean {
+  for (const name of names) {
+    let manifest: { _from?: unknown; _resolved?: unknown };
+    try {
+      manifest = JSON.parse(fs.readFileSync(path.join(treeDir, name, "package.json"), "utf8")) as typeof manifest;
+    } catch {
+      continue;
+    }
+    return typeof manifest._from === "string" || typeof manifest._resolved === "string";
+  }
+  return false;
+}
+
+function pathState(p: string): "present" | "absent" | "unknown" {
+  try {
+    fs.lstatSync(p);
+    return "present";
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unknown";
+  }
+}
+
 export function staleDepDirs(workspaceRoot: string, installCommands: string[]): StaleDepDir[] {
   if (bypassesLockfile(installCommands)) return [];
 

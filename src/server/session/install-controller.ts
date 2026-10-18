@@ -23,12 +23,14 @@ import { installSkipOutputWarning } from "./install-skip-warning.js";
 import {
   formatEmptyDepDirsFailureMessage,
   formatHoistedDepDirsWarning,
+  formatIncompleteDepDirs,
   formatInstallFailureMessage,
   formatStaleDepDirsFailureMessage,
   formatUnreconciledPnpmFailureMessage,
   INSTALL_STDERR_TAIL_BYTES,
 } from "./install-failure.js";
 import {
+  incompleteNpmDepDirs,
   MAX_REPORTED_MISMATCHES,
   staleDepDirs,
   unreconciledPnpmDepDirs,
@@ -100,17 +102,14 @@ export class InstallController {
         depsHash: this.computeDepsHash(commands),
       };
       if (await this.installMarkerMatches(markerFile, stamp)) {
-        // Overlay mount changes can leave deps empty while the marker still matches.
-        const { contradicting: contradicted } = classifyEmptyDepDirs(this.workspaceDir);
-        if (contradicted.length === 0) {
+        const contradiction = this.depDirsContradictingMarker();
+        if (contradiction === null) {
           this.warnOnSkippedInstallOutput(commands);
           return { skipped: true, reason: "marker" };
         }
-        console.warn(
-          `[install] marker matched but declared dep dir(s) are empty: ` +
-          `${contradicted.map((c) => (c.overlay ? `${c.depDir} (overlay)` : c.depDir)).join(", ")} ` +
-          `— treating as a miss and reinstalling`,
-        );
+        const notice = `[install] marker matched but ${contradiction} — treating as a miss and reinstalling`;
+        console.warn(notice);
+        this.broadcastSSE({ type: "install_log", data: { text: `${notice}\n`, stream: "stderr" } });
       }
       // Remove stale success before an install that could fail part-way through.
       await fsp.rm(markerFile, { force: true }).catch(() => {});
@@ -374,6 +373,19 @@ export class InstallController {
       // Unreadable/invalid config — fall back to the command-derived inputs.
     }
     return computeInstallDepsHash(this.workspaceDir, commands, installInputs);
+  }
+
+  // The marker records a past install, not the tree now: overlay mount changes can empty a dep dir,
+  // and an npm run killed part-way leaves one incomplete.
+  private depDirsContradictingMarker(): string | null {
+    const { contradicting } = classifyEmptyDepDirs(this.workspaceDir);
+    if (contradicting.length > 0) {
+      const listed = contradicting.map((c) => (c.overlay ? `${c.depDir} (overlay)` : c.depDir));
+      return `declared dep dir(s) are empty: ${listed.join(", ")}`;
+    }
+    const incomplete = incompleteNpmDepDirs(this.workspaceDir);
+    if (incomplete.length > 0) return formatIncompleteDepDirs(incomplete, MAX_REPORTED_MISMATCHES);
+    return null;
   }
 
   // Log locally too: container recreation can run an install without an SSE viewer.
