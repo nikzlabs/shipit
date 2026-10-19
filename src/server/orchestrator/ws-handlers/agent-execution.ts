@@ -321,6 +321,8 @@ async function composeAndRunAgentTurn(
 
   const agentInfo = ctx.agentRegistry.get(agentId);
   const useStreaming = ctx.credentialStore.getLiveSteering() && (agentInfo?.capabilities.supportsSteering ?? false);
+  // planning#700 — before the guards below, which compare the process with the session.
+  if (useStreaming && runner?.residentToAttach) await runner.attachIdleResident?.();
   // Release stale credentials before the executor captures a process to write into.
   const failoverSession = capturedSessionId ? ctx.sessionManager.get(capturedSessionId) : undefined;
   if (

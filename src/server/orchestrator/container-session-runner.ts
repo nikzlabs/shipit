@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
 import type { WsServerMessage, WsQueueRow, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
-import type { AgentGoalCommand, AgentGoalCommandResult, WorkerAgentGoalBody } from "../shared/types/agent-types.js";
+import type { AgentGoalCommand, AgentGoalCommandResult, WorkerAgentGoalBody, WorkerResidentSpawn } from "../shared/types/agent-types.js";
 import type { PresentStore } from "./present-store.js";
 import { emitChatCard, type InProgressPersister } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, AnswerHoldStore, ChatMessageGroup, SteeredMessage, RecordedChatCard, DispatchAdmission } from "./session-runner.js";
@@ -20,7 +20,8 @@ import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner, WorkerTurnIdentity } from "./proxy-agent-process.js";
 import { adoptInFlightTurn, type InFlightTurnInfo } from "./turn-adoption.js";
 import { reconcilePermissionCards } from "./permission-cards.js";
-import { workerReportsNoTurn } from "./restart-turn-reattach.js";
+import { attachableResident, workerReportsNoTurn } from "./restart-turn-reattach.js";
+import { recordStatusCardSpawn } from "./session-status-spawn-record.js";
 import { originView, unknownServiceError, type ServiceManager, type ManagedService, type SecretsStatusInternalSnapshot } from "./service-manager.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
@@ -75,6 +76,9 @@ export interface InstallCompletion {
   unverified?: boolean;
 }
 
+// planning#700 — the first connect's reading, which the stream can still be opening after.
+const ATTACH_FIRST_CONNECT_WAIT_MS = 10_000;
+
 // The worker's `startsOwnTurn`, read off the wire.
 function startsOwnTurn(agentId: AgentId, data: Record<string, unknown>): boolean {
   if (data.type === "agent_self_wake") return true;
@@ -114,7 +118,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _streamingProxy: ProxyAgentProcess | null = null;
   // A streaming process the worker already held at the first connect: after an orchestrator
   // restart nothing here follows it, and it starts turns of its own (planning#639).
-  private _unfollowedResident: { runToken: string; agentId: AgentId } | null = null;
+  private _unfollowedResident: { runToken: string; agentId: AgentId; spawn?: WorkerResidentSpawn } | null = null;
   private _statusUnreadSince = 0;
   private _firstConnectRetry: ReturnType<typeof setTimeout> | null = null;
   private _firstConnectAttempt = 0;
@@ -742,13 +746,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     params: AgentRunParams,
     runToken?: string,
     turn?: WorkerTurnIdentity,
+    spawnIdentity?: string,
   ): Promise<void> {
     const prev = this._startInFlight;
     let release: () => void = () => {};
     this._startInFlight = new Promise<void>((r) => { release = r; });
     try {
       await prev.catch(() => {});
-      await this._doStartAgentViaProxy(agentId, params, runToken, turn);
+      await this._doStartAgentViaProxy(agentId, params, runToken, turn, spawnIdentity);
     } finally {
       release();
     }
@@ -759,6 +764,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     params: AgentRunParams,
     runToken?: string,
     turn?: WorkerTurnIdentity,
+    spawnIdentity?: string,
   ): Promise<void> {
     await this._workerReady;
     this.assertWorkerReachable("/agent/start");
@@ -776,6 +782,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       ...(runToken !== undefined ? { runToken } : {}),
       ...(turn?.deliveryId !== undefined ? { deliveryId: turn.deliveryId } : {}),
       ...(turn?.silentCompaction ? { silentCompaction: true } : {}),
+      ...(spawnIdentity !== undefined ? { spawnIdentity } : {}),
       ...modelListField(),
     };
 
@@ -882,7 +889,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     this.sse.fastForwardLastSeenSeq(status.latestSseSeq ?? 0);
     if (status.streaming === true && status.runToken !== undefined && !this._agent) {
-      this._unfollowedResident = { runToken: status.runToken, agentId: status.agentId ?? this._agentId };
+      this._unfollowedResident = {
+        runToken: status.runToken,
+        agentId: status.agentId ?? this._agentId,
+        ...(status.resident ? { spawn: status.resident } : {}),
+      };
     }
     return status;
   }
@@ -915,14 +926,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       streaming: status.streaming === true,
       ...(status.ownTurn !== undefined ? { ownTurn: status.ownTurn } : {}),
       ...(status.silentCompaction === true ? { silentCompaction: true } : {}),
-    });
+    }, status.resident);
     if (!adopted) return false;
     await adopted;
     return true;
   }
 
   // The listeners are wired when this returns: adoption does all of it before its first await.
-  private wireWorkerTurn(turn: InFlightTurnInfo): Promise<void> | null {
+  private wireWorkerTurn(turn: InFlightTurnInfo, spawn: WorkerResidentSpawn | undefined): Promise<void> | null {
     const deps = this._systemTurnDeps;
     if (!deps) return null;
     this._agentId = turn.agentId;
@@ -930,6 +941,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       ...(turn.runToken !== undefined ? { runToken: turn.runToken } : {}),
       ...(turn.deliveryId !== undefined ? { deliveryId: turn.deliveryId } : {}),
     });
+    this.restoreResidentSpawn(spawn);
     const adopted = adoptInFlightTurn(this, deps, proxy, turn);
     this.emitMessage({
       type: "session_status",
@@ -952,6 +964,74 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (this._disposed) return false;
     await this.ensureWorkerResourcesStarted();
     return !this._disposed && this._isRunning;
+  }
+
+  /**
+   * planning#700 — what the process was started with, so the spawn guards of the next turn
+   * compare it with the session (docs/334 req 3). Without it, a guard keeps the process for ever.
+   */
+  private restoreResidentSpawn(spawn: WorkerResidentSpawn | undefined): void {
+    if (!spawn) return;
+    this._appliedSpawnIdentity = spawn.spawnIdentity;
+    this._appliedPermissionMode = spawn.permissionMode;
+    recordStatusCardSpawn(this.sessionId, spawn.sessionStatusCard);
+  }
+
+  /** planning#700 — an idle process the next turn can take over; also before the first connect reads it. */
+  get residentToAttach(): boolean {
+    // A container still being created holds no process.
+    if (this._agent !== null || this._disposed || this.workerUrl === PLACEHOLDER_WORKER_URL) return false;
+    return this._unfollowedResident !== null || !this._workerResourcesStarted;
+  }
+
+  /**
+   * planning#700 — after an orchestrator restart the worker can still hold the session's idle
+   * resident process, whose prompt cache is warm. Takes it over for the turn that is starting,
+   * before that turn's spawn guards, which retire it when the session no longer matches.
+   * docs/334 plan, piece 3.
+   */
+  async attachIdleResident(): Promise<boolean> {
+    if (!this.residentToAttach) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      this.ensureWorkerResourcesStarted(),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, ATTACH_FIRST_CONNECT_WAIT_MS); }),
+    ]);
+    clearTimeout(timer);
+    const resident = this._unfollowedResident;
+    if (!resident || this._agent || this._disposed) return false;
+    let status: WorkerAgentStatus;
+    try {
+      status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
+    } catch (err) {
+      console.warn(
+        `[container-runner:${this.sessionId}] not taking over the idle process: the worker's status did not read `
+        + `(${err instanceof Error ? err.message : String(err)})`,
+      );
+      return false;
+    }
+    if (this._agent || this._disposed || this._unfollowedResident !== resident) return false;
+    // The first connect's reading can be old, and an unfollowed process that exited told no one.
+    const spawn = status.runToken === resident.runToken ? attachableResident(status) : null;
+    if (!spawn) {
+      console.log(
+        `[container-runner:${this.sessionId}] not taking over the idle process ${resident.runToken}: `
+        + `the worker reports runToken=${status.runToken ?? "none"}, turnActive=${String(status.turnActive)}, `
+        + `spawn facts ${status.resident ? "kept" : "not kept"}`,
+      );
+      return false;
+    }
+    this.createAgent(resident.agentId, { runToken: resident.runToken });
+    this.restoreResidentSpawn(spawn);
+    this._residentRoute ??= this._systemTurnDeps?.recoverResidentRoute?.(this.sessionId, resident.agentId);
+    // The first connect moved the replay past the event that listed them.
+    this._backgroundTasks.set(status.backgroundTasks ?? []);
+    this.isStreamingActive = true;
+    console.log(
+      `[container-runner:${this.sessionId}] took over the idle process ${resident.runToken} `
+      + `(agent=${resident.agentId}, ${status.backgroundTasks?.length ?? 0} background task(s))`,
+    );
+    return true;
   }
 
   // The last delay repeats until the status reads or the runner is disposed.
@@ -1711,7 +1791,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     console.log(
       `[container-runner:${this.sessionId}] adopting a turn the CLI started on its own (agent=${resident.agentId})`,
     );
-    void this.wireWorkerTurn({ ...resident, streaming: true, ownTurn: "unheard" })?.catch((err: unknown) => {
+    const { runToken, agentId, spawn } = resident;
+    void this.wireWorkerTurn({ runToken, agentId, streaming: true, ownTurn: "unheard" }, spawn)?.catch((err: unknown) => {
       console.error(`[container-runner:${this.sessionId}] adopting a CLI-started turn failed:`, err);
     });
   }

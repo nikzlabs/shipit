@@ -424,6 +424,8 @@ app.addHook("onClose"):
 
 **Session containers survive orchestrator shutdown, and so do their in-flight turns.** This is what makes updates zero-downtime (docs/113): `deploy.sh` replaces only the orchestrator, and the next boot re-adopts the survivors via `rediscoverContainers()` and `reattachInFlightTurns()` (docs/240). Orphan cleanup at startup reaps whatever no longer maps to an active session. What survives is *work*, not the container: the same sweep reclaims a stale worker that is idle (docs/242, above).
 
+**An idle resident process survives too, and the next turn takes it over** (docs/334): both turn paths call `attachIdleResident()` before their spawn guards. The worker keeps what the process was started with (`WorkerAgentStatus.resident`: spawn identity, status-card value, permission mode) and its task list, and the runner restores them — also on in-flight adoption — so the guards still retire a process the session no longer matches. A runner never knows a process's spawn facts any other way after a restart.
+
 **Standby containers are the one exception, and for the same reason.** docs/113 protects work in flight; a standby holds none — nobody has claimed it — while it does carry the previous deploy's worker image, pre-install and overlay base. So boot kills every standby (`reapStandbyContainers()`) and the warm pool rebuilds itself on the new image.
 
 Two rules follow, and both have bitten production:

@@ -4,6 +4,7 @@ import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import { holdsActiveReservation } from "./sessions.js";
 import type { AgentId, WorkerAgentStatus } from "../shared/types.js";
+import type { WorkerResidentSpawn } from "../shared/types/agent-types.js";
 import { workerGet, workerPost } from "./worker-http.js";
 import { getErrorMessage } from "./validation.js";
 import { getContainerFreshness } from "./container-freshness.js";
@@ -84,6 +85,32 @@ export async function workerHasLiveWork(
     return staleIdleHoldReason({ ...status, terminalActive: false }) !== null;
   } catch {
     return true;
+  }
+}
+
+/**
+ * planning#700 — what an idle streaming process was started with, when a runner can take it
+ * over: no turn and no self-wake, and a worker that kept the facts its spawn guards compare.
+ */
+export function attachableResident(status: WorkerAgentStatus): WorkerResidentSpawn | null {
+  if (!status.running || status.streaming !== true || status.runToken === undefined) return null;
+  if (status.turnActive !== false || status.selfWakeActive === true) return null;
+  return status.resident ?? null;
+}
+
+/** planning#700 — whether a session with no runner holds a process its next turn can take over. */
+export async function workerIdleResident(
+  containerManager: Pick<SessionContainerManager, "get"> | null,
+  sessionId: string,
+): Promise<boolean> {
+  const container = containerManager?.get(sessionId);
+  if (container?.status !== "running") return false;
+  try {
+    const status = await workerGet(container.workerUrl, "/agent/status", { timeoutMs: PROBE_TIMEOUT_MS }) as WorkerAgentStatus;
+    return attachableResident(status) !== null;
+  } catch (err) {
+    console.warn(`[turn-reattach] reading the worker of ${sessionId} for its idle process failed: ${getErrorMessage(err)}`);
+    return false;
   }
 }
 

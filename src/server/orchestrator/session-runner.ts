@@ -802,6 +802,10 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   syncServiceMcp?(): Promise<void>;
   readonly dependencyGap?: DependencyGap | null;
   resumeInFlightTurn?(): Promise<boolean>;
+  /** planning#700 — take over the worker's idle resident process; call before the spawn guards. */
+  attachIdleResident?(): Promise<boolean>;
+  /** planning#700 — no agent here, and the worker holds a process the next turn can take over, or is not read yet. */
+  readonly residentToAttach?: boolean;
 
   setSystemTurnDeps(deps: SystemTurnDeps): void;
   assertCanDispatch(): void;

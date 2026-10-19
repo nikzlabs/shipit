@@ -30,6 +30,7 @@ export interface ProxyAgentRunner {
     params: AgentRunParams,
     runToken?: string,
     turn?: WorkerTurnIdentity,
+    spawnIdentity?: string,
   ): Promise<void>;
   writeAgentStdin(data: string): Promise<void>;
   sendAgentMessage(text: string, turn?: WorkerTurnIdentity): Promise<void>;
@@ -73,6 +74,8 @@ export class ProxyAgentProcess extends EventEmitter<{
 
   private silentCompaction = false;
 
+  private spawnIdentity: string | undefined;
+
   private runner: ProxyAgentRunner;
   private lastSubmission: Promise<unknown> | null = null;
 
@@ -92,11 +95,15 @@ export class ProxyAgentProcess extends EventEmitter<{
     this.silentCompaction = true;
   }
 
+  setSpawnIdentity(spawnIdentity: string): void {
+    this.spawnIdentity = spawnIdentity;
+  }
+
   run(params: AgentRunParams): void {
     const started = this.runner._startAgentViaProxy(this.agentId, params, this.runToken, {
       ...(this.deliveryId !== undefined ? { deliveryId: this.deliveryId } : {}),
       ...(this.silentCompaction ? { silentCompaction: true } : {}),
-    });
+    }, this.spawnIdentity);
     // Tracked before the catch, so a caller awaiting it sees the rejection.
     this.lastSubmission = started;
     started.catch((err: unknown) => {

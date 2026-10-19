@@ -373,6 +373,8 @@ async function runDispatchedTurnInner(
   // One user row for every attempt; a retry's echo of the prompt stamps it (docs/007 req 5).
   const persistGuard: { done: boolean; rowId?: number } = { done: false };
   const runOnce = async (attempt: number): Promise<void> => {
+    // planning#700 — before the guards below, which compare the process with the session.
+    if (attempt === 0 && runner.residentToAttach) await runner.attachIdleResident?.();
     // Retire before capture: env prep must not kill the incoming agent during account failover.
     if (deps.needsAccountFailover?.(runner.sessionId, agentId)) {
       const outgoing = runner.getAgent();

@@ -145,7 +145,8 @@ a hazard a ShipIt design must also answer.
     orchestrator has no link to the process that holds the warm cache, and a
     new process would write the whole conversation to the cache again
     (requirement 13's reason). The exception ends when ShipIt can reconnect
-    to that process (planning#700).
+    to that process (planning#700). No longer applies since 2026-10-19
+    (docs/334, below).
 
 ## Requirement provenance
 
@@ -234,3 +235,10 @@ None.
   their next turn, which no requirement allowed. Offered "accept it as a
   known limit until planning#700" or "record it as a requirement exception".
   The user chose the exception. Recorded as requirement 16.
+- 2026-10-19 — Requirement 16's exception ended, as its own last sentence
+  says: planning#700 ([docs/334](../334-reattach-resident-claude/requirements.md))
+  lets the restarted orchestrator take the idle process over, and such a
+  session's idle compaction runs in it. The requirement keeps its number.
+  docs/334's probe also found that, through ShipIt's own spawn path, a new
+  process reads the conversation warm, which the reason given in requirements
+  13 and 16 assumes it does not; requirement 13 is not changed here.

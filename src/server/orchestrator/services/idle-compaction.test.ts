@@ -4,7 +4,12 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import type { AgentId, CompactionCard, SessionInfo } from "../../shared/types.js";
 import { UsageManager } from "../usage.js";
-import { SessionRunnerRegistry, type QueuedMessage, type SystemTurnDeps } from "../session-runner.js";
+import {
+  SessionRunnerRegistry,
+  type QueuedMessage,
+  type SessionRunnerInterface,
+  type SystemTurnDeps,
+} from "../session-runner.js";
 import type { PersistedMessage } from "../chat-history.js";
 import { MISSED_COMPACTION_NOTICE } from "../compact-before-turn.js";
 import {
@@ -33,6 +38,8 @@ interface Setup {
   liveSteering?: boolean;
   container?: "running" | "none" | "standby" | "local";
   session?: Partial<SessionInfo>;
+  workerHoldsIdleResident?: IdleCompactionDeps["workerHoldsIdleResident"];
+  onRunnerCreated?: (runner: SessionRunnerInterface) => void;
 }
 
 const cleanup: (() => void)[] = [];
@@ -88,7 +95,10 @@ function setup(opts: Setup = {}) {
   turnDeps.onTurnEnd = vi.fn();
 
   const registry = new SessionRunnerRegistry({
-    onRunnerCreated: (r) => r.setSystemTurnDeps(turnDeps),
+    onRunnerCreated: (r) => {
+      r.setSystemTurnDeps(turnDeps);
+      opts.onRunnerCreated?.(r);
+    },
   });
   const containerStatus = opts.container ?? "running";
   const deps: IdleCompactionDeps = {
@@ -108,6 +118,7 @@ function setup(opts: Setup = {}) {
           get: () => (containerStatus === "none" ? undefined : { status: "running" }),
           isStandby: () => containerStatus === "standby",
         } as never,
+    ...(opts.workerHoldsIdleResident ? { workerHoldsIdleResident: opts.workerHoldsIdleResident } : {}),
   };
   const idle = new IdleCompaction(deps);
   usage.onAnchoredTurn((turn) => idle.arm(turn));
@@ -401,14 +412,50 @@ describe("firing — what drops it", () => {
     }
   });
 
-  it("drops a Claude session whose resident process is gone, without creating a runner", async () => {
+  it("drops a Claude session with no runner whose worker holds no process, without creating a runner", async () => {
+    const probe = vi.fn(async () => false);
+    const { idle, turn, agents, registry } = setup({ agentId: "claude", workerHoldsIdleResident: probe });
+    turn();
+    // docs/334 — a restart leaves every session with no runner; the fire reads the worker.
+    expect(idle.isWaiting(SESSION)).toBe(true);
+    await idle.fire(SESSION);
+    await flushTurn();
+    expect(probe).toHaveBeenCalledWith(SESSION);
+    expect(agents).toHaveLength(0);
+    expect(registry.get(SESSION)).toBeUndefined();
+  });
+
+  it("drops a Claude session with no runner in local mode, where no process outlives a restart", async () => {
+    const probe = vi.fn(async () => true);
+    const { idle, turn, agents, registry } = setup({ agentId: "claude", container: "local", workerHoldsIdleResident: probe });
+    turn();
+    expect(idle.isWaiting(SESSION)).toBe(false);
+    await idle.fire(SESSION);
+    await flushTurn();
+    expect(probe).not.toHaveBeenCalled();
+    expect(agents).toHaveLength(0);
+    expect(registry.get(SESSION)).toBeUndefined();
+  });
+
+  it("drops a Claude session whose runner holds no process and knows none to take over", async () => {
     const { idle, turn, agents, registry } = setup({ agentId: "claude" });
+    const runner = registry.getOrCreate(SESSION, "/tmp/ws", "claude");
+    Object.defineProperty(runner, "residentToAttach", { value: false });
     turn();
     expect(idle.isWaiting(SESSION)).toBe(false);
     await idle.fire(SESSION);
     await flushTurn();
     expect(agents).toHaveLength(0);
-    expect(registry.get(SESSION)).toBeUndefined();
+  });
+
+  it("drops it when the runner could not take the process over after all", async () => {
+    const { idle, turn, agents, registry } = setup({ agentId: "claude", workerHoldsIdleResident: async () => true });
+    turn();
+    await idle.fire(SESSION);
+    await flushTurn();
+    // The runner was created, but it holds no streaming process: no cold compaction in a new one.
+    expect(registry.get(SESSION)).toBeDefined();
+    expect(agents).toHaveLength(0);
   });
 
   it("checks again after reaching the runner", async () => {
@@ -464,6 +511,30 @@ describe("firing — the compaction turn", () => {
     await waitForTurn(() => resident.sendUserMessage.mock.calls.length === 1, "the compaction entered the resident");
     expect(resident.sendUserMessage).toHaveBeenCalledWith("/compact", { silentCompaction: true });
     expect(resident.kill).not.toHaveBeenCalled();
+    expect(agents).toHaveLength(0);
+  });
+
+  it("after an orchestrator restart, takes the worker's idle process over and compacts in it (docs/334 req 2)", async () => {
+    const resident = makeFakeAgent();
+    const { idle, turn, agents } = setup({
+      agentId: "claude",
+      workerHoldsIdleResident: async () => true,
+      onRunnerCreated: (runner) => {
+        Object.defineProperty(runner, "residentToAttach", { get: () => runner.getAgent() === null });
+        runner.attachIdleResident = vi.fn(async () => {
+          if (runner.getAgent()) return false;
+          runner.setAgent(resident as never);
+          runner.isStreamingActive = true;
+          return true;
+        });
+      },
+    });
+    turn();
+    expect(idle.isWaiting(SESSION)).toBe(true);
+
+    await idle.fire(SESSION);
+    await waitForTurn(() => resident.sendUserMessage.mock.calls.length === 1, "the compaction entered the resident");
+    expect(resident.sendUserMessage).toHaveBeenCalledWith("/compact", { silentCompaction: true });
     expect(agents).toHaveLength(0);
   });
 
