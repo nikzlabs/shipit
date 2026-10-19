@@ -16,7 +16,8 @@ triggers of [docs/178](../178-context-compaction/plan.md) and
 
 ```
 ordinary turn ends (agent_result) ──► usage row: context, cache_ttl, cache_anchor_at ──► arm(session)
-  arm: lifetime L ──► L < 30 min? no deadline                                        (req 11)
+  arm: lifetime L ──► none (Grok; OpenCode before planning#701)? no deadline         (req 14, 15)
+       L < 30 min? no deadline                                                       (req 11)
        context < 200K? no deadline                                                   (req 6)
        deadlines[session] = { due: anchor + 0.9·L, expires: anchor + L }             (req 1)
 one host-wide timer at the earliest `due` ──► fire(session)
@@ -38,9 +39,17 @@ orchestrator, at the earliest deadline.
 ### 1. The cache lifetime (req 1, 9, 10, 11)
 
 `idleCacheLifetimeMinutes(session)` in a new `services/idle-compaction.ts`
-answers in minutes, or "none" when the harness cannot compact (Antigravity,
-`supportsCompaction: false` in `shared/catalogue/harnesses.ts`). Three rules,
-in order:
+answers in minutes, or "none" when the session gets no idle compaction:
+
+- the harness cannot compact (Antigravity, `supportsCompaction: false` in
+  `shared/catalogue/harnesses.ts`);
+- **Grok**, until a probe shows its cache warm across processes (req 15);
+- **OpenCode**, until planning#701 — one stable instruction-file path per
+  session — has merged and its control probe is warm (req 14). If this
+  feature lands first, OpenCode answers "none", and the change that turns it
+  on cites the probe.
+
+Otherwise three rules, in order:
 
 1. **Observed.** The newest non-null `usage_turns.cache_ttl` among the rows
    whose `credential_route_id` matches the session's newest row: `1h` → 60,
@@ -377,6 +386,10 @@ prefix therefore changes on every turn, so every OpenCode turn in ShipIt reads
 its conversation cold — not only an idle compaction. Not yet shown: that a
 stable path makes OpenCode warm across processes. That needs a control run
 with a fixed path.
+
+**Decided (requirements.md, 2026-10-19):** OpenCode stays in scope once the
+path is stable and a control probe is warm (req 14; the fix is planning#701).
+Grok is out until a probe shows it warm (req 15).
 
 ### 2. `cache_creation` reaches ShipIt on stream-json — true
 

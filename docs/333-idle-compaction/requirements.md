@@ -1,7 +1,7 @@
 ---
 issue: planning#699
 title: Compact an idle session before its prompt cache expires
-description: ShipIt compacts a large, idle session's context shortly before its prompt cache expires — on Claude, Codex and every harness that can compact — because the Claude CLI's own idle compaction never runs under ShipIt.
+description: ShipIt compacts a large, idle session's context shortly before its prompt cache expires — on Claude, Codex and (after a prompt fix) OpenCode — because the Claude CLI's own idle compaction never runs under ShipIt.
 ---
 
 # 333 — Idle compaction (requirements)
@@ -129,12 +129,22 @@ a hazard a ShipIt design must also answer.
     writes the whole conversation to the cache again, so a compaction there
     would cost what the user's next turn costs and save nothing.
 
+14. OpenCode stays in requirement 9's scope. Before OpenCode sessions get an
+    idle compaction, ShipIt stops changing OpenCode's prompt between turns
+    (it now gives OpenCode a new instruction-file path on every turn), and a
+    probe confirms that a new OpenCode process reads the previous one's
+    cache.
+
+15. Grok sessions get no idle compaction until a probe shows that a new Grok
+    process reads the previous one's cache. This is an exception to
+    requirement 9.
+
 ## Requirement provenance
 
 Requirements 1 and 2 come from what the user asked for: the user wants ShipIt
 users to get the benefit of the CLI's compaction before the cache expires,
 even though ShipIt can stop a container before that time. Requirements 5 to
-13 come from the user's answers and instructions on 2026-10-19 (below).
+15 come from the user's answers and instructions on 2026-10-19 (below).
 Requirements 3 and 4 were
 not asked for: each keeps a guarantee that already ships from becoming weaker —
 docs/178 for how a compaction appears, and docs/295 req 9 and docs/324 req 6
@@ -143,15 +153,7 @@ visible.
 
 ## Open questions
 
-- Does OpenCode stay in requirement 9's scope? A probe on 2026-10-19
-  (plan.md, "Verify first") found every OpenCode turn in ShipIt reads its
-  conversation cold, because ShipIt gives OpenCode a new instruction-file path
-  on every turn and OpenCode puts that path into the prompt. An idle
-  compaction on OpenCode saves nothing until that is fixed. Codex was warm
-  across processes.
-- Does Grok stay in requirement 9's scope without a probe? No configured role
-  runs Grok, so whether a new Grok process reads the previous one's cache is
-  unknown.
+None.
 
 ## Resolved questions
 
@@ -207,3 +209,14 @@ visible.
   with the new orchestrator), or "compact anyway in a new container" (a full
   cache write now, no saving). The user chose to skip it. Recorded as
   requirement 13.
+- 2026-10-19 — Child-session probes (plan.md, "Verify first" 1b) found Codex
+  warm across processes, and every OpenCode turn in ShipIt cold, because
+  ShipIt gives OpenCode a new instruction-file path on every turn and OpenCode
+  puts that path into the prompt. Does OpenCode stay in requirement 9's scope?
+  Offered "fix the path first, keep it" (recommended; the fix also saves cache
+  cost on every OpenCode turn) or "remove OpenCode from scope". The user chose
+  to fix the path first. Recorded as requirement 14.
+- 2026-10-19 — No configured role runs Grok, so its cache across processes
+  could not be probed. Does Grok stay in scope? Offered "exclude until tested"
+  (recommended) or "keep it under requirement 10's 30-minute assumption". The
+  user chose to exclude it until tested. Recorded as requirement 15.

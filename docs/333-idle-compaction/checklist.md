@@ -8,7 +8,8 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 - [x] The user decided the ShipIt-update case: an exception to req 2 (req 13). No container is started.
 - [x] Probe: `cache_creation` with the 5m/1h split arrives on main-thread `assistant` messages in `--output-format stream-json` (CLI 2.1.300). Result: it does.
 - [x] Cross-spawn check for Codex and OpenCode (plan.md, "Verify first" 1b): Codex is warm across processes; OpenCode is cold, because ShipIt gives it a new instruction-file path every turn. No configured role runs Grok, so Grok is unchecked.
-- [ ] The user decides whether OpenCode and Grok stay in req 9's scope (requirements.md, Open questions).
+- [x] The user decided: OpenCode stays once its prompt is stable (req 14); Grok is out until tested (req 15).
+- [ ] For OpenCode only: planning#701 (one stable instruction-file path per session) merged, and its control probe warm. Until then OpenCode answers "none"; the rest of the feature does not wait for it.
 
 ## Piece 1 — cache lifetime
 
@@ -53,7 +54,7 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 
 ## Tests
 
-- [ ] Lifetime: observed per route; 5-minute → no deadline (req 11); unknown → 30 (req 10); a Kimi model on Codex → 5.
+- [ ] Lifetime: observed per route; 5-minute → no deadline (req 11); unknown → 30 (req 10); a Kimi model on Codex → 5; Grok → none (req 15); OpenCode → none until planning#701 (req 14).
 - [ ] Deadline: anchored on the last tool result; replaced by a new result; kept when a turn dies without one; not written by a compaction turn; dropped by rewind and model change; re-derived at boot, and not from a failed compaction's row.
 - [ ] Fire: each check drops it; never after `expires`; refused when busy, including resident background work; re-checked after the wake; dropped with no container and, for resident Claude, with no resident agent.
 - [ ] A silent compaction does not move the session in the list, does not clear a merged session's resolved state, does not unmute it, and does not change the last turn outcome — also after a restart mid-compaction.
