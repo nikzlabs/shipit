@@ -91,6 +91,10 @@ async function runDispatchedTurnInner(
   runner.assertCanDispatch();
   const { text, activity } = opts;
 
+  // planning#700 — before what reads the process's background work, and the spawn guards. A
+  // driver-owned turn is the rebase step, which runs on a process of its own (docs/334 req 1).
+  if (opts.postTurn !== "none" && runner.residentToAttach) await runner.attachIdleResident?.();
+
   const isCompactRequest =
     (getAgentCapabilities(agentId)?.supportsCompaction ?? false) && isCompactCommand(text);
   /**
@@ -373,8 +377,6 @@ async function runDispatchedTurnInner(
   // One user row for every attempt; a retry's echo of the prompt stamps it (docs/007 req 5).
   const persistGuard: { done: boolean; rowId?: number } = { done: false };
   const runOnce = async (attempt: number): Promise<void> => {
-    // planning#700 — before the guards below, which compare the process with the session.
-    if (attempt === 0 && runner.residentToAttach) await runner.attachIdleResident?.();
     // Retire before capture: env prep must not kill the incoming agent during account failover.
     if (deps.needsAccountFailover?.(runner.sessionId, agentId)) {
       const outgoing = runner.getAgent();

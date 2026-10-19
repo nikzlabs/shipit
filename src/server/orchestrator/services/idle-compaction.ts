@@ -165,9 +165,17 @@ export class IdleCompaction {
       return;
     }
     // A runner starts the session's install and services; only create one for a process to take over.
-    if (!existing && this.needsResident(deadline.agentId) && !(await this.workerHoldsIdleResident(sessionId))) {
-      console.log(`[idle-compaction] not compacting ${sessionId}: ${RESIDENT_GONE}`);
-      return;
+    if (!existing && this.needsResident(deadline.agentId)) {
+      if (!(await this.workerHoldsIdleResident(sessionId))) {
+        console.log(`[idle-compaction] not compacting ${sessionId}: ${RESIDENT_GONE}`);
+        return;
+      }
+      // The container can have been reclaimed during the reading, and a runner would start a new one.
+      const blockedAfterProbe = this.blockedReason(sessionId, deadline, this.deps.runnerRegistry.get(sessionId));
+      if (blockedAfterProbe) {
+        console.log(`[idle-compaction] not compacting ${sessionId}: ${blockedAfterProbe}`);
+        return;
+      }
     }
     let runner: SessionRunnerInterface;
     try {

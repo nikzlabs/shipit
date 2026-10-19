@@ -98,7 +98,10 @@ export function attachableResident(status: WorkerAgentStatus): WorkerResidentSpa
   return status.resident ?? null;
 }
 
-/** planning#700 — whether a session with no runner holds a process its next turn can take over. */
+/**
+ * planning#700 — whether a session with no runner holds a process a turn can take over, with no
+ * background task that would keep a compaction out.
+ */
 export async function workerIdleResident(
   containerManager: Pick<SessionContainerManager, "get"> | null,
   sessionId: string,
@@ -107,7 +110,7 @@ export async function workerIdleResident(
   if (container?.status !== "running") return false;
   try {
     const status = await workerGet(container.workerUrl, "/agent/status", { timeoutMs: PROBE_TIMEOUT_MS }) as WorkerAgentStatus;
-    return attachableResident(status) !== null;
+    return attachableResident(status) !== null && (status.backgroundTaskCount ?? 0) === 0;
   } catch (err) {
     console.warn(`[turn-reattach] reading the worker of ${sessionId} for its idle process failed: ${getErrorMessage(err)}`);
     return false;

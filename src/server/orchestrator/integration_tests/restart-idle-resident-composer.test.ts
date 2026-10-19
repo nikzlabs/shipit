@@ -1,6 +1,3 @@
-// docs/334-reattach-resident-claude — a message from the composer runs in `runAgentWithMessage`
-// (`ws-handlers/agent-execution.ts`), not in the runner's dispatch, so it takes the idle process
-// over itself, before its own spawn guards. The local runner stands in for the container one.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";

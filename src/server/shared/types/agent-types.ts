@@ -591,8 +591,10 @@ export interface WorkerAgentStartBody {
 export interface WorkerResidentSpawn {
   spawnIdentity: string;
   sessionStatusCard: boolean;
-  /** The current mode: the start params', then each `/agent/permission-mode`. Absent is the CLI default. */
+  /** The current mode: the start params', then each change requested or reported. Absent is the CLI default. */
   permissionMode?: PermissionMode;
+  /** docs/327 — the declared MCP servers the process holds. */
+  serviceMcpServers: ServiceMcpServer[];
 }
 
 export interface WorkerAgentKillBody {

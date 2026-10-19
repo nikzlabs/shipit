@@ -76,8 +76,11 @@ export interface InstallCompletion {
   unverified?: boolean;
 }
 
-// planning#700 — the first connect's reading, which the stream can still be opening after.
-const ATTACH_FIRST_CONNECT_WAIT_MS = 10_000;
+interface UnfollowedResident {
+  runToken: string;
+  agentId: AgentId;
+  spawn?: WorkerResidentSpawn;
+}
 
 // The worker's `startsOwnTurn`, read off the wire.
 function startsOwnTurn(agentId: AgentId, data: Record<string, unknown>): boolean {
@@ -118,8 +121,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _streamingProxy: ProxyAgentProcess | null = null;
   // A streaming process the worker already held at the first connect: after an orchestrator
   // restart nothing here follows it, and it starts turns of its own (planning#639).
-  private _unfollowedResident: { runToken: string; agentId: AgentId; spawn?: WorkerResidentSpawn } | null = null;
+  private _unfollowedResident: UnfollowedResident | null = null;
   private _statusUnreadSince = 0;
+  // planning#700 — the first connect's status reading, and whether one has succeeded.
+  private _firstReading: Promise<unknown> | null = null;
+  private _statusRead = false;
   private _firstConnectRetry: ReturnType<typeof setTimeout> | null = null;
   private _firstConnectAttempt = 0;
   // A turn may be live there, so the idle reclaim waits too, for at most the hold's deadline.
@@ -975,29 +981,25 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._appliedSpawnIdentity = spawn.spawnIdentity;
     this._appliedPermissionMode = spawn.permissionMode;
     recordStatusCardSpawn(this.sessionId, spawn.sessionStatusCard);
+    recordServiceMcpSpawn(this.sessionId, spawn.serviceMcpServers);
   }
 
-  /** planning#700 — an idle process the next turn can take over; also before the first connect reads it. */
+  /** planning#700 — an idle process the next turn can take over; also before the worker is read. */
   get residentToAttach(): boolean {
     // A container still being created holds no process.
     if (this._agent !== null || this._disposed || this.workerUrl === PLACEHOLDER_WORKER_URL) return false;
-    return this._unfollowedResident !== null || !this._workerResourcesStarted;
+    return this._unfollowedResident !== null || !this._statusRead;
   }
 
   /**
-   * planning#700 — after an orchestrator restart the worker can still hold the session's idle
-   * resident process, whose prompt cache is warm. Takes it over for the turn that is starting,
-   * before that turn's spawn guards, which retire it when the session no longer matches.
-   * docs/334 plan, piece 3.
+   * planning#700 — takes over the idle process the worker kept through an orchestrator restart,
+   * before the turn's spawn guards, which retire it when the session no longer matches.
    */
   async attachIdleResident(): Promise<boolean> {
     if (!this.residentToAttach) return false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      this.ensureWorkerResourcesStarted(),
-      new Promise<void>((resolve) => { timer = setTimeout(resolve, ATTACH_FIRST_CONNECT_WAIT_MS); }),
-    ]);
-    clearTimeout(timer);
+    // The status reading only: the stream replays this turn's events when it opens.
+    void this.ensureWorkerResourcesStarted();
+    await this._firstReading;
     const resident = this._unfollowedResident;
     if (!resident || this._agent || this._disposed) return false;
     let status: WorkerAgentStatus;
@@ -1021,17 +1023,40 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       );
       return false;
     }
-    this.createAgent(resident.agentId, { runToken: resident.runToken });
+    const proxy = this.createAgent(resident.agentId, { runToken: resident.runToken });
     this.restoreResidentSpawn(spawn);
     this._residentRoute ??= this._systemTurnDeps?.recoverResidentRoute?.(this.sessionId, resident.agentId);
     // The first connect moved the replay past the event that listed them.
     this._backgroundTasks.set(status.backgroundTasks ?? []);
     this.isStreamingActive = true;
+    this.tendUntilTaken(proxy, resident);
     console.log(
       `[container-runner:${this.sessionId}] took over the idle process ${resident.runToken} `
       + `(agent=${resident.agentId}, ${status.backgroundTasks?.length ?? 0} background task(s))`,
     );
     return true;
+  }
+
+  /**
+   * Until a turn takes the proxy (`reused`), nothing listens to it: a turn the CLI starts is still
+   * adopted from the unfollowed mark, and these keep its tasks and its exit seen.
+   */
+  private tendUntilTaken(proxy: ProxyAgentProcess, resident: UnfollowedResident): void {
+    this._unfollowedResident = resident;
+    const forget = (): void => {
+      if (this._unfollowedResident === resident) this._unfollowedResident = null;
+    };
+    const exited = (): void => {
+      forget();
+      if (this._agent === proxy) this.clearResidentProcessState();
+    };
+    proxy.once("reused", forget);
+    proxy.once("superseded", forget);
+    proxy.once("done", exited);
+    proxy.once("error", exited);
+    proxy.on("event", (event) => {
+      if (event.type === "agent_background_tasks") this.setBackgroundTasks(event.tasks);
+    });
   }
 
   // The last delay repeats until the status reads or the runner is disposed.
@@ -1074,7 +1099,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private async _doStartWorkerResources(): Promise<void> {
     // A container still being created holds none of the requests saved cards refer to.
     const newContainer = this.workerUrl === PLACEHOLDER_WORKER_URL;
-    const status = await this.reconcileWorkerTurnBeforeFirstConnect();
+    const reading = this.reconcileWorkerTurnBeforeFirstConnect();
+    this._firstReading = reading;
+    const status = await reading;
     if (this._disposed) return;
     if (status === "unread") {
       // Without the status the replay would drop a live turn's events (planning#665).
@@ -1086,6 +1113,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this.retryFirstConnect();
       return;
     }
+    this._statusRead = true;
     if (this._statusUnreadSince > 0) {
       this._statusUnreadSince = 0;
       this._firstConnectAttempt = 0;
@@ -1797,6 +1825,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     });
   }
 
+  // planning#700 — an exited process is not one a turn can take over.
+  private forgetExitedUnfollowed(data: Record<string, unknown>): void {
+    if (data.runToken !== undefined && data.runToken === this._unfollowedResident?.runToken) {
+      this._unfollowedResident = null;
+    }
+  }
+
   private handleSSEEvent(event: SSEEvent): void {
     try {
       const data = JSON.parse(event.data) as Record<string, unknown>;
@@ -1822,6 +1857,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         case "agent_done": {
           const target = this.resolveEventTarget();
           if (!target) {
+            this.forgetExitedUnfollowed(data);
             console.warn(`[sse-drop:${this.sessionId}] agent_done dropped (no _agent)`);
             break;
           }
@@ -1834,6 +1870,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         case "agent_error": {
           const target = this.resolveEventTarget();
           if (!target) {
+            this.forgetExitedUnfollowed(data);
             console.warn(`[sse-drop:${this.sessionId}] agent_error dropped (no _agent)`);
             break;
           }

@@ -21,6 +21,7 @@ import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { reportedPermissionMode } from "../shared/cli-permission-mode.js";
 import { adoptModelList } from "../shared/catalogue/model-list.js";
 import { restoreFullResolutionScreenshots } from "./playwright-screenshot.js";
 import { reclaimStillRenderingBrowsers } from "./agents/browser-reclaim.js";
@@ -75,7 +76,11 @@ export class AgentController {
   // agent instead of failing the turn with "No agent running".
   private pendingStart: Promise<void> | null = null;
 
-  private residentSpawn: { runToken?: string; streaming: boolean; spawn?: WorkerResidentSpawn } | null = null;
+  private residentSpawn: {
+    runToken?: string;
+    streaming: boolean;
+    spawn?: Omit<WorkerResidentSpawn, "serviceMcpServers">;
+  } | null = null;
 
   /** docs/327 — the declared MCP servers the running agent process holds. */
   private liveServiceMcp: ServiceMcpServer[] = [];
@@ -338,11 +343,7 @@ export class AgentController {
           return reply.code(400).send({ error: `Invalid mode: ${JSON.stringify(raw)}` });
         }
         this.agent.setPermissionMode(mode);
-        const resident = this.residentSpawn;
-        if (resident?.spawn) {
-          const { permissionMode: _previous, ...rest } = resident.spawn;
-          resident.spawn = mode !== undefined ? { ...rest, permissionMode: mode } : rest;
-        }
+        this.notePermissionMode(mode);
         return { success: true };
       },
     );
@@ -448,7 +449,9 @@ export class AgentController {
       oldestSseSeq: this.deps.oldestSseSeq?.() ?? 0,
       turnActive: this.turnActive,
       turnStartSseSeq: this.turnStartSseSeq,
-      ...(this.residentSpawn?.spawn ? { resident: this.residentSpawn.spawn } : {}),
+      ...(this.residentSpawn?.spawn
+        ? { resident: { ...this.residentSpawn.spawn, serviceMcpServers: this.liveServiceMcp } }
+        : {}),
       backgroundTaskCount: this.backgroundTasks.length,
       backgroundTasks: this.backgroundTasks,
       selfWakeActive: this.selfWakeActive,
@@ -511,6 +514,14 @@ export class AgentController {
     if (event.type === "agent_self_wake") return true;
     if (event.type !== "agent_assistant" || event.parentToolUseId) return false;
     return getAgentCapabilities(agent.agentId)?.startsOwnTurns ?? false;
+  }
+
+  // planning#700 — a restarted orchestrator restores it, so it follows the CLI's own changes too.
+  private notePermissionMode(mode: PermissionMode | undefined): void {
+    const resident = this.residentSpawn;
+    if (!resident?.spawn) return;
+    const { permissionMode: _previous, ...rest } = resident.spawn;
+    resident.spawn = mode !== undefined ? { ...rest, permissionMode: mode } : rest;
   }
 
   // Clear process state here: late done events fail the identity guard after a kill.
@@ -620,6 +631,8 @@ export class AgentController {
       else if (event.type === "agent_tool_result") {
         for (const id of toolResultIds(event.content)) this.toolCalls.closed(id);
       }
+      const reported = reportedPermissionMode(event);
+      if (reported) this.notePermissionMode(reported.mode);
       if (event.type === "agent_result") this.endTurn();
       else if (event.type === "agent_background_tasks") this.backgroundTasks = event.tasks;
       else if (event.type === "agent_self_wake") this.selfWakeActive = true;

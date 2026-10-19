@@ -1,6 +1,3 @@
-// docs/334-reattach-resident-claude — after an orchestrator restart, the next turn takes over the
-// idle resident process the worker kept, with what it was started with. A real worker and a
-// real runner, with fake agents in the worker.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { SessionWorker } from "../../session/session-worker.js";
@@ -14,6 +11,8 @@ import type { SessionContainerManager } from "../session-container.js";
 import { reattachInFlightTurns } from "../restart-turn-reattach.js";
 import { sessionSpawnIdentity } from "../service-routing.js";
 import { forgetStatusCardSpawn, statusCardSpawnValue } from "../session-status-spawn-record.js";
+import { forgetServiceMcpSpawn, serviceMcpSetKey, serviceMcpSpawnKey } from "../service-mcp.js";
+import { residentBackgroundWork } from "../turn-admission.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
 import { PLACEHOLDER_WORKER_URL } from "../worker-http.js";
 import type {
@@ -85,6 +84,7 @@ describe("Integration: the next turn after a restart takes over the idle residen
   let chatHistoryManager: ChatHistoryManager;
   let runners: ContainerSessionRunner[];
   let commits: string[];
+  let workBeforeCompactionDecision: string[] | null;
 
   const resident = () => allAgents[0]!;
   const identity = () => sessionSpawnIdentity(sessionManager.get(SESSION_ID)!, "claude");
@@ -94,6 +94,8 @@ describe("Integration: the next turn after a restart takes over the idle residen
     runners = [];
     commits = [];
     forgetStatusCardSpawn(SESSION_ID);
+    forgetServiceMcpSpawn(SESSION_ID);
+    workBeforeCompactionDecision = null;
     vi.spyOn(console, "warn").mockImplementation(() => {});
     worker = new SessionWorker({
       agentFactory: (agentId) => {
@@ -140,6 +142,10 @@ describe("Integration: the next turn after a restart takes over the idle residen
       },
       buildRunParams: async (_sessionId, _agentId, prompt) => ({ prompt, cwd: "/workspace" }),
       steerInputs: () => ({ liveSteering: true, steeringCapable: true }),
+      shouldCompactBeforeTurn: async (r) => {
+        workBeforeCompactionDecision = residentBackgroundWork(r);
+        return false;
+      },
       statusCardEnabled: () => false,
       answerHold: sessionManager,
       listenerDeps: {
@@ -331,6 +337,102 @@ describe("Integration: the next turn after a restart takes over the idle residen
     expect((await workerStatus()).running).toBe(false);
 
     runner.dispatch(testDispatch({ text: "next task" }));
+    await waitFor(() => allAgents.length === 2 && allAgents[1]!.runCalled, 3000, "a new process started");
+    expect(resident().sentMessages).toEqual([]);
+  });
+
+  it("takes the process over when the message arrives while a viewer's first reading is under way", async () => {
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    runner.attachViewer();
+    runner.dispatch(testDispatch({ text: "next task" }));
+
+    await waitFor(() => resident().sentMessages.length === 1, 3000, "the turn reached the surviving process");
+    expect(allAgents).toHaveLength(1);
+  });
+
+  it("restores the process's background tasks before the compaction-before-turn decision", async () => {
+    await turnOfThePreviousOrchestrator();
+    resident().emit("event", { type: "agent_background_tasks", tasks: [{ id: "bg-1", description: "npm test" }] });
+    const runner = makeRunner();
+    runner.dispatch(testDispatch({ text: "next task" }));
+
+    await waitFor(() => resident().sentMessages.length === 1, 3000, "the turn reached the surviving process");
+    // Resident work skips the decision: a turn of the CLI's own could come between compaction and message.
+    expect(workBeforeCompactionDecision).toBeNull();
+  });
+
+  it("control: with no background task, the compaction-before-turn decision is made", async () => {
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    runner.dispatch(testDispatch({ text: "next task" }));
+
+    await waitFor(() => resident().sentMessages.length === 1, 3000, "the turn reached the surviving process");
+    expect(workBeforeCompactionDecision).toEqual([]);
+  });
+
+  it("still follows a turn the CLI starts on a process taken over but not yet used (req 4)", async () => {
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    expect(await runner.attachIdleResident()).toBe(true);
+
+    resident().emit("event", { type: "agent_background_tasks", tasks: [{ id: "bg-2", description: "npm run build" }] });
+    await waitFor(() => runner.backgroundTaskDescriptions.length === 1, 3000, "the task list stays current");
+    resident().emit("event", { type: "agent_self_wake", taskId: "bg-2", status: "completed" });
+    resident().emit("event", { type: "agent_assistant", content: [{ type: "text", text: "WAKE_TEXT" }] });
+    await waitFor(() => runner.running, 3000, "the session shows as running");
+    endTurn();
+    await turnEnds(runner, 1);
+    expect(chatHistoryManager.load(SESSION_ID).map((m) => m.text ?? "").join("\n")).toContain("WAKE_TEXT");
+  });
+
+  it("lets go of a process taken over but not yet used when it exits", async () => {
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    expect(await runner.attachIdleResident()).toBe(true);
+
+    resident().emit("done", 0);
+    await waitFor(() => runner.getAgent() === null, 3000, "the runner let go of the process");
+    expect(runner.isStreamingActive).toBe(false);
+    expect(runner.residentToAttach).toBe(false);
+  });
+
+  it("forgets an unfollowed process that exits before any turn reads it", async () => {
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    expect(await runner.resumeInFlightTurn()).toBe(false);
+    expect(runner.residentToAttach).toBe(true);
+
+    resident().emit("done", 0);
+    await waitFor(() => !runner.residentToAttach, 3000, "the exit reached the runner");
+  });
+
+  it("follows a mode change the CLI makes by itself, so the restore is the process's real mode (req 3)", async () => {
+    await turnOfThePreviousOrchestrator({ ends: false });
+    resident().emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "tool_use", id: "t1", name: "EnterPlanMode", input: {} }],
+    });
+    endTurn();
+    expect((await workerStatus()).resident?.permissionMode).toBe("plan");
+
+    resident().emit("event", { type: "agent_init", agentId: "claude", sessionId: "cli-session-1", model: "m", tools: [], permissionMode: "default" });
+    expect((await workerStatus()).resident?.permissionMode).toBeUndefined();
+  });
+
+  it("restores the MCP servers the process holds, for the next turn's comparison (req 3)", async () => {
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    expect(serviceMcpSpawnKey(SESSION_ID)).toBeUndefined();
+    expect(await runner.attachIdleResident()).toBe(true);
+    expect(serviceMcpSpawnKey(SESSION_ID)).toBe(serviceMcpSetKey((await workerStatus()).resident?.serviceMcpServers ?? []));
+  });
+
+  it("gives a rebase step a process of its own, as without a restart (req 1)", async () => {
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none" }));
+
     await waitFor(() => allAgents.length === 2 && allAgents[1]!.runCalled, 3000, "a new process started");
     expect(resident().sentMessages).toEqual([]);
   });

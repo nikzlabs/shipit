@@ -100,7 +100,7 @@ function setup(opts: Setup = {}) {
       opts.onRunnerCreated?.(r);
     },
   });
-  const containerStatus = opts.container ?? "running";
+  const container = { status: opts.container ?? "running" };
   const deps: IdleCompactionDeps = {
     isEnabled: opts.enabled ?? (() => true),
     liveSteering: () => opts.liveSteering ?? true,
@@ -112,11 +112,11 @@ function setup(opts: Setup = {}) {
       append: (_id: string, message: PersistedMessage) => { notices.push(message); },
     },
     runnerRegistry: registry,
-    containerManager: containerStatus === "local"
+    containerManager: container.status === "local"
       ? null
       : {
-          get: () => (containerStatus === "none" ? undefined : { status: "running" }),
-          isStandby: () => containerStatus === "standby",
+          get: () => (container.status === "none" ? undefined : { status: "running" }),
+          isStandby: () => container.status === "standby",
         } as never,
     ...(opts.workerHoldsIdleResident ? { workerHoldsIdleResident: opts.workerHoldsIdleResident } : {}),
   };
@@ -146,7 +146,7 @@ function setup(opts: Setup = {}) {
 
   return {
     idle, usage, session, sessions, cards, notices, registry, agents, appended, prompts, compactFlags,
-    turnDeps, sseBroadcast, hold, listenerSessions, turn, anchorOf,
+    turnDeps, sseBroadcast, hold, listenerSessions, turn, anchorOf, container,
   };
 }
 
@@ -446,6 +446,23 @@ describe("firing — what drops it", () => {
     await idle.fire(SESSION);
     await flushTurn();
     expect(agents).toHaveLength(0);
+  });
+
+  it("starts no runner when the container went away while the worker was read", async () => {
+    let container: { status: string } = { status: "running" };
+    const fixture = setup({
+      agentId: "claude",
+      workerHoldsIdleResident: async () => {
+        container.status = "none";
+        return true;
+      },
+    });
+    container = fixture.container;
+    fixture.turn();
+    await fixture.idle.fire(SESSION);
+    await flushTurn();
+    expect(fixture.registry.get(SESSION)).toBeUndefined();
+    expect(fixture.agents).toHaveLength(0);
   });
 
   it("drops it when the runner could not take the process over after all", async () => {

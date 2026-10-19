@@ -10,5 +10,6 @@
 - [x] Idle compaction takes the process over after a restart (`services/idle-compaction.ts`)
 - [x] Tests: `restart-idle-resident.test.ts`, `restart-idle-resident-composer.test.ts`, `services/idle-compaction.test.ts`
 - [x] Probe with the real CLI (plan.md, "Probe")
+- [x] Review fixes: tend a taken-over proxy until a turn takes it; gate on the finished first reading; no attach for a rebase step; worker follows the CLI's own mode changes; restore the MCP servers; attach before compaction-before-turn; idle compaction re-checks after its worker reading; an unfollowed process's exit clears its mark
 - [x] docs/333: req 16 receipt, plan's piece 3 step 4 and "Known limits"
 - [x] `session-containers` skill
