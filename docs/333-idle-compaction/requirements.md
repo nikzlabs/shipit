@@ -138,7 +138,12 @@ visible.
 
 ## Open questions
 
-None.
+- Does a session whose container a ShipIt update destroyed get an idle
+  compaction? Requirement 2 says it does. But a probe on 2026-10-19 (plan.md,
+  "Verify first") showed that a Claude CLI resumed in a new process does not
+  read the original process's cache: it writes the whole conversation again.
+  A compaction in a fresh container would therefore cost what the user's next
+  turn costs, and save nothing — or waste it, if the user does not come back.
 
 ## Resolved questions
 

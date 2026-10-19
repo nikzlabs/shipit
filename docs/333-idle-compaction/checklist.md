@@ -4,8 +4,9 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 
 ## Before code
 
-- [ ] Probe: a Claude session resumed in a fresh container reads the warm cache on its first request. If not, take the ShipIt-update case of req 2 to the user before piece 3's container start.
-- [ ] Probe: `cache_creation` with the 5m/1h split arrives on main-thread `assistant` messages in `--output-format stream-json` (CLI 2.1.300).
+- [x] Probe: a Claude session resumed in a fresh container reads the warm cache on its first request. Result: it does not — the first resume writes the conversation again (plan.md, "Verify first").
+- [ ] The user decides whether the ShipIt-update case becomes an exception to req 2 (requirements.md, Open questions); piece 3's container start follows the answer.
+- [x] Probe: `cache_creation` with the 5m/1h split arrives on main-thread `assistant` messages in `--output-format stream-json` (CLI 2.1.300). Result: it does.
 
 ## Piece 1 — cache lifetime
 

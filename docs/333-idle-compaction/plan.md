@@ -289,20 +289,65 @@ compaction. In ShipIt (traced in source):
 
 ## Verify first
 
-Two facts this design rests on, to be established by probe before the code
-that depends on them is written:
+Two facts this design rests on, established by probe on 2026-10-19 before any
+code.
 
-1. **A resumed CLI reads the warm cache.** Run a turn in a container, destroy
-   the container, start a fresh one, and resume: the first request's
-   `cache_read_input_tokens` must be close to the context. The 2.1.300
-   transcript stores the session context (`session_context` attachment,
-   `api-request-blob`), which suggests the prefix is rebuilt byte for byte —
-   suggestive, not proof. **If it is false**, the ShipIt-update case of
-   piece 3 would compact cold, which saves nothing; that case then goes back
-   to the user as an exception to req 2. Nothing else depends on it.
-2. **`cache_creation` reaches ShipIt on `--output-format stream-json`**, on the
-   main-thread `assistant` messages, with the split filled in. Seen in the
-   transcript the CLI writes; confirm on the wire before piece 1 relies on it.
+**Setup.** Claude Code 2.1.300 (the pinned CLI), `claude-haiku-5-5`, the
+user's subscription, a scratch git repo. Each process was started with
+ShipIt's streaming flags (`process.ts`): `--print --input-format stream-json
+--output-format stream-json --replay-user-messages --verbose --model haiku
+--append-system-prompt-file <file> --exclude-dynamic-system-prompt-sections`,
+one user message on stdin, `--resume <id>` for the later processes. Script and
+raw output: `/persist/idlecompact/` (not committed).
+
+### 1. A resumed CLI does NOT read the original process's cache — false
+
+| Run | Process | State change before it | Context | cache read | cache write |
+|---|---|---|---|---|---|
+| A1 | new session | — | 21,278 | 11,102 | 10,174 |
+| B1 | first resume of A1 | commit + untracked file | 21,315 | 14,022 | **7,291** |
+| C1 | resume of B1 | none | 21,354 | **21,288** | 64 |
+| A3 | new session | — | 21,306 | 12,732 | 8,572 |
+| B3 | first resume of A3 | none | 21,343 | 14,050 | **7,291** |
+| A2 | new session, `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1` | — | 20,828 | 0 | 20,826 |
+| B2 | first resume of A2, same env | commit + untracked file | 20,865 | 13,572 | **7,291** |
+
+- **The first resume after the original process always misses** from about
+  14K tokens on — the end of the system prompt and tools — with or without a
+  change to the repository (B3). Everything after that point is written
+  again. In these runs that was 7,291 tokens; in a 200K session it is the
+  whole conversation.
+- **A resume of a resumed session is warm** (C1: 21,288 of 21,354 read; the
+  64 written are the new message). So
+  the request a resumed process builds differs from the original process's,
+  and is stable from then on.
+- **Git status is not the cause.** With the git snapshot switched off
+  (`CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`, which gates it through
+  `includeGitInstructions`), the first resume missed the same 7,291 tokens
+  (B2).
+
+**Consequence for piece 3.** A ShipIt update destroys the resident process
+that built the cache. A compaction in a fresh container is a first resume, so
+it reads the conversation cold: it costs what the user's next turn would have
+cost, and saves nothing. The ShipIt-update case of req 2 therefore cannot be
+met by starting a container, and goes back to the user as a possible
+exception to req 2 (requirements.md, Open questions). Nothing else in this
+design depends on it.
+
+**Consequence beyond this feature.** Every restart of a Claude session's
+resident process — a container stopped to free memory, a ShipIt update, an
+account move — makes the next turn write the whole conversation to the cache
+again, even inside the cache lifetime. That is what makes req 8's
+compact-before-stop worth its cost: after a stop, the user's next turn is
+cold no matter how soon they come back.
+
+### 2. `cache_creation` reaches ShipIt on stream-json — true
+
+Every main-thread `assistant` message and the `result` carried
+`usage.cache_creation` with the split filled in, for example
+`{"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 10174}` (A1). A
+subscription session wrote 1-hour entries in every run. Piece 1 can rely on
+it.
 
 ## Known limits
 
