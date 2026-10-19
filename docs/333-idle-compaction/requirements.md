@@ -143,7 +143,15 @@ visible.
 
 ## Open questions
 
-None.
+- Does OpenCode stay in requirement 9's scope? A probe on 2026-10-19
+  (plan.md, "Verify first") found every OpenCode turn in ShipIt reads its
+  conversation cold, because ShipIt gives OpenCode a new instruction-file path
+  on every turn and OpenCode puts that path into the prompt. An idle
+  compaction on OpenCode saves nothing until that is fixed. Codex was warm
+  across processes.
+- Does Grok stay in requirement 9's scope without a probe? No configured role
+  runs Grok, so whether a new Grok process reads the previous one's cache is
+  unknown.
 
 ## Resolved questions
 

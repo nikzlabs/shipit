@@ -353,6 +353,31 @@ again, even inside the cache lifetime. That is what makes req 8's
 compact-before-stop worth its cost: after a stop, the user's next turn is
 cold no matter how soon they come back.
 
+### 1b. Across processes on the other harnesses — Codex warm, OpenCode cold
+
+Probed on 2026-10-19 by child sessions running each harness (a Claude
+session cannot run their CLIs). The raw numbers and commands are on
+planning#699. Each probe ran three one-request turns, each in a new process:
+A new, B resumed after a scratch commit, C resumed again.
+
+| Harness (route, model) | A input | B cached | C cached | Verdict |
+|---|---|---|---|---|
+| Codex 0.160.1 (ChatGPT subscription, `gpt-6-luna`, a fresh `codex app-server` per turn, `thread/resume`) | 17,745 | **17,536** | 17,536 | warm across processes |
+| OpenCode 1.18.34 (OpenAI through the ChatGPT account route, `gpt-6-luna`, `opencode run --session`) | 20,374 | 3,584 | **0** | cold |
+| Grok | — | — | — | not checked: no configured role runs Grok |
+
+**Codex:** the first resume in a new process read 98.8% of the previous
+input from the cache. Idle compaction works on Codex as designed.
+
+**OpenCode: ShipIt itself breaks the cache.** `opencode/adapter.ts:156` writes
+the system prompt to `/tmp/opencode-system-prompt-${Date.now()}.md` on every
+turn, and OpenCode puts that path into the text the model reads
+(`Instructions from: <path>`, `session/instruction.ts` at v1.18.34). The
+prefix therefore changes on every turn, so every OpenCode turn in ShipIt reads
+its conversation cold — not only an idle compaction. Not yet shown: that a
+stable path makes OpenCode warm across processes. That needs a control run
+with a fixed path.
+
 ### 2. `cache_creation` reaches ShipIt on stream-json — true
 
 Every main-thread `assistant` message and the `result` carried

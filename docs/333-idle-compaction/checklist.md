@@ -7,7 +7,8 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 - [x] Probe: a Claude session resumed in a fresh container reads the warm cache on its first request. Result: it does not — the first resume writes the conversation again (plan.md, "Verify first").
 - [x] The user decided the ShipIt-update case: an exception to req 2 (req 13). No container is started.
 - [x] Probe: `cache_creation` with the 5m/1h split arrives on main-thread `assistant` messages in `--output-format stream-json` (CLI 2.1.300). Result: it does.
-- [ ] Cross-spawn check for Codex, Grok and OpenCode: a turn's first request reads the cache that the previous turn's process wrote. Where it does not, that harness gains nothing from idle compaction; take it to the user. Codex and OpenCode (OpenAI models) are probed by child sessions on their own harnesses; no configured role runs Grok, so Grok is unchecked.
+- [x] Cross-spawn check for Codex and OpenCode (plan.md, "Verify first" 1b): Codex is warm across processes; OpenCode is cold, because ShipIt gives it a new instruction-file path every turn. No configured role runs Grok, so Grok is unchecked.
+- [ ] The user decides whether OpenCode and Grok stay in req 9's scope (requirements.md, Open questions).
 
 ## Piece 1 — cache lifetime
 
