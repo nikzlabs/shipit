@@ -75,8 +75,8 @@ sends a system-authored `/compact` in the last 10% of the cache lifetime (at
 least 2 minutes), never after the cache is cold. It is off by default and
 uses a 200K-token floor, as requirements 5 and 6 do, and it covers other
 providers with an assumed 30-minute lifetime, as requirements 9 and 10 do. It
-also compacts on a 5-minute cache (an API key), which is an open question
-here. It has no case for a stopped process, because t3code runs on the
+also compacts on a 5-minute cache (an API key), which requirement 11 rules
+out. It has no case for a stopped process, because t3code runs on the
 user's machine; requirement 2 exists because ShipIt stops containers. Its
 review found that settling a thread can interrupt a running idle compaction —
 a hazard a ShipIt design must also answer.
@@ -115,12 +115,16 @@ a hazard a ShipIt design must also answer.
 10. Where ShipIt does not know a provider's cache lifetime, it assumes 30
     minutes.
 
+11. An idle compaction runs only on a cache that lives 30 minutes or more. A
+    shorter cache — for example Claude's 5-minute cache on an API key — gets
+    no idle compaction.
+
 ## Requirement provenance
 
 Requirements 1 and 2 come from what the user asked for: the user wants ShipIt
 users to get the benefit of the CLI's compaction before the cache expires,
 even though ShipIt can stop a container before that time. Requirements 5 to
-10 come from the user's answers and instructions on 2026-10-19 (below).
+11 come from the user's answers and instructions on 2026-10-19 (below).
 Requirements 3 and 4 were
 not asked for: each keeps a guarantee that already ships from becoming weaker —
 docs/178 for how a compaction appears, and docs/295 req 9 and docs/324 req 6
@@ -129,12 +133,7 @@ visible.
 
 ## Open questions
 
-- Does an idle compaction also run on a short cache? A Claude session on an
-  API key has a 5-minute cache, and an older OpenAI model on `in_memory`
-  retention keeps a prefix for about 5 to 10 minutes. A 200K session would
-  then compact after about 4 to 5 minutes idle, while the user may still read
-  the agent's reply. t3code does it. The user's instruction of 2026-10-19
-  named other providers, not short caches.
+None.
 
 ## Resolved questions
 
@@ -165,3 +164,9 @@ visible.
   documents 30 minutes for the current Codex models, so the assumption of
   requirement 10 matters for providers and paths with no documented lifetime,
   such as the ChatGPT subscription backend.
+- 2026-10-19 — Does an idle compaction also run on a short cache (Claude's
+  5-minute cache on an API key; an older OpenAI model on `in_memory`
+  retention, about 5 to 10 minutes)? A 200K session would then compact after
+  about 4 to 5 minutes idle, while the user may still read the reply. Offered
+  "no, only caches of 30 minutes or more" (recommended) or "yes, every cache,
+  as t3code does". The user chose no. Recorded as requirement 11.
