@@ -4,7 +4,6 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 
 ## Before code
 
-- [ ] The open question in requirements.md (docs/322 question hold) is answered and recorded.
 - [ ] Probe: a Claude session resumed in a fresh container reads the warm cache on its first request. If not, take the ShipIt-update case of req 2 to the user before piece 3's container start.
 - [ ] Probe: `cache_creation` with the 5m/1h split arrives on main-thread `assistant` messages in `--output-format stream-json` (CLI 2.1.300).
 
@@ -29,6 +28,11 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 - [ ] Re-check after the wake, immediately before dispatch.
 - [ ] `runner.dispatch(prepareDispatch({ "/compact", automatic, silent, activity }), { whenBusy: "refuse" })`; warn notice on wake or setup failure.
 
+## Piece 3a — past the question hold (req 12)
+
+- [ ] `busyReason`'s question-hold arm is skippable; the idle fire skips it, docs/324 keeps it.
+- [ ] `dispatchOnRunner` admits a silent compaction past the answer hold; the hold is not cleared and held work still waits.
+
 ## Piece 4 — maintenance
 
 - [ ] A silent compaction turn skips `track()`, the unmute, `touchUnlessResolved` and `recordTurnEnd`.
@@ -50,6 +54,7 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 - [ ] Fire: each check drops it; never after `expires`; refused when busy, including resident background work; re-checked after the wake.
 - [ ] A silent compaction does not move the session in the list, does not clear a merged session's resolved state, does not unmute it, and does not change the last turn outcome — also after a restart mid-compaction.
 - [ ] Enforcer: waiting sessions last; one pass fires only as many compactions as the shortfall needs; a compacted session is stopped by a later pass.
+- [ ] Question hold: an idle compaction runs while a question waits; afterwards the hold is still on, held automatic work still waits, and the user's answer releases it.
 - [ ] Integration: a silent idle compaction records the card; a missing card posts the warn notice; a message sent during it runs afterwards.
 
 ## Docs

@@ -119,12 +119,17 @@ a hazard a ShipIt design must also answer.
     shorter cache — for example Claude's 5-minute cache on an API key — gets
     no idle compaction.
 
+12. An idle compaction also runs while the agent waits for the user's answer
+    to a question or a plan. This is an exception to docs/322 req 1, and the
+    idle compaction does not count as the user's response: the question stays
+    open, and automatic work that waits behind it still waits.
+
 ## Requirement provenance
 
 Requirements 1 and 2 come from what the user asked for: the user wants ShipIt
 users to get the benefit of the CLI's compaction before the cache expires,
 even though ShipIt can stop a container before that time. Requirements 5 to
-11 come from the user's answers and instructions on 2026-10-19 (below).
+12 come from the user's answers and instructions on 2026-10-19 (below).
 Requirements 3 and 4 were
 not asked for: each keeps a guarantee that already ships from becoming weaker —
 docs/178 for how a compaction appears, and docs/295 req 9 and docs/324 req 6
@@ -133,15 +138,7 @@ visible.
 
 ## Open questions
 
-- Does an idle compaction run while a question waits for the user? docs/322
-  req 1–2 says that when an agent turn ends on a question or a plan, ShipIt
-  starts no automatic turn until the user responds, and an idle compaction is
-  a turn the user did not start. Holding it until the reply is useless, because
-  the cache is cold by then. So either a session that ended on a question gets
-  no idle compaction — and a user who steps away from a question is a common
-  case — or the idle compaction is an exception to docs/322 req 1: it does no
-  work and asks nothing, and the question stays answerable, but the agent then
-  reads the user's answer against a summary of the conversation.
+None.
 
 ## Resolved questions
 
@@ -178,3 +175,13 @@ visible.
   about 4 to 5 minutes idle, while the user may still read the reply. Offered
   "no, only caches of 30 minutes or more" (recommended) or "yes, every cache,
   as t3code does". The user chose no. Recorded as requirement 11.
+- 2026-10-19 — Does an idle compaction run while a question waits for the
+  user? docs/322 req 1–2 starts no automatic turn — any turn the user did not
+  start — until the user responds, and holding the compaction until the reply
+  is useless because the cache is cold by then. Offered "yes, as an exception
+  to docs/322" (recommended: it does no work and asks nothing, and a user who
+  steps away from a question is a common case, but the agent reads the answer
+  against a summary) or "no, skip those sessions". The user chose the
+  exception. Recorded as requirement 12, and as an exception in docs/322 req 2.
+  That the compaction is not the user's response follows from docs/322 req 3:
+  only a turn the user starts is one.

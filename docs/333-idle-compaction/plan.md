@@ -138,10 +138,10 @@ No per-session interval (CLAUDE.md, "never per-session polling").
    - `now < expires` — a cold cache is never compacted (the t3code rule);
    - the session is not busy. This is docs/324's check
      (`busyReason` in `services/agent-compaction-request.ts`, exported for
-     both): a running turn, a merge or session hold, **resident background
-     work** — which `dispatchOnRunner` does not check, and which a compaction
-     spawn could end (`dispatched-turn.ts`) — and the question hold (see
-     "Open question").
+     both): a running turn, a merge or session hold, and **resident
+     background work** — which `dispatchOnRunner` does not check, and which a
+     compaction spawn could end (`dispatched-turn.ts`). The question hold is
+     the one part of `busyReason` this caller skips (req 12; piece 3a).
 3. **Get a runner**, following `wakeSessionWithTurn` (`wake-session.ts`):
    - a runner with a live container is used as is;
    - no runner but a live container — every session after an orchestrator
@@ -179,6 +179,30 @@ No per-session interval (CLAUDE.md, "never per-session polling").
      nothing: no compaction was due.
    - The default `postTurn` stays, so the turn's drain runs a message that the
      user queued during the compaction.
+
+### 3a. Past the question hold (req 12)
+
+An idle compaction runs while the agent waits for the user's answer, and is
+not the user's response (docs/322 req 2's exception). Three places decide
+that, and each needs the same answer:
+
+- `busyReason` — the fire's step-2 check skips its `awaitingUserAnswer` /
+  `answerHold` arm. docs/324 keeps it: an agent-requested compaction still
+  waits.
+- `dispatchOnRunner`'s answer-hold admission (`session-runner.ts`) holds an
+  automatic dispatch while the agent waits. A **silent compaction** — the
+  class of piece 4 — is admitted instead. docs/295's compaction runs in front
+  of a user's turn, which already ends the hold, and docs/324's never reaches
+  admission while a question waits, so the exemption changes nothing for
+  them.
+- The turn start clears the hold only for a turn that is not `automatic`
+  (`turn-executor.ts`, the docs/322 req 3 block). The dispatch stays
+  `automatic: true`, so the hold stays, and held automatic work keeps
+  waiting for the user's own turn.
+
+The question card stays answerable. The cost the user accepted: the agent
+reads the answer against a summary of the conversation, not the conversation
+itself.
 
 ### 4. A silent compaction turn is maintenance
 
@@ -247,17 +271,6 @@ declared once in `shared/settings-catalogue/global-settings.ts` next to
 `advanced.agentCompaction` (docs/308). `propose: yes`, like its neighbour. A
 typed getter on `CredentialStore`, injected into the service as `isEnabled`,
 and the fallback payload in `services/misc.ts`.
-
-## Open question
-
-**docs/322 forbids it while a question waits.** docs/322 req 1–2: when an
-agent turn ends on a question or a plan, ShipIt starts no automatic turn —
-"any turn the user did not start", including ones added later — until the
-user responds. An idle compaction is such a turn, so as designed a session
-that ended on a question gets none (and docs/322 req 4's "held, not dropped"
-does not fit it either: held until the user replies, the cache is cold). It
-is listed in requirements.md for the user to decide; step 2 of piece 3
-follows the answer.
 
 ## What can interrupt an idle compaction
 
@@ -336,9 +349,11 @@ asynchronous wake; one enforcer pass could start every waiting compaction, and
 the claim that `idle` stops it at once was wrong; adoption dropped the
 compaction class; the turn outcome was overwritten; a rewind left a stale
 deadline; the lifetime was not scoped to the route, and "Codex is all GPT-6"
-was false; two known limits narrowed req 1 and req 2 without the user. From
-the simplification brief: the result-level usage change and the new dispatch
-flag are gone. The question-hold conflict is the one open question.
+was false; two known limits narrowed req 1 and req 2 without the user — the
+stopped-session one is designed away (piece 3), and the question-hold one
+went to the user, who chose the exception of req 12 (piece 3a). From the
+simplification brief: the result-level usage change and the new dispatch
+flag are gone.
 
 ## Docs to change
 
@@ -356,7 +371,8 @@ flag are gone. The question-hold conflict is the one open question.
 | `src/server/orchestrator/ws-handlers/agent-listeners.ts` | The anchor (last tool result); arm after `usageManager.record`; skip `touchUnlessResolved` for a silent compaction |
 | `src/server/orchestrator/turn-executor.ts` | Skip `track`, unmute and `recordTurnEnd` for a silent compaction |
 | `src/server/orchestrator/turn-adoption.ts` and the in-flight record it reads | Keep the compaction class across a restart |
-| `src/server/orchestrator/services/agent-compaction-request.ts` | Export the busy check |
+| `src/server/orchestrator/services/agent-compaction-request.ts` | Export the busy check, with the question hold as a separable arm |
+| `src/server/orchestrator/session-runner.ts` | Admit a silent compaction past the answer hold (req 12) |
 | `src/server/orchestrator/ws-handlers/rollback-handlers.ts`, the model and harness switch paths | Drop the deadline |
 | `src/server/orchestrator/idle-enforcer.ts` | Waiting sessions last; compact instead of stop; `compactingToReclaim` |
 | `src/server/shared/settings-catalogue/global-settings.ts`, `orchestrator/credential-store.ts`, `services/misc.ts` | `advanced.idleCompaction` |
