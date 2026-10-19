@@ -440,17 +440,27 @@ in the last 7 days (req 13's scope, the same `isRecentlyUsedRepo` as req 8):
    the install's end and the restart kept a dev server on the old dependencies.
    With the gate there is no such window: a claim that adopts the stack mid-install
    finds the gate already held (its own `setInstallRunning(true)` is a no-op, so
-   it never closes it), and the refresh's release opens it.
+   it never closes it), and the refresh's release opens it. An install that
+   outlives the 15-minute poll keeps the hold until the worker reports its real
+   end (`waitForInstallEnd`); released as failed at the timeout, the gate would
+   stay latched for a claim that adopted it meanwhile. A status request that
+   fails does not end the wait (it is lost contact, not a result); only the
+   session's container going away does.
 5. **An install request that never reached the worker is retried** on the next
    pass, though HEAD no longer moves. An install that ran and failed is not.
 
 A pass skips the refresh while the standby is still installing.
 
-**Known and not fixed here:** an activation whose `/install` joins an install
-already running in the worker is not re-checked against its own HEAD, so a claim
-that moves HEAD again during a refresh's install can run on the dependencies of
-the commit before. The same race exists for the initial pre-install. The fix
-belongs in the worker's `/install` join: planning#702.
+**A joined install is re-checked (planning#702).** An activation whose `/install`
+arrives while an install runs joins it and is told it started. When a claim moved
+HEAD meanwhile, that install is for the commit before. So the worker records the
+join, and when the running install ends it compares the joiner's tree with the
+installed stamp (the same `markerMatches` rule as a fresh request). On a mismatch
+it installs again, with `/install/status` still `running`, before it reports
+completion; the runner's gate stays held throughout. This covers the initial
+pre-install as well as a refresh's install. Each install carries a generation
+that `stop()` moves, so a stopped install neither runs a dropped join nor reports
+over the install that starts after it.
 
 ## Key files
 

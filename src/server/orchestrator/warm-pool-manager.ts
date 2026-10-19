@@ -145,7 +145,21 @@ export function createWarmPool(
     const install = await runPreInstall(workspaceDir, sc.workerUrl, sessionId, {
       onStarted: () => { held = gate?.setInstallRunning(true) ?? false; },
     });
-    if (held) gate?.setInstallRunning(false, { failed: !install.settled });
+    if (held && gate) {
+      if (install.timedOut) {
+        // Released on the install's real end: latched as failed now, it stays failed for a claim
+        // that adopts the stack, because adoption did not open this hold and will not close it.
+        const containerAlive = (): boolean => {
+          const now = containerManager?.get(sessionId);
+          return now?.status === "running" && now.workerUrl === sc.workerUrl;
+        };
+        void (async () => {
+          gate.setInstallRunning(false, { failed: !(await waitForInstallEnd(sc.workerUrl, containerAlive)) });
+        })();
+      } else {
+        gate.setInstallRunning(false, { failed: !install.settled });
+      }
+    }
     if (!install.settled && !install.ran) installPending.add(sessionId);
     else installPending.delete(sessionId);
   };
@@ -316,6 +330,25 @@ export interface PreInstallOutcome {
   settled: boolean;
   /** The worker ran (or joined) a real install rather than skipping on its marker. */
   ran?: boolean;
+  /** The poll gave up while the worker was still installing. */
+  timedOut?: boolean;
+}
+
+const INSTALL_END_POLL_MS = 10_000;
+
+/**
+ * Whether the worker's running install ended well; false once its container is gone. A status
+ * request that fails is only lost contact, and ending on it would latch the gate as failed.
+ */
+export async function waitForInstallEnd(workerUrl: string, containerAlive: () => boolean): Promise<boolean> {
+  for (;;) {
+    await new Promise((r) => setTimeout(r, INSTALL_END_POLL_MS));
+    if (!containerAlive()) return false;
+    const status = await workerGet(workerUrl, "/install/status").catch(() => null) as
+      | { running?: boolean; lastResult?: { ok: boolean } | null }
+      | null;
+    if (status && !status.running) return status.lastResult?.ok !== false;
+  }
 }
 
 export async function runPreInstall(
@@ -358,7 +391,7 @@ export async function runPreInstall(
       }
     }
     console.warn(`[warm:install:${sessionId}] Pre-install still running after ${MAX_WAIT_MS}ms — leaving worker to finish; on-activation runInstall will join it via /install`);
-    return { settled: false, ran: true };
+    return { settled: false, ran: true, timedOut: true };
   } catch (err) {
     console.warn(`[warm:install:${sessionId}] Pre-install request failed: ${getErrorMessage(err)}`);
     return { settled: false };

@@ -38,6 +38,8 @@
 - [x] A lifecycle script stops a matching dependency hash from standing in for a
       different commit (marker match and overlay pre-stamp).
 - [x] The sweep's preview repair passes the trust and install gates (req 2).
+- [x] A request that joins a running install is re-checked against its own tree
+      when that install ends, and installs again on a mismatch (planning#702).
 - [x] Keep the warm clone current with the default branch, for recent repos
       (req 13): `refreshWarmSession` in the sweep, `refreshWarm` under the claim
       lock.
