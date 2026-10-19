@@ -124,12 +124,17 @@ a hazard a ShipIt design must also answer.
     idle compaction does not count as the user's response: the question stays
     open, and automatic work that waits behind it still waits.
 
+13. A session whose container a ShipIt update destroyed gets no idle
+    compaction. This is an exception to requirement 2: a new agent process
+    writes the whole conversation to the cache again, so a compaction there
+    would cost what the user's next turn costs and save nothing.
+
 ## Requirement provenance
 
 Requirements 1 and 2 come from what the user asked for: the user wants ShipIt
 users to get the benefit of the CLI's compaction before the cache expires,
 even though ShipIt can stop a container before that time. Requirements 5 to
-12 come from the user's answers and instructions on 2026-10-19 (below).
+13 come from the user's answers and instructions on 2026-10-19 (below).
 Requirements 3 and 4 were
 not asked for: each keeps a guarantee that already ships from becoming weaker —
 docs/178 for how a compaction appears, and docs/295 req 9 and docs/324 req 6
@@ -138,12 +143,7 @@ visible.
 
 ## Open questions
 
-- Does a session whose container a ShipIt update destroyed get an idle
-  compaction? Requirement 2 says it does. But a probe on 2026-10-19 (plan.md,
-  "Verify first") showed that a Claude CLI resumed in a new process does not
-  read the original process's cache: it writes the whole conversation again.
-  A compaction in a fresh container would therefore cost what the user's next
-  turn costs, and save nothing — or waste it, if the user does not come back.
+None.
 
 ## Resolved questions
 
@@ -190,3 +190,12 @@ visible.
   exception. Recorded as requirement 12, and as an exception in docs/322 req 2.
   That the compaction is not the user's response follows from docs/322 req 3:
   only a turn the user starts is one.
+- 2026-10-19 — A probe (plan.md, "Verify first") showed that a Claude CLI
+  resumed in a new process does not read the original process's cache: it
+  writes the whole conversation again. Does a session whose container a ShipIt
+  update destroyed still get an idle compaction, as requirement 2 says?
+  Offered "skip it, as an exception to req 2" (recommended), "keep the old
+  container until its compaction runs" (the old worker build must still work
+  with the new orchestrator), or "compact anyway in a new container" (a full
+  cache write now, no saving). The user chose to skip it. Recorded as
+  requirement 13.

@@ -5,8 +5,9 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 ## Before code
 
 - [x] Probe: a Claude session resumed in a fresh container reads the warm cache on its first request. Result: it does not — the first resume writes the conversation again (plan.md, "Verify first").
-- [ ] The user decides whether the ShipIt-update case becomes an exception to req 2 (requirements.md, Open questions); piece 3's container start follows the answer.
+- [x] The user decided the ShipIt-update case: an exception to req 2 (req 13). No container is started.
 - [x] Probe: `cache_creation` with the 5m/1h split arrives on main-thread `assistant` messages in `--output-format stream-json` (CLI 2.1.300). Result: it does.
+- [ ] Cross-spawn check for Codex, Grok and OpenCode: a turn's first request reads the cache that the previous turn's process wrote (`usage_turns` cache-read against context on a few real sessions). Where it does not, that harness gains nothing from idle compaction; take it to the user.
 
 ## Piece 1 — cache lifetime
 
@@ -25,7 +26,8 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 ## Piece 3 — firing
 
 - [ ] Take the attempt synchronously; checks: setting, done, harness, expiry, busy (docs/324's check, exported).
-- [ ] Runner: existing, reconnect (`wakeSessionWithTurn` pattern), or a fresh container whatever the budget.
+- [ ] Runner: existing, or reconnect (`wakeSessionWithTurn` pattern); no container → drop (req 13).
+- [ ] Claude with live steering: drop when the runner holds no resident agent; live steering off: proceed.
 - [ ] Re-check after the wake, immediately before dispatch.
 - [ ] `runner.dispatch(prepareDispatch({ "/compact", automatic, silent, activity }), { whenBusy: "refuse" })`; warn notice on wake or setup failure.
 
@@ -52,7 +54,7 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 
 - [ ] Lifetime: observed per route; 5-minute → no deadline (req 11); unknown → 30 (req 10); a Kimi model on Codex → 5.
 - [ ] Deadline: anchored on the last tool result; replaced by a new result; kept when a turn dies without one; not written by a compaction turn; dropped by rewind and model change; re-derived at boot, and not from a failed compaction's row.
-- [ ] Fire: each check drops it; never after `expires`; refused when busy, including resident background work; re-checked after the wake.
+- [ ] Fire: each check drops it; never after `expires`; refused when busy, including resident background work; re-checked after the wake; dropped with no container and, for resident Claude, with no resident agent.
 - [ ] A silent compaction does not move the session in the list, does not clear a merged session's resolved state, does not unmute it, and does not change the last turn outcome — also after a restart mid-compaction.
 - [ ] Enforcer: waiting sessions last; one pass fires only as many compactions as the shortfall needs; a compacted session is stopped by a later pass.
 - [ ] Question hold: an idle compaction runs while a question waits; afterwards the hold is still on, held automatic work still waits, and the user's answer releases it.

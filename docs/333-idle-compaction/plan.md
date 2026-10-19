@@ -21,7 +21,7 @@ ordinary turn ends (agent_result) ──► usage row: context, cache_ttl, cache
        deadlines[session] = { due: anchor + 0.9·L, expires: anchor + L }             (req 1)
 one host-wide timer at the earliest `due` ──► fire(session)
   fire: take the deadline (one attempt) ──► re-check setting · done · harness · busy · expiry
-        get a runner (reconnect, or start a container)                               (req 2)
+        get a runner (reconnect); no container, or Claude's resident gone ──► drop  (req 13)
         re-check ──► dispatch silent "/compact", refused when busy                   (req 3, 4)
 a silent compaction turn is maintenance: no last-used, no unmute, no turn outcome
 idle enforcer over budget: waiting sessions last; compact one instead of stopping it (req 8)
@@ -142,23 +142,36 @@ No per-session interval (CLAUDE.md, "never per-session polling").
      background work** — which `dispatchOnRunner` does not check, and which a
      compaction spawn could end (`dispatched-turn.ts`). The question hold is
      the one part of `busyReason` this caller skips (req 12; piece 3a).
-3. **Get a runner**, following `wakeSessionWithTurn` (`wake-session.ts`):
-   - a runner with a live container is used as is;
-   - no runner but a live container — every session after an orchestrator
+3. **Get a runner, never a new container.**
+   - A runner with a live container is used as is.
+   - No runner but a live container — every session after an orchestrator
      restart, because runners are re-created only for in-flight turns
-     (`restart-turn-reattach.ts`) — `getOrCreate` reconnects;
-   - **no container** (req 2): a ShipIt update destroys a stale, idle
-     container at boot and does not recreate it (`reattachInFlightTurns`). The
-     fire starts a fresh one, as a user's message would, **whatever the
-     memory budget**: req 8 then orders the enforcer to stop other idle
-     sessions before this one. The other stops do not reach here — the
-     enforcer compacts first (piece 5), and a done session has no deadline
-     (req 7). This case **depends on a fact not yet verified**: see "Verify
-     first".
-4. **Check again** after the awaits of step 3 — the user can come back, the
-   session can become done, the cache can expire — immediately before the
-   dispatch.
-5. **Dispatch** the docs/324 compaction turn:
+     (`restart-turn-reattach.ts`) — reconnects with `getOrCreate`, following
+     `wakeSessionWithTurn` (`wake-session.ts`).
+   - **No container: drop it.** The stops that remove a container are the
+     idle enforcer, which compacts first (piece 5); a done session, which has
+     no deadline (req 7); and a ShipIt update, which destroys a stale, idle
+     container at boot (`reattachInFlightTurns`) — the exception of req 13. A
+     fresh container would be a new agent process, which the probe found
+     writes the whole conversation again ("Verify first").
+4. **A Claude session must reuse the process that built the cache.** With
+   live steering on (`advanced.liveSteering`, the default), Claude keeps one
+   resident process per session, and a dispatch reuses it only while the
+   runner still holds it (`runner.isStreamingActive && runner.getAgent()`,
+   `dispatched-turn.ts`). When it does not — after an orchestrator restart,
+   whose new runner holds no agent, or after a path that releases the
+   resident (`setAgent(null)` in the auth, rebase, recovery and plan-mode
+   paths) — the compaction would start a new process, whose first request
+   writes the whole conversation again: the reason of req 13, so the fire is
+   dropped the same way. With live steering off, every Claude turn already
+   runs in a new resumed process, and the probe found a resume of a resumed
+   session warm, so the fire proceeds. The other harnesses start a process
+   per turn too (docs/276); their compaction spawn is cached like any of
+   their turns (see the checklist's cross-spawn check).
+5. **Check again** after the awaits of steps 3 and 4 — the user can come
+   back, the session can become done, the cache can expire — immediately
+   before the dispatch.
+6. **Dispatch** the docs/324 compaction turn:
 
    ```ts
    runner.dispatch(
@@ -174,7 +187,7 @@ No per-session interval (CLAUDE.md, "never per-session polling").
      bar, records the ordinary "Context compacted" card (req 3), and posts
      `MISSED_COMPACTION_NOTICE` when no card follows (req 4)
      (`dispatched-turn.ts`, `compact-before-turn.ts`).
-   - A failure in step 3 or in dispatch setup posts the same warn notice, as
+   - A failure in step 3 or 4 or in dispatch setup posts the same warn notice, as
      docs/324's `warnUser` does (req 4). A fire dropped by a check posts
      nothing: no compaction was due.
    - The default `postTurn` stays, so the turn's drain runs a message that the
@@ -329,10 +342,9 @@ raw output: `/persist/idlecompact/` (not committed).
 **Consequence for piece 3.** A ShipIt update destroys the resident process
 that built the cache. A compaction in a fresh container is a first resume, so
 it reads the conversation cold: it costs what the user's next turn would have
-cost, and saves nothing. The ShipIt-update case of req 2 therefore cannot be
-met by starting a container, and goes back to the user as a possible
-exception to req 2 (requirements.md, Open questions). Nothing else in this
-design depends on it.
+cost, and saves nothing. The user made that case an exception to req 2
+(req 13), and piece 3 step 4 drops every other fire that would start a new
+Claude process, for the same reason.
 
 **Consequence beyond this feature.** Every restart of a Claude session's
 resident process — a container stopped to free memory, a ShipIt update, an
@@ -351,6 +363,13 @@ it.
 
 ## Known limits
 
+- **An orchestrator restart ends idle compaction for resident Claude
+  sessions** until their next turn: the new runner holds no agent, so piece
+  3 step 4 drops their fires. Every deploy restarts the orchestrator. The
+  fix is not this feature's: re-attaching a runner to the idle resident
+  process that the worker keeps (`agent-controller.ts`, `residentSpawn`)
+  would also spare every such session the full cache write that its next
+  turn pays today. Proposed as a follow-up on planning#699.
 - **A retry after a restart.** A failed attempt is not retried, except once
   more if the orchestrator restarts before `expires`: boot re-derives from the
   same ordinary row, because the failed compaction left no card.
@@ -376,8 +395,10 @@ it.
   without a result (piece 2).
 - **A new `countsAsActivity` dispatch flag.** The silent-compaction class
   already exists and covers every caller (piece 4).
-- **Drop a stopped session's deadline while over budget.** Would narrow req 2
-  without the user's decision; req 8 already says which sessions stop first.
+- **Start a fresh container for a session whose container a ShipIt update
+  destroyed.** The first design. The probe showed the new process writes the
+  whole conversation again, and the user made the case an exception to req 2
+  (req 13).
 - **Precompute a summary and swap it in only if the user comes back after
   expiry** (the CLI's `compact_on_return` mode). Needs a fork of the agent's
   session that no harness offers headlessly, for the user who comes back
@@ -394,11 +415,11 @@ asynchronous wake; one enforcer pass could start every waiting compaction, and
 the claim that `idle` stops it at once was wrong; adoption dropped the
 compaction class; the turn outcome was overwritten; a rewind left a stale
 deadline; the lifetime was not scoped to the route, and "Codex is all GPT-6"
-was false; two known limits narrowed req 1 and req 2 without the user — the
-stopped-session one is designed away (piece 3), and the question-hold one
-went to the user, who chose the exception of req 12 (piece 3a). From the
-simplification brief: the result-level usage change and the new dispatch
-flag are gone.
+was false; two known limits narrowed req 1 and req 2 without the user. Both
+went to the user: the question hold became the exception of req 12 (piece
+3a), and the stopped-container case — after the probe — the exception of req
+13 (piece 3). From the simplification brief: the result-level usage change
+and the new dispatch flag are gone.
 
 ## Docs to change
 
