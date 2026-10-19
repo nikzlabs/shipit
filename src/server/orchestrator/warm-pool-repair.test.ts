@@ -108,10 +108,12 @@ describe("refreshWarmSession", () => {
   let trusted: boolean;
   let refreshWarmClone: ReturnType<typeof vi.fn>;
   let setInstallRunning: ReturnType<typeof vi.fn>;
+  let containerStatus: string;
 
   beforeEach(() => {
     lastUsedAt = new Date().toISOString();
     trusted = true;
+    containerStatus = "running";
     refreshWarmClone = vi.fn(async () => ({ headChanged: true }));
     setInstallRunning = vi.fn(() => true);
     workerGet.mockReset();
@@ -129,7 +131,7 @@ describe("refreshWarmSession", () => {
         get: () => ({ url: REPO, warmSessionId: TARGET.sessionId, lastUsedAt }),
       } as unknown as RepoStore,
       containerManager: {
-        get: () => ({ status: "running", workerUrl: "http://worker:1" }),
+        get: () => ({ status: containerStatus, workerUrl: "http://worker:1" }),
       } as unknown as SessionContainerManager,
       refreshWarmClone,
       previewGate: () => ({ setInstallRunning }),
@@ -190,6 +192,73 @@ describe("refreshWarmSession", () => {
       .mockResolvedValue({ running: false, lastResult: { ok: false } });
     await withPolling(() => pool().refreshWarmSession(TARGET));
     expect(setInstallRunning.mock.calls).toEqual([[true], [false, { failed: true }]]);
+  });
+
+  it("keeps holding past the poll's limit, and releases on the install's real end", async () => {
+    workerInstall.mockResolvedValue({ started: true });
+    let running = true;
+    workerGet
+      .mockResolvedValueOnce({ running: false, lastResult: { ok: true } })
+      .mockImplementation(async () => ({ running, lastResult: running ? null : { ok: true } }));
+    vi.useFakeTimers();
+    try {
+      const refresh = pool().refreshWarmSession(TARGET);
+      await vi.advanceTimersByTimeAsync(15 * 60_000 + 5_000);
+      await refresh;
+      expect(setInstallRunning.mock.calls).toEqual([[true]]);
+
+      running = false;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(setInstallRunning.mock.calls).toEqual([[true], [false, { failed: false }]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("past the poll's limit, keeps holding while the worker does not answer", async () => {
+    workerInstall.mockResolvedValue({ started: true });
+    let answering = true;
+    let running = true;
+    workerGet
+      .mockResolvedValueOnce({ running: false, lastResult: { ok: true } })
+      .mockImplementation(async () => {
+        if (!answering) throw new Error("socket hang up");
+        return { running, lastResult: running ? null : { ok: true } };
+      });
+    vi.useFakeTimers();
+    try {
+      const refresh = pool().refreshWarmSession(TARGET);
+      await vi.advanceTimersByTimeAsync(15 * 60_000 + 5_000);
+      await refresh;
+      answering = false;
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      expect(setInstallRunning.mock.calls).toEqual([[true]]);
+
+      answering = true;
+      running = false;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(setInstallRunning.mock.calls).toEqual([[true], [false, { failed: false }]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("past the poll's limit, releases the hold as failed once the container is gone", async () => {
+    workerInstall.mockResolvedValue({ started: true });
+    workerGet
+      .mockResolvedValueOnce({ running: false, lastResult: { ok: true } })
+      .mockResolvedValue({ running: true, lastResult: null });
+    vi.useFakeTimers();
+    try {
+      const refresh = pool().refreshWarmSession(TARGET);
+      await vi.advanceTimersByTimeAsync(15 * 60_000 + 5_000);
+      await refresh;
+      containerStatus = "stopped";
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(setInstallRunning.mock.calls).toEqual([[true], [false, { failed: true }]]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not release a hold another caller opened", async () => {

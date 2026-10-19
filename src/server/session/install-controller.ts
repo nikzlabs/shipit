@@ -16,6 +16,7 @@ import {
   markerMatches,
   parseMarker,
   serializeMarker,
+  type InstallMarker,
   type InstallMarkerStamp,
 } from "../shared/install-marker.js";
 import { classifyEmptyDepDirs } from "./overlay-dep-check.js";
@@ -52,6 +53,10 @@ export interface InstallControllerDeps {
 export class InstallController {
   private _installRunning = false;
   private _installProcess: ChildProcess | null = null;
+  // Moves on every start and stop; a run whose generation moved owns no state and reports nothing.
+  private _installGeneration = 0;
+  // A request joined the running install; its tree is re-checked when that install ends (planning#702).
+  private _joinedCommands: string[] | null = null;
   // Retain the outcome so the orchestrator can recover a completion missed during SSE disconnect.
   private _lastInstallResult: { ok: boolean; command?: string; message?: string } | null = null;
 
@@ -115,13 +120,14 @@ export class InstallController {
       await fsp.rm(markerFile, { force: true }).catch(() => {});
 
       if (this._installRunning) {
+        this._joinedCommands = commands;
         return { started: true, joined: true };
       }
 
       this._installRunning = true;
       this._lastInstallResult = null;
 
-      void this.runRealInstallCommands(commands, markerDir, markerFile, stamp);
+      void this.runRealInstallCommands(++this._installGeneration, markerDir, markerFile, stamp);
       return { started: true };
     });
 
@@ -198,12 +204,15 @@ export class InstallController {
     });
   }
 
+  // Also between two commands, or between two attempts, where no child is running to kill.
   stop(): void {
+    this._installGeneration++;
+    this._joinedCommands = null;
     if (this._installProcess) {
       killChild(this._installProcess);
       this._installProcess = null;
-      this._installRunning = false;
     }
+    this._installRunning = false;
   }
 
   private readMcpInstalledMarker(): Set<string> {
@@ -285,21 +294,67 @@ export class InstallController {
   }
 
   private async runRealInstallCommands(
-    commands: string[],
+    generation: number,
     markerDir: string,
     markerFile: string,
-    stamp: InstallMarkerStamp,
+    initial: InstallMarkerStamp,
   ): Promise<void> {
+    const owned = (): boolean => this._installGeneration === generation;
+    try {
+      let stamp = initial;
+      for (;;) {
+        const outcome = await this.installOnce(stamp.installCommands, owned);
+        // A joiner was told its install started; this one counts only if it installed the joiner's tree.
+        let rerun: InstallMarkerStamp | null = null;
+        // Re-judge a join that arrived while the last one was judged; finishing below is synchronous.
+        while (this._joinedCommands !== null && owned()) rerun = await this.judgeJoin(stamp);
+        if (!owned()) return;
+        if (rerun) {
+          const notice = `[install] the workspace moved to ${rerun.sourceCommit?.slice(0, 9) ?? "another tree"} `
+            + "while this install ran — installing again for it";
+          console.log(notice);
+          this.broadcastSSE({ type: "install_log", data: { text: `${notice}\n`, stream: "stdout" } });
+          stamp = rerun;
+          continue;
+        }
+        if (outcome.ok) this.finishInstallOk(markerDir, markerFile, stamp);
+        else this.finishInstallFailed(outcome.message, outcome.extra);
+        return;
+      }
+    } catch (err) {
+      if (owned()) this.finishInstallFailed(getErrorMessage(err));
+    }
+  }
+
+  // Judges the newest join against the workspace as it is now; null when the install covers it.
+  private async judgeJoin(installed: InstallMarkerStamp): Promise<InstallMarkerStamp | null> {
+    const commands = this._joinedCommands;
+    this._joinedCommands = null;
+    if (!commands) return null;
+    const stamp: InstallMarkerStamp = {
+      sourceCommit: await this.readSourceCommit(),
+      runtimeKey: runtimeKey(),
+      installCommands: commands,
+      depsHash: this.computeDepsHash(commands),
+    };
+    return this.markerCovers(makeMarker(installed, ""), stamp) ? null : stamp;
+  }
+
+  private async installOnce(
+    commands: string[],
+    owned: () => boolean,
+  ): Promise<{ ok: true } | { ok: false; message: string; extra?: { command?: string; exitCode?: number } }> {
     try {
       for (const rawCmd of commands) {
+        if (!owned()) return { ok: false, message: "install stopped" };
         const cmd = tuneNpmInstall(rawCmd);
         const { code: exitCode, stderrTail } = await this.runSingleInstallCommand(cmd);
         if (exitCode !== 0) {
-          this.finishInstallFailed(formatInstallFailureMessage(cmd, exitCode, stderrTail), {
-            command: cmd,
-            exitCode,
-          });
-          return;
+          return {
+            ok: false,
+            message: formatInstallFailureMessage(cmd, exitCode, stderrTail),
+            extra: { command: cmd, exitCode },
+          };
         }
       }
 
@@ -308,16 +363,14 @@ export class InstallController {
       if (empty.length > 0) {
         const message = formatEmptyDepDirsFailureMessage(empty.map((c) => c.depDir));
         console.warn(`[install] ${message}`);
-        this.finishInstallFailed(message);
-        return;
+        return { ok: false, message };
       }
 
       const stale = staleDepDirs(this.workspaceDir, commands);
       if (stale.length > 0) {
         const message = formatStaleDepDirsFailureMessage(stale, MAX_REPORTED_MISMATCHES);
         console.warn(`[install] ${message}`);
-        this.finishInstallFailed(message);
-        return;
+        return { ok: false, message };
       }
 
       // The pnpm counterpart, and it is not a package comparison: a mounted base may be PRUNED,
@@ -326,8 +379,7 @@ export class InstallController {
       if (unreconciled.length > 0) {
         const message = formatUnreconciledPnpmFailureMessage(unreconciled);
         console.warn(`[install] ${message}`);
-        this.finishInstallFailed(message);
-        return;
+        return { ok: false, message };
       }
 
       // This warning asserts success, so emit it only after every check passes.
@@ -336,10 +388,9 @@ export class InstallController {
         console.warn(warning);
         this.broadcastSSE({ type: "install_log", data: { text: `${warning}\n`, stream: "stderr" } });
       }
-
-      this.finishInstallOk(markerDir, markerFile, stamp);
+      return { ok: true };
     } catch (err) {
-      this.finishInstallFailed(getErrorMessage(err));
+      return { ok: false, message: getErrorMessage(err) };
     }
   }
 
@@ -359,13 +410,15 @@ export class InstallController {
       return false;
     }
     const marker = parseMarker(raw);
-    return (
-      marker !== null &&
-      markerMatches(marker, stamp, {
-        requireDepsHash: isPnpmRepo(this.workspaceDir),
-        contentKeyDescribesTree: contentKeyDescribesTree(this.workspaceDir, this.readInstallInputs()),
-      })
-    );
+    return marker !== null && this.markerCovers(marker, stamp);
+  }
+
+  // The one match rule for a fresh request and for a join, so the two cannot disagree.
+  private markerCovers(marker: InstallMarker, stamp: InstallMarkerStamp): boolean {
+    return markerMatches(marker, stamp, {
+      requireDepsHash: isPnpmRepo(this.workspaceDir),
+      contentKeyDescribesTree: contentKeyDescribesTree(this.workspaceDir, this.readInstallInputs()),
+    });
   }
 
   private readInstallInputs(): string[] | null {
@@ -461,13 +514,14 @@ export class InstallController {
         stderrTail = (stderrTail + text).slice(-INSTALL_STDERR_TAIL_BYTES);
       });
 
+      // A stopped install's child can close after the next install started its own.
       proc.on("error", (err) => {
-        this._installProcess = null;
+        if (this._installProcess === proc) this._installProcess = null;
         reject(err);
       });
 
       proc.on("close", (code) => {
-        this._installProcess = null;
+        if (this._installProcess === proc) this._installProcess = null;
         resolve({ code: code ?? 1, stderrTail });
       });
     });
