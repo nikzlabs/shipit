@@ -40,6 +40,21 @@ viewer left first goes first), stops a done session after 10 minutes
 ([docs/316](../316-done-sessions-return-memory/requirements.md)), and a ShipIt
 update replaces containers.
 
+### Prior art: t3code
+
+[pingdotgg/t3code#21682](https://github.com/pingdotgg/t3code/pull/21682)
+("compact idle threads before the prompt cache expires", open on 2026-10-19)
+does the same from its server: a sweep every minute and at each run's end
+sends a system-authored `/compact` in the last 10% of the cache lifetime (at
+least 2 minutes), never after the cache is cold. It is off by default and
+uses a 200K-token floor, as requirements 5 and 6 do. It differs in scope: it
+also compacts on a 5-minute cache (an API key) and on other providers with an
+assumed 30-minute lifetime, where requirement 1 here covers only the one-hour
+cache. It has no case for a stopped process, because t3code runs on the
+user's machine; requirement 2 exists because ShipIt stops containers. Its
+review found that settling a thread can interrupt a running idle compaction —
+a hazard a ShipIt design must also answer.
+
 ## Requirements
 
 1. When a session's agent context is large and the session has been idle for
@@ -56,35 +71,51 @@ update replaces containers.
 4. If an idle compaction fails, no work and no message is lost, and the
    transcript says that the context was not compacted.
 
+5. Idle compaction is off by default. One global setting in Settings →
+   Advanced turns it on.
+
+6. An idle compaction runs only when the agent's context is 200K tokens or
+   more.
+
+7. A done session (docs/316) gets no idle compaction.
+
+8. When ShipIt is over its memory budget, it stops other idle sessions before
+   it stops a session that waits for its idle compaction. When it must still
+   stop such a session, it compacts that session first and then stops it.
+
 ## Requirement provenance
 
 Requirements 1 and 2 come from what the user asked for: the user wants ShipIt
 users to get the benefit of the CLI's compaction before the cache expires,
-even though ShipIt can stop a container before that time. Requirements 3 and 4
-were not asked for: each keeps a guarantee that already ships from becoming
-weaker — docs/178 for how a compaction appears, and docs/295 req 9 and
-docs/324 req 6 for a failed compaction. They are kept apart so that the
-difference stays visible.
+even though ShipIt can stop a container before that time. Requirements 5 to 8
+come from the user's answers on 2026-10-19 (below). Requirements 3 and 4 were
+not asked for: each keeps a guarantee that already ships from becoming weaker —
+docs/178 for how a compaction appears, and docs/295 req 9 and docs/324 req 6
+for a failed compaction. They are kept apart so that the difference stays
+visible.
 
 ## Open questions
 
-- Is idle compaction on by default, or off until the user turns it on? Where
-  is the switch — one global setting in Settings → Advanced? A compaction is a
-  real model call: if the user never comes back, its cost is a waste, and a
-  user who comes back finds the agent working from a summary, not the full
-  conversation.
-- What is the minimum context size? The CLI uses 200K tokens by default and
-  allows no less than 100K. (docs/295 req 15 uses a 50K floor, for a
-  different purpose.)
-- Does a done session (docs/316) get an idle compaction? ShipIt stops a done
-  session's container after 10 minutes, so under requirement 2 a done session
-  would need its compaction before that stop. Most done sessions get no next
-  message, so their compaction would usually be a waste.
-- Requirement 2 conflicts with the memory budget. When ShipIt is over its
-  budget and must stop a session that waits for its idle compaction, may it
-  compact first, so the memory comes back about a minute later? Or must the
-  memory come back at once, so that this session loses the benefit?
+None.
 
 ## Resolved questions
 
-None yet.
+- 2026-10-19 — Is idle compaction on by default, or off until the user turns
+  it on? Offered "on, with an off switch in Settings → Advanced"
+  (recommended, as the CLI does in the terminal) or "off, opt-in in Settings →
+  Advanced". The user chose off, opt-in. Recorded as requirement 5.
+- 2026-10-19 — What is the minimum context size? Offered 200K tokens (the CLI
+  default, recommended), 100K (the lowest the CLI allows) or a number the user
+  can change. The user chose 200K. Recorded as requirement 6.
+- 2026-10-19 — Does a done session get an idle compaction? ShipIt stops a done
+  session's container after 10 minutes, so it would have to compact before
+  that stop, and most done sessions get no next message. The user chose to
+  skip done sessions. Recorded as requirement 7. A merged session that
+  continues still compacts under docs/295.
+- 2026-10-19 — Requirement 2 conflicts with the memory budget: what happens
+  when ShipIt must stop a session that waits for its idle compaction? Offered
+  "stop other idle sessions first, then compact and stop" (recommended), "stop
+  at once and lose the benefit", or "compact first, in today's stop order". The
+  user chose the first. Recorded as requirement 8. Its consequence: when
+  ShipIt must stop a waiting session, the memory comes back after the
+  compaction, not at once.
