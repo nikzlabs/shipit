@@ -85,6 +85,26 @@ export const GLOBAL_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
+  // docs/333-idle-compaction req 5.
+  "advanced.idleCompaction": defineSetting({
+    key: "advanced.idleCompaction",
+    tab: "advanced",
+    section: "Agent",
+    scope: "global",
+    label: "Compact idle sessions before the prompt cache expires",
+    description:
+      "When a session's context is 200K tokens or more and nobody has used it for most of its "
+      + "prompt cache's lifetime, ShipIt compacts the context shortly before the cache expires, "
+      + "so the next message does not read the whole conversation again at full price. The "
+      + "transcript shows each compaction. Only caches that live 30 minutes or more qualify; "
+      + "Grok sessions are not compacted.",
+    type: bool({ default: false }),
+    store: { kind: "credential-store", field: "idleCompaction" },
+    wire: "idleCompaction",
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
   "advanced.liveSteering": defineSetting({
     key: "advanced.liveSteering",
     tab: "advanced",

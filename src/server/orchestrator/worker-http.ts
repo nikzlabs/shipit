@@ -145,10 +145,14 @@ export async function workerInstall(
 export async function workerPostMessage(
   baseUrl: string,
   text: string,
-  turn?: { deliveryId?: string },
+  turn?: { deliveryId?: string; silentCompaction?: boolean },
   opts?: WorkerHttpOpts,
 ): Promise<void> {
-  const body = turn?.deliveryId !== undefined ? { text, deliveryId: turn.deliveryId } : { text };
+  const body = {
+    text,
+    ...(turn?.deliveryId !== undefined ? { deliveryId: turn.deliveryId } : {}),
+    ...(turn?.silentCompaction ? { silentCompaction: true } : {}),
+  };
   await workerPost(baseUrl, "/agent/message", body, opts);
 }
 

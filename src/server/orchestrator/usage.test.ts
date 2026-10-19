@@ -230,6 +230,65 @@ describe("UsageManager", () => {
   });
 });
 
+describe("UsageManager — the idle-compaction record (docs/333-idle-compaction)", () => {
+  const anchor = (at: number) => ({ at, agentId: "codex" as const, model: "gpt-6-luna" });
+  let dbManager: DatabaseManager;
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+  });
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  it("reads the newest cache lifetime only from the session's own turns on the same route", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheTtl: "1h", credentialRouteId: "anthropic-sub" });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheTtl: "5m", credentialRouteId: "anthropic-key" });
+    // A turn that only read the cache sets nothing; the earlier reading stands.
+    mgr.record("sess-1", 0, 0, 1, 1, { credentialRouteId: "anthropic-sub" });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheTtl: "5m", credentialRouteId: "anthropic-sub", subAgentId: "claude" });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheTtl: "1h" });
+
+    expect(mgr.observedCacheTtl("sess-1", "anthropic-sub")).toBe("1h");
+    expect(mgr.observedCacheTtl("sess-1", "anthropic-key")).toBe("5m");
+    expect(mgr.observedCacheTtl("sess-1", "zai")).toBeUndefined();
+    expect(mgr.observedCacheTtl("sess-1", null)).toBe("1h");
+    expect(mgr.observedCacheTtl("sess-2", "anthropic-sub")).toBeUndefined();
+  });
+
+  it("tells its listeners about each anchored own turn, and a throwing listener does not stop the write", () => {
+    const mgr = new UsageManager(dbManager);
+    const seen: unknown[] = [];
+    mgr.onAnchoredTurn(() => { throw new Error("boom"); });
+    mgr.onAnchoredTurn((turn) => seen.push(turn));
+
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheAnchor: anchor(1_000), credentialRouteId: "r1" });
+    mgr.record("sess-1", 0, 0, 1, 1);
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheAnchor: anchor(2_000), subAgentId: "codex" });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheAnchor: anchor(3_000), backgroundWork: true });
+
+    expect(seen).toEqual([{ sessionId: "sess-1", anchor: anchor(1_000), credentialRouteId: "r1" }]);
+    expect(mgr.getSessionTurns("sess-1")).toHaveLength(4);
+  });
+
+  it("finds each session's newest anchored own turn since a time, past an unanchored compaction", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheAnchor: anchor(1_000) });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheAnchor: anchor(5_000), credentialRouteId: "r1" });
+    // A compaction turn writes no anchor, so it can never start a deadline of its own.
+    mgr.record("sess-1", 0, 0, 0, 0);
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheAnchor: anchor(9_000), subAgentId: "codex" });
+    mgr.record("sess-2", 0, 0, 1, 1, { cacheAnchor: anchor(2_000) });
+    mgr.record("sess-3", 0, 0, 1, 1, { cacheAnchor: anchor(7_000) });
+
+    const turns = mgr.anchoredTurnsSince(3_000).sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+    expect(turns).toEqual([
+      { sessionId: "sess-1", anchor: anchor(5_000), credentialRouteId: "r1" },
+      { sessionId: "sess-3", anchor: anchor(7_000), credentialRouteId: null },
+    ]);
+  });
+});
+
 describe("UsageManager — cumulative cost → per-turn delta", () => {
   let dbManager: DatabaseManager;
   beforeEach(() => {

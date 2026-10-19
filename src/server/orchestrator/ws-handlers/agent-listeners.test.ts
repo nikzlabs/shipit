@@ -138,6 +138,93 @@ describe("wireAgentListeners", () => {
     runner.dispose({ force: true });
   });
 
+  describe("the idle-compaction anchor (docs/333-idle-compaction)", () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    function wire(opts: { compactionTurn?: boolean; maintenanceTurn?: boolean; anchorUnknown?: boolean } = {}) {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-10-19T10:00:00.000Z"));
+      const agent = new FakeAgent("claude");
+      const runner = new SessionRunner({ sessionId: "session-1", sessionDir: "/tmp/session-1", defaultAgentId: "claude" });
+      const d = deps();
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+        ...opts,
+      });
+      const toolResult = (parentToolUseId?: string): void => {
+        agent.emit("event", {
+          type: "agent_tool_result",
+          content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }],
+          ...(parentToolUseId ? { parentToolUseId } : {}),
+        } satisfies AgentEvent);
+      };
+      const result = (tokens = { input: 10, output: 5, cacheRead: 240_000 }): void => {
+        agent.emit("event", {
+          type: "agent_result", status: "success", sessionId: "s", tokens, contextTokens: 240_010, cacheTtl: "1h",
+        } satisfies AgentEvent);
+      };
+      const recorded = () => (d.usageManager.record as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[5] as
+        { cacheAnchor?: { at: number; agentId: string; model: string | null }; cacheTtl?: string } | undefined;
+      return { agent, runner, d, toolResult, result, recorded };
+    }
+
+    it("anchors on the last tool result, a subagent's included, and writes the cache lifetime", () => {
+      const { runner, toolResult, result, recorded } = wire();
+      const start = Date.now();
+      vi.setSystemTime(start + 60_000);
+      toolResult();
+      vi.setSystemTime(start + 90_000);
+      toolResult("toolu_sub");
+      vi.setSystemTime(start + 300_000);
+      result();
+      expect(recorded()).toMatchObject({
+        cacheAnchor: { at: start + 90_000, agentId: "claude", model: null },
+        cacheTtl: "1h",
+      });
+      runner.dispose({ force: true });
+    });
+
+    it("anchors on the turn's start when it had no tool result", () => {
+      const { runner, result, recorded } = wire();
+      const start = Date.now();
+      vi.setSystemTime(start + 300_000);
+      result();
+      expect(recorded()?.cacheAnchor?.at).toBe(start);
+      runner.dispose({ force: true });
+    });
+
+    it("writes no anchor for a compaction turn, nor for a turn that read nothing", () => {
+      const compaction = wire({ compactionTurn: true });
+      compaction.result();
+      expect(compaction.recorded()?.cacheAnchor).toBeUndefined();
+      compaction.runner.dispose({ force: true });
+
+      const refused = wire();
+      refused.result({ input: 0, output: 0, cacheRead: 0 });
+      expect(refused.recorded()?.cacheAnchor).toBeUndefined();
+      refused.runner.dispose({ force: true });
+    });
+
+    it("writes no anchor for a turn adopted after a restart, whose events are replayed", () => {
+      const { runner, result, recorded } = wire({ anchorUnknown: true });
+      result();
+      expect(recorded()?.cacheAnchor).toBeUndefined();
+      runner.dispose({ force: true });
+    });
+
+    it("a silent compaction leaves the session's last use and its last turn's error state alone", () => {
+      const { runner, d, result } = wire({ compactionTurn: true, maintenanceTurn: true });
+      runner.lastTurnErrored = true;
+      result();
+      expect(d.sessionManager.touchUnlessResolved).not.toHaveBeenCalled();
+      expect(d.sessionManager.setLastTurnErrored).not.toHaveBeenCalled();
+      expect(runner.lastTurnErrored).toBe(true);
+      runner.dispose({ force: true });
+    });
+  });
+
   it("prices a subscription turn's long prompts the same live as on reload (docs/329-tiered-model-pricing)", () => {
     const agent = new FakeAgent("claude");
     const runner = new SessionRunner({

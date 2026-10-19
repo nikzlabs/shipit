@@ -202,12 +202,18 @@ export async function runRequestedCompaction(
   }
 }
 
-function busyReason(runner: SessionRunnerInterface): string | null {
+/** Why a compaction cannot start on this runner now, or null. Shared with docs/333's idle compaction. */
+export function busyReason(
+  runner: SessionRunnerInterface,
+  opts: { pastAnswerHold?: boolean } = {},
+): string | null {
   if (runner.running) return "a turn is running";
   if (runner.mergeHold) return "a merge holds the session";
   if (runner.sessionHold) return "another flow holds the session";
-  // docs/322 — the user answers first.
-  if (runner.awaitingUserAnswer || runner.answerHold) return "the agent waits for the user's answer";
+  // docs/322 — the user answers first, except for an idle compaction (docs/333-idle-compaction req 12).
+  if (!opts.pastAnswerHold && (runner.awaitingUserAnswer || runner.answerHold)) {
+    return "the agent waits for the user's answer";
+  }
   // A turn of the CLI's own could come between the compaction and its continuation.
   const work = residentBackgroundWork(runner);
   return work.length > 0 ? `the resident agent has background work in flight (${work.join(", ")})` : null;

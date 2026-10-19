@@ -9,59 +9,59 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 - [x] Probe: `cache_creation` with the 5m/1h split arrives on main-thread `assistant` messages in `--output-format stream-json` (CLI 2.1.300). Result: it does.
 - [x] Cross-spawn check for Codex and OpenCode (plan.md, "Verify first" 1b): Codex is warm across processes; OpenCode is cold, because ShipIt gives it a new instruction-file path every turn. No configured role runs Grok, so Grok is unchecked.
 - [x] The user decided: OpenCode stays once its prompt is stable (req 14); Grok is out until tested (req 15).
-- [ ] For OpenCode only: planning#701 (one stable instruction-file path per session) merged, and its control probe warm. Until then OpenCode answers "none"; the rest of the feature does not wait for it.
+- [x] For OpenCode only: planning#701 (one stable instruction-file path per session) merged, and its control probe warm. Merged as PR #3239; B read 99.1% of A from the cache (plan.md, "Verify first" 1b).
 
 ## Piece 1 — cache lifetime
 
-- [ ] `cache_creation` on per-message usage in `ClaudeUsageIteration` (`shared/types/claude-types.ts`).
-- [ ] `cacheTtl` on `AgentResultEvent`, from main-thread messages only (`session/agents/claude/adapter.ts`).
-- [ ] `idleCacheLifetimeMinutes`: route-scoped observation, the provider table keyed by model vendor, 30 otherwise.
+- [x] `cache_creation` on per-message usage in `ClaudeUsageIteration` (`shared/types/claude-types.ts`).
+- [x] `cacheTtl` on `AgentResultEvent`, from main-thread messages only (`session/agents/claude/adapter.ts`).
+- [x] `idleCacheLifetimeMinutes`: route-scoped observation, the provider table keyed by model vendor, 30 otherwise.
 
 ## Piece 2 — deadline
 
-- [ ] `usage_turns.cache_ttl` and `cache_anchor_at` columns + migration; the anchor is the last tool result or the turn start, written only for ordinary turns.
-- [ ] `services/idle-compaction.ts`: the deadline map, one timer at the earliest `due`.
-- [ ] Arm after `usageManager.record`; 200K floor with `undefined` = skip.
-- [ ] Drop on fire, rewind, and model or harness change; do not clear at turn start.
-- [ ] Boot re-derivation from the newest anchored own-turn row per session.
+- [x] `usage_turns.cache_ttl` and `cache_anchor_at` columns + migration; the anchor is the last tool result or the turn start, written only for ordinary turns.
+- [x] `services/idle-compaction.ts`: the deadline map, one timer at the earliest `due`.
+- [x] Arm after `usageManager.record`; 200K floor with `undefined` = skip.
+- [x] Drop on fire, rewind, and model or harness change (checked at the fire); do not clear at turn start.
+- [x] Boot re-derivation from the newest anchored own-turn row per session.
 
 ## Piece 3 — firing
 
-- [ ] Take the attempt synchronously; checks: setting, done, harness, expiry, busy (docs/324's check, exported).
-- [ ] Runner: existing, or reconnect (`wakeSessionWithTurn` pattern); no container → drop (req 13).
-- [ ] Claude with live steering: drop when the runner holds no resident agent; live steering off: proceed.
-- [ ] Re-check after the wake, immediately before dispatch.
-- [ ] `runner.dispatch(prepareDispatch({ "/compact", automatic, silent, activity }), { whenBusy: "refuse" })`; warn notice on wake or setup failure.
+- [x] Take the attempt synchronously; checks: setting, done, harness, expiry, busy (docs/324's check, exported).
+- [x] Runner: existing, or reconnect (`wakeSessionWithTurn` pattern); no container → drop (req 13).
+- [x] Claude with live steering: drop when the runner holds no resident agent; live steering off: proceed.
+- [x] Re-check after the wake, immediately before dispatch.
+- [x] `runner.dispatch(prepareDispatch({ "/compact", automatic, silent, activity }), { whenBusy: "refuse" })`; warn notice on wake or setup failure.
 
 ## Piece 3a — past the question hold (req 12)
 
-- [ ] `busyReason`'s question-hold arm is skippable; the idle fire skips it, docs/324 keeps it.
-- [ ] `dispatchOnRunner` admits a silent compaction past the answer hold; the hold is not cleared and held work still waits.
+- [x] `busyReason`'s question-hold arm is skippable; the idle fire skips it, docs/324 keeps it.
+- [x] `dispatchOnRunner` admits a silent compaction past the answer hold; the hold is not cleared and held work still waits.
 
 ## Piece 4 — maintenance
 
-- [ ] A silent compaction turn skips `track()`, the unmute, `touchUnlessResolved` and `recordTurnEnd`.
-- [ ] The in-flight record keeps the compaction class; adoption restores maintenance behaviour and the missed-card check.
+- [x] A silent compaction turn skips `track()`, the unmute, `touchUnlessResolved` and `recordTurnEnd`.
+- [x] The in-flight record keeps the compaction class; adoption restores maintenance behaviour and the missed-card check.
 
 ## Piece 5 — idle enforcer
 
-- [ ] Waiting sessions sort after the others in tier 1.
-- [ ] Fire instead of stop; count the bytes; `compactingToReclaim` across passes; stop first once reclaimable.
+- [x] Waiting sessions sort after the others in tier 1.
+- [x] Fire instead of stop; count the bytes; `compactingToReclaim` across passes; stop first once reclaimable.
 
 ## Piece 6 — setting
 
-- [ ] `advanced.idleCompaction` (off by default, `propose: yes`), getter, `services/misc.ts` fallback.
+- [x] `advanced.idleCompaction` (off by default, `propose: yes`), getter, `services/misc.ts` fallback.
 
 ## Tests
 
-- [ ] Lifetime: observed per route; 5-minute → no deadline (req 11); unknown → 30 (req 10); a Kimi model on Codex → 5; Grok → none (req 15); OpenCode → none until planning#701 (req 14).
-- [ ] Deadline: anchored on the last tool result; replaced by a new result; kept when a turn dies without one; not written by a compaction turn; dropped by rewind and model change; re-derived at boot, and not from a failed compaction's row.
-- [ ] Fire: each check drops it; never after `expires`; refused when busy, including resident background work; re-checked after the wake; dropped with no container and, for resident Claude, with no resident agent.
-- [ ] A silent compaction does not move the session in the list, does not clear a merged session's resolved state, does not unmute it, and does not change the last turn outcome — also after a restart mid-compaction.
-- [ ] Enforcer: waiting sessions last; one pass fires only as many compactions as the shortfall needs; a compacted session is stopped by a later pass.
-- [ ] Question hold: an idle compaction runs while a question waits; afterwards the hold is still on, held automatic work still waits, and the user's answer releases it.
-- [ ] Integration: a silent idle compaction records the card; a missing card posts the warn notice; a message sent during it runs afterwards.
+- [x] Lifetime: observed per route; 5-minute → no deadline (req 11); unknown → 30 (req 10); a Kimi model → 5; Grok → none (req 15); OpenCode on an OpenAI model → 30, on an Anthropic model → no deadline (req 14).
+- [x] Deadline: anchored on the last tool result; replaced by a new result; kept when a turn dies without one; not written by a compaction turn; dropped by rewind and model change; re-derived at boot, and not from a failed compaction's row.
+- [x] Fire: each check drops it; never after `expires`; refused when busy, including resident background work; re-checked after the wake; dropped with no container and, for resident Claude, with no resident agent.
+- [x] A silent compaction does not move the session in the list, does not clear a merged session's resolved state, does not unmute it, and does not change the last turn outcome — also after a restart mid-compaction.
+- [x] Enforcer: waiting sessions last; one pass fires only as many compactions as the shortfall needs; a compacted session is stopped by a later pass.
+- [x] Question hold: an idle compaction runs while a question waits; afterwards the hold is still on, held automatic work still waits, and the user's answer releases it.
+- [x] Integration: a silent idle compaction records the card; a missing card posts the warn notice; a message sent during it runs afterwards.
 
 ## Docs
 
-- [ ] `src/server/shipit-docs/wiki/settings-and-accounts.md`, `wiki/chat.md`.
+- [x] `src/server/shipit-docs/wiki/settings-and-accounts.md`, `wiki/chat.md`.

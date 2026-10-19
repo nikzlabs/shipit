@@ -16,7 +16,7 @@ triggers of [docs/178](../178-context-compaction/plan.md) and
 
 ```
 ordinary turn ends (agent_result) ──► usage row: context, cache_ttl, cache_anchor_at ──► arm(session)
-  arm: lifetime L ──► none (Grok; OpenCode before planning#701)? no deadline         (req 14, 15)
+  arm: lifetime L ──► none (Grok)? no deadline                                       (req 15)
        L < 30 min? no deadline                                                       (req 11)
        context < 200K? no deadline                                                   (req 6)
        deadlines[session] = { due: anchor + 0.9·L, expires: anchor + L }             (req 1)
@@ -26,7 +26,7 @@ one host-wide timer at the earliest `due` ──► fire(session)
         re-check ──► dispatch silent "/compact", refused when busy                   (req 3, 4)
 a silent compaction turn is maintenance: no last-used, no unmute, no turn outcome
 idle enforcer over budget: waiting sessions last; compact one instead of stopping it (req 8)
-rewind, model or harness change ──► drop the deadline
+rewind pending, model or harness changed ──► the fire drops it
 orchestrator boot ──► re-derive every deadline from usage_turns
 ```
 
@@ -38,16 +38,23 @@ orchestrator, at the earliest deadline.
 
 ### 1. The cache lifetime (req 1, 9, 10, 11)
 
-`idleCacheLifetimeMinutes(session)` in a new `services/idle-compaction.ts`
-answers in minutes, or "none" when the session gets no idle compaction:
+`cacheLifetimeMinutes` in a new `services/idle-compaction.ts` answers in
+minutes, and `idleCompactionExclusion` says when the harness gets no idle
+compaction at all:
 
 - the harness cannot compact (Antigravity, `supportsCompaction: false` in
   `shared/catalogue/harnesses.ts`);
-- **Grok**, until a probe shows its cache warm across processes (req 15);
-- **OpenCode**, until planning#701 — one stable instruction-file path per
-  session — has merged and its control probe is warm (req 14). If this
-  feature lands first, OpenCode answers "none", and the change that turns it
-  on cites the probe.
+- **Grok**, until a probe shows its cache warm across processes (req 15).
+
+**OpenCode is in** (req 14): planning#701 (PR #3239) gave it one
+instruction-file path per prompt, and its control probe was warm — "Verify
+first" 1b.
+
+The per-harness facts — excluded, a cold first resume (piece 3 step 4), the
+Anthropic default a harness gets by setting no ttl — are one table,
+`HARNESS_CACHE`, keyed by harness id: a lint rule forbids comparing harness ids
+outside `agents/<id>/`, and a `Record<AgentId, …>` makes a new harness declare
+its row.
 
 Otherwise three rules, in order:
 
@@ -107,14 +114,26 @@ in the same `usageManager.record` call:
 - **Written only for ordinary turns.** A compaction turn — this one, docs/295,
   docs/324, a typed `/compact` — leaves `cache_anchor_at` null, so neither a
   success (small context) nor a failure (no card) can start a new deadline.
+- **And only for a turn that reached the model.** A turn whose result reports
+  no tokens read or written (a request refused at once, a result with no
+  usage) did not touch the cache; anchoring on it would put the deadline after
+  the cache is cold. The previous turn's deadline stays.
+- **A turn the CLI starts on its own** (a self-wake adopted on the same
+  listeners) restarts the anchor and is ordinary, also on a process a
+  compaction ran on.
 
 `deadlines: Map<sessionId, { due, expires }>` holds the armed ones, with
 **one** `setTimeout` at the earliest `due`, re-armed whenever the map changes.
 No per-session interval (CLAUDE.md, "never per-session polling").
 
-- **Armed** after `usageManager.record` in the `agent_result` listener
-  (`ws-handlers/agent-listeners.ts`), from the row just written: `due = anchor
-  + 0.9·L`, `expires = anchor + L`. The new entry replaces the old.
+- **Armed** by the row just written: `UsageManager.record` tells its
+  `onAnchoredTurn` listeners about every anchored own-turn row, and the
+  service is one of them (`bootstrap-managers.ts`). `due = anchor + 0.9·L`,
+  `expires = anchor + L`. The new entry replaces the old, or removes it when
+  the new reading arms nothing. A listener, not a call in
+  `agent-listeners.ts`: both turn paths (the WebSocket one and the dispatched
+  one) build their own listener deps, and the store is the one place they
+  share.
 - **Context** is `usageManager.latestContextTokens(id, latestCompactionCard)`
   (`usage.ts`), the reading docs/295 req 15 uses. Under 200K, or `undefined`,
   arms nothing (req 6). Unlike docs/295, `undefined` means "skip".
@@ -123,10 +142,16 @@ No per-session interval (CLAUDE.md, "never per-session polling").
   result leaves the previous entry in place, which is still right: that
   turn's requests could only make the cache warmer.
 - **Dropped** when it fires (one attempt), and when the conversation stops
-  being the one the reading describes: a rewind
-  (`ws-handlers/rollback-handlers.ts`), and a change of the session's model or
-  harness — the next turn would read another model's cold cache, and the
-  context reading would describe the old conversation.
+  being the one the reading describes: a rewind, and a change of the session's
+  model or harness — the next turn would read another model's cold cache, and
+  the context reading would describe the old conversation. Both are checks at
+  the fire, not hooks where they happen: the anchor row records the harness
+  and model of the turn that wrote it (`cache_agent_id`, `cache_model`, so
+  boot sees them too), the deadline keeps them, and a pending rewind
+  (`agentResumeAt`) blocks the fire. The model and harness change in many places (the switch paths, roles,
+  model retirement), and one check covers all of them; an Undo of a rewind
+  clears `agentResumeAt`, so the deadline that still describes the restored
+  conversation stands.
 - **Re-derived at boot**: for each session, the newest own-turn row
   (`sub_agent_id IS NULL AND background_work = 0`) with a non-null
   `cache_anchor_at` younger than 60 minutes arms as above. No schedule column:
@@ -141,10 +166,12 @@ No per-session interval (CLAUDE.md, "never per-session polling").
 2. **Check**, because the world moved since the deadline was armed:
    - the setting is on (req 5) — read here, so turning it on covers sessions
      that are already idle;
-   - the session is not done: `doneSessionTest(sessionManager.listAll())`
-     (req 7);
-   - the harness can compact (req 9);
+   - the session is not archived, and not done:
+     `doneSessionTest(sessionManager.listAll())` (req 7);
+   - the harness and model are the ones the deadline was armed for, and no
+     rewind is pending (piece 2);
    - `now < expires` — a cold cache is never compacted (the t3code rule);
+   - the container is live (step 3);
    - the session is not busy. This is docs/324's check
      (`busyReason` in `services/agent-compaction-request.ts`, exported for
      both): a running turn, a merge or session hold, and **resident
@@ -157,7 +184,8 @@ No per-session interval (CLAUDE.md, "never per-session polling").
      restart, because runners are re-created only for in-flight turns
      (`restart-turn-reattach.ts`) — reconnects with `getOrCreate`, following
      `wakeSessionWithTurn` (`wake-session.ts`).
-   - **No container: drop it.** The stops that remove a container are the
+   - **No container: drop it.** In local mode the orchestrator process runs
+     the agents, so there is always one. The stops that remove a container are the
      idle enforcer, which compacts first (piece 5); a done session, which has
      no deadline (req 7); and a ShipIt update, which destroys a stale, idle
      container at boot (`reattachInFlightTurns`) — the exception of req 13. A
@@ -172,7 +200,9 @@ No per-session interval (CLAUDE.md, "never per-session polling").
    resident (`setAgent(null)` in the auth, rebase, recovery and plan-mode
    paths) — the compaction would start a new process, whose first request
    writes the whole conversation again: the reason of req 13, so the fire is
-   dropped the same way. With live steering off, every Claude turn already
+   dropped the same way. The check runs before step 3 too, so a Claude
+   session after an orchestrator restart gets no runner — a new runner holds
+   no agent, and creating one starts the session's install and services. With live steering off, every Claude turn already
    runs in a new resumed process, and the probe found a resume of a resumed
    session warm, so the fire proceeds. The other harnesses start a process
    per turn too (docs/276); their compaction spawn is cached like any of
@@ -189,6 +219,8 @@ No per-session interval (CLAUDE.md, "never per-session polling").
    );
    ```
 
+   - `permissionMode` is the runner's applied mode, so the resident keeps the
+     mode it has.
    - `whenBusy: "refuse"` is the admission argument, not a dispatch field
      (`session-runner.ts` `dispatch(opts, admission)`). Without it an
      automatic dispatch is queued, and could run after the cache is cold.
@@ -242,7 +274,9 @@ idle compaction each is wrong:
   an error would read as finished (`run-finished.ts`).
 
 So a **silent compaction turn** — `silent` with compaction text, the class
-`dispatched-turn.ts` already recognises — skips all four. This is the existing
+`dispatched-turn.ts` already recognises — skips all four, and the
+`last_turn_errored` flag too: a parent reads a child's status from it
+(`child-sessions.ts`), so a failed compaction would show the child as errored. This is the existing
 classification, not a new flag, and it changes docs/295 and docs/324 too.
 That is harmless there: each of their compactions sits next to a real turn
 that does the bookkeeping. `retireRewindUndo` still runs: a rewind's Undo
@@ -251,10 +285,14 @@ restores a conversation that the compaction has replaced.
 **Restart adoption keeps the class.** A turn adopted after an orchestrator
 restart (`turn-adoption.ts`) is restored with neither `compact` nor `silent`,
 so an adopted compaction would touch the session, take steering, and lose its
-missed-card check. The in-flight record that adoption reads gains the
-compaction class, and adoption restores the maintenance behaviour and the
-missed-card check (req 4). This fixes docs/295 and docs/324 compactions as
-well.
+missed-card check. The in-flight record that adoption reads is the worker's
+`/agent/status`: the executor marks the process (`markSilentCompaction`, or
+`silentCompaction` on the message into a resident), the worker keeps the mark
+with the turn as it keeps the delivery id (`agent-controller.ts`) and reports
+`silentCompaction`, and adoption restores `compact`, `silent`, the harness-
+command mark and the missed-card check (req 4). An older worker reports
+nothing, and its turn is adopted as before. This fixes docs/295 and docs/324
+compactions as well.
 
 ### 5. The idle enforcer (req 2, 8)
 
@@ -278,8 +316,14 @@ well.
   releases (`turn-executor.ts`, the `idle` step precedes `settle`), so the
   stop comes from the next periodic pass, at most 30 s later. Memory comes
   back about a minute after the pass, which is req 8's accepted consequence.
-- The set forgets a session once it is stopped, disposed by another path, or
-  no longer has a live container.
+- The set forgets a session once it is stopped, disposed by another path, no
+  longer has a live container, or was visited since the fire (a viewer now,
+  or a viewer-detach time other than the one the fire saw): the user came
+  back, so its memory is not on its way back. This runs at the start of every
+  pass, also under budget, so a visit while memory was low is seen too.
+- A session handled in a pass's compacting step is not a tier-1 candidate of
+  the same pass: a stop's teardown is asynchronous, so its container is still
+  listed.
 
 The turn's own `running` flag is the hold, not the post-turn lease: that lease
 is capped at 120 s, and a 200K compaction can take longer. The done-session
@@ -362,7 +406,7 @@ again, even inside the cache lifetime. That is what makes req 8's
 compact-before-stop worth its cost: after a stop, the user's next turn is
 cold no matter how soon they come back.
 
-### 1b. Across processes on the other harnesses — Codex warm, OpenCode cold
+### 1b. Across processes on the other harnesses — Codex warm, OpenCode warm after planning#701
 
 Probed on 2026-10-19 by child sessions running each harness (a Claude
 session cannot run their CLIs). The raw numbers and commands are on
@@ -391,6 +435,17 @@ with a fixed path.
 path is stable and a control probe is warm (req 14; the fix is planning#701).
 Grok is out until a probe shows it warm (req 15).
 
+**planning#701 merged (PR #3239), and its control probe was warm.** The
+instruction-file path is now a SHA-256 key over the agent home, the workspace
+and the prompt (`opencode/turn-files.ts`), so it no longer changes per turn.
+Same setup as above (OpenCode 1.18.34, `openai/gpt-6-luna`, the ChatGPT
+subscription route, a new CLI process per turn): A total input 20,399 (cache
+read 3,584); B, resumed after a scratch commit, 20,423 (cache read 20,224 —
+99.1% of A); C, resumed with no change, 20,447 (cache read 20,224). The full
+table and commands are in PR #3239. OpenCode then takes the ordinary rules:
+on an OpenAI model 30 minutes, on an Anthropic model the 5-minute default, so
+no deadline (req 11).
+
 ### 2. `cache_creation` reaches ShipIt on stream-json — true
 
 Every main-thread `assistant` message and the `result` carried
@@ -403,11 +458,20 @@ it.
 
 - **An orchestrator restart ends idle compaction for resident Claude
   sessions** until their next turn: the new runner holds no agent, so piece
-  3 step 4 drops their fires. Every deploy restarts the orchestrator. The
-  fix is not this feature's: re-attaching a runner to the idle resident
-  process that the worker keeps (`agent-controller.ts`, `residentSpawn`)
-  would also spare every such session the full cache write that its next
-  turn pays today. Filed as planning#700.
+  3 step 4 drops their fires. A deploy with a new build marks every idle
+  container stale, and the boot sweep destroys it (`restart-turn-reattach.ts`)
+  — req 13's case. What this limit adds is a restart that keeps the build (a
+  crash, a manual restart), whose containers and residents survive. The fix
+  is not this feature's: re-attaching a runner to the idle resident process
+  that the worker keeps (`agent-controller.ts`, `residentSpawn`) needs the
+  resident's spawn identity, which no orchestrator holds after a restart, and
+  would also spare every such session the full cache write that its next turn
+  pays today. Filed as planning#700. No requirement names this exception: the
+  implementation review flagged it, and it is raised on the pull request.
+- **A turn adopted after a restart arms nothing.** Its events are replayed,
+  so their arrival times say nothing about when its requests ran; anchoring
+  on them could put the deadline after the cache is cold. The session's next
+  turn arms again.
 - **A retry after a restart.** A failed attempt is not retried, except once
   more if the orchestrator restarts before `expires`: boot re-derives from the
   same ordinary row, because the failed compaction left no card.
@@ -459,6 +523,18 @@ went to the user: the question hold became the exception of req 12 (piece
 13 (piece 3). From the simplification brief: the result-level usage change
 and the new dispatch flag are gone.
 
+ShipIt reviewer run f9be17c0-99d9-4387-aa48-49780668a2e6 (Codex) reviewed the
+implementation. Accepted and fixed: a silent-compaction mark sent behind a
+turn the CLI started could land on the next ordinary turn (the worker now
+keeps the mark only for the turn the message starts); the enforcer forgot a
+visited session only during a pass over budget, and could count a stopped
+compaction twice in one pass; the 200K floor was not checked again at the
+fire; an adopted turn anchored on its replay time; boot re-derived a deadline
+for the session's current model, not the turn's (the anchor row now carries
+the harness and model). Kept as a known limit, raised on the pull request:
+an orchestrator restart that keeps the build ends idle compaction for
+resident Claude sessions (planning#700).
+
 ## Docs to change
 
 - `src/server/shipit-docs/wiki/settings-and-accounts.md` — the Advanced row.
@@ -469,15 +545,14 @@ and the new dispatch flag are gone.
 
 | File | Change |
 |---|---|
-| `src/server/orchestrator/services/idle-compaction.ts` (new) | Lifetime, deadlines, the one timer, boot re-derivation, `fireIdleCompaction`, `isWaiting` |
-| `src/server/shared/types/claude-types.ts`, `session/agents/claude/adapter.ts`, `shared/types/agent-types.ts` | `cache_creation` on per-message usage; `cacheTtl` on `AgentResultEvent` |
-| `src/server/shared/database.ts`, `src/server/orchestrator/usage.ts` | `usage_turns.cache_ttl`, `cache_anchor_at`; route-scoped lifetime; newest anchored row per session for boot |
-| `src/server/orchestrator/ws-handlers/agent-listeners.ts` | The anchor (last tool result); arm after `usageManager.record`; skip `touchUnlessResolved` for a silent compaction |
-| `src/server/orchestrator/turn-executor.ts` | Skip `track`, unmute and `recordTurnEnd` for a silent compaction |
-| `src/server/orchestrator/turn-adoption.ts` and the in-flight record it reads | Keep the compaction class across a restart |
+| `src/server/orchestrator/services/idle-compaction.ts` (new) | `HARNESS_CACHE`, lifetime, deadlines, the one timer, boot re-derivation, `fire`, `isWaiting` |
+| `src/server/shared/types/claude-types.ts`, `session/agents/claude/adapter.ts`, `shared/types/agent-types.ts` | `cache_creation` on per-message usage; `cacheTtl` on `AgentResultEvent`; the silent-compaction mark on the agent and the worker wire types |
+| `src/server/shared/database.ts`, `src/server/orchestrator/usage.ts` | `usage_turns.cache_ttl`, `cache_anchor_at`; route-scoped lifetime; `onAnchoredTurn`; newest anchored row per session for boot |
+| `src/server/orchestrator/ws-handlers/agent-listeners.ts` | The anchor (last tool result); no anchor for a compaction or a turn that read nothing; skip `touchUnlessResolved` and `last_turn_errored` for a silent compaction |
+| `src/server/orchestrator/turn-executor.ts` | Skip `track`, unmute and `recordTurnEnd` for a silent compaction; mark its process for the worker |
+| `src/server/session/agent-controller.ts`, `orchestrator/proxy-agent-process.ts`, `container-session-runner.ts`, `worker-http.ts`, `turn-adoption.ts` | The worker keeps and reports the silent-compaction class; adoption restores it |
 | `src/server/orchestrator/services/agent-compaction-request.ts` | Export the busy check, with the question hold as a separable arm |
-| `src/server/orchestrator/session-runner.ts` | Admit a silent compaction past the answer hold (req 12) |
-| `src/server/orchestrator/ws-handlers/rollback-handlers.ts`, the model and harness switch paths | Drop the deadline |
+| `src/server/orchestrator/turn-admission.ts`, `session-runner.ts` | `isSilentCompaction`; admit a silent compaction past the answer hold (req 12) |
 | `src/server/orchestrator/idle-enforcer.ts` | Waiting sessions last; compact instead of stop; `compactingToReclaim` |
 | `src/server/shared/settings-catalogue/global-settings.ts`, `orchestrator/credential-store.ts`, `services/misc.ts` | `advanced.idleCompaction` |
-| `src/server/orchestrator/bootstrap-managers.ts` | Build the service, re-derive at boot |
+| `src/server/orchestrator/bootstrap-managers.ts`, `startup-monitors.ts`, `index.ts` | Build the service, subscribe it to the usage rows, re-derive at boot after adoption, stop its timer on close |

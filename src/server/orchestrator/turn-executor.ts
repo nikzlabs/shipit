@@ -214,12 +214,17 @@ export async function executeAgentTurn(
   );
   // The prompt as spawned: a fork's replay leads its first one (docs/007 req 8).
   let submittedPrompt = prompt;
-  if (input.continuesTurn) deps.listenerDeps.sessionManager.touchUnlessResolved(sessionId);
-  else deps.listenerDeps.sessionManager.track(sessionId);
-  if (deps.listenerDeps.sessionManager.setMuted(sessionId, null)) {
-    deps.listenerDeps.sseBroadcast("session_list", {
-      sessions: deps.listenerDeps.sessionManager.list(),
-    });
+  // docs/333-idle-compaction piece 4 — a silent compaction is maintenance: it does not move the
+  // session in the list, resolve-clear it, unmute it, or replace the last real turn's outcome.
+  let maintenanceTurn = input.compact === true && input.silent === true;
+  if (!maintenanceTurn) {
+    if (input.continuesTurn) deps.listenerDeps.sessionManager.touchUnlessResolved(sessionId);
+    else deps.listenerDeps.sessionManager.track(sessionId);
+    if (deps.listenerDeps.sessionManager.setMuted(sessionId, null)) {
+      deps.listenerDeps.sseBroadcast("session_list", {
+        sessions: deps.listenerDeps.sessionManager.list(),
+      });
+    }
   }
   // docs/324-scheduled-sessions — a run's list row carries the mark for "needs you" (req 21).
   // Never throws, like `writeAnswerHold`: the clear is in the turn start, the set in its settlement.
@@ -458,7 +463,7 @@ export async function executeAgentTurn(
   // Unlike the settlement, this also runs for a result that does not answer this turn's prompt.
   let turnEndRecorded = false;
   const recordTurnEnd = (outcome: LastTurnOutcome, detail?: string): void => {
-    if (turnEndRecorded) return;
+    if (turnEndRecorded || maintenanceTurn) return;
     turnEndRecorded = true;
     try {
       const { sessionManager, sseBroadcast } = deps.listenerDeps;
@@ -1084,6 +1089,9 @@ export async function executeAgentTurn(
     },
     ...(input.useStreaming !== undefined ? { useStreaming: input.useStreaming } : {}),
     ...(adoptsCliStartedTurns ? { adoptsCliStartedTurns: true } : {}),
+    ...(input.compact === true ? { compactionTurn: true } : {}),
+    ...(maintenanceTurn ? { maintenanceTurn: true } : {}),
+    ...(input.adopt === true ? { anchorUnknown: true } : {}),
   });
 
   if (!input.isNewSession) {
@@ -1461,6 +1469,7 @@ export async function executeAgentTurn(
     turnEndRecorded = false;
     sawOwnResult = false;
     harnessCommandTurn = false;
+    maintenanceTurn = false;
     thisTurnEpoch = runner?.turnEpoch;
   };
 
@@ -1927,11 +1936,16 @@ export async function executeAgentTurn(
       }
       // A turn that enters a resident process has no spawn to name its delivery, so the
       // prompt carries the id: an orchestrator restart can then still bind its settlement.
-      if (input.deliveryId !== undefined) agent.sendUserMessage(prompt, { deliveryId: input.deliveryId });
+      const turnIdentity = {
+        ...(input.deliveryId !== undefined ? { deliveryId: input.deliveryId } : {}),
+        ...(maintenanceTurn ? { silentCompaction: true } : {}),
+      };
+      if (Object.keys(turnIdentity).length > 0) agent.sendUserMessage(prompt, turnIdentity);
       else agent.sendUserMessage(prompt);
       noteSubmitted();
     } else {
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);
+      if (maintenanceTurn) agent.markSilentCompaction?.();
       // docs/303 req 15 — the worker reports it back, so a restart mid-nudge adopts a turn
       // that still knows it is one and is not nudged again.
       const paramsBegan = Date.now();

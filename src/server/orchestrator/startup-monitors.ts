@@ -49,6 +49,7 @@ export async function startStartupMonitors(
     startupTimer, authManagers, dockerProxyServer, databaseManager,
     mergeWatchManager, sessionInbox, quotaContinuationManager, autoPushScheduler, agentMergeExecutor,
     cleanupContainer, version, agentRegistry, providerAccountManager, scheduleRunner,
+    idleCompaction,
   } = rt;
 
   // docs/324-scheduled-sessions — a pass now, which also finishes what a restart cut off,
@@ -428,6 +429,7 @@ export async function startStartupMonitors(
     mergeWatchManager?.stopRetryLoop();
     sessionInbox?.stop();
     quotaContinuationManager?.stop();
+    idleCompaction.stop();
   });
   registerShutdownHook(app, {
     startupTimer, authManagers, runnerRegistry, autoPushScheduler,

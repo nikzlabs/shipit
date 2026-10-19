@@ -127,6 +127,15 @@ export interface WireListenersOpts {
   useStreaming?: boolean;
   /** Distinct from streaming: Codex can emit final text after its result without starting a turn. */
   adoptsCliStartedTurns?: boolean;
+  /** docs/333-idle-compaction — a compaction turn's usage row starts no idle-compaction deadline. */
+  compactionTurn?: boolean;
+  /** docs/333-idle-compaction — a silent compaction is maintenance, not use of the session. */
+  maintenanceTurn?: boolean;
+  /**
+   * docs/333-idle-compaction — a turn adopted after a restart: its events are replayed, so when
+   * they arrive says nothing about when its requests ran, and its row carries no anchor.
+   */
+  anchorUnknown?: boolean;
 }
 
 /**
@@ -182,6 +191,14 @@ export function wireAgentListeners(
   // Pipe chunks can split the CLI's line.
   let recentStderr = "";
 
+  // docs/333-idle-compaction — when the turn's last model request started: the turn's start,
+  // or its last tool result, which the next request follows at once. Where it errs, it errs
+  // early, which compacts sooner and never after the cache is cold.
+  let cacheAnchorAt = Date.now();
+  let anchorKnown = opts.anchorUnknown !== true;
+  let compactionTurn = opts.compactionTurn === true;
+  let maintenanceTurn = opts.maintenanceTurn === true;
+
   const adoptCliStartedTurn = (reason: string): void => {
     if (!runner) return;
     // Task notifications also arrive mid-turn; resetting then would erase its history.
@@ -189,6 +206,11 @@ export function wireAgentListeners(
     if (startsTurn) {
       resetRunnerTurnState(runner);
       wiredTurnEpoch = runner.turnEpoch;
+      // The CLI's own turn is ordinary work, also on a process a compaction ran on.
+      cacheAnchorAt = Date.now();
+      anchorKnown = true;
+      compactionTurn = false;
+      maintenanceTurn = false;
     }
     runner.running = true;
     // The CLI is already generating, so a Stop must reach its process.
@@ -694,6 +716,7 @@ export function wireAgentListeners(
     }
 
     if (event.type === "agent_tool_result") {
+      cacheAnchorAt = Date.now();
       const toolResults = extractToolResults(event);
 
       if (toolResults.length > 0) toolTracker.reportMcpCrashesFromResults(toolResults);
@@ -733,8 +756,10 @@ export function wireAgentListeners(
           opts.onConversationKept?.();
         }
         // A PR that merged during this turn resolves the session (docs/316 req 5).
-        deps.sessionManager.touchUnlessResolved(turnSessionId);
-        deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
+        if (!maintenanceTurn) {
+          deps.sessionManager.touchUnlessResolved(turnSessionId);
+          deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
+        }
       }
 
       // Non-guarded turns can report permission denials too; do not call them classifier blocks.
@@ -806,6 +831,10 @@ export function wireAgentListeners(
           reportedCostUsd: event.cost?.totalUsd,
           usage: pricedUsage,
         });
+        // docs/333-idle-compaction — a turn whose requests read nothing did not touch the
+        // cache, so the previous turn's anchor still describes it.
+        const touchedCache =
+          (event.tokens?.input ?? 0) + (event.tokens?.cacheRead ?? 0) + (event.tokens?.cacheWrite ?? 0) > 0;
         perTurnUsage.costUsd = deps.usageManager.record(
           usageSessionId,
           resolvedCost.costUsd,
@@ -826,6 +855,10 @@ export function wireAgentListeners(
             ...(turnAttribution ? { attribution: turnAttribution } : {}),
             ...(opts.getCapturedRouteId?.()
               ? { credentialRouteId: opts.getCapturedRouteId()! }
+              : {}),
+            ...(event.cacheTtl ? { cacheTtl: event.cacheTtl } : {}),
+            ...(!compactionTurn && anchorKnown && touchedCache
+              ? { cacheAnchor: { at: cacheAnchorAt, agentId: agent.agentId, model: sessionAtTurnStart?.model ?? null } }
               : {}),
           },
         );
@@ -929,9 +962,10 @@ export function wireAgentListeners(
         }
       }
 
+      // A maintenance turn leaves the last real turn's outcome in place (docs/333-idle-compaction).
       const turnErrored = Boolean((event as { error?: unknown }).error) && !runner?.wasInterrupted;
-      if (runner) runner.lastTurnErrored = turnErrored;
-      if (turnSessionId) deps.sessionManager.setLastTurnErrored(turnSessionId, turnErrored);
+      if (runner && !maintenanceTurn) runner.lastTurnErrored = turnErrored;
+      if (turnSessionId && !maintenanceTurn) deps.sessionManager.setLastTurnErrored(turnSessionId, turnErrored);
 
       sawTurnResult = true;
 
@@ -1000,8 +1034,10 @@ export function wireAgentListeners(
         runner.clearBackgroundTasks();
       }
       runner.running = false;
-      runner.lastTurnErrored = true;
-      if (turnSessionId) deps.sessionManager.setLastTurnErrored(turnSessionId, true);
+      if (!maintenanceTurn) {
+        runner.lastTurnErrored = true;
+        if (turnSessionId) deps.sessionManager.setLastTurnErrored(turnSessionId, true);
+      }
       runner.clearTurnEventBuffer();
       if (turnSessionId) {
         emitToViewers({

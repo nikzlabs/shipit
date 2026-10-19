@@ -1,6 +1,15 @@
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
+import { isCompactCommand } from "../shared/compact-command.js";
 
 export const ANSWER_HOLD_REASON = "the agent is waiting for the user's answer";
+
+/**
+ * docs/333-idle-compaction req 12 — ShipIt's own silent compaction does no work and asks
+ * nothing, so it runs past the answer hold. It is automatic, so it does not release the hold.
+ */
+export function isSilentCompaction(opts: { silent?: boolean; text: string }): boolean {
+  return opts.silent === true && isCompactCommand(opts.text);
+}
 
 /**
  * A stopped scheduled run holds automatic turns too (docs/324-scheduled-sessions req 33).
