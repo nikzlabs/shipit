@@ -1035,9 +1035,15 @@ export function seedRepoCacheWithLocalBare(opts: {
   tmpDir: string;
   repoUrl: string;
   seedFiles?: Record<string, string>;
+  /**
+   * Seed a real bare cache, with the remote as a sibling working repo. The claim's clone path
+   * (`ensureBareCache`) re-clones a cache that is not bare, which empties the default fixture.
+   */
+  bare?: boolean;
 }): void {
   const { tmpDir, repoUrl, seedFiles } = opts;
-  const repoDir = getRepoCacheDir(tmpDir, repoUrl);
+  const cacheDir = getRepoCacheDir(tmpDir, repoUrl);
+  const repoDir = opts.bare ? `${cacheDir}.origin` : cacheDir;
   fs.mkdirSync(repoDir, { recursive: true });
   execSync("git init -b main", { cwd: repoDir, stdio: "ignore" });
 
@@ -1051,6 +1057,10 @@ export function seedRepoCacheWithLocalBare(opts: {
   );
   execSync(`git remote add origin ${repoUrl}`, { cwd: repoDir, stdio: "ignore" });
   execSync("git update-ref refs/remotes/origin/main HEAD", { cwd: repoDir, stdio: "ignore" });
+  if (opts.bare) {
+    execSync(`git clone -q --bare "${repoDir}" "${cacheDir}"`, { stdio: "ignore" });
+    execSync(`git remote set-url origin ${repoUrl}`, { cwd: cacheDir, stdio: "ignore" });
+  }
 
   const gitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
   if (!gitConfigGlobal) {

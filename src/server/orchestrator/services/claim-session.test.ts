@@ -104,6 +104,42 @@ describe("createClaimSessionService", () => {
     expect([warm.sessionId, warm.claimPath, slowClones]).toEqual(["warm-1", "warm", 1]);
   });
 
+  it("reports the claimed session's pre-started preview on its timing line (docs/288 req 11)", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "claim-session-"));
+    dbManager = new DatabaseManager(path.join(tmpDir, "test.db"));
+    const sessionManager = new SessionManager(dbManager);
+    const repoStore = new RepoStore(dbManager);
+    const url = "https://github.com/example/app.git";
+    repoStore.add(url);
+    repoStore.setReady(url);
+    const warmWorkspace = path.join(tmpDir, "sessions", "warm-1", "workspace");
+    fs.mkdirSync(warmWorkspace, { recursive: true });
+    sessionManager.track("warm-1", "Warm session", warmWorkspace);
+    repoStore.setWarmSessionId(url, "warm-1");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const asked: string[] = [];
+
+    const service = createClaimSessionService({
+      sessionManager,
+      repoStore,
+      createGitManager: () => { throw new Error("no git here"); },
+      createRepoGit: () => { throw new Error("not reached"); },
+      githubAuthManager: { authenticated: false } as unknown as GitHubAuthManager,
+      getSharedRepoDir: () => path.join(tmpDir, "repo-cache", "app"),
+      createSessionDirFull: () => { throw new Error("not reached"); },
+      sseBroadcast: () => {},
+      previewState: (sessionId) => { asked.push(sessionId); return "running"; },
+    });
+
+    await service.claim(url);
+
+    expect(asked).toEqual(["warm-1"]);
+    const timing = log.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith("[timing] claim-session"));
+    expect(timing).toContain("path=warm");
+    expect(timing).toContain("preview=running");
+  });
+
   it("still returns the session when a step after the allocation fails, because no caller could remove it", async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "claim-session-"));
     dbManager = new DatabaseManager(path.join(tmpDir, "test.db"));

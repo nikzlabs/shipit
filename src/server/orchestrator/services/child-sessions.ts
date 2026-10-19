@@ -396,6 +396,8 @@ async function claimAndStartChild(
   const claim = await claimService.claim(claimUrl, {
     forceFetch: true,
     skipReuse: true,
+    // The repo's one warm session is kept for a person opening a session (docs/288 req 12).
+    skipWarm: true,
     excludeSessionIds: [parentSessionId],
   });
   claimed.sessionId = claim.sessionId;

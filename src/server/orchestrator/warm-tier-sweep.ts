@@ -58,10 +58,23 @@ export function createWarmTierSweep(deps: WarmTierSweepDeps): () => Promise<void
     return containerManager.isTrackedContainerRunning(sessionId);
   }
 
+  // Log transitions only: a pass runs every few minutes for as long as the pressure lasts.
+  let skippingForMemory = false;
+
   return async () => {
     if (!containerManager) return;
     // Avoid rebuilding containers the memory enforcer will immediately discard.
-    if (isUnderEvictionPressure(getMemoryStats?.() ?? null)) return;
+    if (isUnderEvictionPressure(getMemoryStats?.() ?? null)) {
+      if (!skippingForMemory) {
+        console.log("[warm-sweep] memory is at the eviction threshold — warm repairs paused until it drops");
+        skippingForMemory = true;
+      }
+      return;
+    }
+    if (skippingForMemory) {
+      console.log("[warm-sweep] memory is below the eviction threshold — warm repairs resumed");
+      skippingForMemory = false;
+    }
 
     for (const repo of repoStore.list()) {
       if (repo.status !== "ready") continue;

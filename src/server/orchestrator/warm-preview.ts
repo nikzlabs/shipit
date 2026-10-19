@@ -24,6 +24,17 @@ export function isRecentlyUsedRepo(lastUsedAt: string | undefined, now = Date.no
   return now - ms <= WARM_PREVIEW_RECENCY_DAYS * DAY_MS;
 }
 
+export type WarmPreviewState = "running" | "starting" | "error" | "none" | "no-auto";
+
+/** What a claim finds waiting for the user, for the claim's timing line (req 11). */
+export function warmPreviewState(mgr: ServiceManager | undefined): WarmPreviewState {
+  if (!mgr) return "none";
+  const auto = mgr.getServices().filter((s) => s.preview === "auto");
+  if (auto.length === 0) return mgr.started ? "no-auto" : "starting";
+  if (auto.some((s) => s.status === "error")) return "error";
+  return auto.every((s) => s.status === "running") ? "running" : "starting";
+}
+
 export interface WarmPreviewDeps extends ServiceManagerBuildDeps {
   repoStore: RepoStore;
   sessionManager: SessionManager;

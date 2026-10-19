@@ -263,6 +263,8 @@ numbers rather than argument:
 | `install-gate` | `service-manager.ts` | how much of "Starting…" was `agent.install` |
 | `compose.up` | `compose-cli.ts` | the `up` itself, split into image and container work |
 | `preview.first-connect` | `preview-timing.ts` | the dev server's own boot — the part this feature removes |
+| `claim-session … preview=` | `claim-session.ts` | what the claim found waiting: `running`, `starting`, `error`, `none`, `no-auto` |
+| `install-decision … warm-stack=` | `service-manager-setup.ts` | `decision=started` with `warm-stack=yes` means the gate stops the pre-started services |
 
 `preview.first-connect` is the number this feature is trying to move: on a warm
 hit it should stop being paid at all, because the first request arrives at a
@@ -363,12 +365,45 @@ reports hours in that phase however fast it booted. The metric needs
 warm-vs-claim attribution before the before/after comparison this design asks for
 can be made. The checklist item stays unchecked.
 
+## Follow-up: claims still opened cold (2026-10-19)
+
+The pre-start shipped, and new sessions still opened with their services down.
+Two causes, both outside the pre-start itself.
+
+**The claim deleted the install marker.** `refreshCloneToLatestMain` unlinked
+the marker whenever its reset moved HEAD — a rule from March 2026, when the
+marker was a bare file. On an active repo the default branch almost always moves
+between two claims, so activation found no marker, the worker reinstalled, the
+`onInstallDecision` relay reported `started`, and the gate ran `compose stop` on
+every auto service. The adopt path's skip handling ("What activation does") was
+correct; it never got a skip. The worker's own stamp already covers a moved HEAD
+(verified at `install-marker.ts:markerMatches`: commit OR dependency-content
+hash, hash required for pnpm), so the claim now leaves the marker alone. A
+default-branch commit that changed the dependencies still reinstalls.
+
+**Agent spawns took the warm session (req 12).** A repo holds one warm session,
+and `warmSessionId` is set as soon as the clone exists. Child sessions
+(`spawnChildSession`, which also serves `propose_repo_session`), headless starts
+and plugin-install sessions all claimed it, so a person's next claim usually got
+a session whose standby, install and preview had not started. They now claim with
+`skipWarm`. A `skipWarm` claim still waits for an in-flight warm before its own
+clone: that wait lasts only the clone, and it keeps two fetches out of the bare
+cache at once.
+
+**Silent skips now log.** The standby step logs when memory stops it, and the
+sweep logs when memory pauses and resumes its repairs.
+
+Req 13 (keep the warm clone current with the default branch) waits on its open
+questions in `requirements.md`.
+
 ## Key files
 
 - `src/server/orchestrator/warm-preview.ts` — the pre-start itself: the recency
   gate, the build, the registration, the start, and the failure cleanup.
 - `src/server/orchestrator/warm-pool-manager.ts` — where it is called from
   (`preStartPreview`, last step of `ensureStandbyForWarmSession`).
+- `src/server/orchestrator/services/claim-session.ts` — the claim; `skipWarm`
+  keeps the warm session for a person (req 12).
 - `src/server/orchestrator/service-manager-setup.ts` — `buildServiceManager` is
   the one construction site; `applyOverlayDepDirsForSession` its runner-free
   overlay half; `adoptExistingServiceManager` is the handoff.

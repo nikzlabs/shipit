@@ -62,6 +62,8 @@ describe("Integration: Ops ShipIt fix-session spawn (docs/162)", () => {
       tmpDir,
       repoUrl: SHIPIT_REPO_URL,
       seedFiles: { "README.md": "# shipit\n" },
+      // A spawn never takes the warm session, so it exercises the clone path.
+      bare: true,
     });
     repoStore.add(SHIPIT_REPO_URL);
     repoStore.setReady(SHIPIT_REPO_URL);

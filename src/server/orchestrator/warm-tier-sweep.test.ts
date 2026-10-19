@@ -217,6 +217,23 @@ describe("warm tier sweep", () => {
     expect(world.warmSessionForRepo).not.toHaveBeenCalled();
   });
 
+  it("logs once when memory pauses repairs and once when they resume", async () => {
+    const log = vi.mocked(console.log);
+    world = makeSweep();
+    const pauseLines = () => log.mock.calls.filter(([m]) => String(m).includes("warm repairs paused")).length;
+    const resumeLines = () => log.mock.calls.filter(([m]) => String(m).includes("warm repairs resumed")).length;
+
+    world.setMemory(atBudget());
+    await world.sweep();
+    await world.sweep();
+    expect(pauseLines()).toBe(1);
+
+    world.setMemory(null);
+    await world.sweep();
+    await world.sweep();
+    expect(resumeLines()).toBe(1);
+  });
+
   it("leaves a freshly warmed session alone until the grace window passes", async () => {
     world = makeSweep({ tracked: null, createdAt: new Date().toISOString() });
 

@@ -48,6 +48,7 @@ import {
   createDepCacheDirHelper,
   createWarmPool,
   createWarmPreviewStarter,
+  warmPreviewState,
   runRepoMigration,
   runRemoteCredentialScrub,
   clearUnrecordedRepoAddresses,
@@ -1099,6 +1100,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     ...(repoPrefetcher ? { shouldSkipClaimFetch: (url: string) => repoPrefetcher.coveredRecently(url) } : {}),
     ...(containerManager ? { containerManager } : {}),
     egressAllowlistStore,
+    previewState: (sessionId: string) => warmPreviewState(serviceManagers.get(sessionId)),
   });
 
   // docs/324-scheduled-sessions — runs start through the same headless start as Quick Capture.

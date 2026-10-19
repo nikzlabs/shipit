@@ -72,7 +72,10 @@ export function createWarmPool(
         console.warn(`[warm] Skipping standby for ${sessionId}: OOM circuit breaker tripped`);
         return;
       }
-      if (isUnderEvictionPressure(getMemoryStats?.() ?? null)) return;
+      if (isUnderEvictionPressure(getMemoryStats?.() ?? null)) {
+        console.log(`[warm] Skipping standby for ${sessionId}: memory is at the eviction threshold`);
+        return;
+      }
 
       // A destroy during preflight must invalidate this creation attempt.
       const intentEpoch = containerManager.teardownEpoch(sessionId);

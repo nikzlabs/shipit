@@ -102,6 +102,7 @@ export type { WarmPoolDeps } from "./warm-pool-manager.js";
 export {
   createWarmPreviewStarter,
   preStartWarmPreview,
+  warmPreviewState,
   isRecentlyUsedRepo,
   WARM_PREVIEW_RECENCY_DAYS,
 } from "./warm-preview.js";

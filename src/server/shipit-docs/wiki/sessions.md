@@ -38,7 +38,9 @@ The user can start a session from:
 
 A new session usually opens instantly because ShipIt keeps a warm one prepared
 in the background. It becomes a real session, with a name derived from the first
-message, the moment the user sends that message.
+message, the moment the user sends that message. The warm session is kept for
+the user: a session you spawn, a Quick Capture or a scheduled run gets its own
+fresh clone, so it starts a little slower and leaves the prepared one in place.
 
 ## Reading a session row
 
