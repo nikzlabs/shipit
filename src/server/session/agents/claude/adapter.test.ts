@@ -838,6 +838,66 @@ describe("ClaudeAdapter", () => {
     });
   });
 
+  describe("cache lifetime (docs/333-idle-compaction)", () => {
+    // The 2.1.300 probe's shape: every main-thread call carries the split.
+    const call = (id: string, fiveMinute: number, oneHour: number, parent?: string): ClaudeEvent => ({
+      type: "assistant",
+      message: {
+        id,
+        content: [{ type: "text", text: id }],
+        usage: {
+          input_tokens: 9,
+          cache_creation_input_tokens: fiveMinute + oneHour,
+          cache_creation: { ephemeral_5m_input_tokens: fiveMinute, ephemeral_1h_input_tokens: oneHour },
+        },
+      },
+      ...(parent ? { parent_tool_use_id: parent } : {}),
+    });
+    const result: ClaudeEvent = { type: "result", subtype: "success", session_id: "s" };
+
+    function resultsOf(events: ClaudeEvent[]) {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      const results: any[] = [];
+      adapter.on("event", (e) => {
+        if (e.type === "agent_result") results.push(e);
+      });
+      for (const e of events) inner.emit("event", e);
+      return { inner, adapter, results };
+    }
+
+    it("reports 1h when every main-thread write was a 1-hour entry", () => {
+      const { results } = resultsOf([call("msg_1", 0, 10_174), call("msg_2", 0, 64), result]);
+      expect(results[0].cacheTtl).toBe("1h");
+    });
+
+    it("reports 5m when any main-thread write was a 5-minute entry", () => {
+      const { results } = resultsOf([call("msg_1", 0, 10_174), call("msg_2", 30, 0), result]);
+      expect(results[0].cacheTtl).toBe("5m");
+    });
+
+    it("ignores a subagent's 5-minute writes", () => {
+      const { results } = resultsOf([call("msg_sub", 500, 0, "toolu_1"), call("msg_1", 0, 64), result]);
+      expect(results[0].cacheTtl).toBe("1h");
+    });
+
+    it("reports nothing for a turn that only read the cache", () => {
+      const { results } = resultsOf([call("msg_1", 0, 0), result]);
+      expect(results[0].cacheTtl).toBeUndefined();
+    });
+
+    it("starts each turn's reading afresh, after a result or a turn with no result", () => {
+      const { inner, adapter, results } = resultsOf([call("msg_1", 30, 0), result]);
+      inner.emit("event", call("msg_2", 0, 64));
+      inner.emit("event", result);
+      inner.emit("event", call("msg_3", 30, 0));
+      adapter.run({ prompt: "p", cwd: "/workspace" } as AgentRunParams);
+      inner.emit("event", call("msg_4", 0, 64));
+      inner.emit("event", result);
+      expect(results.map((r) => r.cacheTtl)).toEqual(["5m", "1h", "1h"]);
+    });
+  });
+
   it("does not use nested subagent usage as the main context", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);

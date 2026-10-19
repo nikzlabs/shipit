@@ -278,6 +278,11 @@ export interface AgentResultEvent {
   requests?: AgentRequestUsage[];
   /** Prefer the reported window to the static fallback. */
   contextWindow?: number;
+  /**
+   * docs/333-idle-compaction — the lifetime of the cache entries this turn's main-thread
+   * calls wrote: "5m" if any was a 5-minute entry. Absent when the turn wrote none.
+   */
+  cacheTtl?: "5m" | "1h";
   durationMs?: number;
   error?: string;
   /** Classifier denials only, not model self-refusals. */
@@ -512,7 +517,10 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
    * `deliveryId` marks the message as a turn's own prompt and names that turn's delivery
    * (docs/329-user-steers-every-turn). A steer passes none.
    */
-  sendUserMessage(text: string, opts?: { images?: ImageAttachment[]; deliveryId?: string }): void;
+  sendUserMessage(
+    text: string,
+    opts?: { images?: ImageAttachment[]; deliveryId?: string; silentCompaction?: boolean },
+  ): void;
   /**
    * The last `run`/`sendUserMessage` submission, resolved once the process has
    * accepted it and rejected if it never did. Present only where submission is
@@ -533,6 +541,11 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
   setPermissionRequester?(requester: PermissionRequester): void;
   /** Correlates a surviving worker turn after orchestrator restart. */
   setDeliveryId?(deliveryId: string): void;
+  /**
+   * docs/333-idle-compaction — the turn this process runs is a silent compaction; a restarted
+   * orchestrator reads it back from the worker and adopts the turn as maintenance.
+   */
+  markSilentCompaction?(): void;
   /** docs/154 — works with or without a live process; `threadId` is the session's agentSessionId. */
   goalCommand?(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult>;
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult;
@@ -564,6 +577,8 @@ export interface WorkerAgentStartBody {
   params: AgentRunParams;
   runToken?: string;
   deliveryId?: string;
+  /** docs/333-idle-compaction — reported back as `WorkerAgentStatus.silentCompaction`. */
+  silentCompaction?: boolean;
   /** docs/318 — the orchestrator's published model list; the worker's embedded one can predate it. */
   modelList?: unknown;
 }
@@ -588,6 +603,8 @@ export interface WorkerAgentStatus {
   ownTurn?: "heard" | "unheard";
   runToken?: string;
   deliveryId?: string;
+  /** docs/333-idle-compaction — the active turn is a silent compaction ShipIt started. */
+  silentCompaction?: boolean;
   agentId?: AgentId;
   streaming?: boolean;
   backgroundTaskCount?: number;

@@ -139,12 +139,20 @@ a hazard a ShipIt design must also answer.
     process reads the previous one's cache. This is an exception to
     requirement 9.
 
+16. After an orchestrator restart that keeps the session's container and its
+    Claude agent process, that session gets no idle compaction until its next
+    turn. This is an exception to requirements 1 and 2: the restarted
+    orchestrator has no link to the process that holds the warm cache, and a
+    new process would write the whole conversation to the cache again
+    (requirement 13's reason). The exception ends when ShipIt can reconnect
+    to that process (planning#700).
+
 ## Requirement provenance
 
 Requirements 1 and 2 come from what the user asked for: the user wants ShipIt
 users to get the benefit of the CLI's compaction before the cache expires,
 even though ShipIt can stop a container before that time. Requirements 5 to
-15 come from the user's answers and instructions on 2026-10-19 (below).
+16 come from the user's answers and instructions on 2026-10-19 (below).
 Requirements 3 and 4 were
 not asked for: each keeps a guarantee that already ships from becoming weaker —
 docs/178 for how a compaction appears, and docs/295 req 9 and docs/324 req 6
@@ -220,3 +228,9 @@ None.
   could not be probed. Does Grok stay in scope? Offered "exclude until tested"
   (recommended) or "keep it under requirement 10's 30-minute assumption". The
   user chose to exclude it until tested. Recorded as requirement 15.
+- 2026-10-19 — The implementation review found that an orchestrator restart
+  which keeps the build (a crash, a manual restart) leaves Claude sessions
+  whose container and agent process survive with no idle compaction until
+  their next turn, which no requirement allowed. Offered "accept it as a
+  known limit until planning#700" or "record it as a requirement exception".
+  The user chose the exception. Recorded as requirement 16.

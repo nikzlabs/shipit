@@ -82,6 +82,9 @@ export class AgentController {
   private turnDeliveryId: string | undefined;
   // The id of a prompt that went in behind a turn the CLI started; the next turn takes it.
   private pendingDeliveryId: string | undefined;
+  // docs/333-idle-compaction — turn-scoped like the delivery id, so a restarted orchestrator
+  // adopts a silent compaction as the maintenance it is.
+  private turnSilentCompaction = false;
 
   // docs/303 req 15 — likewise turn-scoped: a restarted orchestrator reads it back from
   // /agent/status, so the adopted turn settles as the nudge it is and is not nudged twice.
@@ -142,6 +145,7 @@ export class AgentController {
         // Capture turn identity and replay position before the adapter emits anything.
         this.beginTurn();
         this.turnDeliveryId = deliveryId;
+        this.turnSilentCompaction = request.body.silentCompaction === true;
         this.residentSpawn = { runToken, streaming: params.useStreaming === true };
         const agent = this.deps.agentFactory(agentId);
         this.agent = agent;
@@ -342,7 +346,7 @@ export class AgentController {
       return { live: this.liveServiceMcp };
     });
 
-    app.post<{ Body: { text: string; deliveryId?: string } }>(
+    app.post<{ Body: { text: string; deliveryId?: string; silentCompaction?: boolean } }>(
       "/agent/message",
       async (request, reply) => {
         if (!(await this.startSettledWithin(this.deps.messageStartWaitMs ?? MESSAGE_START_WAIT_MS))) {
@@ -372,6 +376,10 @@ export class AgentController {
           if (startsTurn) this.turnDeliveryId = deliveryId;
           else this.pendingDeliveryId = deliveryId;
         }
+        // Only the turn this message starts. Behind a turn the CLI started, a compaction can
+        // run without an event that marks its start here, so a mark kept for it would land
+        // on whichever turn begins next.
+        if (startsTurn) this.turnSilentCompaction = request.body?.silentCompaction === true;
         this.agent.sendUserMessage(text);
         return { success: true };
       },
@@ -428,6 +436,7 @@ export class AgentController {
       pendingPermissionIds: this.deps.permissionBroker.unansweredIds,
       ...(this.residentSpawn?.runToken !== undefined ? { runToken: this.residentSpawn.runToken } : {}),
       ...(this.turnDeliveryId !== undefined ? { deliveryId: this.turnDeliveryId } : {}),
+      ...(this.turnSilentCompaction ? { silentCompaction: true } : {}),
       ...(this.agent ? { agentId: this.agent.agentId } : {}),
       ...(this.residentSpawn
         ? { streaming: this.residentSpawn.streaming || this.agent?.isStreaming === true }
@@ -452,6 +461,7 @@ export class AgentController {
   private beginTurn(): void {
     this.turnActive = true;
     this.turnStartSseSeq = this.deps.latestSseSeq();
+    this.turnSilentCompaction = false;
     if (this.pendingDeliveryId !== undefined) {
       this.turnDeliveryId = this.pendingDeliveryId;
       this.pendingDeliveryId = undefined;
@@ -497,6 +507,7 @@ export class AgentController {
     // Background tasks can outlive a turn; retain their count until the process ends.
     this.selfWakeActive = false;
     this.turnDeliveryId = undefined;
+    this.turnSilentCompaction = false;
     this.reclaimBrowsers();
   }
 

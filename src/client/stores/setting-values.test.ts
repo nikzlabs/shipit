@@ -136,6 +136,7 @@ describe("the record covers the settings the converted tabs generate", () => {
       "advanced.releaseChannel",
       "advanced.enableSubAgents",
       "advanced.agentCompaction",
+      "advanced.idleCompaction",
       "advanced.liveSteering",
       "integrations.autoCreatePr",
       "advanced.autoFixCi",

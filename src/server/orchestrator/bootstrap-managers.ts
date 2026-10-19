@@ -86,6 +86,7 @@ import { MergeWatchManager } from "./merge-watch.js";
 import { QuotaContinuationManager } from "./services/quota-continuation.js";
 import { runRequestedRestart, type RequestedRestartTurn } from "./services/agent-restart-request.js";
 import { runRequestedCompaction } from "./services/agent-compaction-request.js";
+import { IdleCompaction } from "./services/idle-compaction.js";
 import { reportStoppedBackgroundJobs, type StoppedBackgroundJobsReport } from "./services/stopped-background-jobs.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { CleanupContainerManager, CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
@@ -275,6 +276,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       sessionManager,
     });
   }
+  // docs/333-idle-compaction — built once the registry exists; the enforcer reads it at call time.
+  const idleCompactionRef: { ref: IdleCompaction | null } = { ref: null };
   // Reuse the enforcer: its state prevents repeated reclaim against a stale memory reading.
   let idleEnforcer: (() => void) | null = null;
   const enforceIdleContainerLimit = () => {
@@ -302,6 +305,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       poolWarmSessionIds: () => new Set(
         repoStore.list().flatMap((repo) => (repo.warmSessionId ? [repo.warmSessionId] : [])),
       ),
+      idleCompaction: {
+        isWaiting: (sessionId) => idleCompactionRef.ref?.isWaiting(sessionId) ?? false,
+        fire: (sessionId) => idleCompactionRef.ref?.fire(sessionId) ?? Promise.resolve(),
+      },
     });
     idleEnforcer();
   };
@@ -779,6 +786,20 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   });
   registryHolder.ref = runnerRegistry;
 
+  const idleCompaction = new IdleCompaction({
+    isEnabled: () => credentialStore.getIdleCompaction(),
+    liveSteering: () => credentialStore.getLiveSteering(),
+    defaultAgentId,
+    sessionManager,
+    usageManager,
+    chatHistoryManager,
+    runnerRegistry,
+    containerManager,
+  });
+  idleCompactionRef.ref = idleCompaction;
+  // Before any turn can end: an adopted turn's result arms a deadline too.
+  usageManager.onAnchoredTurn((turn) => idleCompaction.arm(turn));
+
   const repoPrefetcher: RepoPrefetcher | null = isTestMode ? null : createRepoPrefetcher({
     repoStore, getBareCacheDir, createRepoGit, githubAuthManager,
   });
@@ -1181,6 +1202,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   } catch (err: unknown) {
     console.error("[turn-reattach] startup sweep failed:", err);
   }
+  // After adoption: a fire that is due at once must see the turns the sweep adopted as running.
+  try {
+    idleCompaction.rederive();
+  } catch (err: unknown) {
+    console.error("[idle-compaction] re-deriving the deadlines at boot failed:", err);
+  }
   void reconcileAgentMergeClaims({
     claims: agentMergeClaims,
     sessionManager,
@@ -1273,6 +1300,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     runRequestedRestartForTurn,
     runRequestedCompactionForTurn,
     reportStoppedBackgroundJobsForTurn,
+    idleCompaction,
     prStatusPoller,
     releaseStatusPoller,
     limitsRegistry,

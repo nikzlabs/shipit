@@ -314,7 +314,7 @@ request whose prompt is over the vendor's limit. The figures sit beside the ring
 on a wide composer and inside the popover otherwise, so "I can't see a number"
 usually means a narrow panel.
 
-**Compaction** summarises the conversation so far and frees that context. Four
+**Compaction** summarises the conversation so far and frees that context. Five
 ways it happens:
 
 - The user types **`/compact`**, optionally with instructions after it —
@@ -340,6 +340,20 @@ ways it happens:
   Offered only where the harness supports compaction. The user can untick it,
   and the choice is kept for the session — the pull request's **⋮** menu shows
   it as **Compact after merge**.
+- **While the session is idle.** With the user's setting *Compact idle sessions
+  before the prompt cache expires* (Settings → Advanced, off by default) on,
+  ShipIt compacts a session whose context is 200K tokens or more shortly before
+  its provider's prompt cache expires — 54 minutes after the last model request
+  on a one-hour cache, 27 on a 30-minute one — so the user's next message does
+  not read the whole conversation again at full price. Read it with
+  `shipit settings get advanced.idleCompaction`. It also runs while you wait for
+  the user's answer to a question or a plan, which stays open. It skips a done
+  session, a cache that lives under 30 minutes (Claude on an API key, or a
+  Claude model through OpenCode), Grok sessions, and a Claude session whose
+  agent process — or ShipIt itself — has restarted since its last turn: a new
+  process reads the whole conversation again, so compacting there saves
+  nothing, and after a ShipIt restart nothing reconnects to the old one yet.
+  A message the user sends meanwhile waits for the compaction, then runs.
 
 Whichever way it happened, a **Context compacted** card is left in the
 transcript — with the before and after token counts where the harness reports

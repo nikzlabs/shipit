@@ -1221,6 +1221,20 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "compact_after_merge_off", "INTEGER NOT NULL DEFAULT 0");
   },
+  // docs/333-idle-compaction — the lifetime of the cache a turn wrote, and when its last model
+  // request started and on which harness and model: the record an idle compaction's deadline is
+  // derived from, also at boot.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(usage_turns)").all() as { name: string }[];
+    for (const [column, type] of [
+      ["cache_ttl", "TEXT"],
+      ["cache_anchor_at", "INTEGER"],
+      ["cache_agent_id", "TEXT"],
+      ["cache_model", "TEXT"],
+    ] as const) {
+      if (!columns.some((c) => c.name === column)) db.exec(`ALTER TABLE usage_turns ADD COLUMN ${column} ${type}`);
+    }
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

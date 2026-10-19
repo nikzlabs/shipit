@@ -32,6 +32,7 @@ export { runDispatchedTurn };
 
 import {
   automaticTurnHeldForAnswer,
+  isSilentCompaction,
   readAnswerHold,
   turnBlockedByPendingCommit,
 } from "./turn-admission.js";
@@ -392,7 +393,7 @@ export function dispatchOnRunner(
   const uncommitted = step ? null : turnBlockedByPendingCommit(runner);
   if (uncommitted) return enqueueOrRefuse(uncommitted);
 
-  const answerHeld = automaticTurnHeldForAnswer(runner, opts.automatic);
+  const answerHeld = isSilentCompaction(opts) ? null : automaticTurnHeldForAnswer(runner, opts.automatic);
   if (answerHeld) return enqueueOrRefuse(answerHeld);
 
   // Only once admitted: a refused step must not end the process of a turn it did not start.

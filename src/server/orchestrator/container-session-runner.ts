@@ -17,7 +17,7 @@ import type { TurnHandle } from "./turn-settlement.js";
 import type { SSEEvent } from "./sse-client.js";
 import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage, PLACEHOLDER_WORKER_URL, WorkerUnavailableError } from "./worker-http.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
-import type { ProxyAgentRunner } from "./proxy-agent-process.js";
+import type { ProxyAgentRunner, WorkerTurnIdentity } from "./proxy-agent-process.js";
 import { adoptInFlightTurn, type InFlightTurnInfo } from "./turn-adoption.js";
 import { reconcilePermissionCards } from "./permission-cards.js";
 import { workerReportsNoTurn } from "./restart-turn-reattach.js";
@@ -741,7 +741,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     agentId: AgentId,
     params: AgentRunParams,
     runToken?: string,
-    turn?: { deliveryId?: string },
+    turn?: WorkerTurnIdentity,
   ): Promise<void> {
     const prev = this._startInFlight;
     let release: () => void = () => {};
@@ -758,7 +758,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     agentId: AgentId,
     params: AgentRunParams,
     runToken?: string,
-    turn?: { deliveryId?: string },
+    turn?: WorkerTurnIdentity,
   ): Promise<void> {
     await this._workerReady;
     this.assertWorkerReachable("/agent/start");
@@ -775,6 +775,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       params: this.withCurrentServiceMcp(params),
       ...(runToken !== undefined ? { runToken } : {}),
       ...(turn?.deliveryId !== undefined ? { deliveryId: turn.deliveryId } : {}),
+      ...(turn?.silentCompaction ? { silentCompaction: true } : {}),
       ...modelListField(),
     };
 
@@ -913,6 +914,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       ...(status.deliveryId !== undefined ? { deliveryId: status.deliveryId } : {}),
       streaming: status.streaming === true,
       ...(status.ownTurn !== undefined ? { ownTurn: status.ownTurn } : {}),
+      ...(status.silentCompaction === true ? { silentCompaction: true } : {}),
     });
     if (!adopted) return false;
     await adopted;
@@ -1105,7 +1107,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await workerPost(this.workerUrl, "/agent/stdin", { data });
   }
 
-  async sendAgentMessage(text: string, turn?: { deliveryId?: string }): Promise<void> {
+  async sendAgentMessage(text: string, turn?: WorkerTurnIdentity): Promise<void> {
     await workerPostMessage(this.workerUrl, text, turn);
   }
 
