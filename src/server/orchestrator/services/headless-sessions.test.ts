@@ -777,14 +777,6 @@ describe("createHeadlessSession", () => {
       expect(claim.claim).toHaveBeenNthCalledWith(2, REPO_URL, { skipReuse: true, skipWarm: true });
     });
 
-    it("never takes the warm session — nobody watches a headless start (docs/288 req 12)", async () => {
-      const claim = claimService();
-
-      await createHeadlessSession(deps({ claimService: claim }), { ...repo(), prompt: "quick" });
-
-      expect(claim.claim).toHaveBeenCalledWith(REPO_URL, expect.objectContaining({ skipWarm: true }));
-    });
-
     it("links a run's session as soon as it exists, so a start refused later leaves it linked", async () => {
       const { runner, markReady, order } = startingContainerRunner({ disposed: true });
       markReady();

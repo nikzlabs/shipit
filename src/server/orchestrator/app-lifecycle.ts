@@ -103,6 +103,7 @@ export {
   createWarmPreviewStarter,
   preStartWarmPreview,
   warmPreviewState,
+  warmPreviewWanted,
   isRecentlyUsedRepo,
   WARM_PREVIEW_RECENCY_DAYS,
 } from "./warm-preview.js";

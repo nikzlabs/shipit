@@ -39,6 +39,8 @@ export interface WarmTierSweepDeps {
   // Remove the manager as well as its containers so preview repair can rebuild it.
   stopPreview?: (sessionId: string) => void;
   repairPreview?: (opts: { sessionId: string; workspaceDir: string; repoUrl: string }) => Promise<void>;
+  /** Move a healthy warm session to the latest default branch (docs/288 req 13). */
+  refreshWarm?: (opts: { sessionId: string; workspaceDir: string; repoUrl: string }) => Promise<void>;
   getMemoryStats?: () => DockerMemoryStats | null;
 }
 
@@ -46,7 +48,7 @@ export function createWarmTierSweep(deps: WarmTierSweepDeps): () => Promise<void
   const {
     repoStore, sessionManager, containerManager,
     warmSessionForRepo, ensureStandbyForWarmSession, waitForWarmSession, stopPreview, repairPreview,
-    getMemoryStats,
+    refreshWarm, getMemoryStats,
   } = deps;
 
   // Probe Docker; the tracking map can miss standby exits. Undefined is not proof of death.
@@ -99,13 +101,11 @@ export function createWarmTierSweep(deps: WarmTierSweepDeps): () => Promise<void
 
         const up = await standbyIsUp(warmId);
         if (up !== false) {
-          // A healthy standby may have lost its preview under memory pressure.
           if (up === true && repoStore.get(repo.url)?.warmSessionId === warmId) {
-            await repairPreview?.({
-              sessionId: warmId,
-              workspaceDir: session.workspaceDir,
-              repoUrl: repo.url,
-            });
+            const target = { sessionId: warmId, workspaceDir: session.workspaceDir, repoUrl: repo.url };
+            await refreshWarm?.(target);
+            // A healthy standby may have lost its preview under memory pressure.
+            if (repoStore.get(repo.url)?.warmSessionId === warmId) await repairPreview?.(target);
           }
           continue;
         }

@@ -35,7 +35,7 @@ import {
   staleDepDirs,
   unreconciledPnpmDepDirs,
 } from "./dep-tree-staleness.js";
-import { computeInstallDepsHash } from "../shared/deps-hash.js";
+import { computeInstallDepsHash, contentKeyDescribesTree } from "../shared/deps-hash.js";
 import { isPnpmRepo } from "../shared/pnpm-repo.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
@@ -361,18 +361,24 @@ export class InstallController {
     const marker = parseMarker(raw);
     return (
       marker !== null &&
-      markerMatches(marker, stamp, { requireDepsHash: isPnpmRepo(this.workspaceDir) })
+      markerMatches(marker, stamp, {
+        requireDepsHash: isPnpmRepo(this.workspaceDir),
+        contentKeyDescribesTree: contentKeyDescribesTree(this.workspaceDir, this.readInstallInputs()),
+      })
     );
   }
 
-  private computeDepsHash(commands: string[]): string | null {
-    let installInputs: string[] | null = null;
+  private readInstallInputs(): string[] | null {
     try {
-      installInputs = resolveShipitConfig(this.workspaceDir).agent.installInputs;
+      return resolveShipitConfig(this.workspaceDir).agent.installInputs;
     } catch {
       // Unreadable/invalid config — fall back to the command-derived inputs.
+      return null;
     }
-    return computeInstallDepsHash(this.workspaceDir, commands, installInputs);
+  }
+
+  private computeDepsHash(commands: string[]): string | null {
+    return computeInstallDepsHash(this.workspaceDir, commands, this.readInstallInputs());
   }
 
   // The marker records a past install, not the tree now: overlay mount changes can empty a dep dir,

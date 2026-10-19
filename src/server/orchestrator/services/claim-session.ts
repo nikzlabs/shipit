@@ -77,10 +77,23 @@ export class ClaimAbortedError extends Error {
 
 export interface ClaimSessionService {
   claim(url: string, opts?: ClaimSessionOptions): Promise<ClaimSessionResult>;
+  /**
+   * Bring the repo's warm session up to the default branch while nobody holds it (docs/288 req 13).
+   * Runs under the claim lock; null when `sessionId` is no longer the repo's warm session.
+   */
+  refreshWarm?(url: string, sessionId: string): Promise<{ headChanged: boolean } | null>;
+}
+
+async function readCacheHead(cacheDir: string): Promise<string | null> {
+  try {
+    return (await safeSimpleGit(cacheDir).raw(["rev-parse", "HEAD"])).trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 // Share one instance across callers so claims for the same repository serialize.
-export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionService {
+export function createClaimSessionService(deps: ClaimSessionDeps): Required<ClaimSessionService> {
   const claimChains = new Map<string, Promise<unknown>>();
   // One entry per tab and repository; a tab id lives for one page load, so the oldest entries are dropped.
   const draftByTab = new Map<string, string>();
@@ -167,6 +180,25 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
   }
 
   return {
+    refreshWarm(url: string, sessionId: string): Promise<{ headChanged: boolean } | null> {
+      return serializeClaim(url, async () => {
+        if (deps.repoStore.get(url)?.warmSessionId !== sessionId) return null;
+        const workspaceDir = deps.sessionManager.get(sessionId)?.workspaceDir;
+        if (!workspaceDir) return null;
+        const sessionGit = deps.createGitManager(workspaceDir);
+        const headBefore = await sessionGit.getHeadHash();
+        // The prefetcher keeps the bare cache current, so an unmoved cache means nothing to fetch.
+        const cacheHead = await readCacheHead(deps.getSharedRepoDir(url));
+        if (cacheHead === null || cacheHead === headBefore) return { headChanged: false };
+        await refreshCloneToLatestMain(
+          workspaceDir,
+          url,
+          (err) => deps.githubAuthManager.markTokenInvalid(`warm refresh failed for ${url}: ${err.message}`),
+        );
+        return { headChanged: (await sessionGit.getHeadHash()) !== headBefore };
+      });
+    },
+
     async claim(url, opts): Promise<ClaimSessionResult> {
       const repo = deps.repoStore.get(url);
       if (!repo) throw new ServiceError(404, "Repository not found");

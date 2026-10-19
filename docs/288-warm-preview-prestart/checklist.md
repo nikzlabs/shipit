@@ -35,8 +35,12 @@
 - [x] Child, headless and plugin-install claims use `skipWarm` (req 12).
 - [x] Log the memory skips, the claim's `preview=` state and the activation's
       `install-decision … warm-stack=` (req 11).
-- [ ] Keep the warm clone current with the default branch (req 13) — blocked on
-      the open questions in `requirements.md`.
+- [x] A lifecycle script stops a matching dependency hash from standing in for a
+      different commit (marker match and overlay pre-stamp).
+- [x] The sweep's preview repair passes the trust and install gates (req 2).
+- [x] Keep the warm clone current with the default branch, for recent repos
+      (req 13): `refreshWarmSession` in the sweep, `refreshWarm` under the claim
+      lock.
 - [ ] Detect a preview whose CONTAINERS were removed while its manager is still
       registered (req 10, residual). The sweep now repairs a missing manager —
       a failed pre-start, a tier-0 reclaim — but a stack the manager still

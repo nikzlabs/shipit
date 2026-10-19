@@ -64,19 +64,21 @@ The trace behind that report:
     a scheduled run, a plugin install — does not take it.
 13. Opening a warm session does not make the user wait for an install or a
     preview restart because the default branch moved after the session was
-    warmed.
+    warmed. This holds for repos opened in the last 7 days — the repos that get
+    a pre-started preview (req 8).
 
 ## Open questions
 
-- Is req 13 worth building now? The marker fix that shipped with req 12 already
-  removes the reinstall when only source code moved. Req 13 then changes only
-  two cases: a default-branch commit that changed the dependencies, and a repo
-  whose `agent.install` has no content key (a codegen step and no
-  `install-inputs`), which reinstalls on every move.
-- If yes, which repos does req 13 cover: only repos inside the 7-day window
-  (the ones that get a pre-started preview), or every warm repo?
+_None._
 
 ## Resolved questions
+
+- 2026-10-19 — *Is req 13 worth building now, and for which repos?* The marker
+  fix already removed the reinstall when only source code moved; req 13 covers
+  the rest — a default-branch commit that changed the dependencies, and a repo
+  whose install has no usable content key. The human chose to build it now, for
+  recently used repos only (the 7-day window of req 8), over every warm repo or
+  waiting for the new log lines. → req 13.
 
 - 2026-10-19 — *Why do new sessions still open cold?* Asked by the human after
   this feature shipped. Two causes were found in the code. (1) A claim that moved
