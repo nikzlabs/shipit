@@ -149,7 +149,9 @@ export async function startStartupMonitors(
         ensureStandbyForWarmSession: rt.ensureStandbyForWarmSession,
         waitForWarmSession: rt.waitForWarmSession,
         stopPreview: (sessionId: string) => stopWarmPreview(serviceManagers, sessionId, composeStopPromises),
-        ...(rt.preStartWarmPreview ? { repairPreview: rt.preStartWarmPreview } : {}),
+        // Through the warm pool, so a repair passes the same trust and install gates (docs/288 req 2).
+        repairPreview: rt.repairWarmPreview,
+        refreshWarm: rt.refreshWarmSession,
         getMemoryStats: () => latestMemoryStats.value,
       })
     : null;

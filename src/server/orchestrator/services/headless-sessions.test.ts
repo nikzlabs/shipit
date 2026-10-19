@@ -773,8 +773,8 @@ describe("createHeadlessSession", () => {
       await createHeadlessSession(deps({ claimService: claim }), { ...repo(), prompt: "quick", fetchBase: true });
       await createHeadlessSession(deps({ claimService: claim }), { ...repo(), prompt: "quick" });
 
-      expect(claim.claim).toHaveBeenNthCalledWith(1, REPO_URL, { skipReuse: true, forceFetch: true });
-      expect(claim.claim).toHaveBeenNthCalledWith(2, REPO_URL, { skipReuse: true });
+      expect(claim.claim).toHaveBeenNthCalledWith(1, REPO_URL, { skipReuse: true, skipWarm: true, forceFetch: true });
+      expect(claim.claim).toHaveBeenNthCalledWith(2, REPO_URL, { skipReuse: true, skipWarm: true });
     });
 
     it("links a run's session as soon as it exists, so a start refused later leaves it linked", async () => {

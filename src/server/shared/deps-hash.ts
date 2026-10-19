@@ -151,8 +151,10 @@ export function computeInstallDepsHash(
   return computeDepsHash(workspaceDir, inputs);
 }
 
-// npm also runs prepublish during install.
-const INSTALL_LIFECYCLE_SCRIPTS = ["preinstall", "install", "postinstall", "prepare", "prepublish"];
+// npm also runs prepublish, and the prepare hooks, during install.
+const INSTALL_LIFECYCLE_SCRIPTS = [
+  "preinstall", "install", "postinstall", "preprepare", "prepare", "postprepare", "prepublish",
+];
 
 /** Lifecycle scripts can change installed output without changing the dependency hash. */
 export function hasInstallLifecycleScript(checkoutDir: string): boolean {
@@ -166,4 +168,9 @@ export function hasInstallLifecycleScript(checkoutDir: string): boolean {
   const scripts = (pkg as { scripts?: unknown }).scripts;
   if (typeof scripts !== "object" || scripts === null) return false;
   return INSTALL_LIFECYCLE_SCRIPTS.some((name) => Boolean((scripts as Record<string, unknown>)[name]));
+}
+
+/** Whether a matching content hash means a matching install, so it can stand in for the commit. */
+export function contentKeyDescribesTree(checkoutDir: string, installInputs: string[] | null): boolean {
+  return (installInputs !== null && installInputs.length > 0) || !hasInstallLifecycleScript(checkoutDir);
 }

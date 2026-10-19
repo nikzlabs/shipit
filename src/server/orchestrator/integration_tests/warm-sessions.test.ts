@@ -469,7 +469,7 @@ describe("Integration: warm session lifecycle", () => {
     }, 30000);
   });
 
-  describe("claim-session skips reinstall when HEAD unchanged", () => {
+  describe("claim-session leaves the install marker for the worker to judge", () => {
     it("preserves install marker when no new commits were fetched", async () => {
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,
@@ -495,7 +495,9 @@ describe("Integration: warm session lifecycle", () => {
       expect(fs.existsSync(marker)).toBe(true);
     }, 15000);
 
-    it("clears install marker when HEAD changed", async () => {
+    // Deleting it forced a reinstall whose gate stopped the pre-started preview (docs/288); the
+    // worker's stamp already reinstalls when the new HEAD's dependencies differ.
+    it("keeps the install marker when the claim moves HEAD", async () => {
       await waitFor(
         () => !!repoStore.get(REPO_URL)?.warmSessionId,
         10000,
@@ -529,7 +531,9 @@ describe("Integration: warm session lifecycle", () => {
       });
 
       expect(res.statusCode).toBe(200);
-      expect(fs.existsSync(marker)).toBe(false);
+      expect(res.json().sessionId).toBe(warmSessionId);
+      expect(fs.existsSync(path.join(workspaceDir, "new-file.txt"))).toBe(true);
+      expect(fs.existsSync(marker)).toBe(true);
     }, 15000);
   });
 

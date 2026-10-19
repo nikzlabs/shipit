@@ -48,6 +48,8 @@ import {
   createDepCacheDirHelper,
   createWarmPool,
   createWarmPreviewStarter,
+  warmPreviewState,
+  warmPreviewWanted,
   runRepoMigration,
   runRemoteCredentialScrub,
   clearUnrecordedRepoAddresses,
@@ -1077,13 +1079,20 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       })
     : undefined;
 
-  const { warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession } = createWarmPool({
+  const {
+    warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession, repairWarmPreview, refreshWarmSession,
+  } = createWarmPool({
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, containerManager,
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
     oomBreaker,
     getMemoryStats: () => latestMemoryStats.value,
     ...(preStartWarmPreview ? { preStartPreview: preStartWarmPreview } : {}),
+    previewWanted: (target) => warmPreviewWanted(target, { repoStore, serviceManagers }),
+    // The claim service is built below and needs this pool; the sweep calls this only after startup.
+    refreshWarmClone: (repoUrl: string, sessionId: string) =>
+      claimSessionService.refreshWarm(repoUrl, sessionId),
+    previewGate: (sessionId: string) => serviceManagers.get(sessionId),
   });
 
   // Scrub before migration creates repo rows; move directories keyed by the old URL hash too.
@@ -1120,6 +1129,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     ...(repoPrefetcher ? { shouldSkipClaimFetch: (url: string) => repoPrefetcher.coveredRecently(url) } : {}),
     ...(containerManager ? { containerManager } : {}),
     egressAllowlistStore,
+    previewState: (sessionId: string) => warmPreviewState(serviceManagers.get(sessionId)),
   });
 
   // docs/324-scheduled-sessions — runs start through the same headless start as Quick Capture.
@@ -1307,7 +1317,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     recordAgentRateLimits,
     markSessionAccountExhausted,
     createSessionDir,
-    warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession, preStartWarmPreview,
+    warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession, repairWarmPreview, refreshWarmSession,
     migratedRepoUrls,
     startupTimer,
     agentMergeClaims,

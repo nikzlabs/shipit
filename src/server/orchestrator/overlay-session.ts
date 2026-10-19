@@ -11,7 +11,7 @@ import {
 import { overlayScopeHash, overlayVolumeName, overlayBaseGenDir, type OverlaySpec } from "./overlay-volume.js";
 import { readBasePointerByHash, type BasePointer, type OverlayScope } from "./overlay-base.js";
 import { makeMarker, serializeMarker } from "../shared/install-marker.js";
-import { computeInstallDepsHash } from "../shared/deps-hash.js";
+import { computeInstallDepsHash, contentKeyDescribesTree } from "../shared/deps-hash.js";
 import { chownToSessionWorker } from "./session-worker-uid.js";
 import { readNodePin, parseVersion, satisfies } from "../shared/node-pin.js";
 
@@ -458,13 +458,14 @@ export async function preStampInstallMarker(args: {
   }
 
   const depsHash = computeInstallDepsHash(workspaceDir, installCommands, installInputs);
+  const contentKeyed = contentKeyDescribesTree(workspaceDir, installInputs);
 
   let runtimeKey: string | null = null;
   for (const spec of specs) {
     const ptr = readPointer(stateDir, spec.scopeHash);
     if (!ptr?.marker) return false;
     const commitMatches = ptr.commit === head;
-    const contentMatches =
+    const contentMatches = contentKeyed &&
       depsHash !== null && typeof ptr.marker.depsHash === "string" && ptr.marker.depsHash === depsHash;
     if (!commitMatches && !contentMatches) return false;
     // A concurrent publish can advance the pointer past the generation actually mounted.

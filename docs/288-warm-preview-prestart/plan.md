@@ -263,6 +263,8 @@ numbers rather than argument:
 | `install-gate` | `service-manager.ts` | how much of "Starting…" was `agent.install` |
 | `compose.up` | `compose-cli.ts` | the `up` itself, split into image and container work |
 | `preview.first-connect` | `preview-timing.ts` | the dev server's own boot — the part this feature removes |
+| `claim-session … preview=` | `claim-session.ts` | what the claim found waiting: `running`, `starting`, `error`, `none`, `no-auto` |
+| `install-decision … warm-stack=` | `service-manager-setup.ts` | `decision=started` with `warm-stack=yes` means the gate stops the pre-started services |
 
 `preview.first-connect` is the number this feature is trying to move: on a warm
 hit it should stop being paid at all, because the first request arrives at a
@@ -363,12 +365,104 @@ reports hours in that phase however fast it booted. The metric needs
 warm-vs-claim attribution before the before/after comparison this design asks for
 can be made. The checklist item stays unchecked.
 
+## Follow-up: claims still opened cold (2026-10-19)
+
+The pre-start shipped, and new sessions still opened with their services down.
+Two causes, both outside the pre-start itself.
+
+**The claim deleted the install marker.** `refreshCloneToLatestMain` unlinked
+the marker whenever its reset moved HEAD — a rule from March 2026, when the
+marker was a bare file. On an active repo the default branch almost always moves
+between two claims, so activation found no marker, the worker reinstalled, the
+`onInstallDecision` relay reported `started`, and the gate ran `compose stop` on
+every auto service. The adopt path's skip handling ("What activation does") was
+correct; it never got a skip. The worker's own stamp already covers a moved HEAD
+(verified at `install-marker.ts:markerMatches`: commit OR dependency-content
+hash, hash required for pnpm), so the claim now leaves the marker alone. A
+default-branch commit that changed the dependencies still reinstalls.
+
+**Agent spawns took the warm session (req 12).** A repo holds one warm session,
+and `warmSessionId` is set as soon as the clone exists. Child sessions
+(`spawnChildSession`, which also serves `propose_repo_session`), headless starts
+and plugin-install sessions all claimed it, so a person's next claim usually got
+a session whose standby, install and preview had not started. They now claim with
+`skipWarm`. A `skipWarm` claim still waits for an in-flight warm before its own
+clone: that wait lasts only the clone, and it keeps two fetches out of the bare
+cache at once.
+
+**Silent skips now log.** The standby step logs when memory stops it, and the
+sweep logs when memory pauses and resumes its repairs.
+
+**What the independent review of this follow-up changed.** Keeping the marker
+exposed a hole the deletion had hidden: a matching dependency hash stood in for
+a different commit even when a lifecycle script (`postinstall: prisma
+generate`) reads files the hash does not cover. `overlay-publish.ts` already
+knew this rule; it is now `contentKeyDescribesTree` in `deps-hash.ts`, and
+`markerMatches` and the overlay pre-stamp apply it too, so such a repo
+reinstalls on a moved HEAD unless `install-inputs` names what the script reads.
+The hook list also gained npm's `preprepare` and `postprepare`.
+The review also found that the sweep's preview repair called the raw pre-start,
+with no trust check and no install check (req 2) — present since the repair
+shipped. The repair now goes through `repairWarmPreview` in the warm pool, which
+shares one `installThenPreStart` with the warm flow: trusted remote, a settled
+install, and a cheap `previewWanted` check (recent repo, a `compose:` file, no
+manager yet) before it touches the worker. A failed pre-install is not retried
+unattended.
+
+## Keeping the warm clone current (req 13)
+
+The marker fix leaves two claims that still reinstall: a default-branch commit
+that changed the dependencies, and a repo whose content key cannot stand in for
+the commit. Both are paid at the claim only because the clone is behind when the
+claim arrives. So the sweep keeps it current while nobody is watching.
+
+Each pass, for a warm session whose standby is healthy, on a trusted repo opened
+in the last 7 days (req 13's scope, the same `isRecentlyUsedRepo` as req 8):
+
+1. **Is the clone behind?** Compare the clone's HEAD with the bare cache's HEAD.
+   The prefetcher (`repo-prefetch.ts`) fetches every cache every 3 minutes, so
+   this is a local read, and the common answer is "no".
+2. **Refresh it under the claim lock.** `ClaimSessionService.refreshWarm` runs
+   the claim's own `refreshCloneToLatestMain` inside the per-repo claim chain, and
+   first re-checks that the session is still the repo's warm session. A claim and
+   a refresh therefore never run git in the same clone at once, and a refresh
+   never touches a session a person has taken. A claim that arrives during a
+   refresh waits for that one fetch; it then finds the clone in sync and skips
+   its own.
+3. **Ask the standby's worker to install.** The same `runPreInstall`; the worker
+   decides from the marker. A source-only move is a skip, and the running dev
+   server's watcher picks the files up (req 5).
+4. **If an install really runs, hold the pre-started stack's install gate** for
+   its duration, exactly as a mid-session reinstall does: the gated services stop
+   when the worker accepts the install and start again on the new dependencies
+   when it settles, or stay held as failed. A stop-and-restart of the stack after
+   the install was the first version; review showed that a claim landing between
+   the install's end and the restart kept a dev server on the old dependencies.
+   With the gate there is no such window: a claim that adopts the stack mid-install
+   finds the gate already held (its own `setInstallRunning(true)` is a no-op, so
+   it never closes it), and the refresh's release opens it.
+5. **An install request that never reached the worker is retried** on the next
+   pass, though HEAD no longer moves. An install that ran and failed is not.
+
+A pass skips the refresh while the standby is still installing.
+
+**Known and not fixed here:** an activation whose `/install` joins an install
+already running in the worker is not re-checked against its own HEAD, so a claim
+that moves HEAD again during a refresh's install can run on the dependencies of
+the commit before. The same race exists for the initial pre-install. The fix
+belongs in the worker's `/install` join: planning#702.
+
 ## Key files
 
 - `src/server/orchestrator/warm-preview.ts` — the pre-start itself: the recency
   gate, the build, the registration, the start, and the failure cleanup.
 - `src/server/orchestrator/warm-pool-manager.ts` — where it is called from
-  (`preStartPreview`, last step of `ensureStandbyForWarmSession`).
+  (`installThenPreStart`, shared by `ensureStandbyForWarmSession` and the
+  sweep's `repairWarmPreview`), and `refreshWarmSession` (req 13).
+- `src/server/orchestrator/warm-tier-sweep.ts` — the five-minute pass: rebuild a
+  dead standby, refresh a healthy one, repair its preview.
+- `src/server/orchestrator/services/claim-session.ts` — the claim; `skipWarm`
+  keeps the warm session for a person (req 12).
 - `src/server/orchestrator/service-manager-setup.ts` — `buildServiceManager` is
   the one construction site; `applyOverlayDepDirsForSession` its runner-free
   overlay half; `adoptExistingServiceManager` is the handoff.

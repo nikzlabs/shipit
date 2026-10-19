@@ -196,6 +196,12 @@ describe("installPluginAsSession (docs/149 v1c)", () => {
     expect(current?.workspaceDir).toBe(currentWs);
   });
 
+  it("never takes the warm session, which is kept for a person (docs/288 req 12)", async () => {
+    const d = deps();
+    await installPluginAsSession(d, { repoUrl, marketplaceId: "test-catalog", pluginName: PLUGIN_NAME });
+    expect(d.claimService.claim).toHaveBeenCalledWith(repoUrl, expect.objectContaining({ skipWarm: true }));
+  });
+
   it("fails fast (401) when GitHub is not connected, without claiming", async () => {
     const d = deps({ authenticated: false });
     await expect(
