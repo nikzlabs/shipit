@@ -350,9 +350,10 @@ ways it happens:
   the user's answer to a question or a plan, which stays open. It skips a done
   session, a cache that lives under 30 minutes (Claude on an API key, or a
   Claude model through OpenCode), Grok sessions, and a Claude session whose
-  agent process has restarted since its last turn: a new process reads the
-  whole conversation again, so compacting there saves nothing. A message the user sends meanwhile waits for
-  the compaction, then runs.
+  agent process — or ShipIt itself — has restarted since its last turn: a new
+  process reads the whole conversation again, so compacting there saves
+  nothing, and after a ShipIt restart nothing reconnects to the old one yet.
+  A message the user sends meanwhile waits for the compaction, then runs.
 
 Whichever way it happened, a **Context compacted** card is left in the
 transcript — with the before and after token counts where the harness reports

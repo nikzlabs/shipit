@@ -22,7 +22,7 @@ ordinary turn ends (agent_result) ──► usage row: context, cache_ttl, cache
        deadlines[session] = { due: anchor + 0.9·L, expires: anchor + L }             (req 1)
 one host-wide timer at the earliest `due` ──► fire(session)
   fire: take the deadline (one attempt) ──► re-check setting · done · harness · busy · expiry
-        get a runner (reconnect); no container, or Claude's resident gone ──► drop  (req 13)
+        get a runner (reconnect); no container, or Claude's resident gone ──► drop  (req 13, 16)
         re-check ──► dispatch silent "/compact", refused when busy                   (req 3, 4)
 a silent compaction turn is maintenance: no last-used, no unmute, no turn outcome
 idle enforcer over budget: waiting sessions last; compact one instead of stopping it (req 8)
@@ -204,10 +204,11 @@ No per-session interval (CLAUDE.md, "never per-session polling").
    resident (`setAgent(null)` in the auth, rebase, recovery and plan-mode
    paths) — the compaction would start a new process, whose first request
    writes the whole conversation again: the reason of req 13, so the fire is
-   dropped the same way. The check runs before step 3 too, so a Claude
-   session after an orchestrator restart gets no runner — a new runner holds
-   no agent, and creating one starts the session's install and services. With live steering off, every Claude turn already
-   runs in a new resumed process, and the probe found a resume of a resumed
+   dropped the same way. After an orchestrator restart this is requirement
+   16's exception. The check runs before step 3 too, so a Claude session
+   after an orchestrator restart gets no runner — a new runner holds no
+   agent, and creating one starts the session's install and services. With
+   live steering off, every Claude turn already runs in a new resumed process, and the probe found a resume of a resumed
    session warm, so the fire proceeds. The other harnesses start a process
    per turn too (docs/276); their compaction spawn is cached like any of
    their turns (see the checklist's cross-spawn check).
@@ -466,17 +467,16 @@ it.
 ## Known limits
 
 - **An orchestrator restart ends idle compaction for resident Claude
-  sessions** until their next turn: the new runner holds no agent, so piece
-  3 step 4 drops their fires. A deploy with a new build marks every idle
-  container stale, and the boot sweep destroys it (`restart-turn-reattach.ts`)
-  — req 13's case. What this limit adds is a restart that keeps the build (a
+  sessions** until their next turn (requirement 16's exception): the new
+  runner holds no agent, so piece 3 step 4 drops their fires. A deploy with a
+  new build marks every idle container stale, and the boot sweep destroys it
+  (`restart-turn-reattach.ts`) — req 13's case. What this limit adds is a restart that keeps the build (a
   crash, a manual restart), whose containers and residents survive. The fix
   is not this feature's: re-attaching a runner to the idle resident process
   that the worker keeps (`agent-controller.ts`, `residentSpawn`) needs the
   resident's spawn identity, which no orchestrator holds after a restart, and
   would also spare every such session the full cache write that its next turn
-  pays today. Filed as planning#700. No requirement names this exception: the
-  implementation review flagged it, and it is raised on the pull request.
+  pays today. Filed as planning#700; requirement 16's exception ends with it.
 - **A turn adopted after a restart arms nothing.** Its events are replayed,
   so their arrival times say nothing about when its requests ran; anchoring
   on them could put the deadline after the cache is cold. The session's next
@@ -540,9 +540,9 @@ visited session only during a pass over budget, and could count a stopped
 compaction twice in one pass; the 200K floor was not checked again at the
 fire; an adopted turn anchored on its replay time; boot re-derived a deadline
 for the session's current model, not the turn's (the anchor row now carries
-the harness and model). Kept as a known limit, raised on the pull request:
-an orchestrator restart that keeps the build ends idle compaction for
-resident Claude sessions (planning#700).
+the harness and model). Kept as a known limit: an orchestrator restart that
+keeps the build ends idle compaction for resident Claude sessions
+(planning#700). The user made it an exception to reqs 1 and 2 (req 16).
 
 A follow-up run, 2c413c1f-6b39-4bee-92e4-585a2f27f4ff (Codex), found three
 more, all fixed: a replaced runner or container kept the old reclaim record
@@ -550,8 +550,8 @@ more, all fixed: a replaced runner or container kept the old reclaim record
 stopped every compacted session, not only as many as memory was short of; a
 cache lifetime one harness or model saw counted for another on the same
 credential (the reading is now scoped to the harness and model). It agreed
-the restart limit's reasoning holds, and that it leaves reqs 1 and 2 partly
-met until planning#700.
+the restart limit's reasoning holds, and that it left reqs 1 and 2 partly met
+— which requirement 16 now records as an exception.
 
 ## Docs to change
 
