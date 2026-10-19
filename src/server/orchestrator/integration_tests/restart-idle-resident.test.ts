@@ -386,6 +386,25 @@ describe("Integration: the next turn after a restart takes over the idle residen
     expect(chatHistoryManager.load(SESSION_ID).map((m) => m.text ?? "").join("\n")).toContain("WAKE_TEXT");
   });
 
+  it("keeps the taken-over facts when a turn the CLI starts is adopted, not the first connect's", async () => {
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    expect(await runner.resumeInFlightTurn()).toBe(false);
+    const changed = await fetch(`${workerUrl}/agent/permission-mode`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "plan" }),
+    });
+    expect(changed.status).toBe(200);
+    expect(await runner.attachIdleResident()).toBe(true);
+    expect(runner.appliedPermissionMode).toBe("plan");
+
+    resident().emit("event", { type: "agent_self_wake", taskId: "task-1", status: "completed" });
+    resident().emit("event", { type: "agent_assistant", content: [{ type: "text", text: "WAKE_TEXT" }] });
+    await waitFor(() => runner.running, 3000, "the session shows as running");
+    expect(runner.appliedPermissionMode).toBe("plan");
+  });
+
   it("lets go of a process taken over but not yet used when it exits", async () => {
     await turnOfThePreviousOrchestrator();
     const runner = makeRunner();

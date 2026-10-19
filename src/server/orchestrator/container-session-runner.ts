@@ -1820,7 +1820,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       `[container-runner:${this.sessionId}] adopting a turn the CLI started on its own (agent=${resident.agentId})`,
     );
     const { runToken, agentId, spawn } = resident;
-    void this.wireWorkerTurn({ runToken, agentId, streaming: true, ownTurn: "unheard" }, spawn)?.catch((err: unknown) => {
+    // A tended proxy already carries the facts, newer than the first connect's reading.
+    const tended = this._agent?.runToken === runToken;
+    void this.wireWorkerTurn({ runToken, agentId, streaming: true, ownTurn: "unheard" }, tended ? undefined : spawn)?.catch((err: unknown) => {
       console.error(`[container-runner:${this.sessionId}] adopting a CLI-started turn failed:`, err);
     });
   }
