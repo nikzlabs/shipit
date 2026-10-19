@@ -1,7 +1,7 @@
 ---
 issue: planning#699
 title: Compact an idle session before its prompt cache expires
-description: ShipIt compacts a large, idle session's context shortly before its one-hour prompt cache expires, because the Claude CLI's own idle compaction never runs under ShipIt.
+description: ShipIt compacts a large, idle session's context shortly before its prompt cache expires — on Claude, Codex and every harness that can compact — because the Claude CLI's own idle compaction never runs under ShipIt.
 ---
 
 # 333 — Idle compaction (requirements)
@@ -40,6 +40,32 @@ viewer left first goes first), stops a done session after 10 minutes
 ([docs/316](../316-done-sessions-return-memory/requirements.md)), and a ShipIt
 update replaces containers.
 
+### OpenAI's cache lifetime (Codex)
+
+From OpenAI's [prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching),
+read on 2026-10-19:
+
+- **GPT-5.6 and later** — the Codex models in ShipIt's catalogue today
+  (`gpt-5.6*`, `gpt-6*`). Caching is on by default, and "a cached prefix
+  remains eligible for reuse for 30 minutes after its most recent write or
+  reuse"; OpenAI may keep it longer. `prompt_cache_options.ttl` accepts only
+  `30m`, which is also the default. A cache write costs 1.25× the uncached
+  input rate and a read 0.1× (0.05× on GPT-6.1 Sol) — the same shape as
+  Anthropic's 5-minute cache.
+- **GPT-5.5 and earlier.** `prompt_cache_retention: "in_memory"` keeps a
+  prefix for about 5 to 10 minutes of inactivity, up to one hour; `"24h"`
+  typically keeps it about 30 minutes, up to 24 hours. Organizations without
+  Zero Data Retention default to `24h`, and GPT-5.5 accepts only `24h`. There
+  is no cache-write surcharge.
+- **Codex CLI 0.160.1**, the version ShipIt pins, sends `prompt_cache_key` and
+  sets neither `prompt_cache_retention` nor `prompt_cache_options` (the two
+  names appear in its binary only inside bundled documentation), so the
+  defaults above apply.
+- **Not verified on a subscription.** A Codex session on a ChatGPT
+  subscription reaches OpenAI through `chatgpt.com/backend-api/codex`, not the
+  public API, and OpenAI documents no cache lifetime for that path. The
+  30-minute figure is the API's, assumed to hold there too.
+
 ### Prior art: t3code
 
 [pingdotgg/t3code#21682](https://github.com/pingdotgg/t3code/pull/21682)
@@ -47,10 +73,10 @@ update replaces containers.
 does the same from its server: a sweep every minute and at each run's end
 sends a system-authored `/compact` in the last 10% of the cache lifetime (at
 least 2 minutes), never after the cache is cold. It is off by default and
-uses a 200K-token floor, as requirements 5 and 6 do. It differs in scope: it
-also compacts on a 5-minute cache (an API key) and on other providers with an
-assumed 30-minute lifetime, where requirement 1 here covers only the one-hour
-cache. It has no case for a stopped process, because t3code runs on the
+uses a 200K-token floor, as requirements 5 and 6 do, and it covers other
+providers with an assumed 30-minute lifetime, as requirements 9 and 10 do. It
+also compacts on a 5-minute cache (an API key), which is an open question
+here. It has no case for a stopped process, because t3code runs on the
 user's machine; requirement 2 exists because ShipIt stops containers. Its
 review found that settling a thread can interrupt a running idle compaction —
 a hazard a ShipIt design must also answer.
@@ -58,7 +84,7 @@ a hazard a ShipIt design must also answer.
 ## Requirements
 
 1. When a session's agent context is large and the session has been idle for
-   most of its one-hour prompt-cache lifetime, ShipIt compacts the context
+   most of its prompt-cache lifetime, ShipIt compacts the context
    before the cache expires. The user's next message then does not re-read the
    whole earlier context.
 
@@ -83,12 +109,19 @@ a hazard a ShipIt design must also answer.
    it stops a session that waits for its idle compaction. When it must still
    stop such a session, it compacts that session first and then stops it.
 
+9. Requirement 1 covers every harness that can compact its context, not only
+   Claude. Codex is included.
+
+10. Where ShipIt does not know a provider's cache lifetime, it assumes 30
+    minutes.
+
 ## Requirement provenance
 
 Requirements 1 and 2 come from what the user asked for: the user wants ShipIt
 users to get the benefit of the CLI's compaction before the cache expires,
-even though ShipIt can stop a container before that time. Requirements 5 to 8
-come from the user's answers on 2026-10-19 (below). Requirements 3 and 4 were
+even though ShipIt can stop a container before that time. Requirements 5 to
+10 come from the user's answers and instructions on 2026-10-19 (below).
+Requirements 3 and 4 were
 not asked for: each keeps a guarantee that already ships from becoming weaker —
 docs/178 for how a compaction appears, and docs/295 req 9 and docs/324 req 6
 for a failed compaction. They are kept apart so that the difference stays
@@ -96,7 +129,12 @@ visible.
 
 ## Open questions
 
-None.
+- Does an idle compaction also run on a short cache? A Claude session on an
+  API key has a 5-minute cache, and an older OpenAI model on `in_memory`
+  retention keeps a prefix for about 5 to 10 minutes. A 200K session would
+  then compact after about 4 to 5 minutes idle, while the user may still read
+  the agent's reply. t3code does it. The user's instruction of 2026-10-19
+  named other providers, not short caches.
 
 ## Resolved questions
 
@@ -119,3 +157,11 @@ None.
   user chose the first. Recorded as requirement 8. Its consequence: when
   ShipIt must stop a waiting session, the memory comes back after the
   compaction, not at once.
+- 2026-10-19 — Requirement 1 covered only the one-hour cache, while t3code
+  also compacts other providers with an assumed 30-minute lifetime. The user:
+  "let's also do that, especially for codex. Research the OpenAI input cache
+  lifetime." Requirement 1 no longer names the one-hour cache; requirements 9
+  and 10 added. The research is under Background. It found that OpenAI
+  documents 30 minutes for the current Codex models, so the assumption of
+  requirement 10 matters for providers and paths with no documented lifetime,
+  such as the ChatGPT subscription backend.
