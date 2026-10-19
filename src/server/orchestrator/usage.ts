@@ -85,21 +85,26 @@ export interface RecordedTurn {
   attribution?: TurnAttribution;
   /** Preserve the harness total across billing-mode changes, even when costUsd has another source. */
   cumulativeSnapshot?: number;
-  /** docs/333-idle-compaction — the lifetime of the cache entries the turn wrote. */
-  cacheTtl?: CacheTtl;
   /**
-   * docs/333-idle-compaction — when the turn's last model request started (epoch ms), and the
-   * harness and model whose cache it read. Set only for an ordinary turn of the session's own.
+   * docs/333-idle-compaction — the harness and model whose cache the turn read. A cache is
+   * theirs alone, so it scopes the two fields below; neither is written without it.
    */
-  cacheAnchor?: CacheAnchor;
+  cacheScope?: CacheScope;
+  /** The lifetime of the cache entries the turn wrote. */
+  cacheTtl?: CacheTtl;
+  /** When the turn's last model request started (epoch ms). Only for an ordinary own turn. */
+  cacheAnchorAt?: number;
 }
 
 export type CacheTtl = "5m" | "1h";
 
-export interface CacheAnchor {
-  at: number;
+export interface CacheScope {
   agentId: AgentId;
   model: string | null;
+}
+
+export interface CacheAnchor extends CacheScope {
+  at: number;
 }
 
 /** docs/333-idle-compaction — the record an idle compaction's deadline is derived from. */
@@ -232,7 +237,8 @@ export class UsageManager {
     this.stmtObservedCacheTtl = this.db.prepare(`
       SELECT cache_ttl FROM usage_turns
       WHERE session_id = ? AND sub_agent_id IS NULL AND background_work = 0
-        AND credential_route_id IS ? AND cache_ttl IS NOT NULL
+        AND credential_route_id IS ? AND cache_agent_id = ? AND cache_model IS ?
+        AND cache_ttl IS NOT NULL
       ORDER BY id DESC LIMIT 1
     `);
     this.stmtAnchoredSince = this.db.prepare(`
@@ -294,7 +300,8 @@ export class UsageManager {
     extra?: RecordedTurnExtra,
   ): number {
     const ownTurn = extra?.subAgentId === undefined && !extra?.backgroundWork;
-    const anchor = ownTurn ? extra?.cacheAnchor : undefined;
+    const scope = ownTurn ? extra?.cacheScope : undefined;
+    const anchor = scope && extra?.cacheAnchorAt !== undefined ? { ...scope, at: extra.cacheAnchorAt } : undefined;
     const costSource: TurnCostSource =
       extra?.costSource ?? (ownTurn ? "cumulative" : "per-turn");
     let perTurnCost = costUsd;
@@ -342,10 +349,10 @@ export class UsageManager {
       atApiRates ?? null,
       extra?.credentialRouteId ?? null,
       extra?.backgroundWork ? 1 : 0,
-      extra?.cacheTtl ?? null,
+      scope ? extra?.cacheTtl ?? null : null,
       anchor?.at ?? null,
-      anchor?.agentId ?? null,
-      anchor?.model ?? null,
+      scope?.agentId ?? null,
+      scope?.model ?? null,
     );
     if (anchor && sessionId !== null) {
       this.notifyAnchoredTurn({ sessionId, anchor, credentialRouteId: extra?.credentialRouteId ?? null });
@@ -369,9 +376,10 @@ export class UsageManager {
     }
   }
 
-  /** docs/333-idle-compaction — the newest cache lifetime this session's own turns saw on the route. */
-  observedCacheTtl(sessionId: string, credentialRouteId: string | null): CacheTtl | undefined {
-    const row = this.stmtObservedCacheTtl.get(sessionId, credentialRouteId) as { cache_ttl: string } | undefined;
+  /** docs/333-idle-compaction — the newest cache lifetime the session's own turns saw on the route, harness and model. */
+  observedCacheTtl(sessionId: string, credentialRouteId: string | null, scope: CacheScope): CacheTtl | undefined {
+    const row = this.stmtObservedCacheTtl.get(sessionId, credentialRouteId, scope.agentId, scope.model) as
+      { cache_ttl: string } | undefined;
     return row?.cache_ttl === "5m" || row?.cache_ttl === "1h" ? row.cache_ttl : undefined;
   }
 

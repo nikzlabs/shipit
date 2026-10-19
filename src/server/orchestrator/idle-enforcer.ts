@@ -54,8 +54,8 @@ export function createIdleEnforcer(
 
   const tier1At = new Map<string, number>();
   // docs/333-idle-compaction req 8 — compacting before their stop; their memory is already
-  // counted. The value is the viewer-detach time at the fire, so a visit since is seen.
-  const compactingToReclaim = new Map<string, number>();
+  // counted. What the fire saw, so that any later use of the session is seen.
+  const compactingToReclaim = new Map<string, { containerId: string; detachedAt: number; turnEpoch: number }>();
   // The first pass that saw each session done.
   const doneWaitFrom = new Map<string, number>();
   // The first pass that saw each draft without a viewer.
@@ -161,13 +161,18 @@ export function createIdleEnforcer(
     for (const id of draftWaitFrom.keys()) if (!stillWaiting.has(id)) draftWaitFrom.delete(id);
   }
 
-  // A session the user came back to, also between two passes, is no longer on its way out.
-  function forgetVisitedCompactions(): void {
-    for (const [sessionId, detachedAt] of compactingToReclaim) {
+  // A session used since the fire — a visit, a turn after the compaction's own, a new
+  // container — is no longer on its way out.
+  function forgetUsedCompactions(): void {
+    for (const [sessionId, atFire] of compactingToReclaim) {
+      const container = containerManager?.get(sessionId);
       const runner = runnerRegistry.get(sessionId);
-      const visited = runner !== undefined
-        && (runner.viewerCount > 0 || runner.lastViewerDetachAt !== detachedAt);
-      if (visited || !containerManager?.get(sessionId) || containerManager.isStandby(sessionId)) {
+      const used = runner !== undefined && (
+        runner.viewerCount > 0
+        || runner.lastViewerDetachAt !== atFire.detachedAt
+        || runner.turnEpoch > atFire.turnEpoch + 1
+      );
+      if (used || container?.id !== atFire.containerId || containerManager?.isStandby(sessionId)) {
         compactingToReclaim.delete(sessionId);
       }
     }
@@ -176,7 +181,7 @@ export function createIdleEnforcer(
   return () => {
     if (!containerManager) return;
 
-    forgetVisitedCompactions();
+    forgetUsedCompactions();
     if (teardownsInFlight === 0) reclaimDoneSessions(Date.now());
     if (teardownsInFlight === 0) reclaimAbandonedDrafts(Date.now());
 
@@ -212,23 +217,30 @@ export function createIdleEnforcer(
       if (!measured) { shortfallIsStale = true; break; }
     }
 
-    // docs/333-idle-compaction req 8 — a session compacted before its stop is stopped first, as
-    // soon as its compaction is over; until then its memory counts as on its way back. Either
-    // way it is this pass's, and tier 1 below must not count it again.
+    // docs/333-idle-compaction req 8 — while its compaction runs, a session's memory counts as on
+    // its way back; once it is over, the session is stopped first while memory is still short,
+    // and forgotten when it no longer is. Either way tier 1 below must not count it again.
     const compactedThisPass = new Set(compactingToReclaim.keys());
+    const compacted: string[] = [];
     for (const sessionId of compactedThisPass) {
-      const runner = runnerRegistry.get(sessionId);
-      if (isReclaimable(sessionId, runner)) {
-        const stopped = stopAgentContainer({ sessionId, runner, idleSince: runner?.lastViewerDetachAt ?? 0 }, now, usage);
-        if (stopped) {
-          compactingToReclaim.delete(sessionId);
-          need -= stopped.freed;
-          reclaimedSomething = true;
-          if (!stopped.measured) shortfallIsStale = true;
-          continue;
-        }
+      if (isReclaimable(sessionId, runnerRegistry.get(sessionId))) compacted.push(sessionId);
+      else need -= usage[sessionId]?.agentBytes ?? 0;
+    }
+    for (const sessionId of compacted) {
+      if (need <= 0 || shortfallIsStale) {
+        compactingToReclaim.delete(sessionId);
+        continue;
       }
-      need -= usage[sessionId]?.agentBytes ?? 0;
+      const runner = runnerRegistry.get(sessionId);
+      const stopped = stopAgentContainer({ sessionId, runner, idleSince: runner?.lastViewerDetachAt ?? 0 }, now, usage);
+      if (!stopped) {
+        need -= usage[sessionId]?.agentBytes ?? 0;
+        continue;
+      }
+      compactingToReclaim.delete(sessionId);
+      need -= stopped.freed;
+      reclaimedSomething = true;
+      if (!stopped.measured) shortfallIsStale = true;
     }
 
     // Stop idle agent containers before stopping any claimed session's preview.
@@ -254,7 +266,11 @@ export function createIdleEnforcer(
 
       if (c.waitsForCompaction && idleCompaction) {
         // Its bytes count now, so one pass compacts only as many sessions as the shortfall needs.
-        compactingToReclaim.set(c.sessionId, runner?.lastViewerDetachAt ?? 0);
+        compactingToReclaim.set(c.sessionId, {
+          containerId: containerManager.get(c.sessionId)?.id ?? "",
+          detachedAt: runner?.lastViewerDetachAt ?? 0,
+          turnEpoch: runner?.turnEpoch ?? 0,
+        });
         const measured = usage[c.sessionId];
         need -= measured?.agentBytes ?? 0;
         reclaimedSomething = true;

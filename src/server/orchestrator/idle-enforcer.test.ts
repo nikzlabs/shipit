@@ -263,16 +263,18 @@ describe("docs/333-idle-compaction req 8 — sessions that wait for their idle c
     disposed: boolean;
     queueLength: number;
     lastViewerDetachAt: number;
+    turnEpoch: number;
   }
 
   function pressure(waiting: string[]) {
     const runners = new Map<string, PressureRunner>(IDS.map((id, i) => [id, {
-      viewerCount: 0, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 1_000 * (i + 1),
+      viewerCount: 0, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 1_000 * (i + 1), turnEpoch: 4,
     }]));
     const stopped = new Set<string>();
     const waits = new Set(waiting);
+    const containerIds = new Map(IDS.map((id) => [id, `container-${id}`]));
     const containerManager = {
-      get: (id: string) => (stopped.has(id) ? undefined : { sessionId: id }),
+      get: (id: string) => (stopped.has(id) ? undefined : { sessionId: id, id: containerIds.get(id) }),
       getAll: () => IDS.filter((id) => !stopped.has(id)).map((sessionId) => ({ sessionId })),
       isStandby: () => false,
       destroy: vi.fn().mockResolvedValue(undefined),
@@ -292,10 +294,11 @@ describe("docs/333-idle-compaction req 8 — sessions that wait for their idle c
         if (r && !r.agentBusy) r.disposed = true;
       },
     } as unknown as SessionRunnerRegistry;
-    // The compaction makes the session busy until it ends.
+    // The compaction is a turn: it makes the session busy until it ends.
     const fire = vi.fn(async (id: string) => {
       waits.delete(id);
       runners.get(id)!.agentBusy = true;
+      runners.get(id)!.turnEpoch += 1;
     });
     let stats: DockerMemoryStats = underBudget;
     const enforce = createIdleEnforcer({
@@ -321,7 +324,10 @@ describe("docs/333-idle-compaction req 8 — sessions that wait for their idle c
       // Teardowns settle before the next pass may act.
       await new Promise((r) => setImmediate(r));
     };
-    return { pass, fire, stopped, runners, waits, destroyed: containerManager.destroyAgentContainer as ReturnType<typeof vi.fn> };
+    return {
+      pass, fire, stopped, runners, waits, containerIds,
+      destroyed: containerManager.destroyAgentContainer as ReturnType<typeof vi.fn>,
+    };
   }
 
   it("stops every session that does not wait before one that does, oldest first", async () => {
@@ -376,6 +382,38 @@ describe("docs/333-idle-compaction req 8 — sessions that wait for their idle c
     expect(stopped.has(OLDEST)).toBe(false);
     expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST, MIDDLE]);
   });
+
+  it("stops only as many compacted sessions as memory is still short of, and forgets the rest", async () => {
+    const { pass, fire, runners, destroyed } = pressure([OLDEST, MIDDLE, NEWEST]);
+    await pass(250);
+    expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST, MIDDLE, NEWEST]);
+
+    for (const id of IDS) runners.get(id)!.agentBusy = false;
+    await pass(50);
+    expect(destroyed.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+    // The others are ordinary idle sessions again, stopped in the ordinary order.
+    await pass(50);
+    expect(destroyed.mock.calls.map(([id]) => id)).toEqual([OLDEST, MIDDLE]);
+  });
+
+  it.each([
+    ["ran another turn after its compaction", (r: PressureRunner) => { r.turnEpoch += 1; }],
+    ["got a new container", (_r: PressureRunner, ids: Map<string, string>) => { ids.set(OLDEST, "replacement"); }],
+  ] as [string, (r: PressureRunner, ids: Map<string, string>) => void][])(
+    "forgets a compacting session that %s",
+    async (_label, use) => {
+      const { pass, fire, runners, containerIds, destroyed } = pressure([OLDEST, MIDDLE, NEWEST]);
+      await pass(50);
+      expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+
+      runners.get(OLDEST)!.agentBusy = true;
+      use(runners.get(OLDEST)!, containerIds);
+      await pass(50);
+      // Its memory no longer counts as on its way back, so the next session is compacted.
+      expect(destroyed).not.toHaveBeenCalled();
+      expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST, MIDDLE]);
+    },
+  );
 
   it("forgets it also after a visit while memory was under the budget", async () => {
     const { pass, fire, runners, waits, destroyed } = pressure([OLDEST, MIDDLE, NEWEST]);

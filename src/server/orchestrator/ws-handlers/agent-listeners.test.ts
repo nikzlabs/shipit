@@ -166,7 +166,7 @@ describe("wireAgentListeners", () => {
         } satisfies AgentEvent);
       };
       const recorded = () => (d.usageManager.record as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[5] as
-        { cacheAnchor?: { at: number; agentId: string; model: string | null }; cacheTtl?: string } | undefined;
+        { cacheScope?: { agentId: string; model: string | null }; cacheAnchorAt?: number; cacheTtl?: string } | undefined;
       return { agent, runner, d, toolResult, result, recorded };
     }
 
@@ -180,7 +180,8 @@ describe("wireAgentListeners", () => {
       vi.setSystemTime(start + 300_000);
       result();
       expect(recorded()).toMatchObject({
-        cacheAnchor: { at: start + 90_000, agentId: "claude", model: null },
+        cacheScope: { agentId: "claude", model: null },
+        cacheAnchorAt: start + 90_000,
         cacheTtl: "1h",
       });
       runner.dispose({ force: true });
@@ -191,26 +192,26 @@ describe("wireAgentListeners", () => {
       const start = Date.now();
       vi.setSystemTime(start + 300_000);
       result();
-      expect(recorded()?.cacheAnchor?.at).toBe(start);
+      expect(recorded()?.cacheAnchorAt).toBe(start);
       runner.dispose({ force: true });
     });
 
     it("writes no anchor for a compaction turn, nor for a turn that read nothing", () => {
       const compaction = wire({ compactionTurn: true });
       compaction.result();
-      expect(compaction.recorded()?.cacheAnchor).toBeUndefined();
+      expect(compaction.recorded()?.cacheAnchorAt).toBeUndefined();
       compaction.runner.dispose({ force: true });
 
       const refused = wire();
       refused.result({ input: 0, output: 0, cacheRead: 0 });
-      expect(refused.recorded()?.cacheAnchor).toBeUndefined();
+      expect(refused.recorded()?.cacheAnchorAt).toBeUndefined();
       refused.runner.dispose({ force: true });
     });
 
     it("writes no anchor for a turn adopted after a restart, whose events are replayed", () => {
       const { runner, result, recorded } = wire({ anchorUnknown: true });
       result();
-      expect(recorded()?.cacheAnchor).toBeUndefined();
+      expect(recorded()?.cacheAnchorAt).toBeUndefined();
       runner.dispose({ force: true });
     });
 

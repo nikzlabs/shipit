@@ -192,7 +192,7 @@ export class IdleCompaction {
     const lifetime = cacheLifetimeMinutes({
       agentId,
       family: selection ? modelIdentityFor(selection)?.family : undefined,
-      observed: this.deps.usageManager.observedCacheTtl(sessionId, turn.credentialRouteId),
+      observed: this.deps.usageManager.observedCacheTtl(sessionId, turn.credentialRouteId, anchor),
     });
     if (lifetime < IDLE_COMPACTION_MIN_LIFETIME_MINUTES) return null;
     if (!this.contextLargeEnough(sessionId)) return null;

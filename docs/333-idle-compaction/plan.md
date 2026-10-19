@@ -58,12 +58,15 @@ its row.
 
 Otherwise three rules, in order:
 
-1. **Observed.** The newest non-null `usage_turns.cache_ttl` among the rows
-   whose `credential_route_id` matches the session's newest row: `1h` → 60,
+1. **Observed.** The newest non-null `usage_turns.cache_ttl` among the
+   session's own rows on the same route, harness and model as the turn that
+   arms (`credential_route_id`, `cache_agent_id`, `cache_model`): `1h` → 60,
    `5m` → 5. Scoped to the route because caches are per account and per
    endpoint: a 1-hour reading from the Anthropic subscription says nothing
    about a later turn on z.ai, which reports no split and must fall to rule 3
-   (req 10).
+   (req 10). Scoped to the harness and model because a cache is theirs alone:
+   a Claude turn's 5-minute reading on a gateway key says nothing about an
+   OpenCode turn on GPT through the same key.
 2. **Documented for the model's provider**, keyed by the model's vendor
    (`shared/catalogue/model-identity.ts`), not by the harness — Codex also
    runs DeepSeek and Kimi models through Responses-compatible endpoints
@@ -145,11 +148,12 @@ No per-session interval (CLAUDE.md, "never per-session polling").
   being the one the reading describes: a rewind, and a change of the session's
   model or harness — the next turn would read another model's cold cache, and
   the context reading would describe the old conversation. Both are checks at
-  the fire, not hooks where they happen: the anchor row records the harness
-  and model of the turn that wrote it (`cache_agent_id`, `cache_model`, so
-  boot sees them too), the deadline keeps them, and a pending rewind
-  (`agentResumeAt`) blocks the fire. The model and harness change in many places (the switch paths, roles,
-  model retirement), and one check covers all of them; an Undo of a rewind
+  the fire, not hooks where they happen: every own-turn row records the
+  harness and model whose cache it read (`cache_agent_id`, `cache_model`, so
+  boot sees them too), the deadline keeps the anchor row's, and a pending
+  rewind (`agentResumeAt`) blocks the fire. The model and harness change in
+  many places (the switch paths, roles, model retirement), and one check
+  covers all of them; an Undo of a rewind
   clears `agentResumeAt`, so the deadline that still describes the restored
   conversation stands.
 - **Re-derived at boot**: for each session, the newest own-turn row
@@ -316,11 +320,16 @@ compactions as well.
   releases (`turn-executor.ts`, the `idle` step precedes `settle`), so the
   stop comes from the next periodic pass, at most 30 s later. Memory comes
   back about a minute after the pass, which is req 8's accepted consequence.
-- The set forgets a session once it is stopped, disposed by another path, no
-  longer has a live container, or was visited since the fire (a viewer now,
-  or a viewer-detach time other than the one the fire saw): the user came
-  back, so its memory is not on its way back. This runs at the start of every
-  pass, also under budget, so a visit while memory was low is seen too.
+- The set forgets a session once it is stopped, disposed by another path, or
+  used since the fire — a viewer now, a viewer-detach time other than the one
+  the fire saw, a turn after the compaction's own (`turnEpoch` beyond the
+  fire's by more than one), or another container than the fire saw. Its
+  memory is then not on its way back. This runs at the start of every pass,
+  also under budget.
+- Once its compaction is over, a session is stopped only while memory is
+  still short; when it no longer is, the session is forgotten and is an
+  ordinary idle session again ("when it must still stop such a session",
+  req 8).
 - A session handled in a pass's compacting step is not a tier-1 candidate of
   the same pass: a stop's teardown is asynchronous, so its container is still
   listed.
@@ -534,6 +543,15 @@ for the session's current model, not the turn's (the anchor row now carries
 the harness and model). Kept as a known limit, raised on the pull request:
 an orchestrator restart that keeps the build ends idle compaction for
 resident Claude sessions (planning#700).
+
+A follow-up run, 2c413c1f-6b39-4bee-92e4-585a2f27f4ff (Codex), found three
+more, all fixed: a replaced runner or container kept the old reclaim record
+(it now also holds the container id and the turn epoch); the compacting step
+stopped every compacted session, not only as many as memory was short of; a
+cache lifetime one harness or model saw counted for another on the same
+credential (the reading is now scoped to the harness and model). It agreed
+the restart limit's reasoning holds, and that it leaves reqs 1 and 2 partly
+met until planning#700.
 
 ## Docs to change
 

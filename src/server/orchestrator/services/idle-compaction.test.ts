@@ -117,18 +117,18 @@ function setup(opts: Setup = {}) {
     db.close();
   });
 
-  /** The anchor the result listener writes: the harness and model that read the cache. */
-  const anchorOf = (agoMs = 0) => ({
-    at: Date.now() - agoMs,
-    agentId: session.agentId ?? "claude",
-    model: session.model ?? null,
-  });
+  /** The scope the result listener writes: the harness and model that read the cache. */
+  const scope = () => ({ agentId: session.agentId ?? ("claude" as const), model: session.model ?? null });
+  const anchorOf = (agoMs = 0) => ({ ...scope(), at: Date.now() - agoMs });
   /** An ordinary turn's row, as the result listener writes it. */
-  const turn = (o: { context?: number; ttl?: "5m" | "1h" | null; anchorAgo?: number; route?: string } = {}) => {
+  const turn = (o: {
+    context?: number; ttl?: "5m" | "1h" | null; anchorAgo?: number | null; route?: string;
+  } = {}) => {
     usage.record(SESSION, 0, 1000, 10, 5, {
       contextTokens: o.context ?? LARGE,
+      cacheScope: scope(),
       ...(o.ttl === null ? {} : { cacheTtl: o.ttl ?? "1h" }),
-      cacheAnchor: anchorOf(o.anchorAgo ?? MINUTE),
+      ...(o.anchorAgo === null ? {} : { cacheAnchorAt: Date.now() - (o.anchorAgo ?? MINUTE) }),
       ...(o.route ? { credentialRouteId: o.route } : {}),
     });
   };
@@ -222,11 +222,19 @@ describe("arming the deadline (req 1, 6, 11)", () => {
   });
 
   it("reads the lifetime observed on the turn's own route", () => {
-    const { idle, usage, turn } = setup();
-    usage.record(SESSION, 0, 1000, 10, 5, { cacheTtl: "1h", credentialRouteId: "anthropic-sub" });
+    const { idle, turn } = setup();
+    turn({ ttl: "1h", route: "anthropic-sub", anchorAgo: null });
     turn({ ttl: "5m", route: "anthropic-key" });
     expect(idle.isWaiting(SESSION)).toBe(false);
     turn({ ttl: null, route: "anthropic-sub" });
+    expect(idle.isWaiting(SESSION)).toBe(true);
+  });
+
+  it("does not take a lifetime another harness or model saw on the same credential", () => {
+    const { idle, turn, session } = setup({ agentId: "claude", liveSteering: false });
+    turn({ ttl: "5m", route: "gateway", anchorAgo: null });
+    Object.assign(session, { agentId: "opencode", model: "gpt-6-luna", serviceId: "openai", billingMode: "sub" });
+    turn({ ttl: null, route: "gateway" });
     expect(idle.isWaiting(SESSION)).toBe(true);
   });
 

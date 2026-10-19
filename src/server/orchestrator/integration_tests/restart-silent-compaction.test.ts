@@ -181,6 +181,13 @@ describe("Integration: a silent compaction across an orchestrator restart (docs/
     // The compaction runs with no event that starts a turn here, and ends.
     lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-1" });
 
+    // A turn the CLI starts on its own is not marked either.
+    lastAgent.emit("event", { type: "agent_self_wake", taskId: "t2", status: "completed" });
+    const own = await status();
+    expect(own.turnActive).toBe(true);
+    expect(own.silentCompaction).toBeUndefined();
+    lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-1" });
+
     expect((await post("/agent/message", { text: "the user's next message" })).status).toBe(200);
     const next = await status();
     expect(next.turnActive).toBe(true);

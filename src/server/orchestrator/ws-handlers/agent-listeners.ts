@@ -856,10 +856,9 @@ export function wireAgentListeners(
             ...(opts.getCapturedRouteId?.()
               ? { credentialRouteId: opts.getCapturedRouteId()! }
               : {}),
+            cacheScope: { agentId: agent.agentId, model: sessionAtTurnStart?.model ?? null },
             ...(event.cacheTtl ? { cacheTtl: event.cacheTtl } : {}),
-            ...(!compactionTurn && anchorKnown && touchedCache
-              ? { cacheAnchor: { at: cacheAnchorAt, agentId: agent.agentId, model: sessionAtTurnStart?.model ?? null } }
-              : {}),
+            ...(!compactionTurn && anchorKnown && touchedCache ? { cacheAnchorAt } : {}),
           },
         );
         if (turnAttribution) {
