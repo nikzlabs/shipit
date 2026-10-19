@@ -133,7 +133,15 @@ visible.
 
 ## Open questions
 
-None.
+- Does an idle compaction run while a question waits for the user? docs/322
+  req 1–2 says that when an agent turn ends on a question or a plan, ShipIt
+  starts no automatic turn until the user responds, and an idle compaction is
+  a turn the user did not start. Holding it until the reply is useless, because
+  the cache is cold by then. So either a session that ended on a question gets
+  no idle compaction — and a user who steps away from a question is a common
+  case — or the idle compaction is an exception to docs/322 req 1: it does no
+  work and asks nothing, and the question stays answerable, but the agent then
+  reads the user's answer against a summary of the conversation.
 
 ## Resolved questions
 
