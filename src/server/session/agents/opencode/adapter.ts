@@ -26,6 +26,7 @@ import { opencodeModelArg, opencodeProviderConfig, isOpenCodeAccountRouting, ope
 import { parseOpencodeLine, OpencodeTurnAccumulator, type OpencodeEvent, type OpencodeToolPart } from "../../../shared/opencode-stream.js";
 import { normalizeOpencodeToolCall, normalizeOpencodeToolResult } from "./opencode-tool-normalizer.js";
 import { compactOpencodeSession } from "./compaction.js";
+import { writeOpencodeTurnFiles, type OpencodeTurnFiles } from "./turn-files.js";
 
 import { ensureManagedOpenCodeData, readOpenCodeAccount, removeOpenCodeAccount } from "../../../shared/opencode-account.js";
 import { OpenCodeSubscriptionLimits } from "./subscription-limits.js";
@@ -75,8 +76,6 @@ export class OpencodeAdapter
   private accumulator = new OpencodeTurnAccumulator();
   private emittedInit = false;
   private resumeSessionId: string | undefined;
-  private configPath: string | null = null;
-  private systemPromptPath: string | null = null;
   private errorKillTimer: NodeJS.Timeout | null = null;
   private stopKillTimer: NodeJS.Timeout | null = null;
   private interruptKillTimer: NodeJS.Timeout | null = null;
@@ -152,31 +151,16 @@ export class OpencodeAdapter
       config.mcp = this.pendingMcpServers;
     }
 
-    if (params.systemPrompt) {
-      this.systemPromptPath = `/tmp/opencode-system-prompt-${Date.now()}.md`;
-      fs.writeFileSync(this.systemPromptPath, params.systemPrompt);
-      config.instructions = [this.systemPromptPath];
-    }
-
-    this.configPath = `/tmp/opencode-config-${Date.now()}.json`;
-    try {
-      fs.writeFileSync(this.configPath, JSON.stringify(config, null, 2));
-    } catch (err) {
-      this.emit("error", err instanceof Error ? err : new Error(String(err)));
-      return;
-    }
-
     const scopedHome = params.homeDir ?? this.resolveHome?.();
     const home = resolveAgentHome(scopedHome);
-    // Local mode has no entrypoint to prepare a dangling data-directory symlink.
-    ensureOpencodeDataDir(home);
     let dataHome: string;
     try {
+      // Local mode has no entrypoint to prepare a dangling data-directory symlink.
+      ensureOpencodeDataDir(home);
       dataHome = ensureManagedOpenCodeData(home);
       if (isOpenCodeAccountRouting(params.serviceRouting)) readOpenCodeAccount(dataHome, params.serviceRouting.credentialTarget.accountId);
       else removeOpenCodeAccount(dataHome);
     } catch (error) {
-      this.cleanupTurnFiles();
       if (this.usingChatGPT) this.emit("auth_required");
       else this.emit("error", error instanceof Error ? error : new Error(String(error)));
       return;
@@ -189,7 +173,6 @@ export class OpencodeAdapter
       XDG_DATA_HOME: dataHome,
       // Bun can prefer inherited PWD over the actual cwd.
       PWD: params.cwd,
-      OPENCODE_CONFIG: this.configPath,
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       OPENCODE_DISABLE_MODELS_FETCH: "1",
       OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
@@ -218,18 +201,28 @@ export class OpencodeAdapter
       );
     }
 
-    if (isOpenCodeAccountRouting(params.serviceRouting) && (!params.compact || (params.sessionId && params.model))) {
-      this.subscriptionLimits = new OpenCodeSubscriptionLimits({
-        dataHome,
-        routeId: params.serviceRouting.credentialTarget.accountId,
-        onLimits: (event) => this.emit("event", event),
-        onFailure: (message) => this.emit("log", "server", message),
-      });
-      this.subscriptionLimits.start();
+    let files: OpencodeTurnFiles;
+    try {
+      if (isOpenCodeAccountRouting(params.serviceRouting) && (!params.compact || (params.sessionId && params.model))) {
+        this.subscriptionLimits = new OpenCodeSubscriptionLimits({
+          dataHome,
+          routeId: params.serviceRouting.credentialTarget.accountId,
+          onLimits: (event) => this.emit("event", event),
+          onFailure: (message) => this.emit("log", "server", message),
+        });
+        this.subscriptionLimits.start();
+      }
+      files = writeOpencodeTurnFiles(config, { home, cwd: params.cwd, systemPrompt: params.systemPrompt });
+    } catch (err) {
+      this.subscriptionLimits?.stop();
+      this.subscriptionLimits = undefined;
+      this.emit("error", err instanceof Error ? err : new Error(String(err)));
+      return;
     }
+    spawnEnv.OPENCODE_CONFIG = files.configPath;
 
     if (params.compact) {
-      this.runCompaction(params, spawnEnv);
+      this.runCompaction(params, spawnEnv, files);
       return;
     }
 
@@ -247,7 +240,7 @@ export class OpencodeAdapter
     } catch (err) {
       this.subscriptionLimits?.stop();
       this.subscriptionLimits = undefined;
-      this.cleanupTurnFiles();
+      files.cleanup();
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
       this.proc = null;
       return;
@@ -284,7 +277,7 @@ export class OpencodeAdapter
       this.clearErrorKillTimer();
       this.drainLines(true);
       this.drainStderrLines(true);
-      this.cleanupTurnFiles();
+      files.cleanup();
       this.finishSubscriptionLimits(() => {
         try {
           if (this.stdinFailure && !this.sawAnyEvent()) {
@@ -412,13 +405,14 @@ export class OpencodeAdapter
 
   // Every path must emit one result, then done; no turn CLI exit handler does it for compaction.
   // The one-shot executor settles the turn and releases its holds on done (planning#644).
-  private runCompaction(params: AgentRunParams, spawnEnv: Record<string, string>): void {
+  private runCompaction(params: AgentRunParams, spawnEnv: Record<string, string>, files: OpencodeTurnFiles): void {
     const sessionId = params.sessionId;
     let settled = false;
+    let serverSpawned = false;
     const settle = (error?: string): void => {
       if (settled) return;
       settled = true;
-      this.cleanupTurnFiles();
+      if (!serverSpawned) files.cleanup();
       this.finishSubscriptionLimits(() => {
         this.compactionProc = null;
         try {
@@ -456,6 +450,8 @@ export class OpencodeAdapter
           spawnFn: this.spawnFn,
           onLog: (message) => this.emit("log", "opencode", message),
           onServerSpawned: (proc) => {
+            serverSpawned = true;
+            proc.once("close", files.cleanup);
             this.compactionProc = proc;
           },
         });
@@ -634,7 +630,6 @@ export class OpencodeAdapter
     this.clearErrorKillTimer();
     if (this.proc) killProcessTree(this.proc, "SIGTERM", { label: "opencode" });
     if (this.compactionProc) killProcessTree(this.compactionProc, "SIGTERM", { label: "opencode-compaction" });
-    this.cleanupTurnFiles();
   }
 
   private clearErrorKillTimer(): void {
@@ -654,20 +649,6 @@ export class OpencodeAdapter
       clearTimeout(this.watchdog);
       this.watchdog = null;
     }
-  }
-
-  private cleanupTurnFiles(): void {
-    for (const p of [this.configPath, this.systemPromptPath]) {
-      if (p) {
-        try {
-          fs.unlinkSync(p);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-    this.configPath = null;
-    this.systemPromptPath = null;
   }
 
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult {
