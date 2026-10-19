@@ -369,7 +369,7 @@ it.
   fix is not this feature's: re-attaching a runner to the idle resident
   process that the worker keeps (`agent-controller.ts`, `residentSpawn`)
   would also spare every such session the full cache write that its next
-  turn pays today. Proposed as a follow-up on planning#699.
+  turn pays today. Filed as planning#700.
 - **A retry after a restart.** A failed attempt is not retried, except once
   more if the orchestrator restarts before `expires`: boot re-derives from the
   same ordinary row, because the failed compaction left no card.
