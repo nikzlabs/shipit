@@ -114,6 +114,25 @@ uses).
   the turn before it. The process emits `reused` first, and a turn that has not
   settled settles then, by the rule above. Its post-turn work goes on; only
   `superseded` gives that up.
+- **A turn of the CLI's own during another turn's setup keeps the process**
+  (planning#703). The CLI can start a turn (a background task's wake) after a
+  turn claimed `running` and before it takes the process. That turn is
+  followed as a turn of its own: by restart adoption (its first event, or a
+  status reading — the first connect's or the take-over's — that sees it
+  before the stream does), or by the previous turn's listeners
+  (`adoptCliStartedTurn`, which starts a turn when the claim is still in
+  setup, on a resident process). Either marks the claim's phase submitted.
+  The claiming turn keeps its claim from where it set `running` (the
+  composer's callers pass it down) and checks it (`claimTakenBeforeSubmit`)
+  after the last await of its setup, before the spawn guards, and before it
+  starts a compaction that its setup decided on. If another turn took it, the
+  message goes back to the head of the queue (`requeueDisplacedTurn`), not
+  started: no longer watched as a started turn (`unwatchLetGo`), offered at
+  once to the running turn as any waiting message is, and released through
+  the queue's gates — the finished turn's commit first — when that turn has
+  already ended. A message whose sender was already told it was dropped is
+  not queued again. Before, the claiming turn took the process: the CLI
+  turn's saved rows were replaced, and its result settled the message.
 - **A turn that a drain starts** is told of a disposed runner and of an
   abandoned turn, as a turn that `dispatch` starts already was
   (`turn-settlement.ts` → `settleWhenRunnerLetsGo`). The restart follow-up is
@@ -190,8 +209,8 @@ the queue, in the order it was sent.
   (`AgentProcess.submissionSettled` resolved; at once for a process with no
   such promise), when the CLI reads the prompt back, and when ShipIt adopts a
   turn that survived an orchestrator restart or that the CLI started by
-  itself. That last case marks only the turn that the adoption began: a wake of
-  the CLI during another turn's setup says nothing about that turn's prompt.
+  itself. A wake of the CLI during another turn's setup is such a turn of its
+  own, and the claiming turn waits for it (planning#703).
   Each attempt of a turn has a token, and an answer marks only the attempt it
   belongs to, so a late answer cannot mark a retry or the next turn. A retry
   (`reopenTurnSetup`) clears `ready`.
@@ -661,6 +680,12 @@ files this feature does not change.
   changed. A typed message does the same.
 - The rebase-resolution turn and ShipIt's compaction turns refused a steer
   until Part 3, which removed that.
+- A post-merge compaction (docs/295) that a setup decided on, while a turn
+  of the CLI's own took the claim (planning#703), does not run: the decision
+  marks the merge's compaction spent before it returns, and the message
+  waits for that turn without it. The decision already declines when the
+  resident process has background work, which is what a turn of the CLI's
+  own usually comes from; nothing is lost but that one compaction.
 
 ## Review record
 

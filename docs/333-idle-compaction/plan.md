@@ -411,8 +411,13 @@ raw output: `/persist/idlecompact/` (not committed).
 whole conversation from the cache in every run, also after a commit; the
 miss above reproduces only with this raw invocation, and mostly as a
 first-turn effect that also hits a second turn in the same process. See
-[docs/334 plan, "Probe"](../334-reattach-resident-claude/plan.md#probe). The
-reasons below are kept as they were decided.
+[docs/334 plan, "Probe"](../334-reattach-resident-claude/plan.md#probe). On
+2026-10-20 the same harness ran a long conversation (Sonnet 5.5, four turns of
+file reads, a write and a commit, 179K tokens) and then waited 12 minutes:
+the first turn of a new process that resumed it read 179,159 tokens from the
+cache and wrote 79, and the old process read 179,218 and wrote 79. The
+reasons below are kept as they were decided; requirement 13 has an open
+question.
 
 **Consequence for piece 3.** A ShipIt update destroys the resident process
 that built the cache. A compaction in a fresh container is a first resume, so

@@ -241,16 +241,6 @@ whether to revisit them is the user's decision (planning#699).
 
 ## Known limits
 
-- **A turn the CLI starts during another turn's setup** (planning#703). If a
-  background task self-wakes while the first turn after a restart sets up,
-  the restart adoption follows it, and the incoming turn then takes the
-  process from it (the docs/329 handover), which can lose the adopted turn's
-  saved transcript prefix and settle the incoming turn on its result. And
-  when the take-over's status reading sees that turn before the stream
-  delivers it, the take-over declines, and the incoming turn's new process
-  kills the survivor — what every first turn after a restart did before this
-  feature. Both races exist without it; it adds up to two status readings to
-  the setup window.
 - **An exit during the second status reading.** If the process exits after
   the worker answers and before its `agent_done` reaches the runner, the turn
   sends its prompt to a process that is gone; the worker refuses it, and the
@@ -299,8 +289,9 @@ found one more, fixed: adopting a turn the CLI starts on a tended proxy
 restored the first connect's older reading over the facts the take-over had
 restored. It also argued that the first "not changed" race loses a
 transcript prefix and settles the incoming turn on the wrong result. That is
-true, and true before this feature; it is a known limit, filed as
-planning#703.
+true, and true before this feature; it was filed as planning#703, which
+has since fixed both races (docs/329 plan, "A turn of the CLI's own during
+another turn's setup keeps the process").
 
 ## Key files
 

@@ -162,7 +162,16 @@ visible.
 
 ## Open questions
 
-None.
+- Requirement 13's reason does not hold as written. A probe through ShipIt's
+  own spawn path (docs/334 plan, "Probe"; repeated on 2026-10-20 with a
+  179K-token conversation of tool calls and a 12-minute gap) found that a new
+  process reads the conversation from the cache as well as the old process
+  does. What can still make the cache cold after an update is a change to
+  what the CLI sends: its version, or ShipIt's instructions. In the 30 days to
+  2026-10-20 there were 3 releases, 8 agent-CLI version bumps and 24 changes
+  to prompt files; not probed is how many of those prompt changes reach the
+  request. Does a session whose container an update destroyed get its idle
+  compaction in a new container?
 
 ## Resolved questions
 

@@ -71,7 +71,7 @@ import {
   type TurnOutcome,
 } from "./turn-settlement.js";
 import { PostTurnHold } from "./post-turn-hold.js";
-import { beginTurnSetup, setSteerRefused } from "./turn-stop-request.js";
+import { beginTurnSetup, currentTurnPhase, endOwnClaim, setSteerRefused } from "./turn-stop-request.js";
 export {
   prepareDispatch,
   queuedMessageToDispatchOptions,
@@ -400,6 +400,7 @@ export function dispatchOnRunner(
   if (step) retireResident(runner);
   // Claim synchronously so another message or delivery retry cannot enter during async setup.
   runner.running = true;
+  const claim = currentTurnPhase(runner);
   if (opts.deliveryId !== undefined) runner.activeDeliveryId = opts.deliveryId;
   const chained = settleWhenRunnerLetsGo(runner, withSettlement(opts, settlement));
   void runner.runDispatchedTurn(chained).catch((err: unknown) => {
@@ -407,12 +408,13 @@ export function dispatchOnRunner(
       `[dispatch] dispatched turn for ${runner.sessionId} failed during setup:`,
       err,
     );
-    runner.running = false;
+    const own = endOwnClaim(runner, claim);
     if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
       runner.activeDeliveryId = undefined;
     }
     settleDispatchSetupFailure(runner, chained, err);
-    if (runner.queueLength > 0) {
+    // A turn of the CLI's own that took the claim drains the queue when it ends.
+    if (own && runner.queueLength > 0) {
       // The shared take, so a held entry at the head cannot strand the user's behind it.
       const next = takeRunnableQueuedTurn(runner);
       if (next) {

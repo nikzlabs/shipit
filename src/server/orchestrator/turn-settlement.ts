@@ -267,6 +267,20 @@ export function settleDroppedQueueEntries(queue: QueuedMessage[], reason: string
  * started and for one that a drain started. A turn that produced its result is
  * interrupted, never dropped as if it had not run.
  */
+/** How to stop each live `settleWhenRunnerLetsGo` watch, keyed by its callback. */
+const letGoWatches = new WeakMap<(outcome: TurnOutcome) => void, () => boolean>();
+
+/**
+ * planning#703 — a started turn goes back to the queue. A disposed runner or an abandoned turn
+ * no longer settles it: the queue does, and the turn that ends meanwhile is another one. The
+ * callback stays the same, so the queue still knows it (`settleDispatchSetupFailure`). False
+ * when the runner already settled it: its sender was told, and may deliver it again.
+ */
+export function stopLetGoWatch(callback: ((outcome: TurnOutcome) => void) | undefined): boolean {
+  const stop = callback ? letGoWatches.get(callback) : undefined;
+  return stop ? stop() : true;
+}
+
 export function settleWhenRunnerLetsGo<
   T extends { text: string; deliveryId?: string; onTurnComplete?: (outcome: TurnOutcome) => void },
 >(
@@ -304,5 +318,13 @@ export function settleWhenRunnerLetsGo<
   runner.on("turn_result", onTurnResult);
   runner.on("disposed", onRunnerDisposed);
   runner.on("turn_abandoned", onTurnAbandoned);
+  letGoWatches.set(settle, () => {
+    letGoWatches.delete(settle);
+    if (settled) return false;
+    runner.off("turn_result", onTurnResult);
+    runner.off("disposed", onRunnerDisposed);
+    runner.off("turn_abandoned", onTurnAbandoned);
+    return true;
+  });
   return { ...opts, onTurnComplete: settle };
 }
