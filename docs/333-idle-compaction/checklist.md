@@ -5,7 +5,7 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 ## Before code
 
 - [x] Probe: a Claude session resumed in a fresh container reads the warm cache on its first request. Result then: it does not. Corrected by planning#704: it does; the cold first resume was a confound (plan.md, "Verify first" 1).
-- [x] The user decided the ShipIt-update case: an exception to req 2 (req 13). No container is started. Removed by the user on 2026-10-19 (planning#704, below), kept on 2026-10-20; an open question now (requirements.md).
+- [x] The user decided the ShipIt-update case: an exception to req 2 (req 13). No container is started. Removed on 2026-10-19 (planning#704, below), kept and then removed on 2026-10-20 (requirements.md, receipts).
 - [x] Probe: `cache_creation` with the 5m/1h split arrives on main-thread `assistant` messages in `--output-format stream-json` (CLI 2.1.300). Result: it does.
 - [x] Cross-spawn check for Codex and OpenCode (plan.md, "Verify first" 1b): Codex is warm across processes; OpenCode is cold, because ShipIt gives it a new instruction-file path every turn. No configured role runs Grok, so Grok is unchecked.
 - [x] The user decided: OpenCode stays once its prompt is stable (req 14); Grok is out until tested (req 15).
@@ -71,7 +71,7 @@ Design: [plan.md](./plan.md). Requirements: [requirements.md](./requirements.md)
 - [x] Probe through ShipIt's spawn on a 303K-token, tool-heavy conversation: a new process reads it warm (plan.md, "Verify first" 1).
 - [x] Probe: a new process stays warm across CLI 2.1.293 → 2.1.300 and a change to ShipIt's instructions (the CLI's stored prompt snapshot).
 - [x] Probe: a new process resumed with `/compact` 50 minutes after the last request. Result: it read 303,133 tokens from the cache and wrote 5.
-- [ ] Req 13: the user's answer to the open question (requirements.md), then its requirement text and receipt.
+- [x] Req 13 rewritten after the user's 2026-10-20 answer, with a dated receipt.
 - [x] `bootSessionRunner` (`wake-session.ts`), shared by `wakeSessionWithTurn` and the fire: no container → start one, marked woken before the wake (`lastUsedAt`, `previewBefore`).
 - [x] The account check (`nextTurnRouteId` over `selectTurnRoute`) replaces the resident check; `workerIdleResident` removed.
 - [x] A process the runner could not take over drops the fire; `isStarting` holds the session from the wake to the dispatch; the fire waits for the worker and the install (`whenReadyForAgent`) and checks the expiry again.

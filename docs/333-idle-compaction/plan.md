@@ -36,13 +36,10 @@ Nothing runs inside the container, because the container can be gone
 (requirements, Background). Nothing is polled: one timer for the whole
 orchestrator, at the earliest deadline.
 
-**planning#704 changed piece 3**: a fire that finds no container starts one, and
-the idle enforcer stops it again (piece 5); the check that Claude's resident
-process is held became a check of the account ("Verify first" 1 shows why).
-**This waits on an open question** (requirements.md): planning#704 implements
-the 2026-10-19 answer that removed req 13's exception, but on 2026-10-20 the
-user kept the exception, for a reason the planning#704 probe contradicts. As
-req 13 reads now, a ShipIt update still ends a session's idle compaction.
+**planning#704 changed piece 3** (req 13 since its last 2026-10-20 answer): a
+fire that finds no container starts one, and the idle enforcer stops it again
+(piece 5); the check that Claude's resident process is held became a check of
+the account ("Verify first" 1 shows why).
 
 ## Pieces
 
@@ -484,8 +481,8 @@ minutes: the first turn of a new process that resumed it read 179,159 tokens
 from the cache and wrote 79, and the old process read 179,218 and wrote 79.
 The user then kept requirement 13 on 2026-10-20 with a new reason: an update
 usually changes the CLI version or ShipIt's instructions, which makes the
-cache cold. The T rows below contradict that reason; requirements.md holds
-the open question.
+cache cold. The T rows below contradict that reason, and the user removed
+the exception the same day (requirements.md, receipts).
 
 **The planning#704 probe (2026-10-20)** repeated it on a large, tool-heavy
 conversation, the same way: CLI 2.1.300, `claude-sonnet-5-5`, the user's
@@ -535,10 +532,10 @@ piece 3 step 4 the account.
 **A finding beyond this feature:** a resumed conversation does not get
 ShipIt's changed instructions; only a new conversation does.
 
-**Consequence for piece 3.** A compaction in a new container after a ShipIt
-update reads the conversation warm, so it saves what req 1 intends; whether
-it runs is the open question on req 13 (requirements.md). Piece 3 step 4
-checks the account, not the process.
+**Consequence for piece 3.** A ShipIt update no longer ends a session's idle
+compaction: the fire starts the container, and the new process reads the
+conversation warm (req 13). Piece 3 step 4 checks the account, not the
+process.
 
 **Consequence beyond this feature.** A restart of a Claude session's process
 — a container stopped to free memory, a ShipIt update — does not make the
@@ -645,11 +642,10 @@ it.
   without a result (piece 2).
 - **A new `countsAsActivity` dispatch flag.** The silent-compaction class
   already exists and covers every caller (piece 4).
-- **Skip a session whose container a ShipIt update destroyed.** Req 13 as it
-  reads now; planning#704 implements the other answer, and the choice is the
-  open question in requirements.md. Its first reason rested on the
-  confounded first probe, its 2026-10-20 reason on a premise the T rows of
-  "Verify first" 1 contradict.
+- **Skip a session whose container a ShipIt update destroyed** (req 13 until
+  the user's last 2026-10-20 answer). Its first reason rested on the
+  confounded first probe, its second on a premise the T rows of "Verify
+  first" 1 contradict.
 - **Drop the fire when the update changed the prompt** (another CLI version,
   other instructions). A new process read the conversation warm across both:
   the CLI builds a resumed request from the stored snapshot.
