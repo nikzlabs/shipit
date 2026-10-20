@@ -193,9 +193,9 @@ No per-session interval (CLAUDE.md, "never per-session polling").
      the agents, so there is always one. The stops that remove a container are the
      idle enforcer, which compacts first (piece 5); a done session, which has
      no deadline (req 7); and a ShipIt update, which destroys a stale, idle
-     container at boot (`reattachInFlightTurns`) — the exception of req 13. A
-     fresh container would be a new agent process, which the probe found
-     writes the whole conversation again ("Verify first").
+     container at boot (`reattachInFlightTurns`) — the exception of req 13. An
+     update usually changes what the CLI sends (its version, or ShipIt's
+     instructions), so a fresh container would read the conversation cold.
 4. **A Claude session must reuse the process that built the cache.** With
    live steering on (`advanced.liveSteering`, the default), Claude keeps one
    resident process per session, and a dispatch reuses it only while the
@@ -416,8 +416,9 @@ first-turn effect that also hits a second turn in the same process. See
 file reads, a write and a commit, 179K tokens) and then waited 12 minutes:
 the first turn of a new process that resumed it read 179,159 tokens from the
 cache and wrote 79, and the old process read 179,218 and wrote 79. The
-reasons below are kept as they were decided; requirement 13 has an open
-question.
+user kept requirement 13 on 2026-10-20 with a new reason: an update usually
+changes the CLI version or ShipIt's instructions, which makes the cache cold.
+Piece 3 step 4 still rests on the old reason below; it is not changed.
 
 **Consequence for piece 3.** A ShipIt update destroys the resident process
 that built the cache. A compaction in a fresh container is a first resume, so
