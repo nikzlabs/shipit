@@ -34,7 +34,9 @@ function makeSweep(world: Partial<World> = {}) {
   const ensureStandbyForWarmSession = vi.fn(async (_opts: unknown) => undefined);
   const destroy = vi.fn(async () => undefined);
   const stopPreview = vi.fn((_sessionId: string) => undefined);
-  const repairPreview = vi.fn(async (_opts: unknown) => undefined);
+  const order: string[] = [];
+  const repairPreview = vi.fn(async (_opts: unknown) => { order.push("repair"); });
+  const refreshWarm = vi.fn(async (_opts: unknown) => { order.push("refresh"); });
   const setWarmSessionId = vi.fn();
   let memory: DockerMemoryStats | null = null;
 
@@ -65,6 +67,7 @@ function makeSweep(world: Partial<World> = {}) {
     ensureStandbyForWarmSession,
     stopPreview,
     repairPreview,
+    refreshWarm,
     getMemoryStats: () => memory,
   });
 
@@ -74,6 +77,8 @@ function makeSweep(world: Partial<World> = {}) {
     ensureStandbyForWarmSession,
     stopPreview,
     repairPreview,
+    refreshWarm,
+    order,
     destroy,
     setWarmSessionId,
     setMemory: (m: DockerMemoryStats | null) => { memory = m; },
@@ -122,6 +127,26 @@ describe("warm tier sweep", () => {
     expect(world.stopPreview).toHaveBeenCalledWith(WARM_ID);
     expect(world.stopPreview.mock.invocationCallOrder[0])
       .toBeLessThan(world.destroy.mock.invocationCallOrder[0] ?? Infinity);
+  });
+
+  it("brings a healthy warm session up to date before it repairs the preview (req 13)", async () => {
+    world = makeSweep({ tracked: { status: "running" }, dockerRunning: true });
+
+    await world.sweep();
+
+    expect(world.refreshWarm).toHaveBeenCalledWith({
+      sessionId: WARM_ID, workspaceDir: "/sessions/warm-1/workspace", repoUrl: URL,
+    });
+    expect(world.order).toEqual(["refresh", "repair"]);
+  });
+
+  it("does not repair the preview of a session a claim took during the refresh", async () => {
+    world = makeSweep({ tracked: { status: "running" }, dockerRunning: true });
+    world.refreshWarm.mockImplementation(async () => { world.claim(); });
+
+    await world.sweep();
+
+    expect(world.repairPreview).not.toHaveBeenCalled();
   });
 
   it("does not touch the preview of a healthy standby", async () => {
@@ -215,6 +240,23 @@ describe("warm tier sweep", () => {
 
     expect(world.ensureStandbyForWarmSession).not.toHaveBeenCalled();
     expect(world.warmSessionForRepo).not.toHaveBeenCalled();
+  });
+
+  it("logs once when memory pauses repairs and once when they resume", async () => {
+    const log = vi.mocked(console.log);
+    world = makeSweep();
+    const pauseLines = () => log.mock.calls.filter(([m]) => String(m).includes("warm repairs paused")).length;
+    const resumeLines = () => log.mock.calls.filter(([m]) => String(m).includes("warm repairs resumed")).length;
+
+    world.setMemory(atBudget());
+    await world.sweep();
+    await world.sweep();
+    expect(pauseLines()).toBe(1);
+
+    world.setMemory(null);
+    await world.sweep();
+    await world.sweep();
+    expect(resumeLines()).toBe(1);
   });
 
   it("leaves a freshly warmed session alone until the grace window passes", async () => {

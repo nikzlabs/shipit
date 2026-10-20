@@ -50,6 +50,8 @@ function Skeleton({ width }: { width: string }) {
 }
 
 function renderSubtitle(action: RewindGapAction, preview?: WsRewindPreview): ReactNode {
+  // docs/007 reqs 6, 9 — the item is disabled and the reason names fork.
+  if (preview?.unavailableReason) return preview.unavailableReason;
   if (action === "fork") {
     if (preview?.keptTurnGroupCount === undefined) return <Skeleton width="w-32" />;
     return `Includes ${plural(preview.keptTurnGroupCount, "turn group")}`;
@@ -164,7 +166,11 @@ export function RewindPoint({
         <DropdownMenuContent align="center" side="top" className="w-64">
           {!forkOnly && (
             <>
-              <DropdownMenuItem onSelect={() => chooseAction("chat")} className="flex-col items-start">
+              <DropdownMenuItem
+                onSelect={() => chooseAction("chat")}
+                disabled={previews?.chat?.unavailableReason !== undefined}
+                className="flex-col items-start"
+              >
                 <div className="font-medium text-(--color-text-primary)">Rewind chat to here</div>
                 <div className="mt-0.5 text-(--color-text-secondary)">{renderSubtitle("chat", previews?.chat)}</div>
               </DropdownMenuItem>
@@ -172,7 +178,11 @@ export function RewindPoint({
                 <div className="font-medium text-(--color-text-primary)">Rewind code to here</div>
                 <div className="mt-0.5 text-(--color-text-secondary)">{renderSubtitle("code", previews?.code)}</div>
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => chooseAction("both")} className="flex-col items-start">
+              <DropdownMenuItem
+                onSelect={() => chooseAction("both")}
+                disabled={previews?.both?.unavailableReason !== undefined}
+                className="flex-col items-start"
+              >
                 <div className="font-medium text-(--color-text-primary)">Rewind chat and code</div>
                 <div className="mt-0.5 text-(--color-text-secondary)">{renderSubtitle("both", previews?.both)}</div>
               </DropdownMenuItem>

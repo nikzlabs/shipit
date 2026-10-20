@@ -1,10 +1,10 @@
 import type { ToolDescriptor } from "./types.js";
 import { MAX_PAYLOAD_LEN, MAX_DESC_LEN, MAX_ID_LEN, MAX_LABEL_LEN } from "../../shared/propose-actions-validation.js";
 import {
+  ADVERTISED_STATUS_LEN,
   MAX_LAST_TURN_LEN,
   MAX_NEEDS_YOU_ITEMS,
   MAX_NEEDS_YOU_LEN,
-  MAX_STATUS_LEN,
   validateSessionStatus,
 } from "../../shared/session-status-validation.js";
 import { requireOfferDescriptions } from "../../shared/session-status-offers.js";
@@ -18,7 +18,7 @@ const TOOL_DESCRIPTION = [
   "or the direct answer when the user asked something. It is the ONLY field that is not a",
   "delta: every call rewrites it, and a call that omits it clears the line, so pass it again",
   "whenever the turn did something worth saying and leave it out when it did not.",
-  `\`status\` is markdown and may carry a short list (up to ${MAX_STATUS_LEN} chars).`,
+  `\`status\` is markdown and may carry a short list (up to ${ADVERTISED_STATUS_LEN} chars).`,
   "EVERY field is markdown, not only `status`: a step, a label and a description all render it,",
   "so a link into a file, an issue or the running app is a working link. Keep those to one",
   "short line — a heading or a list does not belong in a checkbox row.",
@@ -53,10 +53,12 @@ const inputSchema = {
     },
     status: {
       type: "string",
-      maxLength: MAX_STATUS_LEN,
+      // The advertised cap, not the enforced one. Claude Code shows `maxLength`
+      // to the model but does not enforce it, so a small overshoot reaches the validator.
+      maxLength: ADVERTISED_STATUS_LEN,
       description:
         "Markdown, and it may carry a short list: what the session is about, how far it got, "
-        + `what is done and what is not started yet (≤${MAX_STATUS_LEN} chars). `
+        + `what is done and what is not started yet (≤${ADVERTISED_STATUS_LEN} chars). `
         + "Omit it to leave the stored status unchanged; it is required on the session's first call.",
     },
     needsYou: {

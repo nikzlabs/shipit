@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
+  releaseResidentOnPendingRewind,
   releaseResidentOnServiceMcpChange,
   releaseResidentOnSpawnChange,
   releaseResidentOnStatusCardChange,
@@ -102,6 +103,32 @@ describe("releaseResidentOnSpawnChange", () => {
     expect(releaseResidentOnSpawnChange(asRunner(runner), "claude-opus-5")).toBe(true);
     expect(runner.getAgent()).toBeNull();
     expect(runner.isStreamingActive).toBe(false);
+  });
+});
+
+describe("releaseResidentOnPendingRewind (docs/007 req 7)", () => {
+  it("retires a resident while a rewind point waits for a spawn to fork at it", () => {
+    const order: string[] = [];
+    const runner = makeRunner({ order });
+    const agent = runner.agent!;
+
+    expect(releaseResidentOnPendingRewind(asRunner(runner), "msg-7")).toBe(true);
+
+    expect(order).toEqual(["emit:superseded", "removeAllListeners", "kill"]);
+    expect(agent.kill).toHaveBeenCalledOnce();
+    expect(runner.getAgent()).toBeNull();
+    expect(runner.isStreamingActive).toBe(false);
+  });
+
+  it("keeps the resident with no point pending, and does nothing without one", () => {
+    const runner = makeRunner({});
+    const agent = runner.agent!;
+    expect(releaseResidentOnPendingRewind(asRunner(runner), undefined)).toBe(false);
+    expect(agent.kill).not.toHaveBeenCalled();
+    expect(runner.getAgent()).toBe(agent);
+
+    expect(releaseResidentOnPendingRewind(asRunner(makeRunner({ agent: null })), "msg-7")).toBe(false);
+    expect(releaseResidentOnPendingRewind(null, "msg-7")).toBe(false);
   });
 });
 

@@ -687,6 +687,7 @@ export class FakeClaudeProcess extends EventEmitter {
   public runCalled = false;
   public lastPrompt = "";
   public lastSessionId: string | undefined;
+  public lastResumeAt: string | undefined;
   public lastSystemPrompt: string | undefined;
   public lastImages: { data: string; mediaType: string; filename?: string }[] | undefined;
   public lastCwd: string | undefined;
@@ -730,6 +731,7 @@ export class FakeClaudeProcess extends EventEmitter {
   run(params: {
     prompt: string;
     sessionId?: string;
+    resumeAt?: string;
     systemPrompt?: string;
     images?: { data: string; mediaType: string; filename?: string }[];
     cwd?: string;
@@ -749,6 +751,7 @@ export class FakeClaudeProcess extends EventEmitter {
     this.lastCompact = params.compact;
     this.lastPrompt = params.prompt;
     this.lastSessionId = params.sessionId;
+    this.lastResumeAt = params.resumeAt;
     this.lastSystemPrompt = params.systemPrompt;
     this.lastImages = params.images;
     this.lastCwd = params.cwd;
@@ -810,6 +813,8 @@ interface RawClaudeEvent {
   message?: { content?: unknown[] };
   subtype?: string;
   is_error?: boolean;
+  is_api_error_message?: boolean;
+  uuid?: string;
   total_cost_usd?: number | null;
   usage?: {
     input_tokens?: number;
@@ -848,6 +853,8 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
         type: "agent_assistant",
         content: raw.message?.content ?? [],
         parentToolUseId: raw.parent_tool_use_id,
+        ...(raw.is_api_error_message === true ? { synthetic: true } : {}),
+        ...(raw.uuid ? { messageId: raw.uuid } : {}),
       };
     case "user":
       if (raw.isReplay) {
@@ -861,12 +868,13 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
               .map((b) => b.text)
               .join("")
           : "";
-        return { type: "agent_user_replay", text };
+        return { type: "agent_user_replay", text, ...(raw.uuid ? { messageId: raw.uuid } : {}) };
       }
       return {
         type: "agent_tool_result",
         content: raw.message?.content ?? [],
         parentToolUseId: raw.parent_tool_use_id,
+        ...(raw.uuid ? { messageId: raw.uuid } : {}),
       };
     case "result": {
       const u = raw.usage;
@@ -1027,9 +1035,15 @@ export function seedRepoCacheWithLocalBare(opts: {
   tmpDir: string;
   repoUrl: string;
   seedFiles?: Record<string, string>;
+  /**
+   * Seed a real bare cache, with the remote as a sibling working repo. The claim's clone path
+   * (`ensureBareCache`) re-clones a cache that is not bare, which empties the default fixture.
+   */
+  bare?: boolean;
 }): void {
   const { tmpDir, repoUrl, seedFiles } = opts;
-  const repoDir = getRepoCacheDir(tmpDir, repoUrl);
+  const cacheDir = getRepoCacheDir(tmpDir, repoUrl);
+  const repoDir = opts.bare ? `${cacheDir}.origin` : cacheDir;
   fs.mkdirSync(repoDir, { recursive: true });
   execSync("git init -b main", { cwd: repoDir, stdio: "ignore" });
 
@@ -1043,6 +1057,10 @@ export function seedRepoCacheWithLocalBare(opts: {
   );
   execSync(`git remote add origin ${repoUrl}`, { cwd: repoDir, stdio: "ignore" });
   execSync("git update-ref refs/remotes/origin/main HEAD", { cwd: repoDir, stdio: "ignore" });
+  if (opts.bare) {
+    execSync(`git clone -q --bare "${repoDir}" "${cacheDir}"`, { stdio: "ignore" });
+    execSync(`git remote set-url origin ${repoUrl}`, { cwd: cacheDir, stdio: "ignore" });
+  }
 
   const gitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
   if (!gitConfigGlobal) {

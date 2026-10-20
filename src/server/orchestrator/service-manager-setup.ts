@@ -520,6 +520,8 @@ export function buildServiceManager(args: {
         }
       : {}),
     stackName: process.env.DOCKER_STACK,
+    // The Engine API source for status, in place of spawned Compose CLI queries (docs/332).
+    ...(containerManager ? { docker: containerManager.getDockerClient() } : {}),
     opsSession: session?.kind === "ops",
     dockerSocketGrant: () => dockerSocketGrantFor(deps.sessionManager.get(sessionId), deps.repoStore),
     ...(containerManager ? { sessionGpu: () => containerManager.gpuDecision(sessionId) } : {}),
@@ -715,8 +717,14 @@ export function setupServiceManager(
     else decisionListeners.push(fn);
   };
   if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
+    // Read before adoption clears it: "started" on a warm stack means the gate stops its services.
+    const warmStack = serviceManagers.get(runner.sessionId)?.preStartedWarm === true;
     installPromise = runner.runInstall(installCommands, {
       onWorkerDecision: (decision) => {
+        console.log(
+          `[timing] install-decision for ${runner.sessionId} decision=${decision} ` +
+            `warm-stack=${warmStack ? "yes" : "no"} took=${Date.now() - installStartedAt}ms`,
+        );
         observedDecision = decision;
         for (const fn of decisionListeners) fn(decision);
       },

@@ -9,6 +9,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import tls from "node:tls";
+import { setTimeout as sleep } from "node:timers/promises";
 import { spawn, execFileSync } from "node:child_process";
 import { killProcessTree } from "../src/server/shared/kill-child.ts";
 import { CodexOAuthRefresher } from "../src/server/orchestrator/agents/codex/oauth-refresher.ts";
@@ -21,6 +22,10 @@ const SESSION_CLI_REFRESH_WINDOW_MS = 5 * 60_000;
 const ACCOUNT_ID = "00000000-0000-4000-8000-000000000000";
 const HOSTS = ["auth.openai.com", "chatgpt.com", "api.openai.com", "*.openai.com", "*.chatgpt.com"];
 const SESSION_TURN = ["exec", "--skip-git-repo-check", "ok"];
+const LOGIN = ["login", "--device-auth"];
+const LOGIN_DEVICE_CODE_MS = 30_000;
+const LOGIN_REVOKE_ANSWER_MS = 1_000;
+const LOGIN_WAIT_MS = 1_000;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-refresh-probe-"));
 let failed = 0;
@@ -72,7 +77,8 @@ function startRecorder() {
     key: fs.readFileSync(path.join(root, "leaf.key")),
     cert: fs.readFileSync(path.join(root, "leaf.pem")),
   });
-  const recorder = { requests: [], tokenAnswer: "ok", port: 0, close: () => {} };
+  // `login`: note whether `watch` exists at each request, answer a revoke late, and never answer the rest.
+  const recorder = { requests: [], tokenAnswer: "ok", login: false, watch: "", held: [], port: 0, close: () => {} };
 
   const answerToken = (res) => {
     const refuse = (status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
@@ -97,11 +103,25 @@ function startRecorder() {
     req.on("data", (chunk) => { body += chunk; });
     req.on("end", () => {
       const url = req.url ?? "";
-      const kind = url.startsWith("/oauth/token") ? "token" : req.method === "POST" && /\/responses(\?|$)/.test(url) ? "model" : "other";
+      const kind = url.startsWith("/oauth/token") ? "token"
+        : url.startsWith("/oauth/revoke") ? "revoke"
+        : url.startsWith("/api/accounts/deviceauth/usercode") ? "device_code"
+        : req.method === "POST" && /\/responses(\?|$)/.test(url) ? "model" : "other";
       let parsed = {};
       try { parsed = JSON.parse(body); } catch { /* not JSON */ }
-      recorder.requests.push({ kind, host: req.headers.host, url, body: parsed, bearer: markOf(req.headers.authorization) });
-      if (kind === "token") {
+      const request = { kind, method: req.method, host: req.headers.host, url, body: parsed, bearer: markOf(req.headers.authorization) };
+      recorder.requests.push(request);
+      if (recorder.login && kind === "revoke") {
+        request.fileAtArrival = fs.existsSync(recorder.watch);
+        setTimeout(() => {
+          request.fileAtAnswer = fs.existsSync(recorder.watch);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end("{}");
+        }, LOGIN_REVOKE_ANSWER_MS);
+      } else if (recorder.login) {
+        request.fileAtArrival = fs.existsSync(recorder.watch);
+        recorder.held.push(res);
+      } else if (kind === "token") {
         answerToken(res);
       } else if (kind === "model") {
         res.writeHead(200, { "content-type": "text/event-stream" });
@@ -250,6 +270,45 @@ function sessionTurn(recorder, name, msLeft) {
   });
 }
 
+// The login CLI up to its device-code request, which the recorder holds: the sign-in goes no further.
+async function loginStart(recorder, name) {
+  const home = path.join(root, name);
+  writeAuth(home, "ORIGINAL", 10 * DAY_MS);
+  recorder.requests = [];
+  recorder.login = true;
+  recorder.watch = authFile(home);
+  const child = spawn(bin, LOGIN, {
+    cwd: home,
+    env: cliEnv(recorder, home, path.join(home, ".codex")),
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  let exit = null;
+  const exited = new Promise((resolve) => {
+    child.on("exit", (code, signal) => { exit = code ?? signal; resolve(); });
+    child.on("error", (err) => { exit = err.code ?? "error"; resolve(); });
+  });
+  const waitFor = async (condition, ms) => {
+    const deadline = Date.now() + ms;
+    while (!condition() && exit === null && Date.now() < deadline) await sleep(50);
+    return condition();
+  };
+  try {
+    const deviceCode = () => recorder.requests.find((request) => request.kind === "device_code");
+    await waitFor(deviceCode, LOGIN_DEVICE_CODE_MS);
+    if (deviceCode()) await sleep(LOGIN_WAIT_MS);
+    return {
+      requests: recorder.requests.map((request) => ({ ...request })),
+      fileWhileWaiting: fs.existsSync(authFile(home)),
+      waiting: exit === null,
+    };
+  } finally {
+    killProcessTree(child, "SIGKILL", { label: "codex-refresh-probe" });
+    await Promise.race([exited, sleep(5_000, undefined, { ref: false })]);
+    recorder.login = false;
+    for (const res of recorder.held.splice(0)) res.destroy();
+  }
+}
+
 const minutes = (ms) => `${(ms / 60_000).toFixed(1)} min`;
 
 async function main() {
@@ -322,6 +381,22 @@ async function main() {
     check(inside.tokenRequests.length === 1 && inside.order[0]?.kind === "token" && holds(inside.home, "ROTATED"),
       `(f) a session's CLI refreshes before its model call with ${minutes(SESSION_CLI_REFRESH_WINDOW_MS - 60_000)} left`,
       `token requests=${inside.tokenRequests.length} first=${inside.order[0]?.kind}`);
+
+    // (g) A sign-in revokes the old grant, then removes the account's file before it waits for the user.
+    const login = await loginStart(recorder, "g-login");
+    const [revoke, deviceCode] = login.requests;
+    const seen = login.requests.map((request) => request.kind).join(",") || "none";
+    check(
+      revoke?.kind === "revoke" && revoke.method === "POST" && revoke.host === "auth.openai.com"
+        && revoke.body.token === refreshToken("ORIGINAL") && revoke.body.token_type_hint === "refresh_token"
+        && revoke.fileAtArrival === true && revoke.fileAtAnswer === true,
+      "(g) codex login --device-auth first revokes the account's refresh token, and keeps auth.json until the answer",
+      `requests=${seen} method=${revoke?.method} file at revoke=${revoke?.fileAtArrival} file at answer=${revoke?.fileAtAnswer}`,
+    );
+    check(seen === "revoke,device_code" && deviceCode.method === "POST" && deviceCode.fileAtArrival === false
+      && !login.fileWhileWaiting && login.waiting,
+      "(g) it removes auth.json before it asks for a device code, and the file stays gone while it waits",
+      `requests=${seen} file at device code=${deviceCode?.fileAtArrival} file while waiting=${login.fileWhileWaiting} cli=${login.waiting ? "waiting" : "exited"}`);
   } finally {
     recorder.close();
   }

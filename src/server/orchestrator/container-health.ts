@@ -15,6 +15,8 @@ const COMPOSE_PARENT_SESSION_LABEL = "shipit-parent-session";
 const COMPOSE_SERVICE_NAME_LABEL = "shipit-service-name";
 const DOCKER_COMPOSE_SERVICE_LABEL = "com.docker.compose.service";
 const DOCKER_COMPOSE_ONEOFF_LABEL = "com.docker.compose.oneoff";
+const DOCKER_COMPOSE_PROJECT_LABEL = "com.docker.compose.project";
+const SESSION_NETWORK_PREFIX = "shipit-session-";
 
 export interface HealthDeps {
   docker: Docker;
@@ -77,11 +79,12 @@ export async function startHealthMonitor(
   }
 
   try {
-    // An agent-only label filter would hide Compose service events.
+    // An agent-only label filter would hide Compose service events. Network events drive the
+    // session-network heal, which used to ride the 5-second service poll (docs/332).
     state.eventStream = await deps.docker.getEvents({
       filters: {
-        type: ["container"],
-        event: ["die", "oom", "start", "destroy"],
+        type: ["container", "network"],
+        event: ["die", "oom", "start", "destroy", "connect", "disconnect"],
       },
     });
 
@@ -100,16 +103,36 @@ export async function startHealthMonitor(
     function handleEvent(line: string): void {
       try {
         const event = JSON.parse(line) as {
+          Type?: string;
           Action?: string;
           Actor?: { ID?: string; Attributes?: Record<string, string> };
         };
         const attrs = event.Actor?.Attributes ?? {};
         const action = event.Action;
+
+        if (event.Type === "network") {
+          // `connect` too: a recreated network has to be rejoined, and the heal is membership-gated,
+          // so our own reattachment settles rather than looping (docs/332).
+          if (action !== "connect" && action !== "disconnect" && action !== "destroy") return;
+          const networkName = attrs.name ?? "";
+          if (!networkName.startsWith(SESSION_NETWORK_PREFIX)) return;
+          deps.emitter.emit("session_network_changed", networkName);
+          return;
+        }
+
         // Unlabelled churn cannot change the index; stale entries after exits fail toward denial.
         if (action === "start" && attrs[COMPOSE_PARENT_SESSION_LABEL]) {
           deps.onLabelledContainerStarted?.();
         }
         const containerId = event.Actor?.ID ?? "";
+        // A restart reuses the container ID, so an unclaimed OOM must not outlive the run it
+        // belongs to and be charged to the next exit of the same container.
+        if (action === "start" && containerId) state.recentOoms.delete(containerId);
+        const project = attrs[DOCKER_COMPOSE_PROJECT_LABEL];
+        // A project container appearing or going away changes what the stack's status should read.
+        if (project && (action === "start" || action === "destroy")) {
+          deps.emitter.emit("compose_project_changed", project);
+        }
         // Compose down removes a service without its egress sidecars, which are not in its project.
         if (action === "destroy") {
           if (containerId && (attrs[COMPOSE_PARENT_SESSION_LABEL] || attrs[CONTAINER_SESSION_ID_LABEL])
@@ -153,8 +176,24 @@ export async function startHealthMonitor(
 
         const parentSessionId = attrs[COMPOSE_PARENT_SESSION_LABEL];
         if (parentSessionId) {
+          // Correlate as the agent path does: an `oom` event carries no exit code, and the `die`
+          // that follows carries no OOM flag. Reporting both separately would describe one kill as
+          // an exit-1 crash and a non-OOM SIGKILL, and service status now acts on it (docs/332).
+          if (action === "oom") {
+            if (containerId) {
+              pruneRecentOoms(state);
+              state.recentOoms.set(containerId, Date.now());
+            }
+            // Kept as an operator signal: the kernel may have killed a child while PID 1 survived,
+            // in which case no `die` follows and the service correctly stays running.
+            console.warn(
+              `[container] Session ${parentSessionId} child container ${containerId.slice(0, 12)} `
+              + "reported an OOM kill",
+            );
+            return;
+          }
           const exitCode = Number(attrs.exitCode ?? 1);
-          const oom = action === "oom";
+          const oom = takeRecentOom(state, containerId);
           // Parent labels include infrastructure: sidecar replacement is not a user-service crash.
           const egressSidecar = Boolean(
             attrs[COMPOSE_EGRESS_SIDECAR_LABEL]

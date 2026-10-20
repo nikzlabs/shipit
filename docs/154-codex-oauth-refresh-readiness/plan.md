@@ -412,9 +412,14 @@ success (`emittedUnauthenticated`).
   the row, and it holds for every writer of the row.
 - *A tick that finds the source missing while the row reads `authenticating` reports
   nothing* (`missing_credentials — waiting for auth_complete sign_in=in_progress`).
-  `codex login --device-auth` removes `auth.json` at its start (measured offline on CLI
-  0.159.2, 2026-10-13: the file is gone within 0.5 s, before the CLI's first request is
-  answered), so the source is missing for the whole sign-in, as for Claude. A nudge
+  `codex login --device-auth` first revokes the account's refresh token
+  (`POST /oauth/revoke` to the token host) and keeps `auth.json` until that request has
+  an answer, at most 10 s when none comes. Then it removes the file, before it asks for a
+  device code, so the source is missing while the sign-in waits for the user (measured
+  offline on CLI 0.160.1, 2026-10-15; probe check (g)). A reconnect therefore asks the
+  token host to end the old grant, which the sessions' copies of the source share. The first measurement
+  (2026-10-13) used a file without JWT-shaped tokens, which the CLI removes at once and
+  does not revoke. A nudge
   ticks every account (each Codex `auth_required` report sends one). For an account
   that the refresher had not announced before, its `agent_auth_failed` event closed the
   sign-in that the user was in and set the row `auth_failed` while the login CLI still
@@ -459,8 +464,12 @@ depends on: the call rotates a token at the start of the margin and one that has
 days left, with one grant and no model call; each of the three refusal codes
 ends `revoked` and leaves the file as it was; a 429 and a 500 end `rate_limited`
 and `unknown_failure` after one request; a credential published during the call
-is kept; and a session's own CLI (`codex exec`) refreshes only inside its
-5-minute window. 16 checks, about 17 s, exit 1 on a failure. CI runs it as the
+is kept; a session's own CLI (`codex exec`) refreshes only inside its
+5-minute window; and `codex login --device-auth` revokes the old refresh token and
+keeps `auth.json` until the answer, then removes the file before it asks for a
+device code and keeps it removed while it waits (the recorder answers the revoke
+after 1 s and never answers the device-code request). 18 checks, about 18 s, exit 1
+on a failure. CI runs it as the
 job `codex-refresh-probe` (`.github/workflows/ci.yml`) on a pull request that
 changes `docker/agent-cli/package.json`, its lockfile or `install-agent-clis.sh`,
 the probe, the refresher or the workflow, and on every push to `main`. The job
@@ -515,10 +524,15 @@ installs the CLI with the images' own `install-agent-clis.sh`
   is what brings the tick.
 - **Whether a resident `codex app-server` refreshes with no turn in progress**
   was not measured. For Claude this was seen in production.
-- **That the login CLI removes `auth.json` at its start was measured on CLI 0.159.2
-  only**, and the probe script does not check it. With a login CLI that kept the file,
-  the source would be present during a sign-in, and a tick that found its grant
-  rejected then would report the account and close the sign-in.
+- **A sign-in keeps the old credential for one request.** The login CLI removes
+  `auth.json` only after its revoke has an answer: one round trip to the token host,
+  and up to 10 s when none comes. In that window the source is present while the row
+  reads `authenticating`, so the stand-down above does not apply. A tick in that window
+  that sends a refresh (inside the 45-minute margin, or forced) sends a grant that is
+  being revoked. If the token host refuses it, the file still holds that credential at
+  the verdict, and the account is not already announced, the refresher reports it: the
+  `agent_auth_failed` event closes the sign-in that the user is in and sets the row
+  `auth_failed` while the login CLI still runs. The sign-in starts no tick itself.
 
 ### Key files (2026-10)
 

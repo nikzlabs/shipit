@@ -240,6 +240,18 @@ describe("handleServiceRequest — logs", () => {
     const { error } = await request(mgr, "logs", "nope");
     expect(error).toBe("Unknown service: nope");
   });
+
+  it("names the failed project-file read when the service is not registered", async () => {
+    const mgr = makeManager({
+      services: [],
+      projectComposeFailure: { kind: "malformed", message: "ShipIt could not start its Compose helper container" },
+    });
+    const { error } = await request(mgr, "logs", "plan");
+    expect(error).toBe(
+      "ShipIt has no service \"plan\", and its last read of this session's Compose file failed: "
+      + "ShipIt could not start its Compose helper container",
+    );
+  });
 });
 
 describe("handleServiceRequest — failure modes", () => {

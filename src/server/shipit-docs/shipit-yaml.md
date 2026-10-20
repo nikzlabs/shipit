@@ -115,6 +115,16 @@ sizing is fully automatic.
   `install-inputs` below). So a new commit that only edits source or docs — but
   not `package.json`/the lockfile — still skips install. A different runtime or a
   changed `install` always re-runs (a warm dependency cache keeps it fast).
+- **A matching stamp is not enough if the restored tree is not whole.** The stamp
+  records an install that once succeeded; it says nothing about the directories
+  now. So the install also re-runs when a declared directory is empty, or when an
+  npm `node_modules` (one with a `package-lock.json` beside it) is incomplete:
+  it holds locked packages but no `.package-lock.json`, the record npm deletes
+  first and writes last, which is what an npm run killed part-way leaves; or that
+  record lists packages that are not on disk. The install log names the
+  directory and why. An install that failed or was stopped part-way also runs
+  again on the next start, even when a published dependency base matches the
+  commit.
 - **A skipped install guarantees `dep-dirs`, and nothing else it wrote.** The
   stamp can match a checkout that never ran the install — a workspace reclaimed
   for disk and re-cloned, or a session that mounted an already-published
@@ -172,7 +182,9 @@ sizing is fully automatic.
     `--package-lock=false`, `--package-lock-only`.
   - **A `npm ci` that died part-way** — `npm ci` empties the directory first and
     writes its record only at the end, so a half-extracted tree carries no
-    record. The empty check still covers it when the directory is left empty.
+    record. The empty check still covers it when the directory is left empty,
+    and the next start does not trust it: a matching stamp over such a tree
+    re-runs the install (see above).
 
   Within the comparison itself: a tree holding *more* than the lockfile asks for
   is fine, dev dependencies are required only when the tree already records some

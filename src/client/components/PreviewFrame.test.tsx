@@ -5,6 +5,7 @@ import { PreviewFrame, formatErrorForMessage, type PreviewStatus } from "./Previ
 import { usePreviewStore } from "../stores/preview-store.js";
 import { findPresetById } from "./device-presets.js";
 import type { PreviewError } from "../hooks/usePreviewErrors.js";
+import { notifyPreviewsStopped } from "../hooks/usePreviewsStopped.js";
 
 class ResizeObserverStub {
   observe(): void {}
@@ -1868,6 +1869,131 @@ describe("PreviewFrame", () => {
       view.rerender(s2);
       await screen.findByTitle("Live Preview");
       expect(iframe.getAttribute("src")).toBe(deepUrl);
+    });
+
+    describe("returning before the service list lands", () => {
+      const S1_RUNNING: PreviewStatus = { ...RUNNING, port: 3000 };
+
+      function pane(sessionId: string, preview: PreviewStatus | null) {
+        return (
+          <PreviewFrame
+            preview={preview} sessionId={sessionId} {...defaultProps}
+            detectedPorts={preview?.detectedPorts ?? []} selectedPort={3000} onSelectPort={vi.fn()}
+          />
+        );
+      }
+
+      // Leaves s1 for s2, then comes back with no service rows and no status:
+      // what the pane sees when the session has no preview snapshot to restore.
+      async function returnWithNothingKnown() {
+        usePreviewStore.setState({
+          previewTargetMemory: {
+            s1: { service: "web", port: 3000 },
+            s2: { service: "web", port: 3000 },
+          },
+        });
+        usePreviewStore.getState().setServices([WEB]);
+        const view = render(pane("s1", S1_RUNNING));
+        const iframe = await screen.findByTitle("Live Preview");
+        const deepUrl = "http://s1--3000.localhost:3000/deep";
+        iframe.setAttribute("src", deepUrl);
+
+        view.rerender(pane("s2", { ...S1_RUNNING, url: "/preview/s2/3000/" }));
+        await act(async () => {
+          usePreviewStore.getState().setServices([]);
+        });
+        view.rerender(pane("s1", null));
+        return { view, iframe, deepUrl };
+      }
+
+      it("shows the retained iframe at once instead of hiding it", async () => {
+        const { iframe } = await returnWithNothingKnown();
+
+        expect(iframe).toHaveAttribute("title", "Live Preview");
+        expect(iframe).not.toHaveClass("hidden");
+      });
+
+      it("does not reload the retained iframe when the service turns out to be running", async () => {
+        const { view, iframe, deepUrl } = await returnWithNothingKnown();
+
+        await act(async () => {
+          usePreviewStore.getState().setServices([WEB]);
+        });
+        view.rerender(pane("s1", S1_RUNNING));
+        await screen.findByTitle("Live Preview");
+        await act(async () => {});
+        expect(iframe.getAttribute("src")).toBe(deepUrl);
+      });
+
+      it("still reloads after an outage it saw, even if the row blinks out before recovery", async () => {
+        const { view, iframe, deepUrl } = await returnWithNothingKnown();
+
+        await act(async () => {
+          usePreviewStore.getState().setServices([{ ...WEB, status: "starting" }]);
+        });
+        expect(await screen.findByText("Waiting for web…")).toBeInTheDocument();
+        await act(async () => {
+          usePreviewStore.getState().setServices([]);
+        });
+        // The document predates the outage, so the gap must not reveal it.
+        expect(iframe).toHaveClass("hidden");
+        await act(async () => {
+          usePreviewStore.getState().setServices([WEB]);
+        });
+        view.rerender(pane("s1", S1_RUNNING));
+        await screen.findByTitle("Live Preview");
+        expect(iframe.getAttribute("src")).not.toBe(deepUrl);
+        expect(iframe.getAttribute("src")).toBe("http://s1--3000.localhost:3000/");
+      });
+
+      it("still reloads after an outage it saw before leaving the session", async () => {
+        const { view, iframe, deepUrl } = await returnWithNothingKnown();
+        await act(async () => {
+          usePreviewStore.getState().setServices([{ ...WEB, status: "starting" }]);
+        });
+        expect(await screen.findByText("Waiting for web…")).toBeInTheDocument();
+
+        // Away and back again, with the snapshot gone (`/{slug}/new`, mobile home).
+        view.rerender(pane("s2", { ...S1_RUNNING, url: "/preview/s2/3000/" }));
+        await act(async () => {
+          usePreviewStore.getState().setServices([]);
+        });
+        view.rerender(pane("s1", null));
+        expect(iframe).toHaveClass("hidden");
+
+        await act(async () => {
+          usePreviewStore.getState().setServices([WEB]);
+        });
+        view.rerender(pane("s1", S1_RUNNING));
+        await screen.findByTitle("Live Preview");
+        expect(iframe.getAttribute("src")).not.toBe(deepUrl);
+        expect(iframe.getAttribute("src")).toBe("http://s1--3000.localhost:3000/");
+      });
+
+      it("does not reload a slot rebuilt after the outage it saw", async () => {
+        const { view } = await returnWithNothingKnown();
+        await act(async () => {
+          usePreviewStore.getState().setServices([{ ...WEB, status: "starting" }]);
+        });
+        expect(await screen.findByText("Waiting for web…")).toBeInTheDocument();
+
+        view.rerender(pane("s2", { ...S1_RUNNING, url: "/preview/s2/3000/" }));
+        await act(async () => {
+          notifyPreviewsStopped("s1");
+        });
+        expect(document.querySelector('iframe[src^="http://s1--"]')).toBeNull();
+
+        // s2 saw the same outage, so its own reload happens here and is not counted.
+        await act(async () => {
+          usePreviewStore.getState().setServices([WEB]);
+        });
+        // `el.src =` is the reload path; React itself writes the attribute.
+        const reload = vi.spyOn(HTMLIFrameElement.prototype, "src", "set");
+        view.rerender(pane("s1", S1_RUNNING));
+        await screen.findByTitle("Live Preview");
+        await act(async () => {});
+        expect(reload).not.toHaveBeenCalled();
+      });
     });
   });
 });

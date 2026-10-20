@@ -85,6 +85,26 @@ export const GLOBAL_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
+  // docs/333-idle-compaction req 5.
+  "advanced.idleCompaction": defineSetting({
+    key: "advanced.idleCompaction",
+    tab: "advanced",
+    section: "Agent",
+    scope: "global",
+    label: "Compact idle sessions before the prompt cache expires",
+    description:
+      "When a session's context is 200K tokens or more and nobody has used it for most of its "
+      + "prompt cache's lifetime, ShipIt compacts the context shortly before the cache expires, "
+      + "so the next message does not read the whole conversation again at full price. The "
+      + "transcript shows each compaction. Only caches that live 30 minutes or more qualify; "
+      + "Grok sessions are not compacted.",
+    type: bool({ default: false }),
+    store: { kind: "credential-store", field: "idleCompaction" },
+    wire: "idleCompaction",
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
   "advanced.liveSteering": defineSetting({
     key: "advanced.liveSteering",
     tab: "advanced",
@@ -186,7 +206,8 @@ export const GLOBAL_SETTINGS = {
       "When you continue a session whose PR already merged and the branch hasn't moved since, "
       + "this does two things before the next turn: resets the branch to the latest base, so the "
       + "agent builds on current code, and compacts the agent's context, so the shipped work stops "
-      + "filling it. A per-message checkbox lets you skip either one for any one send.",
+      + "filling it. A checkbox in the composer skips the reset for one message, and another "
+      + "turns the compaction off for that session until you turn it on again.",
     type: bool({ default: true }),
     store: { kind: "credential-store", field: "autoResetMergedBranch" },
     wire: "autoResetMergedBranch",

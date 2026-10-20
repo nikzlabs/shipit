@@ -703,6 +703,7 @@ export async function registerRoutes(
           sessionId: sid,
           sessionStatus: session?.sessionStatus ?? null,
           agentGoal: session?.agentGoal ?? null,
+          compactAfterMergeOff: session?.compactAfterMergeOff === true,
         });
       };
       const offDetailsChanged = sessionManager.onDetailsChanged((sid) => {

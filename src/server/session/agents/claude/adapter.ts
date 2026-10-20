@@ -109,6 +109,9 @@ export class ClaudeAdapter
    */
   private readonly turnCalls = new Map<string, ClaudeUsageIteration>();
 
+  // docs/333-idle-compaction — main thread only: subagents write 5-minute entries by default.
+  private turnCacheWrites = { fiveMinute: false, oneHour: false };
+
   private selectedModel: string | undefined;
 
   readonly capabilities: AgentCapabilities = {
@@ -240,11 +243,24 @@ export class ClaudeAdapter
     if (contextTokens > 0) this.latestCallContextTokens = contextTokens;
   }
 
+  private recordCacheWrites(usage: ClaudeUsageIteration | undefined): void {
+    const writes = usage?.cache_creation;
+    if ((writes?.ephemeral_5m_input_tokens ?? 0) > 0) this.turnCacheWrites.fiveMinute = true;
+    if ((writes?.ephemeral_1h_input_tokens ?? 0) > 0) this.turnCacheWrites.oneHour = true;
+  }
+
+  // The CLI's own rule: one 5-minute write makes the turn's cache a 5-minute one.
+  private takeTurnCacheTtl(): "5m" | "1h" | undefined {
+    const { fiveMinute, oneHour } = this.turnCacheWrites;
+    this.turnCacheWrites = { fiveMinute: false, oneHour: false };
+    return fiveMinute ? "5m" : oneHour ? "1h" : undefined;
+  }
+
   private recordCall(id: string | undefined, usage: ClaudeUsageIteration | undefined): void {
     if (!id || !usage) return;
     const seen = this.turnCalls.get(id);
     // A call's events repeat one usage; a snapshot can still read zero, so keep the largest.
-    const max = (field: keyof Omit<ClaudeUsageIteration, "type">) =>
+    const max = (field: keyof Omit<ClaudeUsageIteration, "type" | "cache_creation">) =>
       Math.max(seen?.[field] ?? 0, usage[field] ?? 0);
     this.turnCalls.set(id, {
       input_tokens: max("input_tokens"),
@@ -339,22 +355,30 @@ export class ClaudeAdapter
         if (!raw.parent_tool_use_id) {
           this.recordCallContext(raw.message.usage);
           this.recordCall(raw.message.id, raw.message.usage);
+          this.recordCacheWrites(raw.message.usage);
         }
         return {
           type: "agent_assistant",
           content: raw.message.content,
           parentToolUseId: raw.parent_tool_use_id,
+          ...(raw.is_api_error_message === true ? { synthetic: true } : {}),
+          ...(raw.uuid ? { messageId: raw.uuid } : {}),
         };
 
       case "user":
         // Replay acknowledges delivery; the user message is already rendered.
         if (raw.isReplay) {
-          return { type: "agent_user_replay", text: textFromUserContent(raw.message.content) };
+          return {
+            type: "agent_user_replay",
+            text: textFromUserContent(raw.message.content),
+            ...(raw.uuid ? { messageId: raw.uuid } : {}),
+          };
         }
         return {
           type: "agent_tool_result",
           content: raw.message.content,
           parentToolUseId: raw.parent_tool_use_id,
+          ...(raw.uuid ? { messageId: raw.uuid } : {}),
         };
 
       case "result": {
@@ -375,6 +399,7 @@ export class ClaudeAdapter
         }
         this.latestCallContextTokens = undefined;
         const requests = this.takeTurnRequests();
+        const cacheTtl = this.takeTurnCacheTtl();
         const modelUsage = raw.modelUsage;
         let contextWindow: number | undefined;
         if (modelUsage) {
@@ -404,6 +429,7 @@ export class ClaudeAdapter
           contextTokens,
           ...(requests ? { requests } : {}),
           contextWindow,
+          ...(cacheTtl ? { cacheTtl } : {}),
           durationMs: raw.duration_ms,
           error: errored ? raw.result : undefined,
           permissionDenials: raw.permission_denials?.length
@@ -443,6 +469,7 @@ export class ClaudeAdapter
     // An abnormal prior turn may have left usage without a result to clear it.
     this.latestCallContextTokens = undefined;
     this.turnCalls.clear();
+    this.turnCacheWrites = { fiveMinute: false, oneHour: false };
     this.turnLive = true;
     this.lastCwd = params.cwd;
     this.spawnHomeOverride = params.homeDir;
@@ -468,6 +495,7 @@ export class ClaudeAdapter
     this.inner.run({
       prompt: params.prompt,
       sessionId: params.sessionId,
+      resumeAt: params.resumeAt,
       systemPrompt: params.systemPrompt,
       images: params.images,
       cwd: params.cwd,

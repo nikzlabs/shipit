@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { REPLAY_INLINE_BUDGET_BYTES } from "./services/replay.js";
 import fs from "node:fs";
 import {
   forgetStatusCardSpawn,
@@ -37,6 +38,8 @@ function setup(
     agentInstructions?: boolean;
     accountMcp?: Record<string, McpServerConfig>;
     serviceMcp?: SessionServiceMcp;
+    agentSessionId?: string;
+    compact?: boolean;
   } = {},
 ) {
   const captured: PrepareRunParamsInput[] = [];
@@ -53,7 +56,6 @@ function setup(
     },
     githubAuthManager: { authenticated: true },
     sessionManager: {
-      consumeConversationReplay: () => undefined,
       get: () => session,
     },
     readSystemPrompt: async () => undefined,
@@ -70,6 +72,8 @@ function setup(
       prompt: "hi",
       sessionDir: "/workspace",
       ...(opts.serviceMcp ? { serviceMcp: opts.serviceMcp } : {}),
+      ...(opts.agentSessionId ? { agentSessionId: opts.agentSessionId } : {}),
+      ...(opts.compact ? { compact: true } : {}),
     });
 
   return { run, captured };
@@ -211,5 +215,96 @@ describe("buildAgentRunParams — docs/327 MCP servers on Compose services", () 
 
     expect(params.serviceMcpServers).toBeUndefined();
     expect(serviceMcpSpawnKey("s1")).toBe(serviceMcpSetKey([]));
+  });
+});
+
+describe("buildAgentRunParams — a replay only starts a conversation (docs/007)", () => {
+  const replay = "You are continuing a conversation.\nUser: add the billing routes\nAssistant: done";
+
+  it("resumes a stored id and never lets a stored replay displace it", async () => {
+    const { run } = setup(makeSession({ conversationReplay: replay }), undefined, undefined, {
+      agentSessionId: "stored-conversation",
+    });
+
+    const params = await run();
+
+    expect(params.sessionId).toBe("stored-conversation");
+    expect(params.prompt).toBe("hi");
+    expect(params.systemPrompt ?? "").not.toContain("add the billing routes");
+  });
+
+  it("carries the replay on every spawn until the CLI reports a conversation", async () => {
+    // The fake has no way to write the row, so a build that took the replay would throw.
+    const { run } = setup(makeSession({ conversationReplay: replay }));
+
+    const first = await run();
+    const second = await run();
+
+    expect(first.sessionId).toBeUndefined();
+    expect(first.prompt).toContain("add the billing routes");
+    expect(second.prompt).toContain("add the billing routes");
+  });
+
+  // req 8 — the CLI stores the first user message; it does not store a system prompt.
+  it("puts the replay in front of the first prompt, not in the system prompt", async () => {
+    const { run } = setup(makeSession({ conversationReplay: replay }), undefined, undefined, { agentInstructions: true });
+
+    const params = await run();
+
+    expect(params.prompt).toBe(`${replay}\n\nhi`);
+    expect(params.systemPrompt).toBeDefined();
+    expect(params.systemPrompt).not.toContain("add the billing routes");
+  });
+
+  it("starts the conversation with the replay alone when a compaction comes first: there is nothing to compact", async () => {
+    const { run } = setup(makeSession({ conversationReplay: replay }), undefined, undefined, { compact: true });
+
+    const params = await run();
+
+    expect(params.prompt).toBe(replay);
+    expect(params).not.toHaveProperty("compact");
+  });
+
+  it("compacts a stored conversation as asked", async () => {
+    const { run } = setup(makeSession({ conversationReplay: replay }), undefined, undefined, {
+      compact: true,
+      agentSessionId: "stored-conversation",
+    });
+
+    const params = await run();
+
+    expect(params).toMatchObject({ prompt: "hi", compact: true, sessionId: "stored-conversation" });
+  });
+
+  it("bounds a stored replay too large for the spawn request", async () => {
+    const huge = Array.from({ length: 20_000 }, (_, i) => `User: message ${i} ${"x".repeat(40)}`).join("\n");
+    const { run } = setup(makeSession({ conversationReplay: huge }));
+
+    const params = await run();
+
+    const sent = params.prompt.slice(0, -"\n\nhi".length);
+    expect(Buffer.byteLength(sent, "utf8")).toBeLessThanOrEqual(REPLAY_INLINE_BUDGET_BYTES);
+    expect(params.prompt).toContain("message 19999 ");
+  });
+});
+
+describe("buildAgentRunParams — a rewind point (docs/007 req 4)", () => {
+  it("forks the stored conversation at the point", async () => {
+    const { run } = setup(makeSession({ agentResumeAt: "msg-7" }), undefined, undefined, {
+      agentSessionId: "stored-conversation",
+    });
+
+    const params = await run();
+
+    expect(params).toMatchObject({ sessionId: "stored-conversation", resumeAt: "msg-7" });
+  });
+
+  it("names no point without a stored conversation to fork", async () => {
+    const { run } = setup(makeSession({ agentResumeAt: "msg-7" }));
+
+    const params = await run();
+
+    expect(params.sessionId).toBeUndefined();
+    expect(params).not.toHaveProperty("resumeAt");
   });
 });

@@ -6,6 +6,7 @@ import {
   preStartWarmPreview,
   stopWarmPreview,
   isRecentlyUsedRepo,
+  warmPreviewState,
   WARM_PREVIEW_RECENCY_DAYS,
 } from "./warm-preview.js";
 import type { WarmPreviewDeps } from "./warm-preview.js";
@@ -37,6 +38,38 @@ describe("isRecentlyUsedRepo (docs/288 req 8)", () => {
   it("rejects a missing or unparseable stamp", () => {
     expect(isRecentlyUsedRepo(undefined, now)).toBe(false);
     expect(isRecentlyUsedRepo("not a date", now)).toBe(false);
+  });
+});
+
+describe("warmPreviewState (docs/288 req 11)", () => {
+  const mgr = (started: boolean, services: { preview: "auto" | "manual"; status: string }[]) =>
+    ({ started, getServices: () => services }) as unknown as ServiceManager;
+
+  it("is none when no stack was pre-started", () => {
+    expect(warmPreviewState(undefined)).toBe("none");
+  });
+
+  it("is running only when every auto service runs", () => {
+    expect(warmPreviewState(mgr(true, [
+      { preview: "auto", status: "running" },
+      { preview: "manual", status: "stopped" },
+    ]))).toBe("running");
+    expect(warmPreviewState(mgr(true, [
+      { preview: "auto", status: "running" },
+      { preview: "auto", status: "starting" },
+    ]))).toBe("starting");
+  });
+
+  it("reports an auto service in error", () => {
+    expect(warmPreviewState(mgr(true, [
+      { preview: "auto", status: "running" },
+      { preview: "auto", status: "error" },
+    ]))).toBe("error");
+  });
+
+  it("tells a stack with no auto services from one still parsing its compose file", () => {
+    expect(warmPreviewState(mgr(true, [{ preview: "manual", status: "stopped" }]))).toBe("no-auto");
+    expect(warmPreviewState(mgr(false, []))).toBe("starting");
   });
 });
 

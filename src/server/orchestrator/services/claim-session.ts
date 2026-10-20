@@ -1,5 +1,4 @@
-import { existsSync, unlinkSync } from "node:fs";
-import { sessionStateDirForWorkspace, sessionSharedStateDir, INSTALL_MARKER_FILE } from "../session-state-dir.js";
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
@@ -41,6 +40,8 @@ export interface ClaimSessionDeps {
   shouldSkipClaimFetch?: (repoUrl: string) => boolean;
   containerManager?: SessionContainerManager;
   egressAllowlistStore?: EgressAllowlistStore;
+  /** The claimed session's pre-started preview, for the timing line (docs/288 req 11). */
+  previewState?: (sessionId: string) => string;
 }
 
 export interface ClaimSessionResult {
@@ -59,8 +60,8 @@ export interface ClaimSessionOptions {
   /** Required for background claims: warm drafts may still have an attached user. */
   skipReuse?: boolean;
   /**
-   * Never take the warm session: its standby container started without a mount this session
-   * needs (a scheduled run's notes folder, docs/324-scheduled-sessions).
+   * Never take the warm session: keep it for a person opening a session (docs/288 req 12). A
+   * scheduled run also needs a mount its standby lacks (docs/324-scheduled-sessions).
    */
   skipWarm?: boolean;
   /** The claiming browser tab; only the draft this tab was last given is ever reused. */
@@ -76,10 +77,23 @@ export class ClaimAbortedError extends Error {
 
 export interface ClaimSessionService {
   claim(url: string, opts?: ClaimSessionOptions): Promise<ClaimSessionResult>;
+  /**
+   * Bring the repo's warm session up to the default branch while nobody holds it (docs/288 req 13).
+   * Runs under the claim lock; null when `sessionId` is no longer the repo's warm session.
+   */
+  refreshWarm?(url: string, sessionId: string): Promise<{ headChanged: boolean } | null>;
+}
+
+async function readCacheHead(cacheDir: string): Promise<string | null> {
+  try {
+    return (await safeSimpleGit(cacheDir).raw(["rev-parse", "HEAD"])).trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 // Share one instance across callers so claims for the same repository serialize.
-export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionService {
+export function createClaimSessionService(deps: ClaimSessionDeps): Required<ClaimSessionService> {
   const claimChains = new Map<string, Promise<unknown>>();
   // One entry per tab and repository; a tab id lives for one page load, so the oldest entries are dropped.
   const draftByTab = new Map<string, string>();
@@ -108,9 +122,8 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     sessionDir: string,
     repoLabel: string,
     onAuthError?: (err: Error) => void,
-  ): Promise<{ headChanged: boolean; fetched: boolean; fetchDurationMs: number }> {
+  ): Promise<{ fetched: boolean; fetchDurationMs: number }> {
     const sessionGit = deps.createGitManager(sessionDir);
-    const headBefore = await sessionGit.getHeadHash();
     if (deps.githubAuthManager.authenticated) {
       deps.githubAuthManager.configureGitCredentials(sessionDir);
     }
@@ -130,13 +143,9 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       deps.sseBroadcast("error", { message }),
     );
     handWorkspaceBackToWorker(sessionDir);
-    const headAfter = await sessionGit.getHeadHash();
-    const headChanged = headBefore !== headAfter;
-    if (headChanged) {
-      const stateDir = sessionStateDirForWorkspace(sessionDir);
-      try { unlinkSync(path.join(sessionSharedStateDir(stateDir), INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
-    }
-    return { headChanged, fetched, fetchDurationMs };
+    // Keep the install marker: the worker re-checks it against the new HEAD and dependency hash, and
+    // deleting it forced a reinstall that stopped a warm session's pre-started services (docs/288).
+    return { fetched, fetchDurationMs };
   }
 
   async function refreshClaimedSession(
@@ -171,6 +180,25 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
   }
 
   return {
+    refreshWarm(url: string, sessionId: string): Promise<{ headChanged: boolean } | null> {
+      return serializeClaim(url, async () => {
+        if (deps.repoStore.get(url)?.warmSessionId !== sessionId) return null;
+        const workspaceDir = deps.sessionManager.get(sessionId)?.workspaceDir;
+        if (!workspaceDir) return null;
+        const sessionGit = deps.createGitManager(workspaceDir);
+        const headBefore = await sessionGit.getHeadHash();
+        // The prefetcher keeps the bare cache current, so an unmoved cache means nothing to fetch.
+        const cacheHead = await readCacheHead(deps.getSharedRepoDir(url));
+        if (cacheHead === null || cacheHead === headBefore) return { headChanged: false };
+        await refreshCloneToLatestMain(
+          workspaceDir,
+          url,
+          (err) => deps.githubAuthManager.markTokenInvalid(`warm refresh failed for ${url}: ${err.message}`),
+        );
+        return { headChanged: (await sessionGit.getHeadHash()) !== headBefore };
+      });
+    },
+
     async claim(url, opts): Promise<ClaimSessionResult> {
       const repo = deps.repoStore.get(url);
       if (!repo) throw new ServiceError(404, "Repository not found");
@@ -344,8 +372,9 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       const standby = standbyRunning === true ? "ready"
         : standbyRunning === false ? "missing"
         : "unknown";
+      const preview = deps.previewState?.(result.sessionId) ?? "unknown";
       console.log(
-        `[timing] claim-session for ${url} path=${claimPath} standby=${standby} ` +
+        `[timing] claim-session for ${url} path=${claimPath} standby=${standby} preview=${preview} ` +
           `total=${Date.now() - claimStart}ms fetch=${result.fetchDurationMs}ms`,
       );
 

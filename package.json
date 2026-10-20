@@ -36,7 +36,7 @@
   },
   "dependencies": {
     "@fastify/multipart": "10.1.2",
-    "@fastify/static": "10.1.2",
+    "@fastify/static": "10.1.5",
     "@fastify/websocket": "11.2.0",
     "@formkit/auto-animate": "0.10.0",
     "@modelcontextprotocol/sdk": "1.31.0",
@@ -88,18 +88,18 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@types/ws": "8.18.1",
-    "@vitejs/plugin-react": "6.1.1",
+    "@vitejs/plugin-react": "6.1.2",
     "esbuild": "0.28.1",
     "eslint": "10.12.0",
     "eslint-plugin-react-hooks": "7.1.1",
-    "globals": "17.11.0",
+    "globals": "17.13.0",
     "jsdom": "30.0.1",
     "tailwindcss": "4.3.0",
     "tsx": "4.22.4",
     "typescript": "5.9.3",
     "typescript-eslint": "8.71.1",
-    "vite": "8.3.1",
-    "vitest": "5.0.2"
+    "vite": "8.3.3",
+    "vitest": "5.0.3"
   },
   "overrides": {
     "uuid": "11.1.1",

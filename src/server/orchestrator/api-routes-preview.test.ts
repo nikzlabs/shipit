@@ -152,4 +152,14 @@ describe("GET /api/sessions/:id/services/:name/logs", () => {
       expect(requested).toEqual([undefined]);
     },
   );
+
+  it("names the failed project-file read for a service that is not registered", async () => {
+    const message = "ShipIt could not start its Compose helper container";
+    app = await appWith({ services: [], projectComposeFailure: { kind: "malformed", message } });
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${SESSION}/services/plan/logs` });
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({
+      error: `ShipIt has no service "plan", and its last read of this session's Compose file failed: ${message}`,
+    });
+  });
 });

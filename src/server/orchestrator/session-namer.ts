@@ -144,7 +144,7 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
   switch (harnessId) {
     case "claude": {
       // JSON output includes usage and cost.
-      const args = ["-p", prompt, "--output-format", "json"];
+      const args = ["-p", prompt, "--output-format", "json", "--no-session-persistence"];
       if (model) args.push("--model", claudeCliModelId(model));
       const raw = target.inCredentialCopy
         ? await target.inCredentialCopy((home) => callCli("claude", args, { ...target, credentialRoot: home }))
@@ -158,8 +158,9 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
     case "codex": {
       // Serialize first-run initialization with turns using the same home.
       await ensureCodexHomeInitialized(path.join(namingHome(target), ".codex"));
-      // Naming runs from /tmp, outside a trusted repository.
-      const args = ["exec", "--json", "--skip-git-repo-check", ...codexProviderArgs(serviceRouting)];
+      // Naming runs from /tmp, outside a trusted repository. Without --ephemeral each run
+      // leaves a rollout in the account home, which every new session copies (planning#698).
+      const args = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", ...codexProviderArgs(serviceRouting)];
       if (model) args.push("--model", model);
       args.push(prompt);
       const raw = await callCli("codex", args, target);

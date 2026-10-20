@@ -697,21 +697,23 @@ export function removeDraftUploads(sessionKey: string, toRemove: string[]): void
   if (next.length !== paths.length) saveDraftUploads(sessionKey, next);
 }
 
-// docs/218 + docs/295 — the per-message opt-out for the two merge-continue
-// controls: the third durable half of a draft, beside its text and its upload
-// paths. The untick belongs to the message being composed, and that message
-// survives a reload and a reconnect; component state did not, so every remount
-// silently re-ticked the box. Holds only what the user turned OFF.
+// docs/218 — the per-message opt-out for the merge-continue reset control: the
+// third durable half of a draft, beside its text and its upload paths. The
+// untick belongs to the message being composed, and that message survives a
+// reload and a reconnect; component state did not, so every remount silently
+// re-ticked the box. Holds only what the user turned OFF. The compaction
+// control is not here: its choice is kept for the session, on the server
+// (docs/295-compact-context-on-merge req 5).
 const MERGE_CONTINUE_OPT_OUT_KEY_PREFIX = "shipit-merge-continue-optout:";
 
-/** The two composer controls a merged session offers before its next turn. */
-export type MergeContinueControl = "reset" | "compact";
+/** The composer controls whose untick applies to one message. */
+export type MergeContinueControl = "reset";
 
 /** Which of them the user unticked for the message currently being composed. */
 export type MergeContinueOptOut = Partial<Record<MergeContinueControl, boolean>>;
 
 function isMergeContinueControl(value: unknown): value is MergeContinueControl {
-  return value === "reset" || value === "compact";
+  return value === "reset";
 }
 
 /** The session a merge-continue storage key belongs to, or `undefined`. */
@@ -739,7 +741,7 @@ export function getSavedMergeContinueOptOut(sessionKey: string): MergeContinueOp
 
 /** Persist (or clear, when nothing is unticked) a session's merge-continue opt-out. */
 export function saveMergeContinueOptOut(sessionKey: string, optOut: MergeContinueOptOut): void {
-  const controls = (["reset", "compact"] as const).filter((c) => optOut[c]);
+  const controls = (["reset"] as const).filter((c) => optOut[c]);
   try {
     if (controls.length > 0) {
       localStorage.setItem(MERGE_CONTINUE_OPT_OUT_KEY_PREFIX + sessionKey, JSON.stringify(controls));

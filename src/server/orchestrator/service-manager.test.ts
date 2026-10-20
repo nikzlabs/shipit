@@ -1,10 +1,13 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import type { ChildProcess } from "node:child_process";
+import type * as childProcessModule from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
   type ServiceManager,
+  LOG_FOLLOWER_REARM_MS,
+  MAX_LOG_FOLLOWER_REARMS,
   NETWORK_JOIN_TIMEOUT_MS,
   STARTING_WATCHDOG_MS,
   STARTING_TIMEOUT_MESSAGE,
@@ -18,6 +21,7 @@ import {
   type SecretsStatusInternalSnapshot,
 } from "./service-manager.js";
 import { DEFAULT_STOP_GRACE_PERIOD_MS, type DockerSocketGrant } from "./compose-generator.js";
+import { COMPOSE_HELPER_IMAGE_ENV, ComposeHelperError } from "./compose-helper.js";
 import { OPS_TEMPLATE } from "./templates-ops.js";
 import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-dir.js";
 import { serializeStackOp } from "./stack-op-queue.js";
@@ -27,6 +31,23 @@ import { FakeConfinedCompose, recordedOverride, testServiceManager } from "./com
 import { joinSessionNetworkEndpoints } from "./service-manager-setup.js";
 import { releaseSessionNetworkQueued } from "./session-network-release.js";
 import { fakeNetworkDocker } from "./session-network-test-helpers.js";
+
+// A real `docker` exits or prints on its own, at a time the test does not control, and only on a
+// host that has docker (CI does). Tests that follow or snapshot logs take a fake: a follower stays
+// open and silent, and a one-shot `logs` closes with no output so a snapshot can finish.
+const fakeDocker = vi.hoisted(() => ({ enabled: false }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof childProcessModule>();
+  const { EventEmitter } = await import("node:events");
+  const spawn = (...args: Parameters<typeof actual.spawn>) => {
+    if (!fakeDocker.enabled) return actual.spawn(...args);
+    const proc = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true });
+    const argv = Array.isArray(args[1]) ? args[1] : [];
+    if (argv.includes("logs") && !argv.includes("-f")) queueMicrotask(() => proc.emit("close", 0, null));
+    return proc;
+  };
+  return { ...actual, spawn };
+});
 
 function makeSessionDir(prefix: string): string {
   const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -1161,6 +1182,39 @@ services:
     await expect(mgr.restartService("nonexistent")).rejects.toThrow("Unknown service");
   });
 
+  it("names the failed project-file read, not an unknown service, and registers the services once a read works", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    x-shipit-preview: manual\n");
+    const confined = new FakeConfinedCompose({ workspaceDir: dir, sessionId: "test-session" });
+    const helperFailure = "ShipIt could not start its Compose helper container for `read` (exit 125): "
+      + "docker: Error response from daemon: No such image: sha256:gone";
+    vi.spyOn(confined, "readProjectFile").mockRejectedValueOnce(new ComposeHelperError(helperFailure, "start"));
+    const mgr = testServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: () => Promise.resolve(),
+      composeQuery: emptyComposeQuery,
+      pollIntervalMs: 0,
+      confinedCompose: confined,
+    });
+
+    await expect(mgr.start()).rejects.toThrow(helperFailure);
+    expect(mgr.getServices()).toEqual([]);
+    for (const action of [mgr.startService, mgr.stopService, mgr.restartService]) {
+      const err = await action.call(mgr, "web").catch((e: unknown) => e);
+      expect((err as Error).message).toBe(
+        `ShipIt has no service "web", and its last read of this session's Compose file failed: ${helperFailure}`,
+      );
+    }
+
+    await mgr.reconcile();
+    expect(mgr.getService("web")).toBeDefined();
+    expect(mgr.projectComposeFailure).toBeNull();
+    await expect(mgr.startService("nonexistent")).rejects.toThrow("Unknown service: nonexistent");
+  });
+
   it("registers an 'error' listener on the log follower so a failed docker exec can't crash the process", () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
@@ -1174,6 +1228,10 @@ services:
     expect(proc!.listenerCount("error")).toBeGreaterThan(0);
 
     expect(() => proc!.emit("error", new Error("spawn docker ENOENT"))).not.toThrow();
+    // `close` always follows a spawn error and owns the removal, so that it can also re-arm the
+    // follower — removing the entry here would make its identity guard skip that (docs/332).
+    expect(logProcesses.has("web")).toBe(true);
+    proc!.emit("close");
     expect(logProcesses.has("web")).toBe(false);
 
     cleanup();
@@ -1434,6 +1492,28 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
       expect(mgr.projectComposeFailure?.kind).toBe("refused");
       expect(mgr.projectComposeFailure?.message).toContain("web");
       expect(mgr.projectComposeFailure?.message).toContain("privileged");
+    });
+
+    // Distinct repositories, and the other settings cleared, so one setting cannot stand in for another.
+    const IMAGE_SETTINGS: [string, string][] = [
+      ["SESSION_WORKER_IMAGE", "test-worker:prod"],
+      ["SESSION_WORKER_DOCKER_IMAGE", "test-worker-docker:prod"],
+      ["SESSION_EGRESS_SIDECAR_IMAGE", "test-sidecar:prod"],
+      [COMPOSE_HELPER_IMAGE_ENV, "test-helper:prod"],
+    ];
+    it.each(IMAGE_SETTINGS)("refuses a build that would tag the image %s names", async (env, image) => {
+      for (const [key] of IMAGE_SETTINGS) vi.stubEnv(key, "");
+      vi.stubEnv(env, image);
+      try {
+        const dir = setup();
+        writeCompose(dir, `services:\n  web:\n    image: ${image}\n    build: .\n    ports: ['3000:3000']\n`);
+        const mgr = createMockedManager(dir);
+
+        await expect(mgr.start()).rejects.toThrow("is reserved for one of ShipIt's own images");
+        expect(mgr.projectComposeFailure?.kind).toBe("refused");
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
 
     it("records a file it could not parse as MALFORMED, not refused", async () => {
@@ -3912,7 +3992,9 @@ describe("ServiceManager stuck-starting recovery (#2044)", () => {
     const { mgr, setPsResponse } = makeManager(dir);
 
     await mgr.start();
-    setPsResponse("");
+    // A listed-but-never-running container is what the watchdog owns: a service with NO container
+    // belongs to the missing-container rule, which reaches it first (docs/332).
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "paused", ExitCode: 0 }));
     await mgr.startService("web");
     expect(mgr.getService("web")?.status).toBe("starting");
 
@@ -4141,7 +4223,8 @@ describe("ServiceManager starting-state address hygiene (#2044)", () => {
     });
 
     await mgr.start();
-    setPsResponse("");
+    // Paused, not absent: the missing-container rule would otherwise own this service (docs/332).
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "paused", ExitCode: 0 }));
     const startPromise = mgr.startService("web");
     await vi.advanceTimersByTimeAsync(0);
 
@@ -4186,7 +4269,12 @@ describe("ServiceManager starting-state address hygiene (#2044)", () => {
 describe("ServiceManager — compose up output reaches the service log", () => {
   let tmpDir: string;
 
+  beforeEach(() => {
+    fakeDocker.enabled = true;
+  });
+
   afterEach(() => {
+    fakeDocker.enabled = false;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -4321,7 +4409,12 @@ describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
     return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
   }
 
+  beforeEach(() => {
+    fakeDocker.enabled = true;
+  });
+
   afterEach(() => {
+    fakeDocker.enabled = false;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -4510,6 +4603,150 @@ describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
     const second = logProcesses().get("web");
     expect(second).toBeDefined();
     expect(second).not.toBe(first);
+  });
+
+  // docs/332: the re-arm replaced a poll, so an unattachable follower would otherwise leave a
+  // 2-second timer running for ever on a session nobody is watching.
+  it("re-attaches a follower that dies on its own, without a poll", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    const first = logProcesses().get("web");
+
+    first!.emit("close", 0);
+    await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+
+    const second = logProcesses().get("web");
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+    vi.useRealTimers();
+  });
+
+  it("gives up re-arming a follower that never attaches, rather than retrying for ever", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 2; i++) {
+      logProcesses().get("web")?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+
+    expect(logProcesses().has("web")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  // A `docker compose logs` that writes a diagnostic and exits proves the follower did NOT attach,
+  // so crediting stderr to the budget made the bound meaningless.
+  it("does not let a stderr diagnostic refill the re-arm budget", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 3; i++) {
+      const proc = logProcesses().get("web");
+      proc?.stderr?.emit("data", Buffer.from("error: no such service\n"));
+      proc?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+
+    expect(logProcesses().has("web")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("refills the budget on real container output, so later disconnects still recover", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 3; i++) {
+      const proc = logProcesses().get("web");
+      proc?.stdout?.emit("data", Buffer.from("listening on 3000\n"));
+      proc?.emit("close", 0);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+      expect(logProcesses().has("web")).toBe(true);
+    }
+    vi.useRealTimers();
+  });
+
+  // The budget has to cover the attempt a RECONCILE makes too: `onRunning` runs on every one, so a
+  // follower that can never attach would spawn a process on every backstop for ever (docs/332).
+  it("spawns nothing more once the budget is spent, not even from a reconcile", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 2; i++) {
+      logProcesses().get("web")?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+    expect(logProcesses().has("web")).toBe(false);
+
+    await poll();
+    await poll();
+
+    expect(logProcesses().has("web")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("follows the logs again once the user restarts the service", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 2; i++) {
+      logProcesses().get("web")?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+    expect(logProcesses().has("web")).toBe(false);
+
+    await mgr.startService("web");
+    expect(logProcesses().has("web")).toBe(true);
+
+    // And the NEW container's follower gets a fresh budget, so it can re-arm on its own again.
+    logProcesses().get("web")?.emit("close", 1);
+    await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+
+    expect(logProcesses().has("web")).toBe(true);
+    vi.useRealTimers();
   });
 
   it("does not replace a follower that is still alive", async () => {

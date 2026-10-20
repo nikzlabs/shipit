@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   bypassesLockfile,
+  incompleteNpmDepDirs,
   npmLockfileMismatches,
   staleDepDirs,
   unreconciledPnpmDepDirs,
@@ -250,6 +251,139 @@ describe("staleDepDirs — which declared dirs get checked at all", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "dep-stale-"));
     roots.push(root);
     expect(staleDepDirs(root, ["npm ci"])).toEqual([]);
+  });
+});
+
+describe("incompleteNpmDepDirs — is a restored npm tree still whole", () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const r of roots) fs.rmSync(r, { recursive: true, force: true });
+    roots.length = 0;
+  });
+
+  const LOCKED: Record<string, Entry> = {
+    "node_modules/vite": { version: "5.4.10" },
+    "node_modules/@types/node": { version: "22.0.0" },
+    "node_modules/vite/node_modules/esbuild": { version: "0.21.5" },
+  };
+
+  // `onDisk` lists the package paths that exist; `recorded` is npm's hidden lockfile, or null.
+  function makeTree(opts: {
+    depDir?: string;
+    onDisk: string[];
+    recorded: Record<string, Entry> | null;
+    lockfile?: string;
+  }): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "dep-incomplete-"));
+    roots.push(root);
+    const depDir = opts.depDir ?? "node_modules";
+    fs.writeFileSync(path.join(root, "shipit.yaml"), `agent:\n  dep-dirs:\n    - ${depDir}\n`);
+    const projectDir = path.join(root, path.dirname(depDir));
+    fs.mkdirSync(path.join(root, depDir), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, "package-lock.json"), opts.lockfile ?? lock(LOCKED));
+    for (const pkg of opts.onDisk) fs.mkdirSync(path.join(projectDir, pkg), { recursive: true });
+    if (opts.recorded !== null) {
+      fs.writeFileSync(path.join(root, depDir, ".package-lock.json"), lock(opts.recorded));
+    }
+    return root;
+  }
+
+  it("flags a tree an npm run left without its record — killed part-way", () => {
+    const root = makeTree({ onDisk: ["node_modules/vite"], recorded: null });
+
+    expect(incompleteNpmDepDirs(root)).toEqual([{ depDir: "node_modules", missing: [] }]);
+  });
+
+  it("flags the packages npm recorded that are no longer on disk", () => {
+    const root = makeTree({ onDisk: ["node_modules/vite"], recorded: LOCKED });
+
+    expect(incompleteNpmDepDirs(root)).toEqual([
+      {
+        depDir: "node_modules",
+        missing: ["node_modules/@types/node", "node_modules/vite/node_modules/esbuild"],
+      },
+    ]);
+  });
+
+  it("accepts a tree holding everything npm recorded", () => {
+    const root = makeTree({ onDisk: Object.keys(LOCKED), recorded: LOCKED });
+
+    expect(incompleteNpmDepDirs(root)).toEqual([]);
+  });
+
+  it("accepts a workspace link as present, and leaves keys outside the dep dir alone", () => {
+    const recorded: Record<string, Entry> = {
+      "node_modules/web": { link: true },
+      "packages/web/node_modules/nanoid": { version: "3.3.7" },
+    };
+    const root = makeTree({ onDisk: [], recorded });
+    fs.mkdirSync(path.join(root, "packages", "web"), { recursive: true });
+    fs.symlinkSync("../packages/web", path.join(root, "node_modules", "web"));
+
+    expect(incompleteNpmDepDirs(root)).toEqual([]);
+  });
+
+  it("works for an `npm --prefix` project's dep dir", () => {
+    const root = makeTree({ depDir: "web/node_modules", onDisk: ["node_modules/vite"], recorded: null });
+
+    expect(incompleteNpmDepDirs(root)).toEqual([
+      { depDir: "web/node_modules", missing: [] },
+    ]);
+  });
+
+  it("does not read a missing record as unfinished where npm would not have written one", () => {
+    // Only tool caches: nothing an install put there.
+    const cachesOnly = makeTree({ onDisk: ["node_modules/.vite"], recorded: null });
+    // npm 6 writes no record at all, even from a v2 lockfile; it stamps package.json instead.
+    const npm6 = makeTree({ onDisk: ["node_modules/vite"], recorded: null });
+    fs.writeFileSync(
+      path.join(npm6, "node_modules", "vite", "package.json"),
+      JSON.stringify({ name: "vite", version: "5.4.10", _from: "vite@5.4.10" }),
+    );
+    // Another package manager owns the tree.
+    const yarn = makeTree({ onDisk: ["node_modules/vite"], recorded: null });
+    fs.writeFileSync(path.join(yarn, "yarn.lock"), "");
+
+    expect(incompleteNpmDepDirs(cachesOnly)).toEqual([]);
+    expect(incompleteNpmDepDirs(npm6)).toEqual([]);
+    expect(incompleteNpmDepDirs(yarn)).toEqual([]);
+  });
+
+  it("matches a scoped package by its full name, not by its scope", () => {
+    const root = makeTree({
+      onDisk: ["node_modules/@types/unrelated"],
+      recorded: null,
+      lockfile: lock({ "node_modules/@types/node": { version: "22.0.0" } }),
+    });
+
+    expect(incompleteNpmDepDirs(root)).toEqual([]);
+  });
+
+  it("leaves a workspace member alone — the workspace root records and reinstalls its tree", () => {
+    // A member that kept its own package-lock.json: the root install never writes a record there.
+    const root = makeTree({ depDir: "packages/web/node_modules", onDisk: ["node_modules/vite"], recorded: null });
+    fs.writeFileSync(
+      path.join(root, "package-lock.json"),
+      lock({ "packages/web": { version: "1.0.0" }, "node_modules/web": { link: true } }),
+    );
+
+    expect(incompleteNpmDepDirs(root)).toEqual([]);
+  });
+
+  it("checks nothing for an install strategy whose record does not map to disk", () => {
+    // --install-strategy=linked keeps packages under node_modules/.store (measured on npm 11).
+    const root = makeTree({ onDisk: ["node_modules/.store"], recorded: LOCKED });
+
+    expect(incompleteNpmDepDirs(root)).toEqual([]);
+  });
+
+  it("checks nothing for an empty dir or a dep dir that is not a node_modules", () => {
+    const empty = makeTree({ onDisk: [], recorded: null });
+    const dist = makeTree({ depDir: "web/dist", onDisk: ["dist/assets"], recorded: null });
+
+    expect(incompleteNpmDepDirs(empty)).toEqual([]);
+    expect(incompleteNpmDepDirs(dist)).toEqual([]);
   });
 });
 

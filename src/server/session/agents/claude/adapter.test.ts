@@ -543,6 +543,40 @@ describe("ClaudeAdapter", () => {
     });
   });
 
+  it("marks the CLI's own error text, so it is not taken as an answer (docs/007)", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "API Error: 500" }] },
+      is_api_error_message: true,
+    } satisfies ClaudeEvent);
+
+    expect(events[0]).toMatchObject({ type: "agent_assistant", synthetic: true });
+  });
+
+  it("passes on the CLI's id of each message, so a rewind can fork at it (docs/007 req 5)", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", { type: "assistant", message: { content: [{ type: "text", text: "Hi" }] }, uuid: "a-1" } satisfies ClaudeEvent);
+    inner.emit("event", { type: "user", message: { content: [] }, uuid: "r-1" } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "user", message: { content: [{ type: "text", text: "next" }] }, isReplay: true, uuid: "u-1",
+    } satisfies ClaudeEvent);
+
+    expect(events).toEqual([
+      expect.objectContaining({ type: "agent_assistant", messageId: "a-1" }),
+      expect.objectContaining({ type: "agent_tool_result", messageId: "r-1" }),
+      { type: "agent_user_replay", text: "next", messageId: "u-1" },
+    ]);
+  });
+
   it("maps user event to agent_tool_result", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
@@ -801,6 +835,66 @@ describe("ClaudeAdapter", () => {
       inner.emit("event", result);
       expect(results).toHaveLength(1);
       expect(results[0].requests).toEqual([{ input: 9, cacheRead: 2, cacheWrite: 2 }]);
+    });
+  });
+
+  describe("cache lifetime (docs/333-idle-compaction)", () => {
+    // The 2.1.300 probe's shape: every main-thread call carries the split.
+    const call = (id: string, fiveMinute: number, oneHour: number, parent?: string): ClaudeEvent => ({
+      type: "assistant",
+      message: {
+        id,
+        content: [{ type: "text", text: id }],
+        usage: {
+          input_tokens: 9,
+          cache_creation_input_tokens: fiveMinute + oneHour,
+          cache_creation: { ephemeral_5m_input_tokens: fiveMinute, ephemeral_1h_input_tokens: oneHour },
+        },
+      },
+      ...(parent ? { parent_tool_use_id: parent } : {}),
+    });
+    const result: ClaudeEvent = { type: "result", subtype: "success", session_id: "s" };
+
+    function resultsOf(events: ClaudeEvent[]) {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      const results: any[] = [];
+      adapter.on("event", (e) => {
+        if (e.type === "agent_result") results.push(e);
+      });
+      for (const e of events) inner.emit("event", e);
+      return { inner, adapter, results };
+    }
+
+    it("reports 1h when every main-thread write was a 1-hour entry", () => {
+      const { results } = resultsOf([call("msg_1", 0, 10_174), call("msg_2", 0, 64), result]);
+      expect(results[0].cacheTtl).toBe("1h");
+    });
+
+    it("reports 5m when any main-thread write was a 5-minute entry", () => {
+      const { results } = resultsOf([call("msg_1", 0, 10_174), call("msg_2", 30, 0), result]);
+      expect(results[0].cacheTtl).toBe("5m");
+    });
+
+    it("ignores a subagent's 5-minute writes", () => {
+      const { results } = resultsOf([call("msg_sub", 500, 0, "toolu_1"), call("msg_1", 0, 64), result]);
+      expect(results[0].cacheTtl).toBe("1h");
+    });
+
+    it("reports nothing for a turn that only read the cache", () => {
+      const { results } = resultsOf([call("msg_1", 0, 0), result]);
+      expect(results[0].cacheTtl).toBeUndefined();
+    });
+
+    it("starts each turn's reading afresh, after a result or a turn with no result", () => {
+      const { inner, adapter, results } = resultsOf([call("msg_1", 30, 0), result]);
+      inner.emit("event", call("msg_2", 0, 64));
+      inner.emit("event", result);
+      inner.emit("event", call("msg_3", 30, 0));
+      adapter.run({ prompt: "p", cwd: "/workspace" } as AgentRunParams);
+      inner.emit("event", call("msg_4", 0, 64));
+      inner.emit("event", result);
+      expect(results.map((r) => r.cacheTtl)).toEqual(["5m", "1h", "1h"]);
     });
   });
 

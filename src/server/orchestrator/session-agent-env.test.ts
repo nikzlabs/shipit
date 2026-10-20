@@ -111,7 +111,6 @@ function makeFakeSessionManager(opts: {
     setAgentPinnedCalls: number;
     agentSessionId: string | undefined;
     setAgentSessionIdCalls: { id: string; value: string }[];
-    clearAgentSessionIdCalls: string[];
     conversationReplay: string | undefined;
     setProviderRouteCalls: { id: string; kind: string; routeId: string }[];
     modelSelection: ModelSelection | undefined;
@@ -124,7 +123,6 @@ function makeFakeSessionManager(opts: {
     setAgentPinnedCalls: 0,
     agentSessionId: opts.agentSessionId,
     setAgentSessionIdCalls: [] as { id: string; value: string }[],
-    clearAgentSessionIdCalls: [] as string[],
     conversationReplay: undefined as string | undefined,
     setProviderRouteCalls: [] as { id: string; kind: string; routeId: string }[],
     modelSelection: undefined as ModelSelection | undefined,
@@ -160,10 +158,6 @@ function makeFakeSessionManager(opts: {
     setAgentSessionId: (id: string, value: string) => {
       state.setAgentSessionIdCalls.push({ id, value });
       state.agentSessionId = value;
-    },
-    clearAgentSessionId: (id: string) => {
-      state.clearAgentSessionIdCalls.push(id);
-      state.agentSessionId = undefined;
     },
     setConversationReplay: (_id: string, replay: string) => {
       state.conversationReplay = replay;
@@ -254,7 +248,7 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(fs.readFileSync(sessionCreds, "utf8")).toBe(fresh);
   });
 
-  it("returns overrideAgentSessionId when the docs/153 repair recovers an id from an orphan jsonl", async () => {
+  it("keeps the stored id when the docs/153 repair merges an orphan conversation (docs/007)", async () => {
     const account = path.join(tmpDir, "provider-accounts", "claude", "claude-default");
     fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
     fs.writeFileSync(
@@ -279,12 +273,13 @@ describe("prepareSessionAgentEnvironment", () => {
 
     const runner = new FakeContainerRunner();
     const credentialStore = makeFakeCredentialStore();
+    const storedId = "2595726f-stored-id-without-a-file-yet";
     const { sm, state } = makeFakeSessionManager({
       agentPinned: true,
-      agentSessionId: "2595726f-stale-uuid-from-pre-recovery",
+      agentSessionId: storedId,
     });
 
-    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
       enforceAccountRouting: true,
@@ -298,9 +293,10 @@ describe("prepareSessionAgentEnvironment", () => {
       },
     });
 
-    expect(result.overrideAgentSessionId).toBe(recoveredId);
-    expect(state.setAgentSessionIdCalls).toContainEqual({ id: "s1", value: recoveredId });
-    expect(state.agentSessionId).toBe(recoveredId);
+    expect(fs.existsSync(path.join(sessionDir, ".claude", "projects", "-workspace", `${recoveredId}.jsonl`)))
+      .toBe(true);
+    expect(state.setAgentSessionIdCalls).toHaveLength(0);
+    expect(state.agentSessionId).toBe(storedId);
   });
 
   it("selects the turn's route fresh, returns it as turnRoute, and never persists a session route (docs/260-turn-level-account-routing reqs 1–2)", async () => {
@@ -737,7 +733,7 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(runner.pushed).toHaveLength(1);
   });
 
-  it("returns no override on healthy turns (no leak repair fired)", async () => {
+  it("leaves the stored id alone on healthy turns (no leak repair fired)", async () => {
     const account = path.join(tmpDir, "provider-accounts", "claude", "claude-default");
     fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
     fs.writeFileSync(
@@ -768,7 +764,7 @@ describe("prepareSessionAgentEnvironment", () => {
     });
     writeSessionAccountMarker(tmpDir, "s1", "claude", "claude-default");
 
-    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
       enforceAccountRouting: true,
@@ -782,12 +778,11 @@ describe("prepareSessionAgentEnvironment", () => {
       },
     });
 
-    expect(result.overrideAgentSessionId).toBeUndefined();
     expect(state.setAgentSessionIdCalls).toHaveLength(0);
     expect(state.agentSessionId).toBe(healthyId);
   });
 
-  it("returns overrideAgentSessionId=null and clears the DB when the leak repair finds no resumable jsonl", async () => {
+  it("keeps the stored id and arms no replay when its conversation file is missing or unreadable (the incident)", async () => {
     const account = path.join(tmpDir, "provider-accounts", "claude", "claude-default");
     fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
     fs.writeFileSync(
@@ -802,21 +797,19 @@ describe("prepareSessionAgentEnvironment", () => {
     );
     const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
     fs.mkdirSync(projectsDir, { recursive: true });
-    const stubSid = "856d63e4-stub-jsonl-no-user-no-assistant";
-    fs.writeFileSync(
-      path.join(projectsDir, `${stubSid}.jsonl`),
-      `${JSON.stringify({ sessionId: stubSid, type: "last-prompt", prompt: "x" })}\n`,
-    );
+    const storedId = "6e2d0f4a-live-conversation-the-cli-was-writing";
+    // A directory where the file belongs: any read of it fails, as a file too big to read did.
+    fs.mkdirSync(path.join(projectsDir, `${storedId}.jsonl`));
 
     const runner = new FakeContainerRunner();
     const credentialStore = makeFakeCredentialStore();
     const { sm, state } = makeFakeSessionManager({
       agentPinned: true,
-      agentSessionId: "doomed-init-uuid-from-failed-resume",
+      agentSessionId: storedId,
     });
     writeSessionAccountMarker(tmpDir, "s1", "claude", "claude-default");
 
-    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
       enforceAccountRouting: true,
@@ -830,9 +823,9 @@ describe("prepareSessionAgentEnvironment", () => {
       },
     });
 
-    expect(result.overrideAgentSessionId).toBeNull();
-    expect(state.clearAgentSessionIdCalls).toEqual(["s1"]);
-    expect(state.agentSessionId).toBeUndefined();
+    expect(state.agentSessionId).toBe(storedId);
+    expect(state.setAgentSessionIdCalls).toHaveLength(0);
+    expect(state.conversationReplay).toBeUndefined();
   });
 
   const codexThreadId = "019e8956-beff-7300-b553-6eff4f9e3ee6";
@@ -874,7 +867,7 @@ describe("prepareSessionAgentEnvironment", () => {
       agentSessionId: codexThreadId,
     });
 
-    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "codex",
       enforceAccountRouting: true,
@@ -888,54 +881,13 @@ describe("prepareSessionAgentEnvironment", () => {
       },
     });
 
-    expect(result.overrideAgentSessionId).toBeUndefined();
-    expect(state.clearAgentSessionIdCalls).toHaveLength(0);
-    expect(state.setAgentSessionIdCalls).toHaveLength(0);
     expect(state.agentSessionId).toBe(codexThreadId);
+    expect(state.setAgentSessionIdCalls).toHaveLength(0);
     expect(fs.lstatSync(path.join(sessionDir, ".codex")).isSymbolicLink()).toBe(false);
     expect(fs.existsSync(path.join(sessionDir, ".codex", codexRolloutRel))).toBe(true);
   });
 
-  it("clears an unresumable Codex thread and arms a visible-history replay", async () => {
-    seedLeakedCodexSession(false);
-
-    const runner = new FakeContainerRunner();
-    const credentialStore = makeFakeCredentialStore();
-    const { sm, state } = makeFakeSessionManager({
-      agentPinned: true,
-      agentSessionId: codexThreadId,
-    });
-    const chatHistoryManager = {
-      load: () => [
-        { role: "user" as const, text: "fix the flaky test" },
-        { role: "assistant" as const, text: "Fixed it in foo.test.ts." },
-      ],
-      replaceInProgress: () => {},
-      append: () => 0,
-    };
-
-    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
-      sessionId: "s1",
-      agentId: "codex",
-      enforceAccountRouting: true,
-      deps: {
-        credentialsDir: tmpDir,
-        credentialStore,
-        sessionManager: sm,
-        chatHistoryManager,
-        providerAccountManager: fakeAccountManager({
-          ok: true, route: { kind: "account", id: "codex-default" },
-        }) as never,
-      },
-    });
-
-    expect(result.overrideAgentSessionId).toBeNull();
-    expect(state.clearAgentSessionIdCalls).toEqual(["s1"]);
-    expect(state.conversationReplay).toContain("fix the flaky test");
-    expect(state.conversationReplay).toContain("Fixed it in foo.test.ts.");
-  });
-
-  it("still clears an unresumable Codex thread when no chat history is wired", async () => {
+  it("keeps a Codex thread id whose rollout is not on disk, and arms no replay", async () => {
     seedLeakedCodexSession(false);
 
     const runner = new FakeContainerRunner();
@@ -945,7 +897,7 @@ describe("prepareSessionAgentEnvironment", () => {
       agentSessionId: codexThreadId,
     });
 
-    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "codex",
       enforceAccountRouting: true,
@@ -959,8 +911,8 @@ describe("prepareSessionAgentEnvironment", () => {
       },
     });
 
-    expect(result.overrideAgentSessionId).toBeNull();
-    expect(state.clearAgentSessionIdCalls).toEqual(["s1"]);
+    expect(state.agentSessionId).toBe(codexThreadId);
+    expect(state.setAgentSessionIdCalls).toHaveLength(0);
     expect(state.conversationReplay).toBeUndefined();
   });
 
@@ -1557,7 +1509,7 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
   function prepare(
     sessionManager: SessionManager,
     opts: { reusingResidentAgent?: boolean; accountId?: string } = {},
-  ): Promise<{ overrideAgentSessionId?: string | null }> {
+  ): Promise<unknown> {
     return prepareSessionAgentEnvironment(
       new FakeContainerRunner() as unknown as SessionRunnerInterface,
       {
@@ -1597,20 +1549,17 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
       agentSessionId: CONVERSATION_ID,
     });
 
-    const first = await prepare(sm);
+    await prepare(sm);
 
     expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
     expect(fs.existsSync(
       path.join(sessionDir, ".claude", "projects", "-workspace", `${CONVERSATION_ID}.jsonl`),
     )).toBe(true);
-    expect(first.overrideAgentSessionId).toBe(CONVERSATION_ID);
 
-    const callsAfterFirst = state.setAgentSessionIdCalls.length;
-    const second = await prepare(sm);
-    expect(second.overrideAgentSessionId).toBeUndefined();
-    expect(state.setAgentSessionIdCalls).toHaveLength(callsAfterFirst);
-    expect(state.clearAgentSessionIdCalls).toHaveLength(0);
+    await prepare(sm);
+    expect(state.setAgentSessionIdCalls).toHaveLength(0);
+    expect(state.agentSessionId).toBe(CONVERSATION_ID);
   });
 
   it("syncs the routed non-default account's token, not the default's", async () => {
@@ -1654,10 +1603,9 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
       agentSessionId: CONVERSATION_ID,
     });
 
-    const result = await prepare(sm, { reusingResidentAgent: true });
+    await prepare(sm, { reusingResidentAgent: true });
 
     expect(fs.existsSync(orphanClaude)).toBe(true);
-    expect(result.overrideAgentSessionId).toBeUndefined();
     expect(state.setAgentSessionIdCalls).toHaveLength(0);
     const synced = JSON.parse(
       fs.readFileSync(path.join(sessionDir, ".claude", ".credentials.json"), "utf8"),
@@ -1861,7 +1809,6 @@ describe("agentEnvTurnArgs", () => {
       residentRoute: { kind: "account" as const, id: "a1" },
       previousRouteId: "a0",
       requireResidentRoute: true,
-      ownUserText: "the message this turn submits",
     };
     expect(agentEnvTurnArgs(every)).toEqual(every);
     expect(Object.keys(agentEnvTurnArgs(every)).sort()).toEqual(Object.keys(every).sort());
@@ -1870,9 +1817,5 @@ describe("agentEnvTurnArgs", () => {
   it("omits what the caller did not set", () => {
     expect(agentEnvTurnArgs(undefined)).toEqual({});
     expect(agentEnvTurnArgs({})).toEqual({});
-  });
-
-  it("forwards an empty own-user-text rather than treating it as absent", () => {
-    expect(agentEnvTurnArgs({ ownUserText: "" })).toEqual({ ownUserText: "" });
   });
 });

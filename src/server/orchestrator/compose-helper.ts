@@ -54,6 +54,10 @@ let helperImage: ComposeHelperImage = {
   name: undefined,
   reason: "ShipIt did not resolve it at startup",
 };
+let helperDocker: Pick<Docker, "getImage"> | undefined;
+let pinGeneration = 0;
+let repinning: Promise<ComposeHelperImage> | undefined;
+const REPIN_TIMEOUT_MS = 30_000;
 
 /** Pinned by id, as `resolveWorkerImageId` pins the worker image. */
 export async function resolveComposeHelperImage(
@@ -70,12 +74,98 @@ export async function resolveComposeHelperImage(
   }
 }
 
-export function setComposeHelperImage(image: ComposeHelperImage): void {
+/** At startup: pins the image, and keeps `docker` so `repinComposeHelperImage` can resolve it again. */
+export async function pinComposeHelperImage(
+  docker: Pick<Docker, "getImage">,
+  name: string | undefined,
+): Promise<ComposeHelperImage> {
+  const image = await resolveComposeHelperImage(docker, name);
+  setComposeHelperImage(image, docker);
+  return image;
+}
+
+export function setComposeHelperImage(image: ComposeHelperImage, docker?: Pick<Docker, "getImage">): void {
   helperImage = image;
+  helperDocker = docker;
+  pinGeneration++;
+  repinning = undefined;
 }
 
 export function composeHelperImage(): ComposeHelperImage {
   return helperImage;
+}
+
+/**
+ * After a helper run failed with "No such image": when Docker confirms the pinned id is gone (a
+ * rebuild that moved the tag, an image cleanup), pins the id the name resolves to now. That is
+ * the trust the startup pin already gives the name, which a project cannot move
+ * (`validateComposeHelperImageUse`). Returns the current pin when the id is still there or another
+ * run re-pinned first, and the reason when the name resolves to nothing; the pin stays then.
+ * Concurrent callers share one bounded resolve.
+ */
+export function repinComposeHelperImage(goneId: string): Promise<ComposeHelperImage> {
+  const pinned = helperImage;
+  const docker = helperDocker;
+  if (pinned.status !== "ready" || pinned.id !== goneId || !docker) return Promise.resolve(pinned);
+  const generation = pinGeneration;
+  repinning ??= (async () => {
+    try {
+      const next = await withTimeout(resolveAfterGone(docker, pinned), REPIN_TIMEOUT_MS, {
+        status: "missing",
+        name: pinned.name,
+        reason: `Docker did not answer within ${REPIN_TIMEOUT_MS / 1000} seconds`,
+      });
+      if (generation !== pinGeneration) return helperImage;
+      if (next.status !== "ready") {
+        console.warn(`[compose-helper] Docker no longer has image ${pinned.id}, and ${pinned.name} does not resolve: ${next.reason}`);
+      } else if (next.id !== pinned.id) {
+        helperImage = next;
+        console.warn(`[compose-helper] Docker no longer has image ${pinned.id}; ${next.name} re-pinned to ${next.id}`);
+      }
+      return next;
+    } finally {
+      if (generation === pinGeneration) repinning = undefined;
+    }
+  })();
+  return repinning;
+}
+
+async function resolveAfterGone(
+  docker: Pick<Docker, "getImage">,
+  pinned: Extract<ComposeHelperImage, { status: "ready" }>,
+): Promise<ComposeHelperImage> {
+  try {
+    await docker.getImage(pinned.id).inspect();
+    // Still there: something else failed, such as the container's own command, which must not run twice.
+    return pinned;
+  } catch (err) {
+    if ((err as { statusCode?: number }).statusCode !== 404) return pinned;
+  }
+  return resolveComposeHelperImage(docker, pinned.name);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(onTimeout), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/** `promise`'s value, or undefined as soon as `signal` aborts. */
+async function unlessAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T | undefined> {
+  if (!signal) return promise;
+  let onAbort = (): void => {};
+  const aborted = new Promise<undefined>((resolve) => { onAbort = () => resolve(undefined); });
+  // Raced, and first, even when already aborted: the abort wins, and `promise`'s rejection is handled.
+  if (signal.aborted) onAbort();
+  else signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await Promise.race([aborted, promise]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 export type ComposeHelperErrorKind =
@@ -307,6 +397,8 @@ export interface ConfinedComposeOptions {
   stackName?: string;
   dockerSocketHostPath?: string;
   image?: () => ComposeHelperImage;
+  /** See `repinComposeHelperImage`. */
+  repinImage?: (goneId: string) => Promise<ComposeHelperImage>;
   identity?: () => SessionIdentity | null;
   socketGid?: () => number | null;
   env?: () => NodeJS.ProcessEnv;
@@ -352,6 +444,7 @@ export class ConfinedCompose {
   private readonly stackName?: string;
   private readonly dockerSocketHostPath: string;
   private readonly image: () => ComposeHelperImage;
+  private readonly repinImage: (goneId: string) => Promise<ComposeHelperImage>;
   private readonly identity: () => SessionIdentity | null;
   private readonly socketGid: () => number | null;
   private readonly env: () => NodeJS.ProcessEnv;
@@ -370,6 +463,7 @@ export class ConfinedCompose {
     this.stackName = opts.stackName;
     this.dockerSocketHostPath = opts.dockerSocketHostPath ?? CONTAINER_DOCKER_SOCKET;
     this.image = opts.image ?? composeHelperImage;
+    this.repinImage = opts.repinImage ?? repinComposeHelperImage;
     this.identity = opts.identity ?? (() => identityForSession(opts.sessionId));
     this.socketGid = opts.socketGid ?? defaultSocketGid;
     this.env = opts.env ?? (() => process.env);
@@ -540,12 +634,32 @@ export class ConfinedCompose {
     if (image.status !== "ready") {
       throw new ComposeHelperError(
         `ShipIt cannot run Compose for this session: its Compose helper image`
-        + `${image.name ? ` (${image.name})` : ""} was not available when ShipIt started (${image.reason}). `
-        + "Rebuild ShipIt's images with the deployment's build script, which builds the compose-helper "
-        + "image, and restart ShipIt.",
+        + `${image.name ? ` (${image.name})` : ""} was not available when ShipIt started (${image.reason}). ${REBUILD_HELPER_IMAGE}`,
         "unavailable",
       );
     }
+    try {
+      const result = await this.run(this.helperRequest(spec, image.id));
+      if (result.code !== 125 || result.interrupted || !NO_SUCH_IMAGE.test(result.stderr)) return result;
+      spec.onOutput?.flush?.();
+      const next = await unlessAborted(this.repinImage(image.id), spec.signal);
+      if (next === undefined || spec.signal?.aborted) return { ...result, interrupted: "cancelled" };
+      if (next.status !== "ready") {
+        throw new ComposeHelperError(
+          `ShipIt cannot run Compose for this session: Docker reported its Compose helper image `
+          + `(${image.name}, pinned as ${image.id}) missing, and ShipIt could not resolve that name again (${next.reason}). ${REBUILD_HELPER_IMAGE}`,
+          "unavailable",
+        );
+      }
+      if (next.id === image.id) return result;
+      // Docker confirmed the image gone, so no container ran: the command still runs only once.
+      return await this.run(this.helperRequest(spec, next.id));
+    } finally {
+      spec.onOutput?.flush?.();
+    }
+  }
+
+  private helperRequest(spec: HelperSpec, imageId: string): HelperRunRequest {
     const containerName = `${COMPOSE_HELPER_LABEL}-${spec.command}-${this.sessionId.slice(0, 12)}-${randomBytes(4).toString("hex")}`;
     const labels = { [COMPOSE_HELPER_LABEL]: this.sessionId, ...stackLabel(this.stackName) };
     const args = [
@@ -562,23 +676,19 @@ export class ConfinedCompose {
       ...(spec.stdin !== undefined ? ["-i"] : []),
       ...spec.mounts.flatMap((m) => ["--mount", m]),
       ...Object.entries(spec.env).flatMap(([k, v]) => (v === undefined ? [] : ["-e", `${k}=${v}`])),
-      image.id,
+      imageId,
       ...spec.cmd,
     ];
-    try {
-      return await this.run({
-        args,
-        containerName,
-        ...(spec.stdin !== undefined ? { stdin: spec.stdin } : {}),
-        ...(spec.onOutput ? { onOutput: spec.onOutput } : {}),
-        ...(spec.captureStdout ? { captureStdout: true } : {}),
-        ...(spec.maxStdoutBytes !== undefined ? { maxStdoutBytes: spec.maxStdoutBytes } : {}),
-        ...(spec.timeoutMs !== undefined ? { timeoutMs: spec.timeoutMs } : {}),
-        ...(spec.signal ? { signal: spec.signal } : {}),
-      });
-    } finally {
-      spec.onOutput?.flush?.();
-    }
+    return {
+      args,
+      containerName,
+      ...(spec.stdin !== undefined ? { stdin: spec.stdin } : {}),
+      ...(spec.onOutput ? { onOutput: spec.onOutput } : {}),
+      ...(spec.captureStdout ? { captureStdout: true } : {}),
+      ...(spec.maxStdoutBytes !== undefined ? { maxStdoutBytes: spec.maxStdoutBytes } : {}),
+      ...(spec.timeoutMs !== undefined ? { timeoutMs: spec.timeoutMs } : {}),
+      ...(spec.signal ? { signal: spec.signal } : {}),
+    };
   }
 
   private failure(
@@ -672,6 +782,12 @@ export class ConfinedCompose {
 // Stat, open, and read errors on a path, from Compose, BuildKit, or `head`.
 const PATH_READ_FAILURE =
   /\b(?:open|lstat|stat|readlink|cannot open)\b[^\n]*?:\s*(?:no such file or directory|permission denied|not a directory|too many levels of symbolic links)|unable to prepare context/i;
+
+// The daemon's answer to `docker run --pull never` for an image it does not have.
+const NO_SUCH_IMAGE = /\bNo such image\b/i;
+
+const REBUILD_HELPER_IMAGE = "Rebuild ShipIt's images with the deployment's build script, which builds "
+  + "the compose-helper image, and restart ShipIt.";
 
 const REGISTRY_AUTH_FAILURE =
   /\b(?:unauthorized|authentication required|pull access denied|no basic auth credentials|failed to authorize|failed to fetch (?:oauth|anonymous) token)\b|denied: requested access/i;

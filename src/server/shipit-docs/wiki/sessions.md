@@ -38,7 +38,12 @@ The user can start a session from:
 
 A new session usually opens instantly because ShipIt keeps a warm one prepared
 in the background. It becomes a real session, with a name derived from the first
-message, the moment the user sends that message.
+message, the moment the user sends that message. For a repository opened in
+the last week, ShipIt also keeps that warm session on the latest default branch
+and reinstalls its dependencies when they change, so opening it does not wait
+for either. The warm session is kept for the user: a session you spawn, a Quick
+Capture or a scheduled run gets its own fresh clone, so it starts a little
+slower and leaves the prepared one in place.
 
 ## Reading a session row
 
@@ -169,6 +174,22 @@ At a gap between turns, four actions:
 After the last turn, only **Fork** is offered — the three rewinds would do
 nothing there.
 
+**What the agent remembers follows the chat.** Rewind chat and rewind both cut
+the agent's own conversation at the same point: Claude Code continues from its
+copy of that message, so the agent forgets the dropped turns and keeps
+everything above the line exactly as it was. Rewind code leaves the agent's
+conversation alone, and the next message tells the agent that the code was
+rolled back and to which commit.
+
+**Some rewinds of the chat are greyed out, and the menu says to fork instead.**
+The agent's conversation can only be cut at a message it has, so these cannot be
+made in place: a rewind to the very start of the chat, a rewind into messages
+from before ShipIt recorded which message is which, a rewind to just after a
+message the user sent while the agent was working, and any chat rewind in a
+session whose agent is Codex, which cannot cut its conversation. **Fork** from
+the same point gives the same chat in a new session. Rewind code is always
+offered.
+
 Anything that touches files asks for confirmation first, and tells the user how
 many files it will change. A rewind can be undone: a toast offers it
 immediately, and **Recover recent rewind** on the session menu offers it after
@@ -194,6 +215,16 @@ who reports this error only has to choose the rewind again.
 A fork is a real, separate session with its own branch and its own pull request,
 and ShipIt moves the browser to it as soon as it exists — the user does not go
 looking for it in the sidebar.
+
+**A fork is also the only way to a new agent conversation.** ShipIt hands the
+agent the conversation the session is in and nothing else: it never starts a new
+one on its own and never pastes the chat back in. If the agent reports that it
+cannot find that conversation, the turn ends with an error card that says so, and
+the session keeps its conversation. Sending again tries the same conversation
+again. To go on in a new conversation, the user forks from the latest point: the
+fork's agent gets the recent chat as the first message of its new conversation,
+and the whole chat in a file it can read. That first message is part of the
+conversation, so the agent still has it after its process restarts.
 
 ## Attention, and turning it off
 

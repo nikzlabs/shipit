@@ -58,7 +58,10 @@ beforeEach(() => {
   });
   useSettingsStore.setState({ autoResetMergedBranch: true });
   useUiStore.setState({ agentList: [agent()], activeAgentId: "claude" });
-  useSessionStore.setState({ sessionId: "s1", messages: [], queuedMessages: [], isLoading: false });
+  useSessionStore.setState({
+    sessionId: "s1", messages: [], queuedMessages: [], isLoading: false,
+    sessionDetails: {}, pendingCompactAfterMerge: {},
+  });
   localStorage.clear();
 });
 
@@ -92,9 +95,11 @@ describe("compactRunsBeforeTurn", () => {
     expect(compactRunsBeforeTurn("s1", "next slice")).toBe(false);
   });
 
-  it("is false once the user unticks the control, for that one message", () => {
+  it("is false once the user turns the compaction off for the session (docs/295 req 5)", () => {
     offeringCompaction();
-    usePrStore.getState().setMergeContinueOptOut("s1", "compact", true);
+    useSessionStore.setState({
+      sessionDetails: { s1: { sessionStatus: null, agentGoal: null, compactAfterMergeOff: true } },
+    });
     expect(compactRunsBeforeTurn("s1", "next slice")).toBe(false);
   });
 

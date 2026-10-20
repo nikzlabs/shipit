@@ -32,6 +32,7 @@ export { runDispatchedTurn };
 
 import {
   automaticTurnHeldForAnswer,
+  isSilentCompaction,
   readAnswerHold,
   turnBlockedByPendingCommit,
 } from "./turn-admission.js";
@@ -110,6 +111,8 @@ export interface ChatMessageGroup {
   toolUse: ClaudeContentBlockToolUse[];
   toolResults?: ToolResultEntry[];
   subagentEvents?: SubagentEvent[];
+  /** docs/007 req 5 — the CLI's id of the latest message that fed this group. */
+  agentMessageId?: string;
 }
 
 export interface SteeredMessage {
@@ -390,7 +393,7 @@ export function dispatchOnRunner(
   const uncommitted = step ? null : turnBlockedByPendingCommit(runner);
   if (uncommitted) return enqueueOrRefuse(uncommitted);
 
-  const answerHeld = automaticTurnHeldForAnswer(runner, opts.automatic);
+  const answerHeld = isSilentCompaction(opts) ? null : automaticTurnHeldForAnswer(runner, opts.automatic);
   if (answerHeld) return enqueueOrRefuse(answerHeld);
 
   // Only once admitted: a refused step must not end the process of a turn it did not start.
@@ -565,8 +568,6 @@ export interface SystemTurnDeps {
       /** The route of the session's previous own turn, kept when no resident process remains. */
       previousRouteId?: string;
       requireResidentRoute?: boolean;
-      /** This turn's own user text, already persisted; a replay armed here must not carry it. */
-      ownUserText?: string;
     },
   ) => Promise<{ turnRoute?: { kind: ProviderRouteKind; id: string } } | undefined>;
   needsAccountFailover?: (sessionId: string, agentId: AgentId) => boolean;

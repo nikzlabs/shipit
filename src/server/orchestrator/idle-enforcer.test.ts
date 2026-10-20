@@ -249,3 +249,186 @@ describe("abandoned warm drafts return their memory", () => {
     expect(destroy).not.toHaveBeenCalled();
   });
 });
+
+describe("docs/333-idle-compaction req 8 — sessions that wait for their idle compaction", () => {
+  const MB = 1024 * 1024;
+  const OLDEST = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const MIDDLE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const NEWEST = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const IDS = [OLDEST, MIDDLE, NEWEST];
+
+  interface PressureRunner {
+    viewerCount: number;
+    agentBusy: boolean;
+    disposed: boolean;
+    queueLength: number;
+    lastViewerDetachAt: number;
+    turnEpoch: number;
+  }
+
+  function pressure(waiting: string[]) {
+    const runners = new Map<string, PressureRunner>(IDS.map((id, i) => [id, {
+      viewerCount: 0, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 1_000 * (i + 1), turnEpoch: 4,
+    }]));
+    const stopped = new Set<string>();
+    const waits = new Set(waiting);
+    const containerIds = new Map(IDS.map((id) => [id, `container-${id}`]));
+    const containerManager = {
+      get: (id: string) => (stopped.has(id) ? undefined : { sessionId: id, id: containerIds.get(id) }),
+      getAll: () => IDS.filter((id) => !stopped.has(id)).map((sessionId) => ({ sessionId })),
+      isStandby: () => false,
+      destroy: vi.fn().mockResolvedValue(undefined),
+      // Production teardown yields before the container is gone, so a pass still lists it.
+      destroyAgentContainer: vi.fn(async (id: string) => {
+        await Promise.resolve();
+        stopped.add(id);
+      }),
+    } as unknown as SessionContainerManager;
+    const runnerRegistry = {
+      get: (id: string) => {
+        const r = runners.get(id);
+        return r && !r.disposed ? r : undefined;
+      },
+      dispose: (id: string) => {
+        const r = runners.get(id);
+        if (r && !r.agentBusy) r.disposed = true;
+      },
+    } as unknown as SessionRunnerRegistry;
+    // The compaction is a turn: it makes the session busy until it ends.
+    const fire = vi.fn(async (id: string) => {
+      waits.delete(id);
+      runners.get(id)!.agentBusy = true;
+      runners.get(id)!.turnEpoch += 1;
+    });
+    let stats: DockerMemoryStats = underBudget;
+    const enforce = createIdleEnforcer({
+      containerManager,
+      runnerRegistry,
+      sessionManager: { listAll: () => [], listWarm: () => [], get: () => undefined } as unknown as SessionManager,
+      getMemoryStats: () => stats,
+      idleCompaction: { isWaiting: (id) => waits.has(id), fire },
+    });
+    /** A fresh reading `overMb` over the budget, each session's agent taking `agentMb`. */
+    const pass = async (overMb: number, agentMb = 100): Promise<void> => {
+      stats = {
+        usedBytes: (1_000 + overMb) * MB,
+        totalBytes: 2_000 * MB,
+        budgetBytes: 1_000 * MB,
+        warnAtBytes: 900 * MB,
+        evictAtBytes: 1_000 * MB,
+        bySession: Object.fromEntries(
+          IDS.filter((id) => !stopped.has(id)).map((id) => [id, { agentBytes: agentMb * MB, serviceBytes: 0 }]),
+        ),
+      };
+      enforce();
+      // Teardowns settle before the next pass may act.
+      await new Promise((r) => setImmediate(r));
+    };
+    return {
+      pass, fire, stopped, runners, waits, containerIds,
+      destroyed: containerManager.destroyAgentContainer as ReturnType<typeof vi.fn>,
+    };
+  }
+
+  it("stops every session that does not wait before one that does, oldest first", async () => {
+    const { pass, fire, stopped } = pressure([OLDEST]);
+    await pass(150);
+    expect([...stopped].sort()).toEqual([MIDDLE, NEWEST].sort());
+    expect(fire).not.toHaveBeenCalled();
+  });
+
+  it("compacts a waiting session instead of stopping it, and counts its memory", async () => {
+    const { pass, fire, stopped } = pressure([OLDEST, MIDDLE]);
+    await pass(150);
+    expect([...stopped]).toEqual([NEWEST]);
+    // One more session's worth was missing, so one compaction starts, not two.
+    expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+  });
+
+  it("stops the compacted session in a later pass, once its compaction is over, before anyone else", async () => {
+    const { pass, fire, stopped, runners } = pressure([OLDEST, MIDDLE, NEWEST]);
+    await pass(50);
+    expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+
+    // Still compacting: its memory is on its way back, so nobody else is touched.
+    await pass(50);
+    expect(stopped.size).toBe(0);
+    expect(fire).toHaveBeenCalledTimes(1);
+
+    runners.get(OLDEST)!.agentBusy = false;
+    await pass(50);
+    expect([...stopped]).toEqual([OLDEST]);
+    expect(fire).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts a compacted session's stop once, and goes on to the next one for the rest", async () => {
+    const { pass, fire, runners, destroyed } = pressure([OLDEST, MIDDLE, NEWEST]);
+    await pass(50);
+    expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+
+    runners.get(OLDEST)!.agentBusy = false;
+    await pass(150);
+    expect(destroyed.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+    expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST, MIDDLE]);
+  });
+
+  it("forgets a compacting session the user came back to: its memory no longer counts", async () => {
+    const { pass, fire, stopped, runners } = pressure([OLDEST, MIDDLE, NEWEST]);
+    await pass(50);
+    expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+
+    runners.get(OLDEST)!.viewerCount = 1;
+    await pass(50);
+    expect(stopped.has(OLDEST)).toBe(false);
+    expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST, MIDDLE]);
+  });
+
+  it("stops only as many compacted sessions as memory is still short of, and forgets the rest", async () => {
+    const { pass, fire, runners, destroyed } = pressure([OLDEST, MIDDLE, NEWEST]);
+    await pass(250);
+    expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST, MIDDLE, NEWEST]);
+
+    for (const id of IDS) runners.get(id)!.agentBusy = false;
+    await pass(50);
+    expect(destroyed.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+    // The others are ordinary idle sessions again, stopped in the ordinary order.
+    await pass(50);
+    expect(destroyed.mock.calls.map(([id]) => id)).toEqual([OLDEST, MIDDLE]);
+  });
+
+  it.each([
+    ["ran another turn after its compaction", (r: PressureRunner) => { r.turnEpoch += 1; }],
+    ["got a new container", (_r: PressureRunner, ids: Map<string, string>) => { ids.set(OLDEST, "replacement"); }],
+  ] as [string, (r: PressureRunner, ids: Map<string, string>) => void][])(
+    "forgets a compacting session that %s",
+    async (_label, use) => {
+      const { pass, fire, runners, containerIds, destroyed } = pressure([OLDEST, MIDDLE, NEWEST]);
+      await pass(50);
+      expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+
+      runners.get(OLDEST)!.agentBusy = true;
+      use(runners.get(OLDEST)!, containerIds);
+      await pass(50);
+      // Its memory no longer counts as on its way back, so the next session is compacted.
+      expect(destroyed).not.toHaveBeenCalled();
+      expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST, MIDDLE]);
+    },
+  );
+
+  it("forgets it also after a visit while memory was under the budget", async () => {
+    const { pass, fire, runners, waits, destroyed } = pressure([OLDEST, MIDDLE, NEWEST]);
+    await pass(50);
+    expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+
+    // The user came back, worked, and left; the compaction ended and a new deadline waits.
+    const oldest = runners.get(OLDEST)!;
+    oldest.agentBusy = false;
+    oldest.lastViewerDetachAt = 9_000;
+    waits.add(OLDEST);
+    await pass(-100);
+
+    await pass(50);
+    expect(destroyed).not.toHaveBeenCalled();
+    expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST, MIDDLE]);
+  });
+});

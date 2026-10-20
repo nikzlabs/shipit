@@ -32,8 +32,8 @@ export function createOAuthAccountRepush(
         const opts = { repairLeakedSubtrees: !deps.hasLiveAgent(session.id) };
         const wrote =
           marked !== undefined
-            ? repushProviderAccountToken(deps.credentialsDir, session.id, agentId, accountId, undefined, undefined, opts)
-            : repushAgentToken(deps.credentialsDir, session.id, agentId, undefined, undefined, opts);
+            ? repushProviderAccountToken(deps.credentialsDir, session.id, agentId, accountId, opts)
+            : repushAgentToken(deps.credentialsDir, session.id, agentId, opts);
         if (wrote) healed++;
       } catch (err) {
         console.error(`[${logPrefix}] repush failed for session ${session.id}:`, err);

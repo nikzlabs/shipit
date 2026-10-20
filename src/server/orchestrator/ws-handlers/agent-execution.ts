@@ -41,6 +41,7 @@ import { buildPostTurnReleaseFlow } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
 import { createPromptRepark, createPromptTakeLedger, type PromptTakeLedger } from "../turn-settlement.js";
 import {
+  releaseResidentOnPendingRewind,
   releaseResidentOnSpawnChange,
   releaseResidentOnStatusCardChange,
   releaseResidentOnServiceMcpChange,
@@ -352,6 +353,7 @@ async function composeAndRunAgentTurn(
       runner,
       desiredSpawnIdentity(ctx.sessionManager, capturedSessionId, agentId),
     );
+    releaseResidentOnPendingRewind(runner, ctx.sessionManager.get(capturedSessionId)?.agentResumeAt);
   }
   if (useStreaming) {
     releaseResidentOnStatusCardChange(runner, ctx.credentialStore.getSessionStatusCard());
@@ -380,9 +382,9 @@ async function composeAndRunAgentTurn(
         endLine: f.endLine,
       }))
     : undefined;
-  const persistUserMessage = (sessionId: string): void => {
-    if (opts.silent) return;
-    ctx.chatHistoryManager.append(sessionId, {
+  const persistUserMessage = (sessionId: string): number | undefined => {
+    if (opts.silent) return undefined;
+    return ctx.chatHistoryManager.append(sessionId, {
       role: "user",
       text: userText,
       images: historyImages,
@@ -608,7 +610,7 @@ async function composeAndRunAgentTurn(
       ),
     listenerDeps,
     buildRunParams: async (sessionId, id, p, turnRoute) => {
-      // Env preparation can replace agentSessionId; read it again.
+      // At spawn: the CLI may have reported its conversation since this connection read it.
       const session = ctx.sessionManager.get(sessionId);
       return buildAgentRunParams({
         deps: {
@@ -642,8 +644,6 @@ async function composeAndRunAgentTurn(
           credentialStore: ctx.credentialStore,
           sessionManager: ctx.sessionManager,
           providerAccountManager: ctx.providerAccountManager,
-          chatHistoryManager: ctx.chatHistoryManager,
-          sseBroadcast: ctx.sseBroadcast,
           ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
         },
       });
