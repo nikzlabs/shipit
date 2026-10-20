@@ -36,7 +36,7 @@
   },
   "dependencies": {
     "@fastify/multipart": "10.1.2",
-    "@fastify/static": "10.1.2",
+    "@fastify/static": "10.1.5",
     "@fastify/websocket": "11.2.0",
     "@formkit/auto-animate": "0.10.0",
     "@modelcontextprotocol/sdk": "1.31.0",
