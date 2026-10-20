@@ -224,6 +224,8 @@ Two rules, both enforced by `npm run check-deps` (`scripts/check-dependency-age.
 
 To bump: edit the manifest to the exact version, `npm install` to refresh the lockfile, then `npm run check-deps` before opening the PR.
 
+**Container image pins (`docker/Dockerfile.*`) are outside `check-deps`, and no cooldown holds them.** The npm cooldown binds because npm publishes a timestamp; Renovate's Docker datasource has none for ghcr.io (upstream `renovatebot/renovate#39064`), so a ghcr bump is raised as soon as it is published whatever `minimumReleaseAge` says — `minimumReleaseAgeBehaviour: timestamp-optional` lets it through deliberately, because `timestamp-required` would hold every candidate forever and rot the pin unseen. The human on `automerge: false` is the only gate. So **when a bot PR proposes a container version younger than 7 days, retarget the PR at the newest release that is already 7 days old; do not hold the PR.** Holding only rotates the candidate: uv 0.13.1 was raised 3 days old, and 0.13.2 and 0.13.3 landed within a day of each other while it was held, so the 0.13 migration landed only once the PR was retargeted at 0.13.0. Read the aged tag's digest from GitHub's package-versions page for the image (`https://github.com/<owner>/<repo>/pkgs/container/<image>/versions`) and confirm the page's mapping by checking one other row against a digest Renovate itself pinned — ghcr.io is outside the agent egress allowlist, so the registry cannot be read directly.
+
 A third rule is enforced separately by `npm run check-audit` (`scripts/check-audit.ts`):
 
 3. **No advisory at `high` or above** may affect the dependency tree unless it is
