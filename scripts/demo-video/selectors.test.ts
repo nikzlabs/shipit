@@ -18,9 +18,9 @@ const CLIENT_SOURCE = readdirSync(CLIENT_DIR, { recursive: true, encoding: "utf8
 // Stands in for a part the client fills in at run time: `${…}` in a template literal.
 const RUNTIME = "\u0000";
 
-// A string literal, a template literal, or JSX text.
-const OPEN = "[\"'`>]\\s*";
-const CLOSE = "\\s*[\"'`<]";
+// A whole string or template literal, or JSX text with the whitespace around it.
+const OPEN = "(?:[\"'`]|>\\s*)";
+const CLOSE = "(?:[\"'`]|\\s*<)";
 
 interface Expected {
   value: string;
@@ -42,11 +42,15 @@ function attributeName(name: string): Expected {
   return { value: name, pattern: new RegExp(`(?<![\\w-])${escapeRegExp(name)}(?![\\w-])`) };
 }
 
-const ATTRIBUTE = /\[([\w-]+)(?:([\^$]?)="([^"]*)")?\]/g;
+const ATTRIBUTE = /^\s*([\w-]+)\s*(?:([\^$]?)=\s*(?:"([^"]*)"|'([^']*)'))?\s*$/;
 
 /** `[name]` checks the attribute name; `[name="v"]`, `^=` and `$=` check the value. */
 function fromSelector(selector: string): Expected[] {
-  return [...selector.matchAll(ATTRIBUTE)].map(([, name, operator, value]) => {
+  return [...selector.matchAll(/\[([^\]]*)\]/g)].map(([brackets, body]) => {
+    const parts = ATTRIBUTE.exec(body);
+    if (!parts) throw new Error(`unsupported attribute selector ${brackets}`);
+    const [, name, operator, doubleQuoted, singleQuoted] = parts;
+    const value = doubleQuoted ?? singleQuoted;
     if (value === undefined) return attributeName(name);
     return literal(value, operator === "^" ? "prefix" : operator === "$" ? "suffix" : "whole");
   });
@@ -85,7 +89,10 @@ describe("demo-video selector map", () => {
   it("keeps the contract the external pipeline loads it by", () => {
     expect(SELECTORS).toBeTypeOf("object");
     expect(SELECTORS.paneTabLabels?.constructor).toBe(Object);
-    expect(ts.preProcessFile(readFileSync(SELECTORS_PATH, "utf8"), true, true).importedFiles).toEqual([]);
+    const source = readFileSync(SELECTORS_PATH, "utf8");
+    expect(ts.preProcessFile(source, true, true).importedFiles).toEqual([]);
+    // preProcessFile records only literal specifiers, so also reject `import(target)`.
+    expect(source).not.toMatch(/\b(import|require)\s*\(/);
   });
 
   const checked = Object.entries(SELECTORS).filter(([key]) => !UNCHECKED_ENTRIES.has(key));
