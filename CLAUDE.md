@@ -224,6 +224,12 @@ Two rules, both enforced by `npm run check-deps` (`scripts/check-dependency-age.
 
 To bump: edit the manifest to the exact version, `npm install` to refresh the lockfile, then `npm run check-deps` before opening the PR.
 
+**Container image pins (`docker/Dockerfile.*`) are outside `check-deps`, and no cooldown enforces their age today.** Renovate's Docker datasource carries a release timestamp for Docker Hub only — ghcr.io is upstream `renovatebot/renovate#39064` — so `minimumReleaseAge` has nothing to evaluate there, and `minimumReleaseAgeBehaviour: timestamp-optional` lets the candidate through with no age delay. `timestamp-required` is worse, not stricter: while the timestamp is missing it holds every candidate pending, so no branch and no PR is raised at all and the pin rots with only the Dependency Dashboard to show it. The human on `automerge: false` is the gate.
+
+So **when a bot PR proposes a container version younger than 7 days, retarget the PR at the newest release that is both past the 7-day window and newer than the current pin — do not hold it.** Holding can rotate the candidate instead of converging on one (#2926: the proposal moved on twice while it was held). If no aged release is newer than the pin, defer; never retarget at the pinned version or below.
+
+Two things to get right when retargeting. **The digest decides what Docker pulls** — in `image:tag@sha256:…` the tag is cosmetic, so a stale digest ships the old image under a new tag and nothing fails. Read the digest of the exact tag you are pinning, keep the image variant and platform coverage the bot's candidate had, and say in the PR where the digest came from; where ghcr.io is outside the session's egress allowlist, GitHub's package-versions page (`https://github.com/<owner>/<repo>/pkgs/container/<image>/versions`) is a usable fallback once you confirm its mapping against a digest Renovate itself pinned. **The edit makes the branch yours**: Renovate stops updating a branch that carries a non-bot commit, and asking it to rebase afterwards discards the retarget and restores the newer candidate. Append your own commit, merge `main` in by hand if it conflicts, re-run the checks, and re-read the final tag and digest before merging.
+
 A third rule is enforced separately by `npm run check-audit` (`scripts/check-audit.ts`):
 
 3. **No advisory at `high` or above** may affect the dependency tree unless it is
