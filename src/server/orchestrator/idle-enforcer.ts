@@ -8,7 +8,7 @@ import type { SessionManager } from "./sessions.js";
 import { holdsActiveReservation } from "./sessions.js";
 import { doneSessionTest } from "../shared/session-resolution.js";
 import { isShipItOwnSession } from "./shipit-own-sessions.js";
-import type { IdleCompaction } from "./services/idle-compaction.js";
+import type { IdleCompaction, WokenSession } from "./services/idle-compaction.js";
 
 export interface IdleServiceHooks {
   liveSessions: () => string[];
@@ -27,7 +27,7 @@ export interface IdleEnforcementDeps {
   /** Each repo's current pool warm session; without it, drafts cannot be told apart and are left alone. */
   poolWarmSessionIds?: () => ReadonlySet<string>;
   /** docs/333-idle-compaction — sessions that wait for their idle compaction are stopped last, compacted first. */
-  idleCompaction?: Pick<IdleCompaction, "isWaiting" | "fire">;
+  idleCompaction?: Pick<IdleCompaction, "isWaiting" | "fire" | "wokenSessions" | "forgetWoken" | "isStarting">;
 }
 
 // docs/316-done-sessions-return-memory req 4 — time to continue work first.
@@ -74,6 +74,8 @@ export function createIdleEnforcer(
     // first dictation after a quiet period would pay a container start.
     if (isShipItOwnSession(sessionId)) return false;
     if (holdsActiveReservation(sessionManager?.get(sessionId))) return false;
+    // docs/333-idle-compaction — between its wake and its dispatch no turn holds the runner yet.
+    if (idleCompaction?.isStarting(sessionId)) return false;
     if (!runner) return true;
     // agentBusy includes autonomous turns and pending background work.
     if (runner.agentBusy) return false;
@@ -178,12 +180,48 @@ export function createIdleEnforcer(
     }
   }
 
+  // The wake's runner is new, so any visit leaves a detach time; any turn but the silent
+  // compaction moves `lastUsedAt`.
+  function usedSinceWake(sessionId: string, atWake: WokenSession): boolean {
+    const runner = runnerRegistry.get(sessionId);
+    if (runner && (runner.viewerCount > 0 || runner.lastViewerDetachAt !== 0)) return true;
+    const session = sessionManager?.get(sessionId);
+    return session !== undefined && session.lastUsedAt !== atWake.lastUsedAt;
+  }
+
+  // docs/333-idle-compaction req 13 — a container an idle compaction started is stopped again
+  // once the compaction is over, whatever the budget, unless the session was used meanwhile.
+  function stopWokenSessions(): void {
+    if (!idleCompaction || !containerManager) return;
+    for (const [sessionId, atWake] of idleCompaction.wokenSessions()) {
+      if (idleCompaction.isStarting(sessionId)) continue;
+      const runner = runnerRegistry.get(sessionId);
+      // A container still being created has no record yet.
+      const gone = !containerManager.get(sessionId) && !runner?.awaitingContainer;
+      if (usedSinceWake(sessionId, atWake) || gone || containerManager.isStandby(sessionId)) {
+        idleCompaction.forgetWoken(sessionId);
+        continue;
+      }
+      // The compaction, or its post-turn lease, still holds the session.
+      if (!containerManager.get(sessionId) || !isReclaimable(sessionId, runner)) continue;
+      // Disposal stops the preview services the runner holds, unless they ran before the wake.
+      const keepsPreview = atWake.previewBefore && !!services?.has(sessionId);
+      if (!disposeRunner(sessionId, runner, keepsPreview)) continue;
+      idleCompaction.forgetWoken(sessionId);
+      if (keepsPreview) tier1At.set(sessionId, Date.now());
+      else tier1At.delete(sessionId);
+      console.log(`[idle-cleanup] Stopping the agent container started for the idle compaction of ${sessionId}`);
+      destroyAgentOnly(sessionId);
+    }
+  }
+
   return () => {
     if (!containerManager) return;
 
     forgetUsedCompactions();
     if (teardownsInFlight === 0) reclaimDoneSessions(Date.now());
     if (teardownsInFlight === 0) reclaimAbandonedDrafts(Date.now());
+    if (teardownsInFlight === 0) stopWokenSessions();
 
     const stats = getMemoryStats?.() ?? null;
     let need = bytesOverBudget(stats);
@@ -339,21 +377,11 @@ export function createIdleEnforcer(
   ): { freed: number; measured: boolean } | null {
     const runner = runnerRegistry.get(c.sessionId);
     const keepsPreview = !!services?.has(c.sessionId);
-    if (keepsPreview && runner) {
-      (runner as SessionRunnerInterface & { preserveComposeOnDispose?: boolean })
-        .preserveComposeOnDispose = true;
-    }
-
-    runnerRegistry.dispose(c.sessionId);
-    if (runner && !runner.disposed) {
+    if (!disposeRunner(c.sessionId, runner, keepsPreview)) {
       console.log(
         `[idle-cleanup] Skipping container destroy for session ${c.sessionId}`
         + ` — runner declined disposal (still holds live work)`,
       );
-      if (keepsPreview) {
-        (runner as SessionRunnerInterface & { preserveComposeOnDispose?: boolean })
-          .preserveComposeOnDispose = false;
-      }
       return null;
     }
 
@@ -370,6 +398,16 @@ export function createIdleEnforcer(
     announce(c.sessionId, keepsPreview ? "agent-reclaimed" : "memory-pressure", idleMs, runner?.queueLength ?? 0);
     destroyAgentOnly(c.sessionId);
     return { freed, measured: measured !== undefined };
+  }
+
+  // False when the runner declined disposal.
+  function disposeRunner(sessionId: string, runner: SessionRunnerInterface | undefined, keepsPreview: boolean): boolean {
+    type Preserving = SessionRunnerInterface & { preserveComposeOnDispose?: boolean };
+    if (keepsPreview && runner) (runner as Preserving).preserveComposeOnDispose = true;
+    runnerRegistry.dispose(sessionId);
+    if (!runner || runner.disposed) return true;
+    if (keepsPreview) (runner as Preserving).preserveComposeOnDispose = false;
+    return false;
   }
 
   function announce(

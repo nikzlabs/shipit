@@ -99,25 +99,6 @@ export function attachableResident(status: WorkerAgentStatus): WorkerResidentSpa
 }
 
 /**
- * planning#700 — whether a session with no runner holds a process a turn can take over, with no
- * background task that would keep a compaction out.
- */
-export async function workerIdleResident(
-  containerManager: Pick<SessionContainerManager, "get"> | null,
-  sessionId: string,
-): Promise<boolean> {
-  const container = containerManager?.get(sessionId);
-  if (container?.status !== "running") return false;
-  try {
-    const status = await workerGet(container.workerUrl, "/agent/status", { timeoutMs: PROBE_TIMEOUT_MS }) as WorkerAgentStatus;
-    return attachableResident(status) !== null && (status.backgroundTaskCount ?? 0) === 0;
-  } catch (err) {
-    console.warn(`[turn-reattach] reading the worker of ${sessionId} for its idle process failed: ${getErrorMessage(err)}`);
-    return false;
-  }
-}
-
-/**
  * Stop for a session whose worker still works with no runner to interrupt (docs/324-scheduled-sessions
  * req 33): kills the resident agent, which ends its turn and background tasks. Targets the resident by
  * its run token, so a kill that arrives late spares a replacement. False when there is none.

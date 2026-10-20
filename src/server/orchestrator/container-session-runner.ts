@@ -1177,6 +1177,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     return proxy;
   }
 
+  /** The worker and the install, which a fresh agent process waits for before it starts. */
+  async whenReadyForAgent(): Promise<void> {
+    await this._workerReady;
+    await this._waitForInstallBeforeAgent();
+  }
+
   // Keep install and CLI memory peaks from overlapping in the container.
   private async _waitForInstallBeforeAgent(): Promise<void> {
     if (this._installComplete) {

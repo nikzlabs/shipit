@@ -23,7 +23,7 @@ next turn (WS or dispatched; not a rebase step), before compaction-before-turn a
   └─ spawn guards (unchanged) ──► retire it when the session no longer matches   (req 3)
   └─ reuse ──► /agent/message to the warm process                              (req 1)
 in-flight adoption (both paths) ──► the same restore                              (req 3)
-idle compaction, no runner ──► probe the worker; attach; compact on the process  (req 2)
+idle compaction ──► attach a surviving process; since planning#704 a new one where none (req 2)
 ```
 
 ## Pieces
@@ -138,6 +138,12 @@ process and its background work.
 
 ### 4. Idle compaction (req 2)
 
+**Superseded by planning#704** ([docs/333 piece 3](../333-idle-compaction/plan.md),
+steps 3 and 4): a new process reads the conversation warm, so the fire no
+longer needs the resident. It still attaches a surviving process; it is
+dropped when the worker runs one it could not take over; with no process it
+compacts in a new one. As built for this feature:
+
 `services/idle-compaction.ts` drops a fire when the warm cache can only be
 read by a resident process and none is reachable. That check changes:
 
@@ -237,7 +243,9 @@ its background tasks, which the next turn's `/agent/start` used to kill
 (req 4); and the spawn facts, without which a model change after a restart
 never replaced an adopted process (req 3). The reasons of docs/333 req 13 and
 piece 3 step 4 rest on the docs/333 probe, which these runs do not support;
-whether to revisit them is the user's decision (planning#699).
+whether to revisit them is the user's decision (planning#699). The user
+removed req 13's exception, and planning#704 replaced the resident check with
+an account check (docs/333 plan, "Verify first" 1).
 
 ## Known limits
 
@@ -247,10 +255,10 @@ whether to revisit them is the user's decision (planning#699).
   runner's resync (`verifyRunningState`) ends the turn with its "out of sync"
   notice. The window is one HTTP round trip on the first turn after a restart.
 - **A container from an older worker build** reports no `resident` record,
-  so its process is replaced as before. A deploy that changes the build
-  destroys stale idle containers at boot anyway (docs/333 req 13); only a
-  stale container kept for live work is affected, and only on the first
-  deploy of this feature.
+  so its process is replaced as before (an idle compaction is dropped
+  instead: docs/333 plan, piece 3 step 3). A deploy that changes the build
+  destroys stale idle containers at boot anyway; only a stale container kept
+  for live work is affected, and only on the first deploy of this feature.
 - **The first turn after a restart waits for two status readings** (each at
   most 3 s).
 
@@ -302,5 +310,5 @@ another turn's setup keeps the process").
 | `src/server/orchestrator/proxy-agent-process.ts`, `container-session-runner.ts` | Carry the identity into `/agent/start`; `attachIdleResident`, `tendUntilTaken`, `restoreResidentSpawn`, `residentToAttach` |
 | `src/server/orchestrator/turn-executor.ts` | Compute the identity before the spawn and give it to the agent |
 | `src/server/orchestrator/dispatched-turn.ts`, `ws-handlers/agent-execution.ts` | Attach before compaction-before-turn and the spawn guards |
-| `src/server/orchestrator/restart-turn-reattach.ts` | `attachableResident`, `workerIdleResident` |
-| `src/server/orchestrator/services/idle-compaction.ts` | The resident check of piece 4 |
+| `src/server/orchestrator/restart-turn-reattach.ts` | `attachableResident` (`workerIdleResident` went with planning#704) |
+| `src/server/orchestrator/services/idle-compaction.ts` | The resident check of piece 4, replaced by planning#704 |

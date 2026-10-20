@@ -207,10 +207,12 @@ export interface PrepareSessionAgentEnvironmentResult {
   turnRoute?: ProviderRoute;
 }
 
+type TurnRouteDeps = Pick<SessionAgentEnvDeps, "credentialsDir" | "credentialStore" | "providerAccountManager">;
+
 function selectTurnRoute(
   agentId: AgentId,
   session: SessionInfo,
-  deps: SessionAgentEnvDeps,
+  deps: TurnRouteDeps,
   opts: {
     excludeRouteIds?: readonly string[] | undefined;
     residentRoute?: { kind: ProviderRouteKind; id: string } | undefined;
@@ -248,6 +250,29 @@ function selectTurnRoute(
     },
   );
   return routeFromSelection(agentId, selection, blockedSubjectFor(agentId, session));
+}
+
+/**
+ * docs/333-idle-compaction — the route a turn's preparation would select now, without preparing
+ * anything. Null when no route can run a turn.
+ */
+export function nextTurnRouteId(
+  agentId: AgentId,
+  session: SessionInfo,
+  deps: TurnRouteDeps,
+  runner: Pick<SessionRunnerInterface, "residentRoute"> | undefined,
+  previousRouteId: string | undefined,
+): string | null {
+  // Not `requireResidentRoute`: a dispatch first retires a resident whose route this
+  // selection would leave (`residentRouteNeedsRelease`), so the selection is the answer.
+  try {
+    return selectTurnRoute(agentId, session, deps, {
+      residentRoute: runner?.residentRoute,
+      previousRouteId,
+    })?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function blockedSubjectFor(agentId: AgentId, session: SessionInfo): string | undefined {

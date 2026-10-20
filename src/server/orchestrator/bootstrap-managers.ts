@@ -15,7 +15,7 @@ import { globalSystemPromptForTurn, type SystemPromptScope } from "./global-syst
 import { LogStore } from "./log-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import { ReleaseStatusPoller } from "./release-status-poller.js";
-import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
 import { sessionHasLiveAgent } from "./session-runner.js";
 import { releaseQueuedTurn } from "./queue-drain.js";
 import type { ServiceManager } from "./service-manager.js";
@@ -89,6 +89,8 @@ import { QuotaContinuationManager } from "./services/quota-continuation.js";
 import { runRequestedRestart, type RequestedRestartTurn } from "./services/agent-restart-request.js";
 import { runRequestedCompaction } from "./services/agent-compaction-request.js";
 import { IdleCompaction } from "./services/idle-compaction.js";
+import { bootSessionRunner } from "./wake-session.js";
+import { nextTurnRouteId } from "./session-agent-env.js";
 import { reportStoppedBackgroundJobs, type StoppedBackgroundJobsReport } from "./services/stopped-background-jobs.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { CleanupContainerManager, CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
@@ -310,6 +312,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       idleCompaction: {
         isWaiting: (sessionId) => idleCompactionRef.ref?.isWaiting(sessionId) ?? false,
         fire: (sessionId) => idleCompactionRef.ref?.fire(sessionId) ?? Promise.resolve(),
+        wokenSessions: () => idleCompactionRef.ref?.wokenSessions() ?? new Map(),
+        forgetWoken: (sessionId) => idleCompactionRef.ref?.forgetWoken(sessionId),
+        isStarting: (sessionId) => idleCompactionRef.ref?.isStarting(sessionId) ?? false,
       },
     });
     idleEnforcer();
@@ -790,13 +795,26 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
 
   const idleCompaction = new IdleCompaction({
     isEnabled: () => credentialStore.getIdleCompaction(),
-    liveSteering: () => credentialStore.getLiveSteering(),
     defaultAgentId,
     sessionManager,
     usageManager,
     chatHistoryManager,
     runnerRegistry,
     containerManager,
+    wake: (session) => bootSessionRunner(
+      { sessionManager, runnerRegistry, defaultAgentId, containerManager, restoreWorkspace },
+      session,
+    ),
+    ...(credentialsDir ? {
+      nextTurnRouteId: (session: SessionInfo, agentId: AgentId, runner: SessionRunnerInterface | undefined) => nextTurnRouteId(
+        agentId,
+        session,
+        { credentialsDir, credentialStore, ...(providerAccountManager ? { providerAccountManager } : {}) },
+        runner,
+        usageManager.lastTurnCredentialRouteId(session.id),
+      ),
+    } : {}),
+    hasPreview: (sessionId) => serviceManagers.has(sessionId),
   });
   idleCompactionRef.ref = idleCompaction;
   // Before any turn can end: an adopted turn's result arms a deadline too.

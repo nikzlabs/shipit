@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
-import type { CredentialRoute } from "../shared/types.js";
+import type { CredentialRoute, SessionInfo } from "../shared/types.js";
 import type { ModelSelection } from "../shared/catalogue/index.js";
 import { credentialStorageEnvNames } from "../shared/catalogue/index.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
@@ -16,6 +16,7 @@ import {
   repushSessionAgentToken,
   selectAgentEnvForPush,
   agentEnvTurnArgs,
+  nextTurnRouteId,
   PUSH_AGENT_SECRETS_TIMEOUT_MS,
 } from "./session-agent-env.js";
 import { syncAgentTokenIn } from "./session-credentials.js";
@@ -1817,5 +1818,39 @@ describe("agentEnvTurnArgs", () => {
   it("omits what the caller did not set", () => {
     expect(agentEnvTurnArgs(undefined)).toEqual({});
     expect(agentEnvTurnArgs({})).toEqual({});
+  });
+});
+
+describe("nextTurnRouteId (docs/333-idle-compaction)", () => {
+  const session = { id: "s1", title: "Idle", createdAt: "", lastUsedAt: "" } as SessionInfo;
+  const credentialsDir = path.join(os.tmpdir(), "next-turn-route-no-record");
+  const deps = (manager: ReturnType<typeof fakeAccountManager>) => ({
+    credentialsDir,
+    credentialStore: makeFakeCredentialStore(),
+    providerAccountManager: { ...manager, getByRouteId: (id: string) => ({ id }) } as never,
+  });
+
+  it("asks the turn's own account choice, with the previous turn's route as the current one", () => {
+    const manager = fakeAccountManager({ ok: true, route: { kind: "account", id: "acct-b" } });
+    expect(nextTurnRouteId("claude", session, deps(manager), undefined, "acct-a")).toBe("acct-b");
+    expect(manager.selectAccountForTurn).toHaveBeenCalledWith("anthropic", { optimistic: true, currentRouteId: "acct-a" });
+  });
+
+  it("takes a resident process's route as the current one", () => {
+    const manager = fakeAccountManager({ ok: true, route: { kind: "account", id: "acct-b" } });
+    const runner = { residentRoute: { kind: "account" as const, id: "acct-b" } };
+    expect(nextTurnRouteId("claude", session, deps(manager), runner, "acct-a")).toBe("acct-b");
+    expect(manager.selectAccountForTurn).toHaveBeenCalledWith("anthropic", { optimistic: true, currentRouteId: "acct-b" });
+  });
+
+  it("answers with the route a dispatch moves to when it retires the resident for failover", () => {
+    const manager = fakeAccountManager({ ok: true, route: { kind: "account", id: "acct-c" } });
+    const runner = { residentRoute: { kind: "account" as const, id: "acct-b" } };
+    expect(nextTurnRouteId("claude", session, deps(manager), runner, "acct-b")).toBe("acct-c");
+  });
+
+  it("is null when no route can run a turn", () => {
+    const manager = fakeAccountManager({ ok: false, reason: "auth_required" });
+    expect(nextTurnRouteId("claude", session, deps(manager), undefined, "acct-a")).toBeNull();
   });
 });

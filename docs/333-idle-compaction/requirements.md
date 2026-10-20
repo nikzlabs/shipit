@@ -144,8 +144,9 @@ a hazard a ShipIt design must also answer.
     Claude agent process, that session gets no idle compaction until its next
     turn. This is an exception to requirements 1 and 2: the restarted
     orchestrator has no link to the process that holds the warm cache, and a
-    new process would write the whole conversation to the cache again
-    (requirement 13's reason). The exception ends when ShipIt can reconnect
+    new process would write the whole conversation to the cache again (the
+    reason requirement 13 then gave, disproved later; below). The exception
+    ends when ShipIt can reconnect
     to that process (planning#700). No longer applies since 2026-10-19
     (docs/334, below).
 
@@ -163,7 +164,22 @@ visible.
 
 ## Open questions
 
-None.
+- Does a session whose container a ShipIt update destroyed get an idle
+  compaction? The answers on record differ. On 2026-10-19 the user removed
+  requirement 13's exception (planning#704). On 2026-10-20 the user kept it,
+  with the reason that an update usually changes the CLI version or
+  ShipIt's instructions and so makes the cache cold (receipt below). The
+  planning#704 probe (2026-10-20, plan.md, "Verify first" 1) found that this
+  reason does not hold: the CLI builds a resumed request from the system
+  prompt and tool list it stored in the transcript, so a conversation built
+  on CLI 2.1.293 and resumed on 2.1.300 read 94,254 tokens from the cache
+  and wrote 73, and one resumed after a line was added to ShipIt's
+  instructions read 94,302 and wrote 73. A 303K-token conversation that a
+  new process resumed with `/compact` 50 minutes after its last request read
+  303,133 tokens from the cache and wrote 5. Options: "remove the exception"
+  (what planning#704 implements; cost: one container start for each such
+  session after an update) or "keep the exception" with a reason that still
+  holds, for example that container-start cost.
 
 ## Resolved questions
 

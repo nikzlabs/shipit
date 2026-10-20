@@ -21,6 +21,7 @@ import {
   type FakeAgent,
 } from "../integration_tests/dispatch-test-helpers.js";
 import { GLOBAL_SETTINGS } from "../../shared/settings-catalogue/global-settings.js";
+import { bootSessionRunner } from "../wake-session.js";
 import {
   IdleCompaction,
   cacheLifetimeMinutes,
@@ -35,10 +36,11 @@ const LARGE = 250_000;
 interface Setup {
   agentId?: AgentId;
   enabled?: () => boolean;
-  liveSteering?: boolean;
   container?: "running" | "none" | "standby" | "local";
   session?: Partial<SessionInfo>;
-  workerHoldsIdleResident?: IdleCompactionDeps["workerHoldsIdleResident"];
+  /** The route a turn would take now; absent leaves the account check out. */
+  nextTurnRouteId?: IdleCompactionDeps["nextTurnRouteId"];
+  hasPreview?: IdleCompactionDeps["hasPreview"];
   onRunnerCreated?: (runner: SessionRunnerInterface) => void;
 }
 
@@ -94,31 +96,40 @@ function setup(opts: Setup = {}) {
   listenerSessions.setLastTurnOutcome = vi.fn();
   turnDeps.onTurnEnd = vi.fn();
 
+  const container = { status: opts.container ?? "running", id: "container-1" };
+  const wakes: string[] = [];
   const registry = new SessionRunnerRegistry({
     onRunnerCreated: (r) => {
       r.setSystemTurnDeps(turnDeps);
+      // The runner factory starts a container where none runs.
+      if (container.status === "none" || container.status === "standby") {
+        wakes.push(r.sessionId);
+        Object.assign(container, { status: "running", id: "woken-container" });
+      }
       opts.onRunnerCreated?.(r);
     },
   });
-  const container = { status: opts.container ?? "running" };
+  const containerManager = container.status === "local"
+    ? null
+    : {
+        get: () => (container.status === "none" ? undefined : { status: "running", id: container.id }),
+        isStandby: () => container.status === "standby",
+      } as never;
+  const sessionManager = { get: (id: string) => sessions.get(id), listAll: () => [...sessions.values()] } as never;
   const deps: IdleCompactionDeps = {
     isEnabled: opts.enabled ?? (() => true),
-    liveSteering: () => opts.liveSteering ?? true,
     defaultAgentId: "claude",
-    sessionManager: { get: (id: string) => sessions.get(id), listAll: () => [...sessions.values()] } as never,
+    sessionManager,
     usageManager: usage,
     chatHistoryManager: {
       latestCompactionCard: (id: string) => cards.get(id),
       append: (_id: string, message: PersistedMessage) => { notices.push(message); },
     },
     runnerRegistry: registry,
-    containerManager: container.status === "local"
-      ? null
-      : {
-          get: () => (container.status === "none" ? undefined : { status: "running" }),
-          isStandby: () => container.status === "standby",
-        } as never,
-    ...(opts.workerHoldsIdleResident ? { workerHoldsIdleResident: opts.workerHoldsIdleResident } : {}),
+    containerManager,
+    wake: (s) => bootSessionRunner({ sessionManager, runnerRegistry: registry, defaultAgentId: "claude", containerManager }, s),
+    ...(opts.nextTurnRouteId ? { nextTurnRouteId: opts.nextTurnRouteId } : {}),
+    ...(opts.hasPreview ? { hasPreview: opts.hasPreview } : {}),
   };
   const idle = new IdleCompaction(deps);
   usage.onAnchoredTurn((turn) => idle.arm(turn));
@@ -146,7 +157,7 @@ function setup(opts: Setup = {}) {
 
   return {
     idle, usage, session, sessions, cards, notices, registry, agents, appended, prompts, compactFlags,
-    turnDeps, sseBroadcast, hold, listenerSessions, turn, anchorOf, container,
+    turnDeps, sseBroadcast, hold, listenerSessions, turn, anchorOf, container, wakes,
   };
 }
 
@@ -214,7 +225,7 @@ describe("arming the deadline (req 1, 6, 11)", () => {
   });
 
   it("arms nothing on a cache that lives under 30 minutes (req 11)", () => {
-    const { idle, turn } = setup({ agentId: "claude", liveSteering: false });
+    const { idle, turn } = setup({ agentId: "claude" });
     turn({ ttl: "5m" });
     expect(idle.isWaiting(SESSION)).toBe(false);
 
@@ -242,7 +253,7 @@ describe("arming the deadline (req 1, 6, 11)", () => {
   });
 
   it("does not take a lifetime another harness or model saw on the same credential", () => {
-    const { idle, turn, session } = setup({ agentId: "claude", liveSteering: false });
+    const { idle, turn, session } = setup({ agentId: "claude" });
     turn({ ttl: "5m", route: "gateway", anchorAgo: null });
     Object.assign(session, { agentId: "opencode", model: "gpt-6-luna", serviceId: "openai", billingMode: "sub" });
     turn({ ttl: null, route: "gateway" });
@@ -380,13 +391,22 @@ describe("firing — what drops it", () => {
     expect(agents).toHaveLength(0);
   });
 
-  it.each(["none", "standby"] as const)("starts no container, with the container %s (req 13)", async (container) => {
-    const { idle, turn, agents, registry } = setup({ container });
-    turn();
+  it("drops it when a turn would run on another account, whose cache is cold", async () => {
+    const nextRoute = vi.fn((): string | null => "account-b");
+    const { idle, turn, agents, wakes } = setup({ container: "none", nextTurnRouteId: nextRoute });
+    turn({ route: "account-a" });
+    expect(idle.isWaiting(SESSION)).toBe(false);
     await idle.fire(SESSION);
     await flushTurn();
+    expect(nextRoute).toHaveBeenCalledWith(expect.objectContaining({ id: SESSION }), "codex", undefined);
     expect(agents).toHaveLength(0);
-    expect(registry.get(SESSION)).toBeUndefined();
+    expect(wakes, "no container is started for a cold cache").toEqual([]);
+  });
+
+  it("drops it when no account can run a turn now", async () => {
+    const { idle, turn } = setup({ nextTurnRouteId: () => null });
+    turn({ route: "account-a" });
+    expect(idle.isWaiting(SESSION)).toBe(false);
   });
 
   it("is refused while a turn runs, a flow holds the session, or the resident has background work", async () => {
@@ -410,69 +430,6 @@ describe("firing — what drops it", () => {
       expect(agents).toHaveLength(0);
       runner.running = false;
     }
-  });
-
-  it("drops a Claude session with no runner whose worker holds no process, without creating a runner", async () => {
-    const probe = vi.fn(async () => false);
-    const { idle, turn, agents, registry } = setup({ agentId: "claude", workerHoldsIdleResident: probe });
-    turn();
-    // docs/334 — a restart leaves every session with no runner; the fire reads the worker.
-    expect(idle.isWaiting(SESSION)).toBe(true);
-    await idle.fire(SESSION);
-    await flushTurn();
-    expect(probe).toHaveBeenCalledWith(SESSION);
-    expect(agents).toHaveLength(0);
-    expect(registry.get(SESSION)).toBeUndefined();
-  });
-
-  it("drops a Claude session with no runner in local mode, where no process outlives a restart", async () => {
-    const probe = vi.fn(async () => true);
-    const { idle, turn, agents, registry } = setup({ agentId: "claude", container: "local", workerHoldsIdleResident: probe });
-    turn();
-    expect(idle.isWaiting(SESSION)).toBe(false);
-    await idle.fire(SESSION);
-    await flushTurn();
-    expect(probe).not.toHaveBeenCalled();
-    expect(agents).toHaveLength(0);
-    expect(registry.get(SESSION)).toBeUndefined();
-  });
-
-  it("drops a Claude session whose runner holds no process and knows none to take over", async () => {
-    const { idle, turn, agents, registry } = setup({ agentId: "claude" });
-    const runner = registry.getOrCreate(SESSION, "/tmp/ws", "claude");
-    Object.defineProperty(runner, "residentToAttach", { value: false });
-    turn();
-    expect(idle.isWaiting(SESSION)).toBe(false);
-    await idle.fire(SESSION);
-    await flushTurn();
-    expect(agents).toHaveLength(0);
-  });
-
-  it("starts no runner when the container went away while the worker was read", async () => {
-    let container: { status: string } = { status: "running" };
-    const fixture = setup({
-      agentId: "claude",
-      workerHoldsIdleResident: async () => {
-        container.status = "none";
-        return true;
-      },
-    });
-    container = fixture.container;
-    fixture.turn();
-    await fixture.idle.fire(SESSION);
-    await flushTurn();
-    expect(fixture.registry.get(SESSION)).toBeUndefined();
-    expect(fixture.agents).toHaveLength(0);
-  });
-
-  it("drops it when the runner could not take the process over after all", async () => {
-    const { idle, turn, agents, registry } = setup({ agentId: "claude", workerHoldsIdleResident: async () => true });
-    turn();
-    await idle.fire(SESSION);
-    await flushTurn();
-    // The runner was created, but it holds no streaming process: no cold compaction in a new one.
-    expect(registry.get(SESSION)).toBeDefined();
-    expect(agents).toHaveLength(0);
   });
 
   it("checks again after reaching the runner", async () => {
@@ -535,7 +492,6 @@ describe("firing — the compaction turn", () => {
     const resident = makeFakeAgent();
     const { idle, turn, agents } = setup({
       agentId: "claude",
-      workerHoldsIdleResident: async () => true,
       onRunnerCreated: (runner) => {
         Object.defineProperty(runner, "residentToAttach", { get: () => runner.getAgent() === null });
         runner.attachIdleResident = vi.fn(async () => {
@@ -555,12 +511,147 @@ describe("firing — the compaction turn", () => {
     expect(agents).toHaveLength(0);
   });
 
-  it("with live steering off, Claude's compaction is a resumed process like every turn", async () => {
-    const { idle, turn, prompts } = setup({ agentId: "claude", liveSteering: false });
+  // "Verify first" 1 — a new process reads the stored conversation warm.
+  it("runs Claude's compaction in a new process when no process can be taken over", async () => {
+    const { idle, turn, prompts, registry } = setup({ agentId: "claude" });
+    const runner = registry.getOrCreate(SESSION, "/tmp/ws", "claude");
+    Object.defineProperty(runner, "residentToAttach", { value: false });
     turn();
+    expect(idle.isWaiting(SESSION)).toBe(true);
     await idle.fire(SESSION);
     await waitForTurn(() => prompts.length === 1, "compaction spawn");
     expect(prompts[0]?.trim()).toBe("/compact");
+  });
+
+  it("runs in local mode, where no agent process outlives a restart", async () => {
+    const { idle, turn, prompts, wakes } = setup({ agentId: "claude", container: "local" });
+    turn();
+    await idle.fire(SESSION);
+    await waitForTurn(() => prompts.length === 1, "compaction spawn");
+    expect(wakes).toEqual([]);
+    expect(idle.wokenSessions().size).toBe(0);
+  });
+
+  it.each(["none", "standby"] as const)(
+    "starts the container when there is %s, compacts, and marks it to stop again (req 13)",
+    async (container) => {
+      const { idle, turn, prompts, wakes, session } = setup({ agentId: "claude", container });
+      turn();
+      expect(idle.isWaiting(SESSION)).toBe(true);
+      await idle.fire(SESSION);
+      await waitForTurn(() => prompts.length === 1, "compaction spawn");
+      expect(wakes).toEqual([SESSION]);
+      expect(prompts[0]?.trim()).toBe("/compact");
+      expect(idle.wokenSessions().get(SESSION)).toEqual({ lastUsedAt: session.lastUsedAt, previewBefore: false });
+      expect(idle.isStarting(SESSION)).toBe(false);
+    },
+  );
+
+  it("records a preview that ran before the wake", async () => {
+    const { idle, turn, prompts } = setup({ container: "none", hasPreview: () => true });
+    turn();
+    await idle.fire(SESSION);
+    await waitForTurn(() => prompts.length === 1, "compaction spawn");
+    expect(idle.wokenSessions().get(SESSION)?.previewBefore).toBe(true);
+  });
+
+  it("holds the session against the idle enforcer from the wake to the dispatch", async () => {
+    let startingDuringWake: boolean | undefined;
+    const fixture = setup({
+      container: "none",
+      onRunnerCreated: () => { startingDuringWake = fixture.idle.isStarting(SESSION); },
+    });
+    fixture.turn();
+    await fixture.idle.fire(SESSION);
+    await waitForTurn(() => fixture.prompts.length === 1, "compaction spawn");
+    expect(startingDuringWake).toBe(true);
+    expect(fixture.idle.isStarting(SESSION)).toBe(false);
+  });
+
+  it("replaces a runner whose container is gone", async () => {
+    const { idle, turn, prompts, wakes, registry, container } = setup({ container: "none" });
+    const stale = registry.getOrCreate(SESSION, "/tmp/ws", "codex");
+    // Its container went away since.
+    Object.assign(container, { status: "none" });
+    wakes.length = 0;
+    turn();
+    await idle.fire(SESSION);
+    await waitForTurn(() => prompts.length === 1, "compaction spawn");
+    expect(wakes).toEqual([SESSION]);
+    expect(stale.disposed).toBe(true);
+    expect(registry.get(SESSION)).not.toBe(stale);
+  });
+
+  it("marks nothing to stop when the container already runs", async () => {
+    const { idle, turn, prompts, wakes } = setup();
+    turn();
+    await idle.fire(SESSION);
+    await waitForTurn(() => prompts.length === 1, "compaction spawn");
+    expect(wakes).toEqual([]);
+    expect(idle.wokenSessions().size).toBe(0);
+  });
+
+  it("still marks a woken session to stop when the check after the wake drops the compaction", async () => {
+    const { idle, turn, prompts, session, registry } = setup({ container: "none" });
+    turn();
+    const getOrCreate = registry.getOrCreate.bind(registry);
+    vi.spyOn(registry, "getOrCreate").mockImplementation((...args) => {
+      session.mergedAt = new Date(Date.now() - MINUTE).toISOString();
+      return getOrCreate(...args);
+    });
+    await idle.fire(SESSION);
+    await flushTurn();
+    expect(prompts).toEqual([]);
+    expect(idle.wokenSessions().has(SESSION)).toBe(true);
+  });
+
+  it("does not start a new process beside one the worker runs and the runner could not take over", async () => {
+    const { idle, turn, prompts } = setup({
+      agentId: "claude",
+      onRunnerCreated: (runner) => {
+        // An older worker kept no spawn facts, so the take-over fails and the process stays.
+        Object.defineProperty(runner, "residentToAttach", { value: true });
+        runner.attachIdleResident = vi.fn(async () => false);
+      },
+    });
+    turn();
+    await idle.fire(SESSION);
+    await flushTurn();
+    expect(prompts).toEqual([]);
+  });
+
+  it("waits for the worker and the install before it compacts", async () => {
+    let finishInstall!: () => void;
+    const { idle, turn, prompts } = setup({
+      container: "none",
+      onRunnerCreated: (runner) => {
+        runner.whenReadyForAgent = () => new Promise<void>((resolve) => { finishInstall = resolve; });
+      },
+    });
+    turn();
+    const fired = idle.fire(SESSION);
+    await flushTurn();
+    expect(prompts).toEqual([]);
+    expect(idle.isStarting(SESSION)).toBe(true);
+    finishInstall();
+    await fired;
+    await waitForTurn(() => prompts.length === 1, "compaction spawn");
+  });
+
+  it("drops it when the cache expired while the container got ready, and still marks it to stop", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { idle, turn, prompts } = setup({
+      container: "none",
+      onRunnerCreated: (runner) => {
+        runner.whenReadyForAgent = async () => { vi.setSystemTime(Date.now() + 61 * MINUTE); };
+      },
+    });
+    turn({ anchorAgo: 0 });
+    await idle.fire(SESSION);
+    vi.useRealTimers();
+    await flushTurn();
+    expect(prompts).toEqual([]);
+    expect(idle.wokenSessions().has(SESSION)).toBe(true);
   });
 
   it("is maintenance: no list move, no unmute, no turn outcome", async () => {

@@ -1,7 +1,7 @@
 ---
 issue: planning#699
 title: Idle compaction — design
-description: An orchestrator deadline at 90% of the provider's cache lifetime, anchored on the last model request and persisted in the usage row, starts the existing silent compaction turn — which stops counting as activity — and the idle enforcer compacts a waiting session before it stops it.
+description: An orchestrator deadline at 90% of the provider's cache lifetime, anchored on the last model request and persisted in the usage row, starts the existing silent compaction turn — which stops counting as activity, and starts the session's container when none runs — and the idle enforcer compacts a waiting session before it stops it.
 ---
 
 # 333 — Idle compaction: design
@@ -21,12 +21,13 @@ ordinary turn ends (agent_result) ──► usage row: context, cache_ttl, cache
        context < 200K? no deadline                                                   (req 6)
        deadlines[session] = { due: anchor + 0.9·L, expires: anchor + L }             (req 1)
 one host-wide timer at the earliest `due` ──► fire(session)
-  fire: take the deadline (one attempt) ──► re-check setting · done · harness · busy · expiry
-        get a runner (reconnect, take the idle resident over); no container,
-        or Claude's resident gone ──► drop                                           (req 13)
+  fire: take the deadline (one attempt) ──► re-check setting · done · harness · account · busy · expiry
+        get a runner: reconnect, take the idle resident over, or — no container —
+        start one (the wake path), marked "woken"                                   (req 2, 13)
         re-check ──► dispatch silent "/compact", refused when busy                   (req 3, 4)
 a silent compaction turn is maintenance: no last-used, no unmute, no turn outcome
 idle enforcer over budget: waiting sessions last; compact one instead of stopping it (req 8)
+idle enforcer, any budget: stop a woken container after its compaction, unless used  (req 13)
 rewind pending, model or harness changed ──► the fire drops it
 orchestrator boot ──► re-derive every deadline from usage_turns
 ```
@@ -34,6 +35,14 @@ orchestrator boot ──► re-derive every deadline from usage_turns
 Nothing runs inside the container, because the container can be gone
 (requirements, Background). Nothing is polled: one timer for the whole
 orchestrator, at the earliest deadline.
+
+**planning#704 changed piece 3**: a fire that finds no container starts one, and
+the idle enforcer stops it again (piece 5); the check that Claude's resident
+process is held became a check of the account ("Verify first" 1 shows why).
+**This waits on an open question** (requirements.md): planning#704 implements
+the 2026-10-19 answer that removed req 13's exception, but on 2026-10-20 the
+user kept the exception, for a reason the planning#704 probe contradicts. As
+req 13 reads now, a ShipIt update still ends a session's idle compaction.
 
 ## Pieces
 
@@ -51,8 +60,8 @@ compaction at all:
 instruction-file path per prompt, and its control probe was warm — "Verify
 first" 1b.
 
-The per-harness facts — excluded, a cold first resume (piece 3 step 4), the
-Anthropic default a harness gets by setting no ttl — are one table,
+The per-harness facts — excluded, the Anthropic default a harness gets by
+setting no ttl — are one table,
 `HARNESS_CACHE`, keyed by harness id: a lint rule forbids comparing harness ids
 outside `agents/<id>/`, and a `Record<AgentId, …>` makes a new harness declare
 its row.
@@ -161,8 +170,11 @@ No per-session interval (CLAUDE.md, "never per-session polling").
   (`sub_agent_id IS NULL AND background_work = 0`) with a non-null
   `cache_anchor_at` younger than 60 minutes arms as above. No schedule column:
   the row is the record.
+- **The account.** The deadline also keeps the anchor row's
+  `credential_route_id`: the cache belongs to the account that wrote it
+  (piece 3 step 4).
 
-### 3. Firing (req 2, 3, 4, 5, 7, 9)
+### 3. Firing (req 2, 3, 4, 5, 7, 9, 13)
 
 `fireIdleCompaction(sessionId)`:
 
@@ -176,49 +188,90 @@ No per-session interval (CLAUDE.md, "never per-session polling").
    - the harness and model are the ones the deadline was armed for, and no
      rewind is pending (piece 2);
    - `now < expires` — a cold cache is never compacted (the t3code rule);
-   - the container is live (step 3);
+   - a turn would run on the deadline's account (step 4);
    - the session is not busy. This is docs/324's check
      (`busyReason` in `services/agent-compaction-request.ts`, exported for
      both): a running turn, a merge or session hold, and **resident
      background work** — which `dispatchOnRunner` does not check, and which a
      compaction spawn could end (`dispatched-turn.ts`). The question hold is
      the one part of `busyReason` this caller skips (req 12; piece 3a).
-3. **Get a runner, never a new container.**
+3. **Get a runner; start a container when none runs** (req 2, 13).
    - A runner with a live container is used as is.
-   - No runner but a live container — every session after an orchestrator
-     restart, because runners are re-created only for in-flight turns
-     (`restart-turn-reattach.ts`) — reconnects with `getOrCreate`, following
-     `wakeSessionWithTurn` (`wake-session.ts`).
-   - **No container: drop it.** In local mode the orchestrator process runs
-     the agents, so there is always one. The stops that remove a container are the
-     idle enforcer, which compacts first (piece 5); a done session, which has
-     no deadline (req 7); and a ShipIt update, which destroys a stale, idle
-     container at boot (`reattachInFlightTurns`) — the exception of req 13. An
-     update usually changes what the CLI sends (its version, or ShipIt's
-     instructions), so a fresh container would read the conversation cold.
-4. **A Claude session must reuse the process that built the cache.** With
-   live steering on (`advanced.liveSteering`, the default), Claude keeps one
-   resident process per session, and a dispatch reuses it only while the
-   runner still holds it (`runner.isStreamingActive && runner.getAgent()`,
-   `dispatched-turn.ts`). When it does not — after an orchestrator restart,
-   whose new runner holds no agent, or after a path that releases the
-   resident (`setAgent(null)` in the auth, rebase, recovery and plan-mode
-   paths) — the compaction would start a new process, whose first request
-   writes the whole conversation again: the reason of req 13, so the fire is
-   dropped the same way. After an orchestrator restart the runner takes the
-   worker's idle process over
-   ([docs/334](../334-reattach-resident-claude/plan.md), which ended req 16's
-   exception): a session with no runner gets one only when its worker reports
-   a process to take over, because creating one starts the session's install
-   and services, and the check after `attachRunner` requires the runner to
-   hold it. With
-   live steering off, every Claude turn already runs in a new resumed process, and the probe found a resume of a resumed
-   session warm, so the fire proceeds. The other harnesses start a process
-   per turn too (docs/276); their compaction spawn is cached like any of
-   their turns (see the checklist's cross-spawn check).
-5. **Check again** after the awaits of steps 3 and 4 — the user can come
-   back, the session can become done, the cache can expire — immediately
-   before the dispatch.
+   - Otherwise the fire takes the wake path, `bootSessionRunner`
+     (`wake-session.ts`: the part of `wakeSessionWithTurn` before its
+     dispatch, which both now share). It restores a reclaimed workspace,
+     disposes a runner whose container is gone, and calls `getOrCreate`,
+     which reconnects to a live container — every session after an
+     orchestrator restart, because runners are re-created only for in-flight
+     turns (`restart-turn-reattach.ts`) — or creates one (verified at
+     `app-lifecycle.ts`, the runner factory's cold path:
+     `createContainerForRunner`). The new runner starts the session's install
+     and preview services, as every wake does (`setupServiceManager`). In
+     local mode the orchestrator process runs the agents, and there is no
+     container to start.
+   - Then docs/334's attach takes the worker's idle process over where one
+     survived ([docs/334](../334-reattach-resident-claude/plan.md), which
+     ended req 16's exception), so it keeps its background work. **When the
+     worker still runs a process the runner could not take over** (an older
+     worker kept no spawn facts, or the status did not read), the fire is
+     dropped: a new process's `/agent/start` would end that one, and its
+     background tasks with it (`postAgentStart`). The probe removed the need
+     for the cache's own process, not this protection of the worker's work.
+   - **A session the fire wakes is marked woken** before the wake, with its
+     `lastUsedAt` and whether its preview services ran (`hasPreview`). Piece 5
+     stops the container again. A container another path is starting
+     (`starting`) is not the fire's, and is not marked. The stops that leave a
+     session with no container: a ShipIt update destroys a stale, idle one at
+     boot (`reattachInFlightTurns`, req 13); a crash or a missed exit; an
+     enforcer stop of a session that did not wait at that pass. The enforcer
+     compacts a waiting session first (piece 5), and a done session has no
+     deadline (req 7).
+   - **From the wake to the dispatch the session is held**: `isStarting`
+     makes the idle enforcer treat it as busy. No turn holds the runner yet,
+     and a session with no install is not `agentBusy` while it boots, so an
+     over-budget pass would otherwise stop it and lose the one attempt.
+   - **The fire waits for the worker and the install** (`whenReadyForAgent`),
+     at most until the cache expires. A fresh process starts only after both
+     (`startAgentOnWorker`), and `bootSessionRunner` stops waiting for the
+     worker after 30 s, so the re-check of step 5 drops a compaction whose
+     cache expired meanwhile.
+   - **The memory budget is not checked before a wake.** Req 8 sets the order
+     of reclaim: a session that waits for its compaction comes after other
+     idle sessions, so the enforcer's next passes stop those, and the woken
+     session is stopped right after its compaction. No other wake checks the
+     budget either.
+4. **The account must be the deadline's.** A cache belongs to the account
+   (the organization) that wrote it, and the CLI records that organization
+   in the transcript (`credential_org`, "Verify first" 1). The fire asks the
+   turn's own route choice which route the compaction would take now —
+   `nextTurnRouteId` (`session-agent-env.ts`) calls `selectTurnRoute` with
+   the current route a turn uses (the runner's resident route, else the
+   on-disk resident-route record, else the previous turn's route) — and
+   drops the fire when the answer is not the deadline's route, or there is
+   none. It does not keep a resident's route by force: a dispatch first
+   retires a resident whose route that same selection would leave
+   (`residentRouteNeedsRelease`, `dispatched-turn.ts`), so the selection is
+   the route the compaction runs on.
+
+   This replaced a check that Claude's resident process is held (with live
+   steering on). That check rested on the "Verify first" 1 probe, whose cold
+   first resume came from a confound: through ShipIt's spawn a new process
+   reads the conversation warm. What the old check covered, case by case:
+   - an orchestrator restart, whose runner holds no process: a new process
+     is warm, and docs/334's attach still reuses a surviving one;
+   - the recovery, rebase and plan-mode paths that release the resident
+     (`setAgent(null)`): the next process resumes the same conversation on
+     the same account and model, so it is warm;
+   - the auth paths (a credential rejected or removed) and an account move:
+     the next process can run on another account, whose cache is cold — the
+     account check covers them;
+   - a model or harness change: already a check (piece 2).
+   With live steering off every Claude turn was already a new process, as on
+   the other harnesses (docs/276).
+5. **Check again** after the awaits of step 3 — the user can come back, the
+   session can become done, the cache can expire — immediately before the
+   dispatch. A woken session keeps its mark whatever happens here; piece 5
+   decides from its use whether its container stops again.
 6. **Dispatch** the docs/324 compaction turn:
 
    ```ts
@@ -237,7 +290,7 @@ No per-session interval (CLAUDE.md, "never per-session polling").
      bar, records the ordinary "Context compacted" card (req 3), and posts
      `MISSED_COMPACTION_NOTICE` when no card follows (req 4)
      (`dispatched-turn.ts`, `compact-before-turn.ts`).
-   - A failure in step 3 or 4 or in dispatch setup posts the same warn notice, as
+   - A failure in step 3 or in dispatch setup posts the same warn notice, as
      docs/324's `warnUser` does (req 4). A fire dropped by a check posts
      nothing: no compaction was due.
    - The default `postTurn` stays, so the turn's drain runs a message that the
@@ -303,7 +356,7 @@ command mark and the missed-card check (req 4). An older worker reports
 nothing, and its turn is adopted as before. This fixes docs/295 and docs/324
 compactions as well.
 
-### 5. The idle enforcer (req 2, 8)
+### 5. The idle enforcer (req 2, 8, 13)
 
 `idle-enforcer.ts`, tier 1 (agent containers, over budget):
 
@@ -343,6 +396,23 @@ The turn's own `running` flag is the hold, not the post-turn lease: that lease
 is capped at 120 s, and a 200K compaction can take longer. The done-session
 pass and the abandoned-draft pass do not change.
 
+**A woken session is stopped again** (req 13), whatever the budget, next to
+the done-session pass: every pass (every 30 s, and when a runner goes idle)
+reads `idleCompaction.wokenSessions()`, and skips a session whose fire is
+still starting it. A session used since the wake is forgotten and keeps its
+container: a viewer, or any detach (the wake's runner is new), or a moved
+`lastUsedAt` — every turn but a silent compaction moves it (piece 4), so a
+retry inside the compaction turn is not use, and a turn during the wake is.
+A session whose container is gone is forgotten too. Otherwise, once it is
+reclaimable (the compaction and its post-turn lease are over), the pass
+disposes the runner, not forced, and destroys the agent container. Disposal
+stops the preview services the runner holds (`setupServiceManager`'s
+`disposed` handler), unless they ran before the wake: then
+`preserveComposeOnDispose` keeps them, as the tier-1 stop does. After an
+update none ran, because shutdown disposes every runner and boot reaps the
+surviving stacks (`reapSurvivingComposeStacks`). No pause notice: the user
+saw no container start.
+
 ### 6. The setting (req 5)
 
 `advanced.idleCompaction` — *Compact idle sessions before the prompt cache
@@ -380,7 +450,9 @@ ShipIt's streaming flags (`process.ts`): `--print --input-format stream-json
 one user message on stdin, `--resume <id>` for the later processes. Script and
 raw output: `/persist/idlecompact/` (not committed).
 
-### 1. A resumed CLI does NOT read the original process's cache — false
+### 1. A new process reads the conversation warm — true through ShipIt's spawn
+
+The first probe concluded the opposite. Its runs, as recorded:
 
 | Run | Process | State change before it | Context | cache read | cache write |
 |---|---|---|---|---|---|
@@ -392,47 +464,87 @@ raw output: `/persist/idlecompact/` (not committed).
 | A2 | new session, `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1` | — | 20,828 | 0 | 20,826 |
 | B2 | first resume of A2, same env | commit + untracked file | 20,865 | 13,572 | **7,291** |
 
-- **The first resume after the original process always misses** from about
-  14K tokens on — the end of the system prompt and tools — with or without a
-  change to the repository (B3). Everything after that point is written
-  again. In these runs that was 7,291 tokens; in a 200K session it is the
-  whole conversation.
-- **A resume of a resumed session is warm** (C1: 21,288 of 21,354 read; the
-  64 written are the new message). So
-  the request a resumed process builds differs from the original process's,
-  and is stable from then on.
-- **Git status is not the cause.** With the git snapshot switched off
-  (`CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`, which gates it through
-  `includeGitInstructions`), the first resume missed the same 7,291 tokens
-  (B2).
+It read the B rows as "a first resume in a new process misses from about 14K
+tokens on". **That reading had a confound:** each B run was also the
+conversation's second request, and a second request misses in the same
+process too — docs/334's probe saw it through ShipIt's spawn (its A2 wrote
+11,406 tokens in the process that built the cache), and with this raw
+invocation a second turn in the first process wrote 8,571. The table cannot
+tell a new-process effect from a second-request effect. C1, a third request,
+was warm.
 
-**Later evidence (docs/334, 2026-10-19).** Through ShipIt's own spawn path
-— its flags, a full model id — the first resume in a new process read the
-whole conversation from the cache in every run, also after a commit; the
-miss above reproduces only with this raw invocation, and mostly as a
-first-turn effect that also hits a second turn in the same process. See
-[docs/334 plan, "Probe"](../334-reattach-resident-claude/plan.md#probe). On
-2026-10-20 the same harness ran a long conversation (Sonnet 5.5, four turns of
-file reads, a write and a commit, 179K tokens) and then waited 12 minutes:
-the first turn of a new process that resumed it read 179,159 tokens from the
-cache and wrote 79, and the old process read 179,218 and wrote 79. The
-user kept requirement 13 on 2026-10-20 with a new reason: an update usually
-changes the CLI version or ShipIt's instructions, which makes the cache cold.
-Piece 3 step 4 still rests on the old reason below; it is not changed.
+**docs/334's probe (2026-10-19)**, through ShipIt's own spawn path (a real
+`SessionWorker` and `ClaudeAdapter`: ShipIt's flags, a full model id), found
+the first resume in a new process warm in every run — `claude-sonnet-5-5`
+read 67,204 of 67,277 tokens, also after a commit and an untracked file. Its
+exchanges were short ([docs/334 plan, "Probe"](../334-reattach-resident-claude/plan.md#probe)).
+On 2026-10-20 the same harness ran a long conversation (Sonnet 5.5, four
+turns of file reads, a write and a commit, 179K tokens) and then waited 12
+minutes: the first turn of a new process that resumed it read 179,159 tokens
+from the cache and wrote 79, and the old process read 179,218 and wrote 79.
+The user then kept requirement 13 on 2026-10-20 with a new reason: an update
+usually changes the CLI version or ShipIt's instructions, which makes the
+cache cold. The T rows below contradict that reason; requirements.md holds
+the open question.
 
-**Consequence for piece 3.** A ShipIt update destroys the resident process
-that built the cache. A compaction in a fresh container is a first resume, so
-it reads the conversation cold: it costs what the user's next turn would have
-cost, and saves nothing. The user made that case an exception to req 2
-(req 13), and piece 3 step 4 drops every other fire that would start a new
-Claude process, for the same reason.
+**The planning#704 probe (2026-10-20)** repeated it on a large, tool-heavy
+conversation, the same way: CLI 2.1.300, `claude-sonnet-5-5`, the user's
+subscription, a clone of this repository, ShipIt's instructions, one worker
+per process. A process was stopped by killing it and stopping its worker;
+the next resumed the conversation in a new worker. Per request, as the
+adapter reports it (`AgentResultEvent.requests`):
 
-**Consequence beyond this feature.** Every restart of a Claude session's
-resident process — a container stopped to free memory, a ShipIt update, an
-account move — makes the next turn write the whole conversation to the cache
-again, even inside the cache lifetime. That is what makes req 8's
-compact-before-stop worth its cost: after a stop, the user's next turn is
-cold no matter how soon they come back.
+| Run | Process | Tool calls | Requests | Context after | First request: cache read / write |
+|---|---|---|---|---|---|
+| A1 | new session: read 4 source files | 4 | 5 | 173,189 | 14,128 / 52,961 |
+| A2 | same process: 2 greps, a glob, 2 file reads | 5 | 6 | 229,476 | 173,187 / 192 |
+| A3 | same process: 3 file reads | 4 | 4 | 303,087 | 229,474 / 165 |
+| B1 | **new process, first resume** | 0 | 1 | 303,135 | **303,085 / 48** |
+| B2 | same new process, next turn | 0 | 1 | 303,183 | 303,133 / 48 |
+| C1 | **new process, 50 minutes after B2, `/compact` as its first message** | 0 | 1 | 3,526 | **303,133 / 5** |
+
+C1 is the fire of a woken container. The CLI reports no usage for a
+compaction turn (the result carries zeros), so its row comes from the
+transcript's `cost-state` totals, before and after C1; those totals match
+every other row's sum. The summary request also had 2,038 uncached input
+tokens (the compaction instruction) and wrote 2,929 output tokens.
+
+Then a smaller conversation (94K tokens, one file read) built on CLI 2.1.293,
+the version pinned before 2.1.300, and resumed in a new process each time:
+
+| Run | First resume in a new process | cache read / write |
+|---|---|---|
+| T1 | CLI 2.1.293 | 94,207 / 72 |
+| T2 | CLI 2.1.300 | 94,254 / 73 |
+| T3 | CLI 2.1.300, one line added to ShipIt's instructions | 94,302 / 73 |
+
+**Why a new process is warm, also after an update.** The CLI writes a
+`prompt_snapshot` attachment into the conversation's transcript — the system
+prompt, ShipIt's appended instructions included, the tool list and the CLI's
+first line — and a `credential_org` attachment with the account's
+organization. A resumed conversation's request is built from the snapshot, so
+its prefix stays the same across processes, containers, CLI versions
+(2.1.293 → 2.1.300) and ShipIt builds. The control for T3: asked for a code
+word added to ShipIt's instructions, the resumed conversation answered "NONE",
+and a new conversation with the same instructions answered it.
+
+**What still makes a new process cold:** another account (organization),
+another model, an expired cache. Piece 2 checks the model and the expiry,
+piece 3 step 4 the account.
+
+**A finding beyond this feature:** a resumed conversation does not get
+ShipIt's changed instructions; only a new conversation does.
+
+**Consequence for piece 3.** A compaction in a new container after a ShipIt
+update reads the conversation warm, so it saves what req 1 intends; whether
+it runs is the open question on req 13 (requirements.md). Piece 3 step 4
+checks the account, not the process.
+
+**Consequence beyond this feature.** A restart of a Claude session's process
+— a container stopped to free memory, a ShipIt update — does not make the
+next turn cold inside the cache lifetime; an account move does. Req 8's
+compact-before-stop now saves the container start that a later fire would
+need (piece 3 step 3).
 
 ### 1b. Across processes on the other harnesses — Codex warm, OpenCode warm after planning#701
 
@@ -484,13 +596,25 @@ it.
 
 ## Known limits
 
-- **An orchestrator restart no longer ends idle compaction for resident
-  Claude sessions** (requirement 16's exception ended with planning#700,
-  [docs/334](../334-reattach-resident-claude/plan.md)): the worker keeps the
-  resident's spawn facts, and the fire takes the idle process over. A worker
-  from a build before docs/334 reports no spawn facts, so its sessions are
-  still dropped; a deploy with a new build destroys stale idle containers at
-  boot anyway (req 13).
+- **An orchestrator restart during a woken compaction** forgets the mark,
+  which lives in memory: that container then stays, as any idle session's
+  does, until the enforcer reclaims it.
+- **A container that gets ready just before the cache expires.** The fire
+  waits for the worker and the install and checks the expiry again, but the
+  compaction's first request comes seconds later; a cache that expires in
+  those seconds is read cold.
+- **A worker from before docs/240** reports no turn liveness, so the first
+  connect cannot tell an idle process from none, and the fire's check for a
+  process it could not take over does not see it. A compaction there
+  replaces the process, as the user's next turn would. Such a container
+  survives an update only while it runs that process.
+- **A wake that replaces a stale runner** (its container gone, its preview
+  still running) disposes it with its preview, as every wake does
+  (`bootSessionRunner`); the new runner starts the preview again, and the
+  stop after the compaction keeps it (`previewBefore`).
+- **The snapshot is the CLI's.** A CLI version that stops building a resumed
+  request from the stored snapshot would make a new process cold again.
+  Nothing detects it before the compaction; its usage row would show it.
 - **A turn adopted after a restart arms nothing.** Its events are replayed,
   so their arrival times say nothing about when its requests ran; anchoring
   on them could put the deadline after the cache is cold. The session's next
@@ -500,9 +624,10 @@ it.
   same ordinary row, because the failed compaction left no card.
 - **The user may be at the composer.** A user who has read and typed for 54
   minutes sees the compaction start, and their message waits for it.
-- **An account move.** If the compaction turn itself is routed to another
-  account (docs/260), it reads that account's cold cache. Moves are rare
-  (`pickKeepingCurrent`), so no dry-run of the routing is made.
+- **An account move during the turn.** The fire compares the deadline's
+  account with the one a turn would take (piece 3 step 4). A move decided
+  only during the compaction turn — a refusal at spawn that fails the turn
+  over (docs/260) — still reads the new account's cold cache.
 - **The lifetime table reads each provider's documentation** and pinned CLI
   versions. It drifts with them, like docs/276.
 
@@ -520,10 +645,22 @@ it.
   without a result (piece 2).
 - **A new `countsAsActivity` dispatch flag.** The silent-compaction class
   already exists and covers every caller (piece 4).
-- **Start a fresh container for a session whose container a ShipIt update
-  destroyed.** The first design. The probe showed the new process writes the
-  whole conversation again, and the user made the case an exception to req 2
-  (req 13).
+- **Skip a session whose container a ShipIt update destroyed.** Req 13 as it
+  reads now; planning#704 implements the other answer, and the choice is the
+  open question in requirements.md. Its first reason rested on the
+  confounded first probe, its 2026-10-20 reason on a premise the T rows of
+  "Verify first" 1 contradict.
+- **Drop the fire when the update changed the prompt** (another CLI version,
+  other instructions). A new process read the conversation warm across both:
+  the CLI builds a resumed request from the stored snapshot.
+- **Keep the resident-process check next to the account check.** It dropped
+  compactions that a new process runs warm (piece 3 step 4).
+- **Check the memory budget before a wake.** Req 8 stops other idle sessions
+  before a waiting one, and no other wake checks the budget.
+- **Tell the compaction from other turns by the turn epoch**, as
+  `compactingToReclaim` does. A retry inside the compaction turn moves the
+  epoch too, and a fire dropped after its wake leaves room for one turn
+  unseen; `lastUsedAt` moves for every turn but a silent compaction.
 - **Precompute a summary and swap it in only if the user comes back after
   expiry** (the CLI's `compact_on_return` mode). Needs a fork of the agent's
   session that no harness offers headlessly, for the user who comes back
@@ -567,17 +704,47 @@ credential (the reading is now scoped to the harness and model). It agreed
 the restart limit's reasoning holds, and that it left reqs 1 and 2 partly met
 — which requirement 16 now records as an exception.
 
+ShipIt reviewer run 2dd061e5-9eb9-441a-b762-c79c425f1762 reviewed planning#704
+(the wake, the stop again, the account check). Accepted and fixed: without
+the resident check, a failed take-over let a new process end the worker's
+process and its background tasks (now dropped, piece 3 step 3); an
+over-budget pass could stop a session while its fire booted it
+(`isStarting`); the account prediction used the anchor's route instead of
+the route a turn would keep (now `selectTurnRoute` itself); the turn-epoch
+test took a retry of the compaction for use and could miss one other turn
+(now `lastUsedAt`, read before the wake); a container id read before the
+container existed lost the mark (the woken mark has none now); the stop
+also stopped a preview that ran before the wake (`previewBefore`); a long
+install could push the compaction past the cache's expiry (the fire now
+waits for it and checks again).
+
+A follow-up run, dc8f5393-069d-4d92-b562-911ad2351a8b, confirmed those fixes
+and found more. Fixed: the route prediction kept a resident's route that a
+dispatch retires for failover (now the plain selection, which is what the
+dispatch moves to); a slow container creation passed the 30 s boot wait
+with no install to wait for (the fire now waits for the worker too); a
+woken mark was forgotten while its container was still being created; the
+stop's dispose-with-preview code was duplicated (`disposeRunner`). Kept as
+known limits: a worker from before docs/240, and a wake that replaces a
+stale runner with its preview, which every wake does. Not changed: a stalled
+workspace restore keeps `isStarting` set, but no container exists then, so
+it holds nothing.
+
 ## Docs to change
 
 - `src/server/shipit-docs/wiki/settings-and-accounts.md` — the Advanced row.
 - `src/server/shipit-docs/wiki/chat.md` — an idle session can be compacted
-  while the setting is on.
+  while the setting is on; a stopped container is started for it and stopped
+  again (planning#704).
 
 ## Key files
 
 | File | Change |
 |---|---|
-| `src/server/orchestrator/services/idle-compaction.ts` (new) | `HARNESS_CACHE`, lifetime, deadlines, the one timer, boot re-derivation, `fire`, `isWaiting` |
+| `src/server/orchestrator/services/idle-compaction.ts` (new) | `HARNESS_CACHE`, lifetime, deadlines, the one timer, boot re-derivation, `fire`, `isWaiting`, the account check, the woken marks |
+| `src/server/orchestrator/wake-session.ts` | `bootSessionRunner`: the wake path's container start, shared by `wakeSessionWithTurn` and the fire |
+| `src/server/orchestrator/session-agent-env.ts` | `nextTurnRouteId`: the route a turn's preparation would select now |
+| `src/server/orchestrator/container-session-runner.ts`, `session-runner.ts` | `whenReadyForAgent`: the worker and the install a fresh agent process waits for |
 | `src/server/shared/types/claude-types.ts`, `session/agents/claude/adapter.ts`, `shared/types/agent-types.ts` | `cache_creation` on per-message usage; `cacheTtl` on `AgentResultEvent`; the silent-compaction mark on the agent and the worker wire types |
 | `src/server/shared/database.ts`, `src/server/orchestrator/usage.ts` | `usage_turns.cache_ttl`, `cache_anchor_at`; route-scoped lifetime; `onAnchoredTurn`; newest anchored row per session for boot |
 | `src/server/orchestrator/ws-handlers/agent-listeners.ts` | The anchor (last tool result); no anchor for a compaction or a turn that read nothing; skip `touchUnlessResolved` and `last_turn_errored` for a silent compaction |
@@ -585,6 +752,6 @@ the restart limit's reasoning holds, and that it left reqs 1 and 2 partly met
 | `src/server/session/agent-controller.ts`, `orchestrator/proxy-agent-process.ts`, `container-session-runner.ts`, `worker-http.ts`, `turn-adoption.ts` | The worker keeps and reports the silent-compaction class; adoption restores it |
 | `src/server/orchestrator/services/agent-compaction-request.ts` | Export the busy check, with the question hold as a separable arm |
 | `src/server/orchestrator/turn-admission.ts`, `session-runner.ts` | `isSilentCompaction`; admit a silent compaction past the answer hold (req 12) |
-| `src/server/orchestrator/idle-enforcer.ts` | Waiting sessions last; compact instead of stop; `compactingToReclaim` |
+| `src/server/orchestrator/idle-enforcer.ts` | Waiting sessions last; compact instead of stop; `compactingToReclaim`; stop a woken container again |
 | `src/server/shared/settings-catalogue/global-settings.ts`, `orchestrator/credential-store.ts`, `services/misc.ts` | `advanced.idleCompaction` |
 | `src/server/orchestrator/bootstrap-managers.ts`, `startup-monitors.ts`, `index.ts` | Build the service, subscribe it to the usage rows, re-derive at boot after adoption, stop its timer on close |
