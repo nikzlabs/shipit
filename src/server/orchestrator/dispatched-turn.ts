@@ -91,6 +91,10 @@ async function runDispatchedTurnInner(
   runner.assertCanDispatch();
   const { text, activity } = opts;
 
+  // planning#700 — before what reads the process's background work, and the spawn guards. A
+  // driver-owned turn is the rebase step, which runs on a process of its own (docs/334 req 1).
+  if (opts.postTurn !== "none" && runner.residentToAttach) await runner.attachIdleResident?.();
+
   const isCompactRequest =
     (getAgentCapabilities(agentId)?.supportsCompaction ?? false) && isCompactCommand(text);
   /**

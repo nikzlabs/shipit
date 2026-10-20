@@ -1959,15 +1959,14 @@ export async function executeAgentTurn(
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
       submittedPrompt = runParams.prompt;
       if (stoppedDuringSetup() || settledDuringSetup()) return;
+      const spawnIdentity = desiredSpawnIdentity(deps.listenerDeps.sessionManager, sessionId, agentId);
+      // planning#700 — the worker keeps it with the process, for an orchestrator that restarts.
+      if (spawnIdentity !== undefined) agent.setSpawnIdentity?.(spawnIdentity);
       agent.run(input.useStreaming !== undefined ? { ...runParams, useStreaming: input.useStreaming } : runParams);
       noteSubmitted();
       if (runner) runner.appliedPermissionMode = input.permissionMode;
       if (runner) {
-        runner.appliedSpawnIdentity = desiredSpawnIdentity(
-          deps.listenerDeps.sessionManager,
-          sessionId,
-          agentId,
-        );
+        runner.appliedSpawnIdentity = spawnIdentity;
         runner.residentRoute = turnRoute ? { kind: turnRoute.kind, id: turnRoute.id } : undefined;
       }
     }

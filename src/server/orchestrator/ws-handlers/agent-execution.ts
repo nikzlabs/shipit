@@ -128,6 +128,16 @@ function isCompactCommandFor(ctx: FullCtx, text: string): boolean {
   return capable && parseCompactCommand(text).match;
 }
 
+/**
+ * planning#700 — before what reads the process's background work, and the spawn guards. Only
+ * where this path reuses a resident process at all: with live steering on.
+ */
+async function attachIdleResidentForTurn(ctx: FullCtx, runner: SessionRunnerInterface | null | undefined): Promise<void> {
+  if (!runner?.residentToAttach) return;
+  const steering = ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities.supportsSteering ?? false;
+  if (ctx.credentialStore.getLiveSteering() && steering) await runner.attachIdleResident?.();
+}
+
 // Runs under the caller's claim on `running`, which keeps other turns out until the compaction.
 export async function decideCompactBeforeTurn(
   ctx: FullCtx,
@@ -138,6 +148,7 @@ export async function decideCompactBeforeTurn(
   // A typed send is never this; a queued entry can be (an automatic turn whose steer was not taken).
   unattended = false,
 ): Promise<boolean> {
+  await attachIdleResidentForTurn(ctx, runner);
   return shouldCompactBeforeTurn({
     deps: {
       getSession: (id) => ctx.sessionManager.get(id),
@@ -321,6 +332,7 @@ async function composeAndRunAgentTurn(
 
   const agentInfo = ctx.agentRegistry.get(agentId);
   const useStreaming = ctx.credentialStore.getLiveSteering() && (agentInfo?.capabilities.supportsSteering ?? false);
+  await attachIdleResidentForTurn(ctx, runner);
   // Release stale credentials before the executor captures a process to write into.
   const failoverSession = capturedSessionId ? ctx.sessionManager.get(capturedSessionId) : undefined;
   if (

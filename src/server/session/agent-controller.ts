@@ -8,8 +8,10 @@ import type {
 } from "./agents/agent-process.js";
 import type { PermissionMode, PermissionSubagent, ServiceRouting, WorkerAgentKillBody, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
 import type {
+  AgentBackgroundTasksEvent,
   AgentGoalCommand,
   WorkerAgentGoalBody,
+  WorkerResidentSpawn,
   WorkerServiceMcpBody,
   WorkerServiceMcpResult,
 } from "../shared/types/agent-types.js";
@@ -19,6 +21,7 @@ import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { reportedPermissionMode } from "../shared/cli-permission-mode.js";
 import { adoptModelList } from "../shared/catalogue/model-list.js";
 import { restoreFullResolutionScreenshots } from "./playwright-screenshot.js";
 import { reclaimStillRenderingBrowsers } from "./agents/browser-reclaim.js";
@@ -73,7 +76,11 @@ export class AgentController {
   // agent instead of failing the turn with "No agent running".
   private pendingStart: Promise<void> | null = null;
 
-  private residentSpawn: { runToken?: string; streaming: boolean } | null = null;
+  private residentSpawn: {
+    runToken?: string;
+    streaming: boolean;
+    spawn?: Omit<WorkerResidentSpawn, "serviceMcpServers">;
+  } | null = null;
 
   /** docs/327 — the declared MCP servers the running agent process holds. */
   private liveServiceMcp: ServiceMcpServer[] = [];
@@ -94,7 +101,7 @@ export class AgentController {
   // Set while the active turn is one the CLI started on its own (planning#639).
   private ownTurn: "heard" | "unheard" | undefined;
 
-  private backgroundTaskCount = 0;
+  private backgroundTasks: AgentBackgroundTasksEvent["tasks"] = [];
   private selfWakeActive = false;
 
   private readonly toolCalls = new SubagentCallTracker();
@@ -124,7 +131,7 @@ export class AgentController {
         return reply.code(409).send({ error: "Agent already running" });
       }
 
-      const { agentId, runToken, deliveryId } = request.body;
+      const { agentId, runToken, deliveryId, spawnIdentity } = request.body;
       if (!agentId || !request.body.params) {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
@@ -146,7 +153,20 @@ export class AgentController {
         this.beginTurn();
         this.turnDeliveryId = deliveryId;
         this.turnSilentCompaction = request.body.silentCompaction === true;
-        this.residentSpawn = { runToken, streaming: params.useStreaming === true };
+        this.residentSpawn = {
+          runToken,
+          streaming: params.useStreaming === true,
+          // From the params: what the process really got, whatever the orchestrator recorded.
+          ...(typeof spawnIdentity === "string" && spawnIdentity
+            ? {
+                spawn: {
+                  spawnIdentity,
+                  sessionStatusCard: params.sessionStatusCard === true,
+                  ...(params.permissionMode !== undefined ? { permissionMode: params.permissionMode } : {}),
+                },
+              }
+            : {}),
+        };
         const agent = this.deps.agentFactory(agentId);
         this.agent = agent;
         this.wireAgentEvents(agent, runToken);
@@ -323,6 +343,7 @@ export class AgentController {
           return reply.code(400).send({ error: `Invalid mode: ${JSON.stringify(raw)}` });
         }
         this.agent.setPermissionMode(mode);
+        this.notePermissionMode(mode);
         return { success: true };
       },
     );
@@ -428,7 +449,11 @@ export class AgentController {
       oldestSseSeq: this.deps.oldestSseSeq?.() ?? 0,
       turnActive: this.turnActive,
       turnStartSseSeq: this.turnStartSseSeq,
-      backgroundTaskCount: this.backgroundTaskCount,
+      ...(this.residentSpawn?.spawn
+        ? { resident: { ...this.residentSpawn.spawn, serviceMcpServers: this.liveServiceMcp } }
+        : {}),
+      backgroundTaskCount: this.backgroundTasks.length,
+      backgroundTasks: this.backgroundTasks,
       selfWakeActive: this.selfWakeActive,
       ...(this.ownTurn !== undefined ? { ownTurn: this.ownTurn } : {}),
       terminalActive: this.deps.otherWorkerLiveness?.().terminalActive ?? false,
@@ -491,13 +516,21 @@ export class AgentController {
     return getAgentCapabilities(agent.agentId)?.startsOwnTurns ?? false;
   }
 
+  // planning#700 — a restarted orchestrator restores it, so it follows the CLI's own changes too.
+  private notePermissionMode(mode: PermissionMode | undefined): void {
+    const resident = this.residentSpawn;
+    if (!resident?.spawn) return;
+    const { permissionMode: _previous, ...rest } = resident.spawn;
+    resident.spawn = mode !== undefined ? { ...rest, permissionMode: mode } : rest;
+  }
+
   // Clear process state here: late done events fail the identity guard after a kill.
   private vacateSlot(): void {
     this.agent = null;
     this.residentSpawn = null;
     this.pendingDeliveryId = undefined;
     this.endTurn();
-    this.backgroundTaskCount = 0;
+    this.backgroundTasks = [];
     this.toolCalls.clear();
   }
 
@@ -547,7 +580,7 @@ export class AgentController {
    * before calling us, and the turn it schedules sets `turnActive` before it dispatches.
    */
   private browsersAreUnattended(): boolean {
-    return !this.turnActive && this.spawnedAgents.size === 0 && this.backgroundTaskCount === 0;
+    return !this.turnActive && this.spawnedAgents.size === 0 && this.backgroundTasks.length === 0;
   }
 
   stop(): void {
@@ -598,8 +631,10 @@ export class AgentController {
       else if (event.type === "agent_tool_result") {
         for (const id of toolResultIds(event.content)) this.toolCalls.closed(id);
       }
+      const reported = reportedPermissionMode(event);
+      if (reported) this.notePermissionMode(reported.mode);
       if (event.type === "agent_result") this.endTurn();
-      else if (event.type === "agent_background_tasks") this.backgroundTaskCount = event.tasks.length;
+      else if (event.type === "agent_background_tasks") this.backgroundTasks = event.tasks;
       else if (event.type === "agent_self_wake") this.selfWakeActive = true;
     });
 

@@ -22,7 +22,8 @@ ordinary turn ends (agent_result) ──► usage row: context, cache_ttl, cache
        deadlines[session] = { due: anchor + 0.9·L, expires: anchor + L }             (req 1)
 one host-wide timer at the earliest `due` ──► fire(session)
   fire: take the deadline (one attempt) ──► re-check setting · done · harness · busy · expiry
-        get a runner (reconnect); no container, or Claude's resident gone ──► drop  (req 13, 16)
+        get a runner (reconnect, take the idle resident over); no container,
+        or Claude's resident gone ──► drop                                           (req 13)
         re-check ──► dispatch silent "/compact", refused when busy                   (req 3, 4)
 a silent compaction turn is maintenance: no last-used, no unmute, no turn outcome
 idle enforcer over budget: waiting sessions last; compact one instead of stopping it (req 8)
@@ -204,10 +205,13 @@ No per-session interval (CLAUDE.md, "never per-session polling").
    resident (`setAgent(null)` in the auth, rebase, recovery and plan-mode
    paths) — the compaction would start a new process, whose first request
    writes the whole conversation again: the reason of req 13, so the fire is
-   dropped the same way. After an orchestrator restart this is requirement
-   16's exception. The check runs before step 3 too, so a Claude session
-   after an orchestrator restart gets no runner — a new runner holds no
-   agent, and creating one starts the session's install and services. With
+   dropped the same way. After an orchestrator restart the runner takes the
+   worker's idle process over
+   ([docs/334](../334-reattach-resident-claude/plan.md), which ended req 16's
+   exception): a session with no runner gets one only when its worker reports
+   a process to take over, because creating one starts the session's install
+   and services, and the check after `attachRunner` requires the runner to
+   hold it. With
    live steering off, every Claude turn already runs in a new resumed process, and the probe found a resume of a resumed
    session warm, so the fire proceeds. The other harnesses start a process
    per turn too (docs/276); their compaction spawn is cached like any of
@@ -402,6 +406,14 @@ raw output: `/persist/idlecompact/` (not committed).
   `includeGitInstructions`), the first resume missed the same 7,291 tokens
   (B2).
 
+**Later evidence (docs/334, 2026-10-19).** Through ShipIt's own spawn path
+— its flags, a full model id — the first resume in a new process read the
+whole conversation from the cache in every run, also after a commit; the
+miss above reproduces only with this raw invocation, and mostly as a
+first-turn effect that also hits a second turn in the same process. See
+[docs/334 plan, "Probe"](../334-reattach-resident-claude/plan.md#probe). The
+reasons below are kept as they were decided.
+
 **Consequence for piece 3.** A ShipIt update destroys the resident process
 that built the cache. A compaction in a fresh container is a first resume, so
 it reads the conversation cold: it costs what the user's next turn would have
@@ -466,17 +478,13 @@ it.
 
 ## Known limits
 
-- **An orchestrator restart ends idle compaction for resident Claude
-  sessions** until their next turn (requirement 16's exception): the new
-  runner holds no agent, so piece 3 step 4 drops their fires. A deploy with a
-  new build marks every idle container stale, and the boot sweep destroys it
-  (`restart-turn-reattach.ts`) — req 13's case. What this limit adds is a restart that keeps the build (a
-  crash, a manual restart), whose containers and residents survive. The fix
-  is not this feature's: re-attaching a runner to the idle resident process
-  that the worker keeps (`agent-controller.ts`, `residentSpawn`) needs the
-  resident's spawn identity, which no orchestrator holds after a restart, and
-  would also spare every such session the full cache write that its next turn
-  pays today. Filed as planning#700; requirement 16's exception ends with it.
+- **An orchestrator restart no longer ends idle compaction for resident
+  Claude sessions** (requirement 16's exception ended with planning#700,
+  [docs/334](../334-reattach-resident-claude/plan.md)): the worker keeps the
+  resident's spawn facts, and the fire takes the idle process over. A worker
+  from a build before docs/334 reports no spawn facts, so its sessions are
+  still dropped; a deploy with a new build destroys stale idle containers at
+  boot anyway (req 13).
 - **A turn adopted after a restart arms nothing.** Its events are replayed,
   so their arrival times say nothing about when its requests ran; anchoring
   on them could put the deadline after the cache is cold. The session's next

@@ -546,6 +546,8 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
    * orchestrator reads it back from the worker and adopts the turn as maintenance.
    */
   markSilentCompaction?(): void;
+  /** planning#700 — what this process is spawned as; the worker reports it back after a restart. */
+  setSpawnIdentity?(spawnIdentity: string): void;
   /** docs/154 — works with or without a live process; `threadId` is the session's agentSessionId. */
   goalCommand?(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult>;
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult;
@@ -579,8 +581,20 @@ export interface WorkerAgentStartBody {
   deliveryId?: string;
   /** docs/333-idle-compaction — reported back as `WorkerAgentStatus.silentCompaction`. */
   silentCompaction?: boolean;
+  /** planning#700 — `sessionSpawnIdentity` at spawn, reported back as `WorkerAgentStatus.resident`. */
+  spawnIdentity?: string;
   /** docs/318 — the orchestrator's published model list; the worker's embedded one can predate it. */
   modelList?: unknown;
+}
+
+/** planning#700 — what the process in the slot was started with, for a restarted orchestrator. */
+export interface WorkerResidentSpawn {
+  spawnIdentity: string;
+  sessionStatusCard: boolean;
+  /** The current mode: the start params', then each change requested or reported. Absent is the CLI default. */
+  permissionMode?: PermissionMode;
+  /** docs/327 — the declared MCP servers the process holds. */
+  serviceMcpServers: ServiceMcpServer[];
 }
 
 export interface WorkerAgentKillBody {
@@ -607,7 +621,10 @@ export interface WorkerAgentStatus {
   silentCompaction?: boolean;
   agentId?: AgentId;
   streaming?: boolean;
+  /** Absent on workers from before planning#700, and when the start named no identity. */
+  resident?: WorkerResidentSpawn;
   backgroundTaskCount?: number;
+  backgroundTasks?: AgentBackgroundTasksEvent["tasks"];
   /** Busy, but does not assert replayability from turnStartSseSeq. */
   selfWakeActive?: boolean;
   /** A PTY exists; does not imply it is doing work. */

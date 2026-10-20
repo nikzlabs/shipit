@@ -23,6 +23,7 @@ import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { MISSED_COMPACTION_NOTICE } from "../compact-before-turn.js";
 import { getErrorMessage } from "../validation.js";
 import { busyReason } from "./agent-compaction-request.js";
+import { workerIdleResident } from "../restart-turn-reattach.js";
 
 /** req 6 */
 export const IDLE_COMPACTION_MIN_CONTEXT_TOKENS = 200_000;
@@ -37,6 +38,7 @@ const FIRE_AT_FRACTION = 0.9;
 const WORKER_READY_TIMEOUT_MS = 30_000;
 const COMPACTION_ACTIVITY = "Compacting context…";
 const SETTING = GLOBAL_SETTINGS["advanced.idleCompaction"];
+const RESIDENT_GONE = "the resident process that holds the warm cache is gone";
 
 interface HarnessCacheFacts {
   /** Why the harness gets no idle compaction. */
@@ -103,6 +105,8 @@ export interface IdleCompactionDeps {
   runnerRegistry: Pick<SessionRunnerRegistry, "get" | "getOrCreate">;
   /** null in local mode, where the orchestrator process is the one that runs the agents. */
   containerManager: Pick<SessionContainerManager, "get" | "isStandby"> | null;
+  /** docs/334 — the worker of a session with no runner holds a process a turn can take over. */
+  workerHoldsIdleResident?: (sessionId: string) => Promise<boolean>;
 }
 
 interface Deadline {
@@ -154,10 +158,24 @@ export class IdleCompaction {
     this.deadlines.delete(sessionId);
     this.reschedule();
 
-    const blocked = this.blockedReason(sessionId, deadline, this.deps.runnerRegistry.get(sessionId));
+    const existing = this.deps.runnerRegistry.get(sessionId);
+    const blocked = this.blockedReason(sessionId, deadline, existing);
     if (blocked) {
       console.log(`[idle-compaction] not compacting ${sessionId}: ${blocked}`);
       return;
+    }
+    // A runner starts the session's install and services; only create one for a process to take over.
+    if (!existing && this.needsResident(deadline.agentId)) {
+      if (!(await this.workerHoldsIdleResident(sessionId))) {
+        console.log(`[idle-compaction] not compacting ${sessionId}: ${RESIDENT_GONE}`);
+        return;
+      }
+      // The container can have been reclaimed during the reading, and a runner would start a new one.
+      const blockedAfterProbe = this.blockedReason(sessionId, deadline, this.deps.runnerRegistry.get(sessionId));
+      if (blockedAfterProbe) {
+        console.log(`[idle-compaction] not compacting ${sessionId}: ${blockedAfterProbe}`);
+        return;
+      }
     }
     let runner: SessionRunnerInterface;
     try {
@@ -168,7 +186,7 @@ export class IdleCompaction {
       return;
     }
     // The awaits above: the user can have come back, the session become done, the cache expired.
-    const blockedNow = this.blockedReason(sessionId, deadline, runner);
+    const blockedNow = this.blockedReason(sessionId, deadline, runner, { attached: true });
     if (blockedNow) {
       console.log(`[idle-compaction] not compacting ${sessionId}: ${blockedNow}`);
       return;
@@ -210,10 +228,12 @@ export class IdleCompaction {
     return context !== undefined && context >= IDLE_COMPACTION_MIN_CONTEXT_TOKENS;
   }
 
+  /** After `attachRunner`, a process that has to be the resident must be held, not only reachable. */
   private blockedReason(
     sessionId: string,
     deadline: Deadline,
     runner: SessionRunnerInterface | undefined,
+    opts: { attached?: boolean } = {},
   ): string | null {
     if (!this.deps.isEnabled()) return `"${SETTING.label}" is off`;
     const session = this.deps.sessionManager.get(sessionId);
@@ -233,13 +253,28 @@ export class IdleCompaction {
       const busy = busyReason(runner, { pastAnswerHold: true });
       if (busy) return busy;
     }
-    // With live steering on, the session's turns run on one resident process. Where a new
-    // process reads cold, only that resident can compact the cache warm.
-    if (HARNESS_CACHE[agentId].firstResumeCold && this.deps.liveSteering()
-      && !(runner?.isStreamingActive && runner.getAgent())) {
-      return "the resident process that holds the warm cache is gone";
-    }
+    if (this.needsResident(agentId) && !this.residentReachable(runner, opts.attached === true)) return RESIDENT_GONE;
     return null;
+  }
+
+  // With live steering on, the session's turns run on one resident process. Where a new
+  // process reads cold, only that resident can compact the cache warm.
+  private needsResident(agentId: AgentId): boolean {
+    return HARNESS_CACHE[agentId].firstResumeCold === true && this.deps.liveSteering();
+  }
+
+  // docs/334 — after an orchestrator restart a runner can take the worker's idle process over.
+  private residentReachable(runner: SessionRunnerInterface | undefined, attached: boolean): boolean {
+    if (runner?.isStreamingActive && runner.getAgent()) return true;
+    if (attached) return false;
+    // In local mode no agent process outlives a restart; otherwise the fire reads the worker.
+    if (!runner) return this.deps.containerManager !== null;
+    return runner.residentToAttach === true;
+  }
+
+  private workerHoldsIdleResident(sessionId: string): Promise<boolean> {
+    return this.deps.workerHoldsIdleResident?.(sessionId)
+      ?? workerIdleResident(this.deps.containerManager, sessionId);
   }
 
   private hasLiveContainer(sessionId: string): boolean {
@@ -248,10 +283,15 @@ export class IdleCompaction {
     return containerManager.get(sessionId)?.status === "running" && !containerManager.isStandby(sessionId);
   }
 
-  // Never a new container: the container is live, so a missing runner is an orchestrator restart.
   private async attachRunner(sessionId: string): Promise<SessionRunnerInterface> {
-    const existing = this.deps.runnerRegistry.get(sessionId);
-    if (existing) return existing;
+    const runner = this.deps.runnerRegistry.get(sessionId) ?? await this.reconnectRunner(sessionId);
+    if (runner.residentToAttach) await runner.attachIdleResident?.();
+    if (runner.disposed) throw new Error("the runner was disposed while it attached");
+    return runner;
+  }
+
+  // Never a new container: the container is live, so a missing runner is an orchestrator restart.
+  private async reconnectRunner(sessionId: string): Promise<SessionRunnerInterface> {
     const session = this.deps.sessionManager.get(sessionId);
     if (!session?.workspaceDir) throw new Error("the session has no workspace");
     const runner = this.deps.runnerRegistry.getOrCreate(
@@ -266,7 +306,6 @@ export class IdleCompaction {
         }),
       ]);
     }
-    if (runner.disposed) throw new Error("the runner was disposed while it attached");
     return runner;
   }
 
