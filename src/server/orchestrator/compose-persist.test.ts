@@ -5,6 +5,7 @@ import path from "node:path";
 import type Docker from "dockerode";
 import type { SessionIdentity } from "../shared/session-identity.js";
 import {
+  dockerDesktopCheck,
   mkdirAsSession,
   preparePersistDir,
   workspaceVolumeDaemonPath,
@@ -164,5 +165,36 @@ describe("workspaceVolumeDaemonPath (docs/317)", () => {
     const resolve = workspaceVolumeDaemonPath(docker(() => Promise.resolve({ Mountpoint: "/data" })), "ws");
     await expect(resolve("/etc/passwd")).rejects.toThrow(/not inside the workspace volume/);
     await expect(resolve("/workspace")).rejects.toThrow(/not inside the workspace volume/);
+  });
+});
+
+describe("dockerDesktopCheck (docs/317)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("recognizes Docker Desktop, including its containerized engine, and asks only once", async () => {
+    const info = vi.fn(() => Promise.resolve({ OperatingSystem: "Docker Desktop (containerized)" }));
+    const isDesktop = dockerDesktopCheck({ info } as unknown as Pick<Docker, "info">);
+    expect(await isDesktop()).toBe(true);
+    expect(await isDesktop()).toBe(true);
+    expect(info).toHaveBeenCalledTimes(1);
+
+    const linux = dockerDesktopCheck({ info: () => Promise.resolve({ OperatingSystem: "Ubuntu 24.04.1 LTS" }) } as unknown as Pick<Docker, "info">);
+    expect(await linux()).toBe(false);
+  });
+
+  // Guessing "no" would give Docker Desktop the bind-backed volume it mounts as an empty directory.
+  it("fails while Docker cannot be asked, and asks again at the next start", async () => {
+    const info = vi.fn()
+      .mockRejectedValueOnce(new Error("connect ENOENT /var/run/docker.sock"))
+      .mockResolvedValueOnce({ OperatingSystem: "Docker Desktop" });
+    const isDesktop = dockerDesktopCheck({ info } as unknown as Pick<Docker, "info">);
+    await expect(isDesktop()).rejects.toThrow(
+      "ShipIt could not ask Docker whether it is Docker Desktop, where it refuses a mount of one subdirectory: "
+      + "connect ENOENT /var/run/docker.sock",
+    );
+    expect(await isDesktop()).toBe(true);
+    expect(info).toHaveBeenCalledTimes(2);
   });
 });

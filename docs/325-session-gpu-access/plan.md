@@ -150,13 +150,14 @@ The library is in the loader's normal path, so that the flags are sufficient. Th
 
 `builtInBrowserUsesGpu` (`playwright-mcp.ts`) decides once for the container, when the module loads: `$SHIPIT_GPU` is `granted`, and `/usr/lib/libd3d12.so` resolves. That is the image's link, and it resolves only where `gpuGraphicsBinds` mounted DirectX. No setting is read (req 8). A container keeps its GPU state and its mounts for life, so the answer cannot become stale.
 
-When both hold, the start command gets two additions:
+When both hold, the start command gets these additions:
 
 - **`--config playwright-mcp-gpu.json`** — the server takes browser flags from a config file only. The file holds three:
   - `--use-angle=gl-egl` selects Mesa through EGL.
   - `--disable-gpu-compositing` keeps the page's composition in software, as it was. The GPU then draws WebGL and nothing else (req 11).
   - `--ignore-gpu-blocklist` — without it, a renderer that Chromium's blocklist refuses gives no WebGL context at all, not software.
 - **`GALLIUM_DRIVER=d3d12`** in the server's environment. Mesa then tries Direct3D 12 and nothing else. Without the pin, a GPU fault makes Mesa draw on the CPU (`llvmpipe`), a third kind of picture. With it, EGL fails to start and Chromium goes back to SwiftShader, with pictures identical to those of a session with no GPU.
+- **`GLIBC_TUNABLES`** in the server's environment, added for req 12: see [Uploads of texture and buffer data](#uploads-of-texture-and-buffer-data-req-12).
 
 In each other container, the command is the one from before this change, byte for byte (req 10). A test holds it to that.
 
@@ -338,7 +339,7 @@ python3 sample_shares.py raw/samples.txt raw/phases.txt
 - `MESA25_LIB` is the `usr/lib/x86_64-linux-gnu` directory of the packages `mesa-libgallium`, `libegl-mesa0`, `libgbm1`, `libgl1-mesa-dri` and `libglx-mesa0` (25.0.7-2~bpo12+1) and `libdrm2`, `libdrm-amdgpu1` and `libdrm-intel1` (2.4.123-1~bpo12+1) from Debian's `bookworm-backports`, extracted with `dpkg -x`. The path in the command is an example. With no `MESA25_LIB`, `run-direct.sh` does not do the runs on that Mesa.
 - A run that fails, crashes or has a program that does not link gives a `## FAILED` line with its exit status, and the shell script then exits with 1. The JSON lines that the run printed before that stay in the output, so a crash at the exit of `mesa_direct.py` leaves its result.
 - Each line of `run-link.mjs` has the host's 1-minute load average at the start and the end of the load (`loadavg`), and the card's use from `nvidia-smi` each 500 ms during it (`cardUse`: min, mean and max in %, or null with no `nvidia-smi`). The direct Mesa runs of `run-direct.sh` print the load average only at their start. The result files of the first two passes do not have these fields.
-- The final run of `run-groups.sh` did not have the groups of 1 and 5 for the page that animates. Those two browsers ran after it, with the same commands. After them, only the stop of `nvidia-smi` in `run-link.mjs` changed: it now also stops a sampler that does not end in 2 s. The first run of the series had earlier versions of `link.html` and `run-groups.sh`. Its result files are also in the scratch space of the session that measured.
+- The final run of `run-groups.sh` did not have the groups of 1 and 5 for the page that animates. Those two browsers ran after it, with the same commands. After them, only the stop of `nvidia-smi` in `run-link.mjs` changed: it now also stops a sampler that does not end in 2 s. On 2026-10-15 it also started to find the GPU process by the libraries of its renderer, because a Chromium with `GLIBC_TUNABLES` in its environment does not name that process on its command line ([Measured after the update](#measured-after-the-update-req-12)). The first run of the series had earlier versions of `link.html` and `run-groups.sh`. Its result files are also in the scratch space of the session that measured.
 - For the samples of the first pass, `sample_shares.py` prints the shares that are given above.
 
 What the files do:
@@ -349,7 +350,149 @@ What the files do:
 - **The frames.** The page counts the calls of its `requestAnimationFrame` callback in two phases: the link, from before the first send to the last `LINK_STATUS` answer, and the first draws, from the first draw to the end of the `readPixels` after the last. It reads the time in each call, and the longest gap counts to the end of the phase. The page of the second pass used the timestamp that `requestAnimationFrame` gives and did not count to the end of the phase, so in its result files a phase in which the frames stopped has a short gap. With `--animate`, a small program that is linked before the measurement draws one triangle into the canvas in each call, with a value that changes with the time. In the group mode the page sends a group, waits on `COMPLETION_STATUS_KHR` of that group between animation frames, then sends the next. With `--draw-group`, it draws with that number of programs, calls `fenceSync` and `flush`, and waits between animation frames until the fence is signaled. Each line also gives the longest send of programs (`longestSendMs`), the longest round of `COMPLETION_STATUS_KHR` calls in one frame (`longestPollMs`), and the longest single call with its place in the round (`longestCallMs`, `longestCallAt`).
 - **Mesa with no browser.** Python and `ctypes`: `eglGetPlatformDisplay` with Mesa's surfaceless platform, an OpenGL ES 3.0 context on a pbuffer, the functions from `eglGetProcAddress`, and the same 200 sources.
 
+## Uploads of texture and buffer data (req 12)
+
+### What was slow, and where the time went
+
+A session of another repository reported that each page load of its three.js game took 18 to 22 s on the GPU route, 11.8 s of it in one `texSubImage3D`: a WebGL 2 texture array of 145 layers of 256 × 256 RGBA8 pixels (36.2 MB). Measured on 2026-10-13 in a `granted` session container on the host of the earlier measurements (Docker Desktop/WSL2, an RTX 4090, a Ryzen 9 5950X, Mesa 22.3.6, glibc 2.36, Chromium 153), with [the files in the repository](#to-repeat-the-upload-measurement). Each number below has the renderer and the host's CPU pressure (`some avg10` of `/proc/pressure/cpu`) of its run.
+
+**The time is one `memcpy` in Mesa, and the card does not make it wait.**
+
+- **The page.** `texStorage3D`, one `texSubImage3D` and a `readPixels` took 8.3 to 11.9 s in five browsers on the card (pressure 0.00 to 2.43) and 0.07 to 0.08 s in two browsers on SwiftShader (0.30 and 2.75). The renderer on the card was `ANGLE (Microsoft Corporation, D3D12 (NVIDIA GeForce RTX 4090), OpenGL ES 3.1)`, and `OpenGL 4.2` in the one browser that used GLX under Xvfb. One of the five was the session's own built-in browser: 8.4 s (0.08).
+- **The calls.** `gl-call-times.so` logged each OpenGL call of the browser's GPU process into Mesa. The whole time was in four `glTexSubImage3D` calls: one for all 145 layers, which the page did not make, then the page's data in parts of 63, 63 and 19 layers. In one run they took 5264, 2141, 2619 and 824 ms (pressure 6.36). The browser made no `glFramebufferTextureLayer` call, so it cleared no layer, and a `glFinish` took 4 ms.
+- **The thread.** During the 5264 ms call, the thread had 5193 ms of user time, 40 ms of system time and 0 page faults. So it did not wait for the card, and it did not wait in the kernel.
+- **The stack.** gdb attached to the GPU process 30 times during one upload. All 30 stacks of the main thread were `__memcpy_avx_unaligned_erms ← util_copy_box ← u_default_texture_subdata ← st_TexSubImage`. An earlier run with 40 attaches gave the same.
+- **Mesa with no browser.** `upload-direct` makes the same calls through EGL. `glTexSubImage3D` of the array took 4079 to 5279 ms in three runs (pressure 0.00 to 7.19). One 2D texture of the same bytes, 4096 × 2320 pixels, took 126 to 136 ms. 145 separate 2D textures of 256 × 256 pixels took 4627 to 5503 ms. Its renderer was `D3D12 (NVIDIA GeForce RTX 4090)`, `OpenGL ES 3.1 Mesa 22.3.6`.
+
+**The cause is one CPU instruction on one kind of memory.** A texture upload in Mesa's Direct3D 12 driver maps a staging buffer, copies the data into it with `memcpy`, and lets the card copy from there (`d3d12_transfer_map` in `d3d12_resource.cpp`: `PIPE_USAGE_STREAM`, which `d3d12_bufmgr.cpp` makes a `D3D12_HEAP_TYPE_UPLOAD` buffer). Direct3D 12 documents the CPU pages of an upload heap as write-combined on a card with its own memory ([`GetCustomHeapProperties`](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12device-getcustomheapproperties(uint_d3d12_heap_type))); the memory type itself was not read here. `upload-direct copy` maps such a buffer and times copy methods into it, in MB each second (pressure 1.43):
+
+| Destination | `rep movsb` | AVX2 stores | glibc `memcpy`, chunks of 4 to 256 KiB | glibc `memcpy`, chunks of 1 to 2 KiB and of 512 KiB to 4 MiB |
+|---|---|---|---|---|
+| Upload heap (a `STREAM_DRAW` array buffer) | 6 to 9 | 280 to 309 | 7 to 9 | 243 to 306 |
+| Read-back heap (a pixel unpack buffer) | 6216 to 15925 | 5847 to 10348 | 7906 to 9641 | 3985 to 9436 |
+| `malloc` memory | 7973 to 14706 | 7883 to 9586 | 8231 to 9542 | 5044 to 9657 |
+
+glibc's `memcpy` uses `rep movsb` from its `x86_rep_movsb_threshold`, which the loader reports as 0x840 (2112 bytes) on this CPU, up to a second limit that the table puts between 256 and 512 KiB. One layer of 256 × 256 RGBA8 pixels is one `memcpy` of 262144 bytes, so each layer is in that range. The 36 MB 2D texture is one `memcpy` above it. That is all of the difference between the two: 7 MB each second against 300.
+
+Three smaller facts from the same runs:
+
+- **Chromium's `gl.finish()` is a flush.** A page that times an upload to `gl.finish()` sees only the part that Chromium made it wait for. For 32 layers the page read 14 ms to `gl.finish()` and 1063 ms to a `readPixels` after it (pressure 0.82).
+- **An upload of 16 MiB or more was copied two times.** Chromium sent the data to its GPU process in parts: 62 layers (15.5 MiB) were one Mesa call, and 64 layers were two calls of 63 and 1. When there was more than one part, Mesa got one more call before them, for the full level and from another address: 64, 63 and 1 layers took 1990, 1745 and 27 ms (pressure 0.61). That is why the reported times were not in proportion to the layers. On Mesa 25.0.7 the browser did not make that call.
+- **The same copy serves other uploads.** See the table of [the mechanism](#the-mechanism-one-tunable-of-the-c-library).
+
+### The mechanism: one tunable of the C library
+
+`GLIBC_TUNABLES=glibc.cpu.x86_rep_movsb_threshold=0x40000000` moves the first limit to 1 GiB, so `memcpy` takes its vector loop for each size that it gave to `rep movsb`. The constant is `GPU_GRAPHICS_GLIBC_TUNABLES` (`shared/gpu-graphics-env.ts`), and it reaches a browser in two ways:
+
+1. **In the container's environment** — `GPU_GRAPHICS_ENV` (`session-gpu.ts`) goes into `Env` on the attempt that has the graphics binds, and on no other (`startWithGpu`, `container-lifecycle.ts`). A container that started without the binds has no Mesa on the card, so it gets no variable. Each process of the container inherits it, and so does a browser that the agent starts for a test, with no step in the test (req 9, req 12). `claude/adapter.ts` gives the CLI the worker's whole environment; the other adapters were not read for this.
+2. **In the built-in browser's start command** — `playwrightMcpArgs` exports it beside the pin. In this session the CLI gave its MCP server the container's environment (`SHIPIT_GPU` was in it), so under Claude Code the export repeats the first way. Codex needs it: it gives an MCP server only the variables that its config names, and `writeMcpConfig` (`codex/adapter.ts`) names `PLAYWRIGHT_BROWSERS_PATH` alone. The other three adapters were not read for this.
+
+glibc ignores a tunable name that it does not know, with no message. So `gpu-graphics-env.test.ts` asks the loader (`ld.so --list-tunables`) for the value, where the machine has an x86-64 glibc that can answer.
+
+Measured with the variable, on the same host and day:
+
+| Upload in Chromium, to the answer of a `readPixels` | No variable | With the variable |
+|---|---|---|
+| The array, one call (the report) | 8286 to 11886 ms, 5 pages of 3 browsers (pressure 0.00 to 2.35) | 263 to 301 ms, 5 pages of 3 browsers (1.00 to 5.71) |
+| The array, one call for each layer | 13984 ms (9.66) | 352 ms (5.71) |
+| 145 separate 2D textures of 256 × 256 | 7280 ms (15.07) | 256 ms (4.67) |
+| One 2D texture of 1100 × 1100, 4.6 MB | 670 ms (12.26) | 31 ms (4.67) |
+| 145 `DYNAMIC_DRAW` buffers of 256 KiB | 4940 ms (10.40) | 268 ms (4.67) |
+| One 2D texture of 4096 × 2320 | 391 ms (15.07) | 299 ms (5.71) |
+| 145 `STATIC_DRAW` buffers of 256 KiB | 165 ms (10.40) | 151 ms (4.67) |
+| The array, 32 layers | 1063 ms (0.82) | 45 ms (0.36) |
+| The array, 64 layers | 3964 ms (0.67) | 173 ms (0.36) |
+| The array, GLX under Xvfb (`OpenGL 4.2`) | 9270 ms (2.43) | 288 ms (0.97) |
+
+- **A real `playwright-mcp`, started with the new command and an environment of `PATH` and `HOME` only,** took 387 and 367 ms for the array (pressure 0.04). Its renderer was the card, and its server had both variables. The session's own built-in browser, which has the old command, took 8388 ms (0.08).
+- **Mesa with no browser:** `glTexSubImage3D` of the array took 126 ms, against 4079 to 5279 ms, and the 145 separate textures 256 ms, against 4627 to 5503 ms. `memcpy` wrote the upload heap at 287 to 309 MB each second for each chunk size.
+- **`memcpy` on `malloc` memory measured the same on this CPU.** Three runs each way: 39 to 55 GB each second in a window of 256 KiB with and without the variable, 31 to 41 in a window of 4 MiB, and 5.3 to 7.9 against 4.8 to 8.0 in a window of 40 MB.
+- **What stays:** the card's memory takes 300 MB each second on this route, so an upload costs about 3.5 ms for each MB, and two times that where the browser copies it two times. `memset` uses `rep stosb`, which wrote the upload heap at 7 to 9 MB each second with and without the variable. No upload of the table was slow with the variable, and the driver's source has no `memset` of mapped memory, so the fill instruction has no tunable here.
+
+Rejected:
+
+- **The variable for the built-in browser only, and a line in `environment.md` for each other browser.** It changes fewer processes. But the report came from a test's own browser, and req 9 says that such a browser needs its flags and no variable.
+- **The variable in the image (`ENV` in the Dockerfiles).** It would change `memcpy` in each session of each host, for a fault that only a container with the mounts can have.
+- **A newer Mesa.** 25.0.7 from Debian's `bookworm-backports`, extracted into scratch space: `glTexSubImage3D` of the array took 4922 ms with no browser (pressure 0.28) and 120 ms with the variable. In Chromium the array took 4797 to 6721 ms (0.52 to 2.13), in three Mesa calls of 2153, 2182 and 592 ms for 63, 63 and 19 layers, so each layer cost what it costs on 22.3.6, and 164 to 187 ms with the variable. The GPU process had `libgallium-25.0.7-2~bpo12+1.so` loaded.
+- **Another ANGLE back end.** `--use-angle=gl` reaches the same Mesa through GLX (last row of the table). `--use-angle=vulkan` gave SwiftShader: Debian's `mesa-vulkan-drivers` has no Direct3D 12 driver (`dzn`), in 22.3.6 and in 25.0.7 (`libvulkan_intel`, `_lvp`, `_radeon`, and in 25.0.7 `_gfxstream` and `_virtio`). A `dzn` built from source was not tried.
+- **Chromium flags.** None was tried: the time is in Mesa's copy, after Chromium and ANGLE made their calls.
+
+glibc's own source later stopped `rep movsb` in `memcpy` on Zen 3 and Zen 4 cores, for a different fault of the instruction ([bug 30994](https://sourceware.org/bugzilla/show_bug.cgi?id=30994)). An image on a glibc with that change was not measured.
+
+### The shader link, asked with req 12
+
+The user asked if the shader link has a remedy that `environment.md` does not name. None was found in the configurations that were tried. Measured on the same day with [the shader probe](#to-repeat-it), 200 programs, the built-in browser's flags and the pin, one browser each way, at a load average of 11.5 to 15:
+
+| | Link, first load | Link, reloads | First draws |
+|---|---|---|---|
+| No variable | 5.4 s | 4.2 to 5.2 s | 7.9 to 8.3 s |
+| With the variable | 5.5 s | 4.5 to 7.0 s | 8.2 to 13.3 s |
+
+- **The variable did not remove the link or the first draws.** One browser each way on a host with load cannot show a small change, but the 4 to 5 s of the link and the 8 s of the first draws stayed. So that cost is not the copy.
+- **A sample of the browser's GPU process shows where it is.** gdb attached 289 times during the four loads of one browser, and 285 attaches gave a stack. 47 % of the stacks were in `d3d12_get_gfx_pipeline_state`, which a draw calls, and almost all of those ended in `libnvidia-gpucomp.so` (86) and `libnvwgf2umx.so` (39): NVIDIA's compiler and its Direct3D driver. 18 % were Mesa's GLSL compiler and linker, 7 % its conversion to DXIL, and 17 % had no Mesa frame and were in Chromium's own binary, which holds ANGLE's shader translator. This agrees with the sampler of the direct Mesa script above, and it is the first sample of a browser process.
+- **The driver and DirectX asked for no cache file in that run.** `strace` of the direct Mesa script with 20 programs showed no path of a cache. Outside libraries, Mesa and the driver asked for `drirc` files, `/dev/dri` and the EGL vendor file. So this configuration has no cache that a writable directory would turn on. A cache that another setting turns on was not looked for.
+
+### Measured after the update (req 12)
+
+Measured on 2026-10-15 on the same host, in a `granted` session container that an orchestrator with this change created. `SHIPIT_GPU_GRAPHICS_REASON` was not set, and the container's environment had `GLIBC_TUNABLES=glibc.cpu.x86_rep_movsb_threshold=0x40000000`; the loader reported that value for `glibc.cpu.x86_rep_movsb_threshold`. The image had Mesa 22.3.6 and glibc 2.36 as before, and Chromium 155.0.8059.12 (Playwright build 1247) instead of 153. The host's load average was 10 to 11 from other containers. Each run reported `ANGLE (Microsoft Corporation, D3D12 (NVIDIA GeForce RTX 4090), OpenGL ES 3.1)`.
+
+| Browser | Upload, to the answer of a `readPixels` | Time | CPU pressure |
+|---|---|---|---|
+| Started by `run-upload.mjs`, no variable given by hand | The array, one call (the report) | 348 ms | 0.14 |
+| The same | The array, one call for each layer | 312 ms | 0.14 |
+| The same | One 2D texture of 4096 × 2320 | 272 ms | 0.11 |
+| The same | 145 separate 2D textures of 256 × 256 | 275 ms | 0.11 |
+| The same | One 2D texture of 1100 × 1100, 4.6 MB | 33 ms | 0.11 |
+| The same | 145 `STATIC_DRAW` buffers of 256 KiB | 177 ms | 0.11 |
+| The same | 145 `DYNAMIC_DRAW` buffers of 256 KiB | 321 ms | 0.11 |
+| Started by `run-upload.mjs` with `--env=GLIBC_TUNABLES=` (the control) | The array, one call | 17197 ms | 5.70 |
+| The session's own built-in browser, through `browser_evaluate` | The array, one call, two times on one page | 523 and 334 ms | 16.54, read after the two |
+
+- **The browser that a test starts inherits the variable.** `run-upload.mjs` gives the browser `{ ...process.env }`, and the variable came from the container's environment.
+- **The built-in browser starts with it.** Its `playwright-mcp` server had `GLIBC_TUNABLES` and `GALLIUM_DRIVER=d3d12` in its environment. So did its GPU process, which had `libEGL_mesa.so.0`, `libd3d12.so`, `libd3d12core.so`, `libdxcore.so` and `libnvwgf2umx.so` loaded.
+- **The control shows that the variable is what makes the difference.** Without it, the array took 17.2 s, against 8.3 to 11.9 s on 2026-10-13 at a lower pressure. A sample of 12 stacks of a slow upload of 64 layers found `__memcpy_avx_unaligned_erms ← util_copy_box ← u_default_texture_subdata ← st_TexSubImage` in 9 of them.
+- **With `GLIBC_TUNABLES` in its environment, Chromium hides the type of its GPU process.** It forks that process from a zygote, and the process keeps the zygote's command line, `--type=zygote`, not `--type=gpu-process`. The renderers do the same. This check first took it for a change of Chromium 155, because each browser that it looked at had the variable: the built-in browser, and a Chromium that Playwright started, on the card and on SwiftShader. The control did too, because `--env=GLIBC_TUNABLES=` gives the variable an empty value. The cause was found later (nikzlabs/shipit#3226). Chromium 155 on SwiftShader, in a container with no GPU, showed `--type=gpu-process`, `--type=renderer` and `--type=utility` with no `GLIBC_TUNABLES`, and `--type=zygote` on each forked process with the remedy's value and with an empty value. Another variable with the remedy's value did not do it. glibc 2.36 puts the text of `GLIBC_TUNABLES` that `environ` points to in other memory, away from the command line and the other variables (a read of `environ` from Python showed it). So the probable cause is that Chromium's process-title code then does not write the type over the command line; that code was not read. With `--no-zygote`, the same Chromium named the process again (a run of the independent review), because each process then starts with its own command line. The probe files found the GPU process by its command line, and the shader probe then read no CPU time for it: a run of the old `run-link.mjs` gave `gpuProcCpuS` null and no libraries. `run-link.mjs` and `sample-gpu-process.sh` now also accept a Chromium process that has the renderer's libraries loaded: `libd3d12.so` or Mesa's on the card, `libvk_swiftshader.so` on SwiftShader. ANGLE is in the `chrome` binary, so it marks no process. With that change, the shader probe read a CPU time for the GPU process on the card and on SwiftShader. The review compared the process that each script picked with the GPU process that Chromium reports, on the card, on SwiftShader and on `llvmpipe`, with the built-in browser in operation: they were the same in each case.
+- **Each process of a browser had the main process's environment.** In three Chromiums started with a marker variable and with `GLIBC_TUNABLES` empty or set, on the card and on SwiftShader, the GPU process had the same two values as the main process. So `environment.md` tells the agent to read the main process, which is the child of the program that started the browser.
+
+### To repeat the upload measurement
+
+The files are in [`texture-upload-probe/`](texture-upload-probe/). They write only what the folder's `.gitignore` names. The commands are for a session container where `echo $SHIPIT_GPU` prints `granted`.
+
+```bash
+cd docs/325-session-gpu-access/texture-upload-probe
+G="--use-angle=gl-egl --ignore-gpu-blocklist"
+T=glibc.cpu.x86_rep_movsb_threshold=0x40000000
+
+# The uploads in Chromium. In a container that has the remedy, take the variable out for the first run.
+node run-upload.mjs no-variable --cases=all --env=GLIBC_TUNABLES= $G > results.txt
+node run-upload.mjs variable --cases=all --env=GLIBC_TUNABLES=$T $G >> results.txt
+python3 show.py results.txt
+
+# Mesa with no browser: the uploads, then the copy methods into mapped memory.
+gcc -O2 -o upload-direct upload-direct.c -ldl
+GLIBC_TUNABLES= ./upload-direct all
+GLIBC_TUNABLES=$T ./upload-direct all
+
+# The OpenGL calls of the browser's GPU process, in raw/gltime.<pid>.log.
+gcc -O1 -fPIC -shared -o gl-call-times.so gl-call-times.c -ldl
+mkdir -p raw
+node run-upload.mjs logged --env=GLIBC_TUNABLES= --env=LD_PRELOAD=$PWD/gl-call-times.so --env=GLTIME_DIR=$PWD/raw $G
+
+# The stacks. GDB_ROOT holds gdb and the debug symbols, extracted with dpkg -x.
+GDB_ROOT=$HOME/gdb-root ./sample-gpu-process.sh raw/stacks 30 -- \
+  node run-upload.mjs sampled --env=GLIBC_TUNABLES= --env=LD_PRELOAD=$PWD/gl-call-times.so --env=GLTIME_DIR=$PWD/raw $G
+python3 stack-shares.py raw/stacks
+```
+
+- `run-upload.mjs` takes `playwright-core` from the session image, as the shader probe does. `--cases` names the uploads (`all` is the seven of the table), `--layers` the number of layers, textures or buffers, and `--runs` the pages for each case.
+- `GDB_ROOT` had these Debian 12 packages: `gdb-minimal`, `libdebuginfod1`, `libipt2`, `libxxhash0`, `libelf1`, `libdw1`, `libbabeltrace1` and `libc6-dbg` from `bookworm`, and `libgl1-mesa-dri-dbgsym`, `libegl-mesa0-dbgsym` and `libglapi-mesa-dbgsym` from `bookworm-debug`. The session has no root, so they were extracted and not installed.
+- gdb can attach only to a process that has `gl-call-times.so` preloaded. The kernel's `ptrace_scope` is 1, and Chromium gives its one `PR_SET_PTRACER` place to its crash handler; the library keeps that place open.
+- Each attach stops the browser, so an upload that is sampled takes much longer: 40 s with 30 attaches.
+- The numbers above are from an earlier form of these files, in the scratch space of the session that measured. The files in the repository ran after that: `run-upload.mjs` for the table of the seven uploads, and the logger, the sampler and `upload-direct array` one time each.
+
 ## What is not verified here
+
+For req 12, one host and one CPU were observed, and the game of the session that asked was not run: its repository is private to that session. So that the game's 11.8 s goes away is a conclusion from the same calls on a page with no game. One container that an orchestrator with this change created was observed ([Measured after the update](#measured-after-the-update-req-12)), on Docker Desktop with the WSL 2 backend and the Claude Code CLI; the built-in browsers of the other CLIs were not observed with it. Whether `rep movsb` is slow on this memory with another CPU, an Intel one for example, was not measured; there the variable changes which `memcpy` path runs and was not timed. The part of the game's load that it reports as the link of 16 programs (4.1 s) was not explained: the shader probe gives 21 to 27 ms for the link of a program, and a time that a page reads around a link can hold an upload before it.
 
 The tests drive fakes. One real host was observed, Docker Desktop with the WSL 2 backend: a session container created with the switch on has `SHIPIT_GPU=granted`, `nvidia-smi` lists the card, and req 7 holds ([Measured on the host](#measured-on-the-host)). Not yet checked: Docker Engine + the toolkit in WSL2, and native Linux; `SESSION_READONLY_ROOTFS=1` and `SESSION_SECCOMP=1`; and what `docker compose config` writes for `gpus: all` (the check accepts both the string and the list form). The fallback means a failure on any of these leaves a session without the GPU, not a session that cannot start.
 
@@ -374,6 +517,8 @@ The third pass had no idle host either: the load average was 1.0 to 5.1 in the f
 - `src/server/orchestrator/container-lifecycle.ts` — request, fallback, state, the graphics attempt.
 - `docker/Dockerfile.session-worker.prod`, `Dockerfile.session-worker.dev` — the DirectX links, Xvfb, the EGL library; `session-gpu-dockerfiles.test.ts` keeps them on the bound directory.
 - `src/server/session/agents/playwright-mcp.ts`, `playwright-mcp-gpu.json` — when the built-in browser draws on the GPU, and its start command and flags.
+- `src/server/shared/gpu-graphics-env.ts` — the C library tunable for uploads to the card (req 12); `GPU_GRAPHICS_ENV` in `session-gpu.ts` puts it into the container, and `playwright-mcp.ts` into the built-in browser's start.
+- `docs/325-session-gpu-access/texture-upload-probe/` — the upload page and its driver, the direct Mesa program, the OpenGL call logger and the stack sampler of [the upload measurement](#to-repeat-the-upload-measurement).
 - `docs/325-session-gpu-access/shader-compile-probe/` — the test page, the browser driver, the frame series, the direct Mesa script and the sampler of [the shader compile measurement](#to-repeat-it).
 - `src/server/orchestrator/session-container.ts` — `gpuAccess` option, `standbyGpuOutOfDate`, `gpuDecision`.
 - `src/server/orchestrator/container-discovery.ts` — state on adoption.

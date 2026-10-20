@@ -170,3 +170,26 @@ describe("install-marker — requireDepsHash (pnpm, docs/276 section 5)", () => 
     expect(markerMatches(marker, { ...STAMP, installCommands: ["pnpm i"] }, pnpm)).toBe(false);
   });
 });
+
+// A lifecycle script can read files the hash does not cover, e.g. `postinstall: prisma generate`.
+describe("install-marker — a content key that does not describe the tree (docs/288)", () => {
+  const marker = makeMarker(STAMP, "t");
+  const otherCommit = { ...STAMP, sourceCommit: "b".repeat(40) };
+  const lifecycle = { contentKeyDescribesTree: false };
+
+  it("does not let a matching hash stand in for a different commit", () => {
+    expect(markerMatches(marker, otherCommit)).toBe(true);
+    expect(markerMatches(marker, otherCommit, lifecycle)).toBe(false);
+  });
+
+  it("still skips on the same commit", () => {
+    expect(markerMatches(marker, STAMP, lifecycle)).toBe(true);
+  });
+
+  it("requires both the hash and the commit for pnpm", () => {
+    const both = { requireDepsHash: true, contentKeyDescribesTree: false };
+    expect(markerMatches(marker, STAMP, both)).toBe(true);
+    expect(markerMatches(marker, otherCommit, both)).toBe(false);
+    expect(markerMatches(marker, { ...STAMP, depsHash: "f".repeat(64) }, both)).toBe(false);
+  });
+});

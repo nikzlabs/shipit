@@ -789,9 +789,13 @@ managers become account-scoped" (in-flight process handle, last pending URL/
 code event, timeout, output buffer, completion/failure state) lives in an
 in-memory map keyed by `{ provider, accountId }`, owned by the relevant auth
 manager. The persisted `ProviderAccount.status` only reflects
-`"authenticating"` while a flow is active, and is reset (to `"ready"` /
-`"auth_failed"`) on process exit so a crash mid-flow doesn't leave a
-permanent `"authenticating"` row. A turn is routed to an `"authenticating"`
+`"authenticating"` while a flow is active. No login process outlives the
+orchestrator, so at start-up `ProviderAccountManager.endInterruptedSignIns`
+(called in `app-di.ts` before agent detection, which counts such a row as a
+credential, and so before the OAuth refreshers start) sets a row that still reads `"authenticating"` as
+`cancelAccountAuth` would: `"ready"` when its credential root holds a
+credential, else `"unavailable"`. Before 2026-10-15 nothing did this, although
+this paragraph said the row was reset on process exit. A turn is routed to an `"authenticating"`
 account only while its credential root holds a credential: Claude's sign-in
 removes it at its start (docs/153-orchestrator-owned-claude-oauth-refresh,
 "A sign-in is not the harvest's to complete").

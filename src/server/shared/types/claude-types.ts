@@ -150,6 +150,8 @@ export interface ClaudeAssistantEvent {
   is_meta?: boolean;
   /** docs/297 — `<local-command-stdout>…</local-command-stdout>`; CLI-only. */
   local_command_source?: string;
+  /** The message's id in the CLI's conversation file. */
+  uuid?: string;
 }
 
 export interface ClaudeUserEvent {
@@ -159,6 +161,7 @@ export interface ClaudeUserEvent {
   };
   parent_tool_use_id?: string;
   isReplay?: boolean;
+  uuid?: string;
 }
 
 /** Last iteration's input and cache counts measure context; turn sums do not. */
@@ -167,6 +170,11 @@ export interface ClaudeUsageIteration {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  /** Cache writes by lifetime (docs/333-idle-compaction). */
+  cache_creation?: {
+    ephemeral_5m_input_tokens?: number;
+    ephemeral_1h_input_tokens?: number;
+  };
   type?: string;
 }
 

@@ -54,7 +54,6 @@ function makeSessionManager(opts: {
       setProviderRouteCalls.push({ kind, routeId });
     },
     setAgentSessionId: () => {},
-    clearAgentSessionId: () => {},
   } as unknown as SessionManager;
   return { sm, setProviderRouteCalls };
 }

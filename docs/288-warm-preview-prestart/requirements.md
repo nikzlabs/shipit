@@ -59,12 +59,38 @@ The trace behind that report:
     it, which is the one moment it is too late to start.
 11. A claim that could not use the warm tier says so. "Warm hit" must not be
     reported for a session that then pays the full cold cost.
+12. The warm session is kept for a person who opens a new session. A session
+    that starts with nobody watching it — one an agent spawns, a Quick Capture,
+    a scheduled run, a plugin install — does not take it.
+13. Opening a warm session does not make the user wait for an install or a
+    preview restart because the default branch moved after the session was
+    warmed. This holds for repos opened in the last 7 days — the repos that get
+    a pre-started preview (req 8).
 
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-10-19 — *Is req 13 worth building now, and for which repos?* The marker
+  fix already removed the reinstall when only source code moved; req 13 covers
+  the rest — a default-branch commit that changed the dependencies, and a repo
+  whose install has no usable content key. The human chose to build it now, for
+  recently used repos only (the 7-day window of req 8), over every warm repo or
+  waiting for the new log lines. → req 13.
+
+- 2026-10-19 — *Why do new sessions still open cold?* Asked by the human after
+  this feature shipped. Two causes were found in the code. (1) A claim that moved
+  HEAD deleted the install marker, so activation reinstalled and the install gate
+  stopped the pre-started services; that is a defect against reqs 1 and 5 and was
+  fixed, not a new requirement. (2) Agent-spawned sessions took the one warm
+  session, so the next session a person opened had only a clone. The human
+  approved, on the session's action card, that *"the warm session is kept for a
+  person; agent-spawned sessions do not consume it"*, applied to child and
+  headless sessions (headless includes Quick Capture and scheduled runs). → req
+  12. The same card asked for warm clones to be kept current with the default
+  branch, with requirements first. → req 13, and the open questions above.
 
 - 2026-09-03 — *"If I start working in the morning and open a new session, it
   should be warmed up already."* Stated to correct an answer that had explained

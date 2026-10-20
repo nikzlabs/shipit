@@ -1,6 +1,7 @@
 import type { AgentId, AgentProcess, FileAttachment, ImageAttachment } from "../shared/types.js";
 import { executeAgentTurn } from "./turn-executor.js";
 import {
+  releaseResidentOnPendingRewind,
   releaseResidentOnServiceMcpChange,
   releaseResidentOnSpawnChange,
   releaseResidentOnStatusCardChange,
@@ -369,6 +370,8 @@ async function runDispatchedTurnInner(
     opts.onTurnComplete?.(outcome);
   };
 
+  // One user row for every attempt; a retry's echo of the prompt stamps it (docs/007 req 5).
+  const persistGuard: { done: boolean; rowId?: number } = { done: false };
   const runOnce = async (attempt: number): Promise<void> => {
     // Retire before capture: env prep must not kill the incoming agent during account failover.
     if (deps.needsAccountFailover?.(runner.sessionId, agentId)) {
@@ -385,6 +388,7 @@ async function runDispatchedTurnInner(
       runner,
       desiredSpawnIdentity(deps.listenerDeps.sessionManager, runner.sessionId, agentId),
     );
+    releaseResidentOnPendingRewind(runner, deps.listenerDeps.sessionManager.get(runner.sessionId)?.agentResumeAt);
     // docs/303 req 21, the same comparison the interactive path makes. Skipped when the
     // dep is unwired, where the setting cannot be read at all.
     if (deps.statusCardEnabled) {
@@ -405,6 +409,7 @@ async function runDispatchedTurnInner(
     await executeAgentTurn(runner, deps, agent, {
       agentId,
       sessionId: runner.sessionId,
+      persistGuard,
       prompt,
       ...(attempt > 0 ? { continuesTurn: true } : {}),
       ...(insertedStatusContext ? { statusContext: insertedStatusContext } : {}),

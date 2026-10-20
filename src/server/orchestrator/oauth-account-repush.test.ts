@@ -11,14 +11,14 @@ vi.mock("./session-credentials.js", () => ({
     return account === undefined ? {} : { claude: account };
   },
   repushProviderAccountToken: (
-    _root: string, sessionId: string, _agent: string, _account: string, _a: unknown, _b: unknown,
+    _root: string, sessionId: string, _agent: string, _account: string,
     opts?: { repairLeakedSubtrees?: boolean },
   ) => {
     pushed.push({ sessionId, via: "account", repair: opts?.repairLeakedSubtrees });
     return true;
   },
   repushAgentToken: (
-    _root: string, sessionId: string, _agent: string, _a: unknown, _b: unknown,
+    _root: string, sessionId: string, _agent: string,
     opts?: { repairLeakedSubtrees?: boolean },
   ) => {
     pushed.push({ sessionId, via: "legacy", repair: opts?.repairLeakedSubtrees });

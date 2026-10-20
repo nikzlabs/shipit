@@ -1208,13 +1208,40 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "quota_resume");
   },
+  // docs/007-threads-checkpoints reqs 4, 5 — the CLI's id of each chat message, and the message
+  // a rewind left for the next spawn to fork the stored conversation at.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "agent_message_id")) {
+      db.exec("ALTER TABLE messages ADD COLUMN agent_message_id TEXT");
+    }
+    addSessionColumnIfMissing(db, "agent_resume_at");
+  },
+  // docs/295-compact-context-on-merge req 5 — the user's compaction choice, kept for the session.
+  (db) => {
+    addSessionColumnIfMissing(db, "compact_after_merge_off", "INTEGER NOT NULL DEFAULT 0");
+  },
+  // docs/333-idle-compaction — the lifetime of the cache a turn wrote, and when its last model
+  // request started and on which harness and model: the record an idle compaction's deadline is
+  // derived from, also at boot.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(usage_turns)").all() as { name: string }[];
+    for (const [column, type] of [
+      ["cache_ttl", "TEXT"],
+      ["cache_anchor_at", "INTEGER"],
+      ["cache_agent_id", "TEXT"],
+      ["cache_model", "TEXT"],
+    ] as const) {
+      if (!columns.some((c) => c.name === column)) db.exec(`ALTER TABLE usage_turns ADD COLUMN ${column} ${type}`);
+    }
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
-function addSessionColumnIfMissing(db: DatabaseInstance, column: string): void {
+function addSessionColumnIfMissing(db: DatabaseInstance, column: string, type = "TEXT"): void {
   const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
   if (columns.some((c) => c.name === column)) return;
-  db.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
+  db.exec(`ALTER TABLE sessions ADD COLUMN ${column} ${type}`);
 }
 
 /** Frozen zero-based indices; tests must not count backward from the changing tip. */

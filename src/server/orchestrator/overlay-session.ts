@@ -11,7 +11,7 @@ import {
 import { overlayScopeHash, overlayVolumeName, overlayBaseGenDir, type OverlaySpec } from "./overlay-volume.js";
 import { readBasePointerByHash, type BasePointer, type OverlayScope } from "./overlay-base.js";
 import { makeMarker, serializeMarker } from "../shared/install-marker.js";
-import { computeInstallDepsHash } from "../shared/deps-hash.js";
+import { computeInstallDepsHash, contentKeyDescribesTree } from "../shared/deps-hash.js";
 import { chownToSessionWorker } from "./session-worker-uid.js";
 import { readNodePin, parseVersion, satisfies } from "../shared/node-pin.js";
 
@@ -458,13 +458,14 @@ export async function preStampInstallMarker(args: {
   }
 
   const depsHash = computeInstallDepsHash(workspaceDir, installCommands, installInputs);
+  const contentKeyed = contentKeyDescribesTree(workspaceDir, installInputs);
 
   let runtimeKey: string | null = null;
   for (const spec of specs) {
     const ptr = readPointer(stateDir, spec.scopeHash);
     if (!ptr?.marker) return false;
     const commitMatches = ptr.commit === head;
-    const contentMatches =
+    const contentMatches = contentKeyed &&
       depsHash !== null && typeof ptr.marker.depsHash === "string" && ptr.marker.depsHash === depsHash;
     if (!commitMatches && !contentMatches) return false;
     // A concurrent publish can advance the pointer past the generation actually mounted.
@@ -478,6 +479,17 @@ export async function preStampInstallMarker(args: {
   }
   if (!runtimeKey) return false;
 
+  // The install controller drops the marker before every install, so a missing marker over a used
+  // upper is usually an install that failed or was killed, and its partial files shadow the base.
+  const used = specs.filter((s) => !upperIsEmpty(s)).map((s) => s.depDir);
+  if (used.length > 0) {
+    console.warn(
+      `[overlay] not pre-stamping the install marker: this session's own layer for ${used.join(", ")} ` +
+        "already holds files that no finished install vouches for, so agent.install runs over it.",
+    );
+    return false;
+  }
+
   const marker = makeMarker(
     { sourceCommit: head, runtimeKey, installCommands, depsHash },
     new Date().toISOString(),
@@ -489,4 +501,14 @@ export async function preStampInstallMarker(args: {
   chown(markerDir);
   chown(markerFile);
   return true;
+}
+
+// Unreadable counts as used: a wrong refusal costs one install, a wrong stamp a broken tree.
+function upperIsEmpty(spec: DepDirOverlaySpec): boolean {
+  if (!spec.orchDirs) return false;
+  try {
+    return fs.readdirSync(spec.orchDirs.upperdir).length === 0;
+  } catch {
+    return false;
+  }
 }

@@ -26,6 +26,7 @@ import {
   CLASSIFIED_SERVICE_FIELDS,
   SERVICE_HOME,
   declaresHome,
+  dockerDesktopRefusal,
   type ComposeParseOptions,
   type ComposeService,
 } from "./compose-generator.js";
@@ -1999,6 +2000,48 @@ describe("rewriteResolvedModel", () => {
         .toThrow("could not locate this session's workspace on the Docker host");
     });
 
+    // docs/317 "Docker Desktop": it looks a bind-backed volume's device up on the host, where it is missing.
+    describe("dockerDesktopRefusal", () => {
+      const persist = (source: string, target: string, volume: Record<string, unknown> = {}) =>
+        ({ type: "volume", source, target, volume });
+      const forms: [string, unknown, boolean][] = [
+        ["the whole workspace", bind(WS, "/app"), false],
+        ["a workspace subdirectory", bind(`${WS}/backend`, "/app"), true],
+        ["a workspace file", bind(`${WS}/conf/nginx.conf`, "/etc/nginx/nginx.conf"), true],
+        ["the Docker socket", bind("/var/run/docker.sock", "/var/run/docker.sock"), false],
+        ["all of /persist", persist("persist", "/data"), false],
+        ["a /persist subdirectory, long form", persist("persist", "/data", { subpath: "plan" }), true],
+        ["a /persist subdirectory, ShipIt's short form", persist("persist/plan", "/data"), true],
+        ["a project volume", persist("pgdata", "/var/lib/postgresql/data"), false],
+        ["a tmpfs", { type: "tmpfs", target: "/tmp" }, false],
+      ];
+      const withDevices = {
+        ...volumeOpts,
+        persist: { volumeSubpath: "sessions/abc/scratch", device: "/var/lib/docker/volumes/shipit-ws-vol/_data/sessions/abc/scratch" },
+      };
+
+      // The refusal must name exactly the mounts the rewrite would give a bind-backed volume.
+      it.each(forms)("agrees with the rewrite on %s", (_label, mount, refused) => {
+        const model = stack([mount], {}, "api");
+        expect(dockerDesktopRefusal(model, WS) !== null).toBe(refused);
+        const declared = Object.keys(rewrite(model, withDevices).volumes ?? {});
+        expect(declared.includes("persist") || declared.includes("shipit-session-workspace")).toBe(refused);
+      });
+
+      it("names the service, the mount, and the whole mount that works instead", () => {
+        expect(dockerDesktopRefusal(stack([bind(WS, "/src"), bind(`${WS}/backend`, "/app")], {}, "api"), WS))
+          .toEqual(new ComposeValidationError(
+            "Service `api`: ShipIt cannot mount `./backend` on Docker Desktop. There it can mount only all of the "
+            + "workspace, because Docker Desktop cannot mount one subdirectory and keep a symlink in it from reaching "
+            + "other sessions' files. Mount `.:/mnt` instead and use `/mnt/backend`.",
+          ));
+        expect(dockerDesktopRefusal(stack([persist("persist", "/data", { subpath: "plan" })], {}, "api"), WS)?.message)
+          .toBe("Service `api`: ShipIt cannot mount `persist/plan` on Docker Desktop. There it can mount only all of "
+            + "/persist, because Docker Desktop cannot mount one subdirectory and keep a symlink in it from reaching "
+            + "other sessions' files. Mount `persist:/mnt` instead and use `/mnt/plan`.");
+      });
+    });
+
     it("refuses to mount the workspace when its place in the shared volume is unknown", () => {
       expect(() => render([bind(WS, "/app")], { ...volumeOpts, workspaceSubpath: undefined }))
         .toThrow("could not locate this session inside the workspace volume");
@@ -3242,8 +3285,9 @@ describe("the `persist` volume (docs/317)", () => {
   const rewriteOpts = {
     sessionId: "0123456789abcdef-session",
     workspaceDir: WS,
-    persist: { device: "/var/lib/docker/volumes/ws/_data/sessions/s1/scratch" },
+    persist: { volumeSubpath: "sessions/s1/scratch", device: "/var/lib/docker/volumes/ws/_data/sessions/s1/scratch" },
   };
+  const volumeDeployment = { workspaceVolume: "shipit-ws", workspaceSubpath: "sessions/s1/workspace" };
 
   interface PersistDoc {
     services: Record<string, { volumes?: unknown[] }>;
@@ -3324,7 +3368,7 @@ services:
     expect(api).not.toHaveProperty("persistSubpaths");
   });
 
-  it("mounts /persist through a bind-backed volume of the session's own scratch directory", () => {
+  it("mounts a /persist subdirectory through a bind-backed volume of the session's own scratch directory", () => {
     const doc = snapshot(`
 services:
   api:
@@ -3360,16 +3404,37 @@ services:
         volume:
           subpath: cache
           nocopy: false
-`, { workspaceVolume: "shipit-ws", workspaceSubpath: "sessions/s1/workspace" });
+`, volumeDeployment);
 
     expect(doc.services.api.volumes).toEqual([
-      { type: "volume", source: "persist", target: "/data", read_only: true, volume: { nocopy: true } },
+      {
+        type: "volume", source: "shipit-workspace", target: "/data", read_only: true,
+        volume: { nocopy: true, subpath: "sessions/s1/scratch" },
+      },
       { type: "volume", source: "shipit-workspace", target: "/app", volume: { subpath: "sessions/s1/workspace" } },
       {
         type: "volume", source: "persist", target: "/cache", read_only: false,
         volume: { nocopy: true, subpath: "cache" },
       },
     ]);
+  });
+
+  // The scratch directory's parent is never mounted, so no container can replace it with a symlink.
+  // Docker Desktop mounts this form too; it cannot mount the bind-backed volume (docs/317).
+  it("mounts all of /persist from the workspace volume at the scratch directory, as the agent container does", () => {
+    const doc = snapshot(`
+services:
+  api:
+    image: x
+    volumes: ["persist:/persist"]
+volumes:
+  persist:
+`, volumeDeployment);
+
+    expect(doc.services.api.volumes).toEqual([
+      { type: "volume", source: "shipit-workspace", target: "/persist", volume: { nocopy: true, subpath: "sessions/s1/scratch" } },
+    ]);
+    expect(doc.volumes).toEqual({ "shipit-workspace": { name: "shipit-ws", external: true } });
   });
 
   it("rewrites persist mounts when the workspace is a bind mount too", () => {
@@ -3386,7 +3451,7 @@ services:
     expect(doc.volumes?.persist?.driver_opts?.device).toBe(rewriteOpts.persist.device);
   });
 
-  it("replaces a declared top-level `persist` volume even when no service mounts it", () => {
+  it("drops a declared top-level `persist` volume that no service mounts", () => {
     const doc = snapshot(`
 services:
   api:
@@ -3395,7 +3460,7 @@ volumes:
   persist:
   pgdata:
 `);
-    expect(doc.volumes?.persist?.driver_opts?.o).toBe("bind");
+    expect(doc.volumes?.persist).toBeUndefined();
     expect(doc.volumes?.pgdata).toEqual({
       name: `${PROJECT}_pgdata`,
       labels: { "shipit-managed": "true", "shipit-session": rewriteOpts.sessionId },
@@ -3410,8 +3475,10 @@ volumes:
   it("fails rather than emit a mount it has no directory for", () => {
     expect(() => snapshot(`services:\n  api:\n    image: x\n    volumes: ["persist:/data"]\n`, { persist: undefined }))
       .toThrow(/could not be located/);
-    expect(() => snapshot(`services:\n  api:\n    image: x\nvolumes:\n  persist:\n`, { persist: undefined }))
-      .toThrow(/could not be located/);
+    expect(() => snapshot(`services:\n  api:\n    image: x\n    volumes: ["persist/plan:/data"]\n`, {
+      ...volumeDeployment,
+      persist: { volumeSubpath: rewriteOpts.persist.volumeSubpath },
+    })).toThrow(/could not be located/);
   });
 });
 
@@ -3504,6 +3571,54 @@ networks:
       });
       expect([...check.trustedOpsProxies]).toEqual(["docker-socket-proxy"]);
     }
+  });
+
+  it("refuses a project image that names one of ShipIt's own repositories, so no build can move its tag", () => {
+    const reserved = { ...ctx, reservedImages: ["shipit-session-worker:prod", "shipit-compose-helper:prod"] };
+    const build = { context: WS, dockerfile: "Dockerfile" };
+    for (const web of [
+      { image: "shipit-compose-helper:prod", build },
+      { image: "docker.io/library/shipit-compose-helper", build },
+      { image: "node:20", build: { ...build, tags: ["Shipit-Compose-Helper:dev"] } },
+      { image: "shipit-compose-helper:prod" },
+      // Any tag of a reserved repository: `:docker` is the worker image ops sessions run.
+      { image: "shipit-session-worker:docker", build },
+    ]) {
+      expect(() => validateResolvedModel(resolved(web), reserved), JSON.stringify(web))
+        .toThrow("is reserved for one of ShipIt's own images");
+    }
+    expect(() => validateResolvedModel(resolved({ image: "shipit-compose-helper-fork:prod", build }), reserved)).not.toThrow();
+    expect(() => validateResolvedModel(resolved({ image: "shipit-compose-helper:prod", build }), ctx)).not.toThrow();
+
+    // Docker Hub's implied `library/` applies to a one-part name only.
+    const nested = { ...ctx, reservedImages: ["acme/helper:prod"] };
+    expect(() => validateResolvedModel(resolved({ image: "docker.io/acme/helper:x", build }), nested))
+      .toThrow("is reserved for one of ShipIt's own images");
+    expect(() => validateResolvedModel(resolved({ image: "library/acme/helper", build }), nested)).not.toThrow();
+  });
+
+  it("refuses an image name or build tag that Buildx Bake would expand after this check", () => {
+    const build = { context: WS, dockerfile: "Dockerfile" };
+    // Assembled at runtime: a literal Bake expression trips no-template-curly-in-string.
+    const bakeExpression = ["$", '{"shipit-compose-helper"}:prod'].join("");
+    for (const web of [
+      { image: "node:20", build: { ...build, tags: [bakeExpression] } },
+      { image: "node:20", build: { ...build, tags: ["%{ if true }shipit-compose-helper%{ endif }:prod"] } },
+      { image: bakeExpression, build },
+      { image: "node 20" },
+    ]) {
+      expect(() => validateResolvedModel(resolved(web), ctx), JSON.stringify(web))
+        .toThrow("is not a plain image reference");
+    }
+    const literal = { image: "ghcr.io:443/acme/web:1.2-rc_3@sha256:abc", build: { ...build, tags: ["localhost:5000/web:Dev"] } };
+    expect(() => validateResolvedModel(resolved(literal), ctx)).not.toThrow();
+    const ipv6 = { image: "[2001:db8::1]:5000/acme/web:Dev", build: { ...build, tags: ["[::1]:5000/web"] } };
+    expect(() => validateResolvedModel(resolved(ipv6), ctx)).not.toThrow();
+
+    // Bake expands `build.network` too; only its fixed values pass.
+    const hostNetwork = ["$", '{"host"}'].join("");
+    expect(() => validateResolvedModel(resolved({ build: { ...build, network: hostNetwork } }), ctx))
+      .toThrow(`\`build.network: ${hostNetwork}\` is not allowed`);
   });
 
   it("refuses a bind source that resolved outside the workspace", () => {

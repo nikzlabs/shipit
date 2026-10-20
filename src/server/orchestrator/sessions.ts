@@ -37,6 +37,7 @@ interface SessionRow {
   workspace_dir: string | null;
   remote_url: string | null;
   conversation_replay: string | null;
+  agent_resume_at: string | null;
   archived: number;
   disk_tier: string;
   user_archived: number;
@@ -84,6 +85,7 @@ interface SessionRow {
   merged_head_sha: string | null;
   merge_continue_declined_anchor: string | null;
   merge_continue_compacted_anchor: string | null;
+  compact_after_merge_off: number;
   pending_agent_notice: string | null;
   pr_repo_id: string | null;
   pr_number: number | null;
@@ -229,6 +231,7 @@ export function toListRow(session: SessionInfo): SessionListRow {
     sessionStatus: _sessionStatus,
     agentGoal: _agentGoal,
     conversationReplay: _conversationReplay,
+    agentResumeAt: _agentResumeAt,
     pendingAgentNotice: _pendingAgentNotice,
     ...row
   } = session;
@@ -324,7 +327,7 @@ export class SessionManager {
     }
   }
 
-  /** Runs after each write of a session's status card or goal; returns the unsubscribe. */
+  /** Runs after each write of a session's status card, goal or compaction choice; returns the unsubscribe. */
   onDetailsChanged(listener: (sessionId: string) => void): () => void {
     this.detailsListeners.add(listener);
     return () => {
@@ -345,7 +348,9 @@ export class SessionManager {
   private fromRow(row: SessionRow): SessionInfo {
     const info: SessionInfo = this.listRowFromRow(row);
     if (row.conversation_replay) info.conversationReplay = row.conversation_replay;
+    if (row.agent_resume_at) info.agentResumeAt = row.agent_resume_at;
     if (row.pending_agent_notice) info.pendingAgentNotice = row.pending_agent_notice;
+    if (row.compact_after_merge_off) info.compactAfterMergeOff = true;
     if (row.agent_goal) {
       const goal = parseAgentGoal(row.agent_goal);
       if (goal) info.agentGoal = goal;
@@ -561,8 +566,24 @@ export class SessionManager {
     ).run(now, now, id);
   }
 
+  /**
+   * Only the CLI-reported id is written here. The conversation it names now holds any
+   * armed replay, so the replay is retired in the same write (docs/007). A rewind point is
+   * retired only by a different id: the fork it asked for reports one, a resume does not.
+   */
   setAgentSessionId(id: string, agentSessionId: string): void {
-    this.db.prepare("UPDATE sessions SET agent_session_id = ? WHERE id = ?").run(agentSessionId, id);
+    this.db.prepare(`
+      UPDATE sessions
+         SET agent_resume_at = CASE WHEN agent_session_id IS ? THEN agent_resume_at ELSE NULL END,
+             agent_session_id = ?,
+             conversation_replay = NULL
+       WHERE id = ?
+    `).run(agentSessionId, agentSessionId, id);
+  }
+
+  /** docs/007 req 4 — the message the next spawn forks the stored conversation at; null clears it. */
+  setAgentResumeAt(id: string, messageId: string | null): void {
+    this.db.prepare("UPDATE sessions SET agent_resume_at = ? WHERE id = ?").run(messageId, id);
   }
 
   /**
@@ -601,26 +622,6 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET conversation_replay = ? WHERE id = ?").run(replay, id);
   }
 
-  /**
-   * A take: the replay is spent by the run parameters that carry it into a system prompt.
-   * An attempt that then fails without reaching the agent leaves the session threadless
-   * AND replayless, which is what `reseedConversationForRetry` (`turn-executor.ts`) puts
-   * back before a retry spawns.
-   */
-  consumeConversationReplay(id: string): string | undefined {
-    let replay: string | undefined;
-    this.db.transaction(() => {
-      const row = this.db.prepare(
-        "SELECT conversation_replay FROM sessions WHERE id = ?",
-      ).get(id) as { conversation_replay: string | null } | undefined;
-      if (row?.conversation_replay) {
-        this.db.prepare("UPDATE sessions SET conversation_replay = NULL WHERE id = ?").run(id);
-        replay = row.conversation_replay;
-      }
-    })();
-    return replay;
-  }
-
   // Branch movement supersedes earlier notices, including appended ones.
   setPendingAgentNotice(id: string, notice: string): void {
     this.db.prepare("UPDATE sessions SET pending_agent_notice = ? WHERE id = ?").run(notice, id);
@@ -635,6 +636,19 @@ export class SessionManager {
       if (existing.includes(notice)) return;
       const combined = existing ? `${existing}\n\n${notice}` : notice;
       this.db.prepare("UPDATE sessions SET pending_agent_notice = ? WHERE id = ?").run(combined, id);
+    })();
+  }
+
+  /** docs/007 req 3 — an undone code rewind takes back its line if no turn has read it yet. */
+  removePendingAgentNotice(id: string, notice: string): void {
+    this.db.transaction(() => {
+      const row = this.db.prepare(
+        "SELECT pending_agent_notice FROM sessions WHERE id = ?",
+      ).get(id) as { pending_agent_notice: string | null } | undefined;
+      const existing = row?.pending_agent_notice;
+      if (!existing?.includes(notice)) return;
+      const remaining = existing.split("\n\n").filter((part) => part !== notice).join("\n\n");
+      this.db.prepare("UPDATE sessions SET pending_agent_notice = ? WHERE id = ?").run(remaining || null, id);
     })();
   }
 
@@ -761,12 +775,12 @@ export class SessionManager {
 
   /**
    * docs/303 — the card is marked stale rather than cleared: after a rewind it may describe
-   * work that is gone, and "Stale" is how it says so. The mark lives here, with the goal's
-   * clear, because every conversation reset and rewind reaches this one method.
+   * work that is gone, and "Stale" is how it says so. A chat rewind also drops the shown
+   * goal, which the forked conversation may not have. The stored agent session id is never
+   * cleared (docs/007 req 2).
    */
-  clearAgentSessionId(id: string): void {
-    // The goal belonged to the old conversation's thread.
-    this.db.prepare("UPDATE sessions SET agent_session_id = NULL, agent_goal = NULL WHERE id = ?").run(id);
+  markRewound(id: string, opts: { chat: boolean }): void {
+    if (opts.chat) this.db.prepare("UPDATE sessions SET agent_goal = NULL WHERE id = ?").run(id);
     const card = this.get(id)?.sessionStatus;
     if (card?.fresh) this.setSessionStatus(id, { ...card, fresh: false });
     else this.detailsChanged(id);
@@ -1113,6 +1127,11 @@ export class SessionManager {
 
   setAutoFixCiPaused(id: string, paused: boolean): void {
     this.db.prepare("UPDATE sessions SET auto_fix_ci_paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
+  }
+
+  setCompactAfterMergeOff(id: string, off: boolean): void {
+    this.db.prepare("UPDATE sessions SET compact_after_merge_off = ? WHERE id = ?").run(off ? 1 : 0, id);
+    this.detailsChanged(id);
   }
 
   /** docs/322 — the agent's last turn ended waiting for the user, so automatic turns wait too. */

@@ -58,11 +58,7 @@ import {
   turnTakesMessages,
 } from "./turn-stop-request.js";
 import { deliverWaitingMessages } from "./dispatch-steering.js";
-import path from "node:path";
-import { armConversationReplay, replaySpillDirs } from "./services/replay.js";
-import type { ReplaySpillTarget } from "./services/replay.js";
 import {
-  clearConversationThread,
   refreshStatusContextInPrompt,
   settleSessionStatusCard,
   shouldCarryStatusNudge,
@@ -111,7 +107,8 @@ export interface TurnInput {
     uploadPaths?: string[];
     userReview?: { filePaths: string[]; commentCount: number };
   };
-  persistUserMessage: (sessionId: string) => void;
+  /** A number returned is the row it wrote, which the CLI's echo of the prompt stamps (docs/007 req 5). */
+  persistUserMessage: (sessionId: string) => unknown;
   afterUserMessagePersisted?: (sessionId: string) => void;
   isNewSession: boolean;
   isAuthRetry?: boolean;
@@ -121,7 +118,8 @@ export interface TurnInput {
   continuesTurn?: boolean;
   // Retries exclude every recorded route; use only actual provider refusals.
   attemptLedger?: readonly RefusedAttempt[];
-  persistGuard?: { done: boolean };
+  /** Shared by a turn's attempts; `rowId` is the user row the first one wrote (docs/007 req 5). */
+  persistGuard?: { done: boolean; rowId?: number };
   fallbackTitle: string;
   // Initial turn only. Adopted turns resample into the executor's mutable value.
   turnStartHeadHash: string | null;
@@ -180,54 +178,9 @@ function readStatusContext(deps: SystemTurnDeps, sessionId: string): string {
   }
 }
 
-/**
- * Put the transcript back before a retry spawns an agent for this turn.
- *
- * The replay is armed when the session has no resumable conversation and is spent by the
- * run parameters that carry it into a system prompt. A turn is dispatched once but this
- * function is re-entered for it by all three recovery paths below — so an attempt that
- * spent the replay and then failed without recording a conversation of its own leaves the
- * session threadless AND replayless, and the attempt that actually runs answers the user
- * with an empty conversation. Re-arming at the env-prep site cannot cover it: that guard
- * fires on the transition that clears a STORED id, which is already clear by then.
- *
- * Only when there is no thread to resume, so a healthy conversation is left to `--resume`,
- * and only when the transcript holds a reply — see `requireReply`.
- */
-function spillFor(
-  workspaceDir: string | undefined,
-  runner: SessionRunnerInterface | null,
-): { spill?: ReplaySpillTarget } {
-  if (!workspaceDir) return {};
-  // A container runner mounts the session's scratch directory at /persist; a local one
-  // leaves it where it is, so the agent-visible path is the host path.
-  return {
-    spill: replaySpillDirs(path.dirname(workspaceDir), {
-      containerized: runner?.supportsRemoteTerminal === true,
-    }),
-  };
-}
-
-function reseedConversationForRetry(
-  deps: SystemTurnDeps,
-  input: TurnInput,
-  runner: SessionRunnerInterface | null,
-): void {
-  try {
-    const session = deps.listenerDeps.sessionManager.get(input.sessionId);
-    if (!session || session.agentSessionId || session.conversationReplay) return;
-    if (!armConversationReplay(deps.listenerDeps, input.sessionId, {
-      requireReply: true,
-      dropTrailingUserText: input.userText,
-      ...spillFor(session.workspaceDir, runner),
-    })) return;
-    console.log(
-      `[turn] re-armed the conversation replay for ${input.sessionId}; `
-      + "the retry continues the transcript rather than starting empty",
-    );
-  } catch (err) {
-    console.error(`[turn] re-arming the conversation replay for ${input.sessionId} failed:`, err);
-  }
+/** The worker can put a Node runtime notice before the prompt, or after a slash command (`prefixPromptWithNotice`). */
+function wrapsPrompt(echoed: string, sent: string): boolean {
+  return echoed.endsWith(`\n\n${sent}`) || echoed.startsWith(`${sent}\n\n`);
 }
 
 // A timer can fire a little early, which would read the hold as still open.
@@ -259,12 +212,19 @@ export async function executeAgentTurn(
     input.statusContext,
     readStatusContext(deps, sessionId),
   );
-  if (input.continuesTurn) deps.listenerDeps.sessionManager.touchUnlessResolved(sessionId);
-  else deps.listenerDeps.sessionManager.track(sessionId);
-  if (deps.listenerDeps.sessionManager.setMuted(sessionId, null)) {
-    deps.listenerDeps.sseBroadcast("session_list", {
-      sessions: deps.listenerDeps.sessionManager.list(),
-    });
+  // The prompt as spawned: a fork's replay leads its first one (docs/007 req 8).
+  let submittedPrompt = prompt;
+  // docs/333-idle-compaction piece 4 — a silent compaction is maintenance: it does not move the
+  // session in the list, resolve-clear it, unmute it, or replace the last real turn's outcome.
+  let maintenanceTurn = input.compact === true && input.silent === true;
+  if (!maintenanceTurn) {
+    if (input.continuesTurn) deps.listenerDeps.sessionManager.touchUnlessResolved(sessionId);
+    else deps.listenerDeps.sessionManager.track(sessionId);
+    if (deps.listenerDeps.sessionManager.setMuted(sessionId, null)) {
+      deps.listenerDeps.sseBroadcast("session_list", {
+        sessions: deps.listenerDeps.sessionManager.list(),
+      });
+    }
   }
   // docs/324-scheduled-sessions — a run's list row carries the mark for "needs you" (req 21).
   // Never throws, like `writeAnswerHold`: the clear is in the turn start, the set in its settlement.
@@ -410,11 +370,34 @@ export async function executeAgentTurn(
    * stronger than the worker's own answer to the submission, and it can arrive
    * first, so it does not wait for one. Only a turn already ended stays ended.
    */
-  const notePromptReadBack = (text: string): void => {
-    if (text.trim() !== prompt.trim()) return;
+  const notePromptReadBack = (text: string, messageId: string | undefined): void => {
+    const echoed = text.trim();
+    const exact = echoed === prompt.trim() || echoed === submittedPrompt.trim();
+    if (!exact && !wrapsPrompt(echoed, submittedPrompt.trim())) return;
+    // docs/007 req 5 — the prompt's own echo comes first. Read behind a turn of the CLI's own,
+    // the prompt is stored as a queued command under another id (measured on 2.1.300).
+    if (messageId && !cliTurnPending && promptMessageId === undefined) {
+      promptMessageId = messageId;
+      stampPromptRow();
+    }
+    if (!exact) return;
     if (ownTurn === "ended") return;
     ownTurn = "running";
     noteAgentHasPrompt();
+  };
+
+  // Written once the listener keeps this attempt's conversation (`onConversationKept`); a
+  // retry's stamp replaces it.
+  let promptMessageId: string | undefined;
+  let promptAnswered = false;
+  const stampPromptRow = (): void => {
+    const rowId = persistGuard.rowId;
+    if (rowId === undefined || promptMessageId === undefined || !promptAnswered) return;
+    try {
+      deps.listenerDeps.chatHistoryManager.recordUserMessageAgentId(sessionId, rowId, promptMessageId);
+    } catch (err) {
+      console.error(`[turn] recording the prompt's message id for ${sessionId} failed:`, err);
+    }
   };
 
   // Only the running turn is this prompt's. A queued one stays queued: the
@@ -480,7 +463,7 @@ export async function executeAgentTurn(
   // Unlike the settlement, this also runs for a result that does not answer this turn's prompt.
   let turnEndRecorded = false;
   const recordTurnEnd = (outcome: LastTurnOutcome, detail?: string): void => {
-    if (turnEndRecorded) return;
+    if (turnEndRecorded || maintenanceTurn) return;
     turnEndRecorded = true;
     try {
       const { sessionManager, sseBroadcast } = deps.listenerDeps;
@@ -594,11 +577,15 @@ export async function executeAgentTurn(
   const turnIsCurrent = (): boolean =>
     !runner || thisTurnEpoch === undefined || runner.turnEpoch === thisTurnEpoch;
 
-  const persistGuard = input.persistGuard ?? { done: false };
+  const persistGuard: { done: boolean; rowId?: number } = input.persistGuard ?? { done: false };
   const persistUserMessageOnce = (sid: string): boolean => {
     if (persistGuard.done) return false;
     persistGuard.done = true;
-    input.persistUserMessage(sid);
+    const rowId = input.persistUserMessage(sid);
+    if (typeof rowId === "number") {
+      persistGuard.rowId = rowId;
+      stampPromptRow();
+    }
     // Echo image URLs need the persisted row; the shared retry latch also prevents duplicate echoes.
     if (input.emitUserEcho) {
       emit({
@@ -619,6 +606,8 @@ export async function executeAgentTurn(
   };
 
   let automaticRecoveryInProgress = false;
+  // The listener already posted the card; a retry would fail the same way.
+  let conversationNotFound = false;
   const recoveryRetryUsed = input.recoveryRetryUsed ?? input.isAuthRetry ?? false;
   const canRecoverAuth = !recoveryRetryUsed && !!deps.ensureAgentTokenFresh;
   // false surfaces sign-in. Do not return false merely because recovery has already started.
@@ -736,7 +725,6 @@ export async function executeAgentTurn(
       console.warn("[turn] 401-recovery token repush failed:", err);
     }
     await finalizeAttemptOutput();
-    reseedConversationForRetry(deps, input, runner);
     const freshAgent = deps.agentFactory(agentId);
     if (runner) runner.setAgent(freshAgent);
     await executeAgentTurn(runner, deps, freshAgent, {
@@ -751,38 +739,10 @@ export async function executeAgentTurn(
     return true;
   };
 
-  // Env preparation can change both pointers; capture after it and before spawning.
-  let activeResumeSessionId: string | null = null;
+  // Env preparation chooses the route; capture after it and before spawning.
   let capturedCredentialRoute:
     | Pick<SessionInfo, "providerRouteKind" | "providerRouteId">
     | undefined;
-  const recoverMissingConversation = (invalidId: string): boolean => {
-    // eslint-disable-next-line no-restricted-syntax -- Claude-only CLI stderr/--resume recovery
-    if (agentId !== "claude" || recoveryRetryUsed || invalidId !== activeResumeSessionId) return false;
-    const current = deps.listenerDeps.sessionManager.get(sessionId)?.agentSessionId;
-    if (current !== invalidId) return false;
-    automaticRecoveryInProgress = true;
-    clearConversationThread(deps.listenerDeps, sessionId);
-    if (runner) {
-      finalizeTurnRows(deps.listenerDeps.chatHistoryManager, runner, sessionId, { skipEmpty: true });
-    }
-    agent.kill();
-    if (runner?.getAgent() === agent) runner.setAgent(null);
-    // The CLI has just told us this conversation is gone; rebuild it from the transcript
-    // rather than letting the recovery start the agent with no history at all.
-    reseedConversationForRetry(deps, input, runner);
-    const freshAgent = deps.agentFactory(agentId);
-    if (runner) runner.setAgent(freshAgent);
-    void executeAgentTurn(runner, deps, freshAgent, {
-      ...input,
-      recoveryRetryUsed: true,
-      reuseExistingAgent: false,
-      emitUserEcho: false,
-      continuesTurn: true,
-      persistGuard,
-    });
-    return true;
-  };
 
   let quotaRetryInProgress = false;
   const capturedRoutePolicy = (): CredentialFailurePolicy | undefined => {
@@ -813,7 +773,6 @@ export async function executeAgentTurn(
     } catch {
       // Already gone.
     }
-    reseedConversationForRetry(deps, input, runner);
     const freshAgent = deps.agentFactory(agentId);
     if (runner) {
       runner.setAgent(freshAgent);
@@ -1098,8 +1057,12 @@ export async function executeAgentTurn(
     isServingAdoptedTurn: () => servingCliStartedTurn(),
     ...(canRecoverAuth ? { willRecoverAuth, recoverAuth } : {}),
     willRetryOnQuotaError,
-    // eslint-disable-next-line no-restricted-syntax -- Claude-only CLI stderr/--resume recovery
-    ...(!recoveryRetryUsed && agentId === "claude" ? { recoverMissingConversation } : {}),
+    // No kill: the CLI exits by itself, and a kill can drop the `done` that ends the turn.
+    onConversationNotFound: () => { conversationNotFound = true; },
+    onConversationKept: () => {
+      promptAnswered = true;
+      stampPromptRow();
+    },
     ...(input.permissionMode !== undefined ? { requestedPermissionMode: input.permissionMode } : {}),
     // An adapter error can be terminal without a later done event, even with an empty queue.
     onError: async () => {
@@ -1126,6 +1089,9 @@ export async function executeAgentTurn(
     },
     ...(input.useStreaming !== undefined ? { useStreaming: input.useStreaming } : {}),
     ...(adoptsCliStartedTurns ? { adoptsCliStartedTurns: true } : {}),
+    ...(input.compact === true ? { compactionTurn: true } : {}),
+    ...(maintenanceTurn ? { maintenanceTurn: true } : {}),
+    ...(input.adopt === true ? { anchorUnknown: true } : {}),
   });
 
   if (!input.isNewSession) {
@@ -1503,6 +1469,7 @@ export async function executeAgentTurn(
     turnEndRecorded = false;
     sawOwnResult = false;
     harnessCommandTurn = false;
+    maintenanceTurn = false;
     thisTurnEpoch = runner?.turnEpoch;
   };
 
@@ -1551,7 +1518,7 @@ export async function executeAgentTurn(
       return;
     }
     if (event.type === "agent_user_replay") {
-      notePromptReadBack(event.text);
+      notePromptReadBack(event.text, event.messageId);
       return;
     }
     if (event.type === "agent_assistant") {
@@ -1744,6 +1711,7 @@ export async function executeAgentTurn(
         input.emitErrorOnNoResult
         && !receivedResult
         && !sawAuthRequired
+        && !conversationNotFound
         && !(runner?.wasInterrupted ?? false)
       ) {
         const base = code !== 0
@@ -1779,6 +1747,7 @@ export async function executeAgentTurn(
         input.onNoResultExit &&
         !receivedResult &&
         !sawAuthRequired &&
+        !conversationNotFound &&
         !(runner?.wasInterrupted ?? false)
       ) {
         let handled = false;
@@ -1899,7 +1868,6 @@ export async function executeAgentTurn(
     const previousRouteId = deps.listenerDeps.usageManager?.lastTurnCredentialRouteId?.(sessionId);
     const prep = await deps.prepareAgentEnv?.(sessionId, agentId, {
       reusingResidentAgent: input.reuseExistingAgent === true,
-      ownUserText: input.userText,
       ...(input.attemptLedger?.length
         ? { excludeRouteIds: input.attemptLedger.map((entry) => entry.routeId) }
         : {}),
@@ -1911,8 +1879,6 @@ export async function executeAgentTurn(
           || (runner?.backgroundWorkDescriptions.length ?? 0) > 0),
     });
     console.log(`[turn] env-prep for ${sessionId} took ${Date.now() - envBegan}ms`);
-    const preparedSession = deps.listenerDeps.sessionManager.get(sessionId);
-    activeResumeSessionId = preparedSession?.agentSessionId ?? null;
     const turnRoute = prep?.turnRoute;
     capturedCredentialRoute = turnRoute
       ? { providerRouteKind: turnRoute.kind, providerRouteId: turnRoute.id }
@@ -1970,11 +1936,16 @@ export async function executeAgentTurn(
       }
       // A turn that enters a resident process has no spawn to name its delivery, so the
       // prompt carries the id: an orchestrator restart can then still bind its settlement.
-      if (input.deliveryId !== undefined) agent.sendUserMessage(prompt, { deliveryId: input.deliveryId });
+      const turnIdentity = {
+        ...(input.deliveryId !== undefined ? { deliveryId: input.deliveryId } : {}),
+        ...(maintenanceTurn ? { silentCompaction: true } : {}),
+      };
+      if (Object.keys(turnIdentity).length > 0) agent.sendUserMessage(prompt, turnIdentity);
       else agent.sendUserMessage(prompt);
       noteSubmitted();
     } else {
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);
+      if (maintenanceTurn) agent.markSilentCompaction?.();
       // docs/303 req 15 — the worker reports it back, so a restart mid-nudge adopts a turn
       // that still knows it is one and is not nudged again.
       const paramsBegan = Date.now();
@@ -1986,6 +1957,7 @@ export async function executeAgentTurn(
         input.compact ? { compact: true } : undefined,
       );
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
+      submittedPrompt = runParams.prompt;
       if (stoppedDuringSetup() || settledDuringSetup()) return;
       agent.run(input.useStreaming !== undefined ? { ...runParams, useStreaming: input.useStreaming } : runParams);
       noteSubmitted();

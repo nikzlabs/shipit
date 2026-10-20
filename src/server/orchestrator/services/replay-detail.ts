@@ -8,6 +8,8 @@ import type { PersistedMessage } from "../chat-history.js";
  */
 export const INLINE_DETAIL_LIMIT = 500;
 
+const TRANSCRIPT_FILE = "transcript.md";
+
 /**
  * Where a replay's spilled tool payloads are written, and where the agent will see them.
  * The two differ because the orchestrator writes to the session's scratch directory on its
@@ -75,6 +77,18 @@ class SpillWriter {
       return null;
     }
     return `${this.target.agentDir}/${name}`;
+  }
+
+  /** The whole transcript of a replay too long to carry inline. */
+  writeTranscript(body: string): string | null {
+    if (!this.usable) return null;
+    try {
+      fs.writeFileSync(path.join(this.target.hostDir, TRANSCRIPT_FILE), body, "utf8");
+    } catch (err) {
+      console.warn(`[replay] failed to write ${TRANSCRIPT_FILE}:`, err);
+      return null;
+    }
+    return `${this.target.agentDir}/${TRANSCRIPT_FILE}`;
   }
 }
 

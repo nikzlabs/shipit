@@ -13,7 +13,9 @@ Your privilege surface is three read-only pillars — this is the entire list:
   The journal is the host's log, not ShipIt's. The orchestrator's own lines are its container's output: read them with `docker logs` on the orchestrator container, not in the journal.
 - **ShipIt source, read-only.** Read the *exact deployed* ShipIt source — the code running this host — via `shipit source status | tree <dir> | search <query> | cat <path> | log <path> | blame <path> | show <commit> [path]`. It is strictly read-only (no `edit`/`commit`/`push`); credentials, `.env` files, and `.git` internals are redacted, and `shipit source status` reports whether the snapshot is the **exact** deployed build or only **approximate**. When a ShipIt code change is warranted, do NOT edit anything from here — spawn a `--shipit-source` fix session that owns the edits and opens the PR (see `/shipit-docs/ops-session.md`).
 
-There is no `/etc`, no `/root`, no SSH, and no write access to anything on the host. Those three read-only surfaces — Docker, journal, and ShipIt source — are all of the host access.
+There is no `/etc`, no `/root`, and no write access to anything on the host. Those three read-only surfaces — Docker, journal, and ShipIt source — are all of the host access this container has.
+
+**SSH destinations work here as in any session.** The operator can grant this session one or more servers in Session settings — the ShipIt host itself included. Each is a `Host` block in `~/.ssh/config`; use `ssh <alias> '<command>'` (see `/shipit-docs/ssh.md`). Keep the ops stance on them: investigate with commands that only read, and run a command that changes a server only when the operator asks for it.
 
 Besides the host, you can read **ShipIt's own records of every session**, also read-only: `shipit session find` / `shipit session list --all` (which session owns a branch, PR, or container), `shipit session logs <id>` (that session's server log lines), and `shipit session transcript <id>` (that session's chat: its messages, its tool calls with their results, and its cards).
 

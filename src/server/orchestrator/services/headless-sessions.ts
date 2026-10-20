@@ -361,8 +361,9 @@ export async function createHeadlessSession(
     // Never claim a draft the user is composing in another view.
     const claimed = await deps.claimService.claim(repoUrl, {
       skipReuse: true,
-      // A warm standby container started without the run's notes mount.
-      ...(opts.scheduleRun ? { skipWarm: true } : {}),
+      // Nobody watches a headless start, so the warm session stays for a person (docs/288 req 12).
+      // A scheduled run also could not use it: its standby started without the run's notes mount.
+      skipWarm: true,
       ...(opts.fetchBase ? { forceFetch: true } : {}),
     });
     newSessionId = claimed.sessionId;

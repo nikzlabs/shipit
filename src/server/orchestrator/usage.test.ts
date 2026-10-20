@@ -230,6 +230,82 @@ describe("UsageManager", () => {
   });
 });
 
+describe("UsageManager — the idle-compaction record (docs/333-idle-compaction)", () => {
+  const CODEX = { agentId: "codex" as const, model: "gpt-6-luna" };
+  const CLAUDE = { agentId: "claude" as const, model: "claude-sonnet-5-5" };
+  const anchor = (at: number) => ({ ...CODEX, at });
+  let dbManager: DatabaseManager;
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+  });
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  it("reads the newest cache lifetime only from the session's own turns on the same route", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CLAUDE, cacheTtl: "1h", credentialRouteId: "anthropic-sub" });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CLAUDE, cacheTtl: "5m", credentialRouteId: "anthropic-key" });
+    // A turn that only read the cache sets nothing; the earlier reading stands.
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CLAUDE, credentialRouteId: "anthropic-sub" });
+    mgr.record("sess-1", 0, 0, 1, 1, {
+      cacheScope: CLAUDE, cacheTtl: "5m", credentialRouteId: "anthropic-sub", subAgentId: "claude",
+    });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CLAUDE, cacheTtl: "1h" });
+
+    expect(mgr.observedCacheTtl("sess-1", "anthropic-sub", CLAUDE)).toBe("1h");
+    expect(mgr.observedCacheTtl("sess-1", "anthropic-key", CLAUDE)).toBe("5m");
+    expect(mgr.observedCacheTtl("sess-1", "zai", CLAUDE)).toBeUndefined();
+    expect(mgr.observedCacheTtl("sess-1", null, CLAUDE)).toBe("1h");
+    expect(mgr.observedCacheTtl("sess-2", "anthropic-sub", CLAUDE)).toBeUndefined();
+  });
+
+  it("reads a lifetime only for the harness and model that saw it", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CLAUDE, cacheTtl: "5m", credentialRouteId: "gateway" });
+    expect(mgr.observedCacheTtl("sess-1", "gateway", CODEX)).toBeUndefined();
+    expect(mgr.observedCacheTtl("sess-1", "gateway", { agentId: "opencode", model: CLAUDE.model })).toBeUndefined();
+    expect(mgr.observedCacheTtl("sess-1", "gateway", { ...CLAUDE, model: "claude-opus-5-5" })).toBeUndefined();
+    // Without a scope, nothing of the kind is written.
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheTtl: "1h", cacheAnchorAt: 1_000, credentialRouteId: "gateway" });
+    expect(mgr.observedCacheTtl("sess-1", "gateway", CLAUDE)).toBe("5m");
+    expect(mgr.anchoredTurnsSince(0)).toEqual([]);
+  });
+
+  it("tells its listeners about each anchored own turn, and a throwing listener does not stop the write", () => {
+    const mgr = new UsageManager(dbManager);
+    const seen: unknown[] = [];
+    mgr.onAnchoredTurn(() => { throw new Error("boom"); });
+    mgr.onAnchoredTurn((turn) => seen.push(turn));
+
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CODEX, cacheAnchorAt: 1_000, credentialRouteId: "r1" });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CODEX });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CODEX, cacheAnchorAt: 2_000, subAgentId: "codex" });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CODEX, cacheAnchorAt: 3_000, backgroundWork: true });
+
+    expect(seen).toEqual([{ sessionId: "sess-1", anchor: anchor(1_000), credentialRouteId: "r1" }]);
+    expect(mgr.getSessionTurns("sess-1")).toHaveLength(4);
+  });
+
+  it("finds each session's newest anchored own turn since a time, past an unanchored compaction", () => {
+    const mgr = new UsageManager(dbManager);
+    const at = (ms: number) => ({ cacheScope: CODEX, cacheAnchorAt: ms });
+    mgr.record("sess-1", 0, 0, 1, 1, at(1_000));
+    mgr.record("sess-1", 0, 0, 1, 1, { ...at(5_000), credentialRouteId: "r1" });
+    // A compaction turn writes no anchor, so it can never start a deadline of its own.
+    mgr.record("sess-1", 0, 0, 0, 0, { cacheScope: CODEX });
+    mgr.record("sess-1", 0, 0, 1, 1, { ...at(9_000), subAgentId: "codex" });
+    mgr.record("sess-2", 0, 0, 1, 1, at(2_000));
+    mgr.record("sess-3", 0, 0, 1, 1, at(7_000));
+
+    const turns = mgr.anchoredTurnsSince(3_000).sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+    expect(turns).toEqual([
+      { sessionId: "sess-1", anchor: anchor(5_000), credentialRouteId: "r1" },
+      { sessionId: "sess-3", anchor: anchor(7_000), credentialRouteId: null },
+    ]);
+  });
+});
+
 describe("UsageManager — cumulative cost → per-turn delta", () => {
   let dbManager: DatabaseManager;
   beforeEach(() => {

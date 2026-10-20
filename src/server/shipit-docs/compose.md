@@ -73,6 +73,13 @@ resolved. If `packages/frontend` is a symlink to a place inside the workspace, t
 mount follows it. If it points outside the workspace, Docker refuses the mount
 and the service does not start. Mount the real directory instead.
 
+**On a Docker Desktop host, ShipIt refuses a subdirectory or a file of the
+workspace** (`./packages/frontend:/app`, `./nginx.conf:/etc/nginx/nginx.conf`).
+Docker Desktop cannot mount one and keep it inside this session. Mount the whole
+workspace (`.:/src`) and point the service at the path inside it:
+`working_dir: /src/packages/frontend`, or the program's own option for a
+configuration file. The refusal names the service and the mount.
+
 The volume names `shipit-workspace` and `shipit-session-workspace` are reserved.
 ShipIt rejects a compose file that declares either one or mounts it in a service.
 
@@ -109,6 +116,9 @@ services:
   both write the same files. Docker does not copy the image's own files into it.
 - A subdirectory must stay inside `/persist`. ShipIt refuses `..` and variable
   interpolation, and Docker refuses a symlink that leads out of it.
+- On a Docker Desktop host, only all of `/persist` can be mounted. ShipIt
+  refuses `persist/<dir>:` there, for the same reason as a workspace
+  subdirectory. Mount `persist:/data` and use `/data/<dir>`.
 - Give each service its own subdirectory, so that it does not see your other
   files in `/persist`.
 - To run the same file outside ShipIt, also declare `volumes: { persist: {} }`
@@ -755,6 +765,14 @@ These rules apply in Open and contained sessions alike:
 - **Ops sessions** trust `docker-socket-proxy` only as the ops template
   defines it. ShipIt always runs the proxy image at its pinned digest, and no
   other service may build or name that image.
+- **ShipIt's own images** — the session worker, its Docker variant, the egress
+  sidecar, and the Compose helper (for example `shipit-session-worker:prod`,
+  `shipit-egress-sidecar:prod`, `shipit-compose-helper:prod`): no service may
+  name their repositories in `image:` or `build.tags`, with any tag.
+- **`image:` and `build.tags`** must be plain image references: letters,
+  digits, and `. _ - / : @ [ ]` only. Compose's own `${VAR}` interpolation is
+  fine, because it is resolved before ShipIt checks the file; an expression
+  left for the build tool to expand (`$${…}`, `%{…}`) is refused.
 
 ### Files Compose reads, and mounts
 

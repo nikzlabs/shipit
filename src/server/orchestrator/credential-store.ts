@@ -912,6 +912,10 @@ export class CredentialStore {
     return this.getDeclaredSetting("advanced.agentCompaction");
   }
 
+  getIdleCompaction(): boolean {
+    return this.getDeclaredSetting("advanced.idleCompaction");
+  }
+
   setSessionStatusCard(enabled: boolean): void {
     this.setDeclaredSetting("advanced.sessionStatusCard", enabled);
   }

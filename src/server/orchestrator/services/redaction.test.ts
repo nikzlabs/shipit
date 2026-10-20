@@ -1,5 +1,8 @@
-import { describe, it, expect } from "vitest";
-import { redactStage1, redactCredentials, redact, REDACTION_PLACEHOLDER } from "./redaction.js";
+import { describe, it, expect, vi } from "vitest";
+import { redactStage1, redactCredentials, redact, makeCliRunner, REDACTION_PLACEHOLDER } from "./redaction.js";
+
+const execFileMock = vi.hoisted(() => vi.fn());
+vi.mock("node:child_process", () => ({ execFile: execFileMock }));
 
 describe("redactStage1 (deterministic floor)", () => {
   it("scrubs an inline GitHub PAT", () => {
@@ -579,6 +582,27 @@ describe("redact (two-stage)", () => {
     const result = await redact("hello world", { run });
     expect(result.stage2Ran).toBe(false);
     expect(result.body).toBe("hello world");
+  });
+});
+
+describe("makeCliRunner (planning#698)", () => {
+  it.each([
+    ["codex", "--ephemeral"],
+    ["claude", "--no-session-persistence"],
+  ] as const)("runs %s without leaving a transcript file", async (agentId, flag) => {
+    execFileMock.mockReset();
+    execFileMock.mockImplementation(
+      (_file: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string) => void) => {
+        setImmediate(() => cb(null, "{\"spans\": []}"));
+        return { on: () => {}, stdin: { end: () => {} } };
+      },
+    );
+
+    expect(await makeCliRunner(agentId)("prompt")).toBe("{\"spans\": []}");
+    const [file, args] = execFileMock.mock.calls[0] as [string, string[]];
+    expect(file).toBe(agentId);
+    expect(args).toContain(flag);
+    expect(args).toContain("prompt");
   });
 });
 

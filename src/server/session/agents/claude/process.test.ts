@@ -468,6 +468,31 @@ describe("ClaudeProcess", () => {
       );
     });
 
+    // docs/007 req 4 — verified on 2.1.300: a new conversation from that message, the stored one untouched.
+    it("forks the stored conversation at a rewind point", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      new ClaudeProcess().run({ prompt: "hello", sessionId: "session-123", resumeAt: "msg-7" });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      const at = args.indexOf("--resume");
+      expect(args.slice(at, at + 5)).toEqual([
+        "--resume", "session-123", "--resume-session-at", "msg-7", "--fork-session",
+      ]);
+    });
+
+    it("forks nothing without a rewind point", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      new ClaudeProcess().run({ prompt: "hello", sessionId: "session-123" });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--resume-session-at");
+      expect(args).not.toContain("--fork-session");
+    });
+
     it("does not include --resume when no sessionId", () => {
       const mockProc = createMockChildProcess();
       mockChildSpawn.mockReturnValue(mockProc as any);
@@ -1365,6 +1390,19 @@ describe("StreamingClaudeProcess", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("forks the stored conversation at a rewind point (docs/007 req 4)", () => {
+    const mockProc = createMockChildProcess();
+    mockChildSpawn.mockReturnValue(mockProc as any);
+
+    new StreamingClaudeProcess().run({ prompt: "first", sessionId: "session-123", resumeAt: "msg-7" });
+
+    const args = mockChildSpawn.mock.calls[0][1] as string[];
+    const at = args.indexOf("--resume");
+    expect(args.slice(at, at + 5)).toEqual([
+      "--resume", "session-123", "--resume-session-at", "msg-7", "--fork-session",
+    ]);
   });
 
   describe("allowlist", () => {

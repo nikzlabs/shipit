@@ -162,8 +162,9 @@ builds; these supersede them.
   and sends it to the session's open viewers (`session_details`, docs/303 →
   Delivery) when what the chip shows (objective, status, budget) changed.
   Usage-only updates are not written. A stored JSON `null`
-  means "read, no goal"; SQL NULL means "never read". Clearing the
-  conversation (`clearAgentSessionId`) also clears the goal.
+  means "read, no goal"; SQL NULL means "never read". A chat rewind
+  (`markRewound`) also clears it: the conversation is forked at the rewind
+  point, which may not have the goal (`docs/007-threads-checkpoints`).
 - **Read on open (req 6).** When a session is opened and its goal was never
   read — a session from before this feature, like the incident's — the goal
   is read once through the same `goalCommand` path, without a turn. Best

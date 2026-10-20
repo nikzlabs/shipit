@@ -135,8 +135,11 @@ access**. A Chrome you start yourself â€” for a rendering test or a benchmark â€
 needs the flags that `/shipit-docs/environment.md` gives; when the user asks
 for that, do it. Chrome falls back to software drawing without a message, so
 run the check that page gives and tell the user which renderer Chrome
-reported. None of this reaches WebGPU, Compose services, or a native Linux
-host.
+reported. Such a container also starts with `GLIBC_TUNABLES` set, for every
+program in it: without that variable, uploads of texture and buffer data to
+the GPU were up to 40 times slower. A program that sets its own
+`GLIBC_TUNABLES` replaces the value; that page says how to keep both. None of
+this reaches WebGPU, Compose services, or a native Linux host.
 
 ## Updating
 

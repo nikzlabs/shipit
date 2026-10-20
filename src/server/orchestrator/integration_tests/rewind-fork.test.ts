@@ -103,7 +103,7 @@ describe("Integration: rewind and fork", () => {
     const { commitHash: changedHead } = await git.autoCommit("change feature");
     expect(changedHead).toBeTruthy();
 
-    chatHistoryManager.append(sessionId, { role: "user", text: "change the file" });
+    chatHistoryManager.append(sessionId, { role: "user", text: "change the file", agentMessageId: "msg-change" });
     chatHistoryManager.append(sessionId, {
       role: "assistant",
       text: "changed",
@@ -142,7 +142,7 @@ describe("Integration: rewind and fork", () => {
     const { commitHash: changedHead } = await git.autoCommit("change feature");
     expect(changedHead).toBeTruthy();
 
-    chatHistoryManager.append(sessionId, { role: "user", text: "change the file" });
+    chatHistoryManager.append(sessionId, { role: "user", text: "change the file", agentMessageId: "msg-change" });
     chatHistoryManager.append(sessionId, {
       role: "assistant",
       text: "changed",
@@ -182,7 +182,7 @@ describe("Integration: rewind and fork", () => {
     fs.writeFileSync(path.join(uploadsDir, "discarded.txt"), "uploaded\n");
 
     chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
-    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response", agentMessageId: "msg-kept" });
     chatHistoryManager.append(sessionId, {
       role: "user",
       text: "discard",
@@ -219,7 +219,7 @@ describe("Integration: rewind and fork", () => {
     });
 
     chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
-    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response", agentMessageId: "msg-kept" });
     chatHistoryManager.append(sessionId, { role: "user", text: "discard" });
 
     const client = await TestClient.connect(port, sessionId);
@@ -249,7 +249,7 @@ describe("Integration: rewind and fork", () => {
       files: [{ path: "/uploads/shared.txt", contentPreview: "uploaded" }],
       uploadPaths: ["/uploads/shared.txt"],
     });
-    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response", agentMessageId: "msg-kept" });
     // The same upload re-attached later, which is what the Files tab's "Add to
     // chat" and the `@` menu produce.
     chatHistoryManager.append(sessionId, {
@@ -277,7 +277,7 @@ describe("Integration: rewind and fork", () => {
   it("stores a chat rewind snapshot and restores it on request", async () => {
     const { sessionId } = await createSession();
     chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
-    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response", agentMessageId: "msg-kept" });
     chatHistoryManager.append(sessionId, { role: "user", text: "restore me" });
 
     const client = await TestClient.connect(port, sessionId);
@@ -312,7 +312,7 @@ describe("Integration: rewind and fork", () => {
     const { commitHash: changedHead } = await git.autoCommit("change feature");
     expect(changedHead).toBeTruthy();
 
-    chatHistoryManager.append(sessionId, { role: "user", text: "change the file" });
+    chatHistoryManager.append(sessionId, { role: "user", text: "change the file", agentMessageId: "msg-change" });
     chatHistoryManager.append(sessionId, {
       role: "assistant",
       text: "changed",
@@ -335,7 +335,7 @@ describe("Integration: rewind and fork", () => {
 
     const loaded = chatHistoryManager.load(sessionId);
     expect(loaded).toHaveLength(2);
-    expect(loaded[0]).toMatchObject({ role: "user", text: "change the file" });
+    expect(loaded[0]).toMatchObject({ role: "user", text: "change the file", agentMessageId: "msg-change" });
     expect(loaded[1]).toMatchObject({
       role: "assistant",
       notice: true,
@@ -354,7 +354,7 @@ describe("Integration: rewind and fork", () => {
     expect(initialHead).toBeTruthy();
 
     chatHistoryManager.append(sessionId, { role: "user", text: "first message" });
-    chatHistoryManager.append(sessionId, { role: "assistant", text: "first reply" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "first reply", agentMessageId: "msg-first-reply" });
     chatHistoryManager.append(sessionId, { role: "user", text: "discard me" });
     chatHistoryManager.append(sessionId, { role: "assistant", text: "also discard" });
 
@@ -388,7 +388,7 @@ describe("Integration: rewind and fork", () => {
       files: [{ path: "/uploads/kept.txt", contentPreview: "kept upload" }],
       uploadPaths: ["/uploads/kept.txt"],
     });
-    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response", agentMessageId: "msg-kept" });
 
     const client = await TestClient.connect(port, sessionId);
     await client.receiveType("preview_status");
@@ -450,7 +450,7 @@ describe("Integration: rewind and fork", () => {
   it("allows fork while a turn is running but still blocks in-place rewind", async () => {
     const { sessionId } = await createSession();
     chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
-    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response", agentMessageId: "msg-kept" });
 
     const client = await TestClient.connect(port, sessionId);
     await client.receiveType("preview_status");
@@ -478,7 +478,7 @@ describe("Integration: rewind and fork", () => {
   it("restores fork snapshots by archiving the child and removing the parent breadcrumb", async () => {
     const { sessionId } = await createSession();
     chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
-    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response", agentMessageId: "msg-kept" });
 
     const client = await TestClient.connect(port, sessionId);
     await client.receiveType("preview_status");
@@ -509,7 +509,7 @@ describe("Integration: rewind and fork", () => {
   it("rejects rewind while a turn is running", async () => {
     const { sessionId } = await createSession();
     chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
-    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response", agentMessageId: "msg-kept" });
 
     const client = await TestClient.connect(port, sessionId);
     await client.receiveType("preview_status");
@@ -534,7 +534,7 @@ describe("Integration: rewind and fork", () => {
   it("clears queued messages when a rewind succeeds", async () => {
     const { sessionId } = await createSession();
     chatHistoryManager.append(sessionId, { role: "user", text: "keep" });
-    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response" });
+    chatHistoryManager.append(sessionId, { role: "assistant", text: "kept response", agentMessageId: "msg-kept" });
     chatHistoryManager.append(sessionId, { role: "user", text: "discard" });
 
     const client = await TestClient.connect(port, sessionId);

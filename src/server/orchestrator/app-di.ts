@@ -14,6 +14,7 @@ import { AuthManager } from "./agents/claude/auth-manager.js";
 import { CodexAuthManager } from "./agents/codex/auth-manager.js";
 import { XaiAuthManager } from "./agents/grok/auth-manager.js";
 import { AntigravityAuthManager } from "./agents/antigravity/auth-manager.js";
+import { loginManagers } from "./agents/index.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
@@ -296,6 +297,10 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const xaiAuthManager = deps.xaiAuthManager ?? new XaiAuthManager();
   const antigravityAuthManager = deps.antigravityAuthManager ?? new AntigravityAuthManager();
   console.log("[server] xAI subscription credentials found:", providerAccountManager.hasAnyAuthForProvider("grok"));
+  // Before agent detection, which counts a row that reads `authenticating` as a credential.
+  providerAccountManager.endInterruptedSignIns(
+    loginManagers({ authManager, codexAuthManager, xaiAuthManager, antigravityAuthManager }),
+  );
 
   if (!process.env.GIT_CONFIG_GLOBAL) {
     initGlobalGitConfig(credentialsDir);

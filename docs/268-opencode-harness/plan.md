@@ -170,9 +170,31 @@ can be set because nothing routes through the fetched registry.
   subset for the shipit bridge is the adapter's own list (recipe: hardcoded
   per adapter).
 - System prompt: config `instructions` array pointing at the rendered
-  system-prompt file (byte-stable per prompt-architecture rules).
+  system-prompt file (byte-stable content and path; see below).
 - No steering, no compaction trigger, no permission broker (`--auto` inside
   the container sandbox — same trust envelope as Claude's bypass mode).
+
+### Stable instruction paths (planning#701)
+
+OpenCode 1.18.34 includes `Instructions from: <absolute path>` in model input
+(`session/instruction.ts` upstream). A per-turn timestamp in that path defeats
+the provider's prefix cache even when the file content is unchanged.
+
+`turn-files.ts` derives the path from the resolved agent home, workspace, and
+prompt content. It stays identical across new adapter instances and the first
+resume, when the CLI session id first becomes available. Different workspaces,
+scoped homes, and prompt revisions get separate paths. Concurrent readers of
+identical instructions share a reference-counted file without rewriting it.
+Publication uses an atomic rename, so even replacement of a stale file exposes
+complete content. Consults currently pass no system prompt
+(`shared/sub-agent-run.ts:buildSubAgentRunParams`) and acquire no instruction file.
+
+The per-run config file has a unique path; OpenCode does not include that path
+in model input. Cleanup releases both files on CLI close, including the
+transient compaction server's close, or immediately when setup fails before
+spawn. Neither `kill()` nor compaction's HTTP settlement removes a live
+process's files. Guards: `turn-files.test.ts`, through the real adapter with
+fake child processes.
 
 ## Auth scope (req 5)
 

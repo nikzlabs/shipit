@@ -317,6 +317,20 @@ dropped unless the session was created as an ops session.
   `bug-filing.md` for the tool contract, the length limits and what never goes
   in the body.
 
+- **SSH destinations, when the operator grants them.** An ops session can hold
+  SSH grants like any other session (Session settings → SSH destinations). A
+  destination can be another server or the ShipIt host itself. Each granted one
+  is a `Host` block in `~/.ssh/config`; without a block, nothing is granted:
+  ```bash
+  cat ~/.ssh/config
+  ssh prod 'uptime; df -h; free -m'
+  ```
+  `ssh.md` has the full contract. The ops stance applies on a destination too:
+  investigate with commands that only read, and run a command that changes a
+  server only when the operator asks for it. An older ops workspace `README.md`
+  can still say that SSH is not available; this document is the current
+  contract.
+
 ## If `docker` or `journalctl` is missing
 
 Both binaries come from the **Docker-capable worker image**, which a ShipIt
@@ -378,8 +392,9 @@ apply here.
 - **No Docker writes.** `docker stop`, `docker rm`, `docker kill`,
   `docker exec`, `docker build`, image pulls/pushes — all rejected by the proxy.
   If a container genuinely needs to be killed or restarted, report your finding
-  and let the operator act on the host directly.
-- **No other host paths.** No `/etc`, `/root`, `/home`, `/proc`, `/sys`. No SSH.
+  and let the operator act on the host directly — or, when this session has the
+  host as an SSH destination, run it over SSH if the operator asks you to.
+- **No other host paths.** No `/etc`, `/root`, `/home`, `/proc`, `/sys`.
 - **The real `/var/run/docker.sock` is not mounted here** — only the proxy holds
   it. You reach Docker over TCP, never the socket.
 - **No writing to another session.** `shipit session transcript` is a read.

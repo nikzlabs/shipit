@@ -61,8 +61,10 @@ export interface WorkspaceMountRecord {
 export const PERSIST_VOLUME = "persist";
 
 export interface PersistVolume {
-  /** Daemon-side path of the session's scratch directory, the one the agent sees at /persist. */
-  device: string;
+  /** The session's scratch directory (the agent's /persist) inside the workspace volume. */
+  volumeSubpath?: string;
+  /** Daemon-side path of that directory; only a subdirectory mount, or the bind deployment, needs it. */
+  device?: string;
 }
 
 export interface ComposeOverrideOptions {
@@ -400,6 +402,8 @@ export interface ResolvedModelContext extends ComposeParseOptions {
   /** Compose names a declared volume, network, secret, or config `<project>_<key>`. */
   project: string;
   workspaceDir: string;
+  /** The images ShipIt runs by name (`SESSION_*_IMAGE`), which no project image may name. */
+  reservedImages?: readonly string[];
 }
 
 export interface ResolvedModelCheck {
@@ -435,12 +439,14 @@ export function validateResolvedModel(model: unknown, ctx: ResolvedModelContext)
     entries.push([name, svc]);
     validateClassifiedFields(name, svc);
     validateServiceSettings(name, svc, socket, containEgress, opsSession, isolateNetwork);
+    validateLiteralImageNames(name, svc);
     validateResolvedServiceFiles(name, svc);
     validateResolvedMounts(name, svc.volumes, declaredVolumes, ctx.workspaceDir);
     if (isTrustedOpsProxyService(name, svc, opsSession)) trustedOpsProxies.add(name);
   }
   validateSocketJoins(entries);
   if (opsSession) validateOpsProxyImageUse(entries);
+  if (ctx.reservedImages?.length) validateReservedImageUse(entries, ctx.reservedImages);
   return { trustedOpsProxies };
 }
 
@@ -848,13 +854,31 @@ function buildTags(build: unknown): unknown[] {
 
 function namesOpsProxyImage(ref: unknown): boolean {
   if (typeof ref !== "string") return false;
-  const lower = ref.trim().toLowerCase();
-  if (lower.includes(OPS_PROXY_DIGEST.slice("sha256:".length))) return true;
-  const withoutDigest = lower.split("@", 1)[0];
+  if (ref.trim().toLowerCase().includes(OPS_PROXY_DIGEST.slice("sha256:".length))) return true;
+  return imageRepository(ref) === OPS_PROXY_REPOSITORY;
+}
+
+/** The repository an image reference names, without tag, digest, or Docker Hub's implied prefixes. */
+function imageRepository(ref: string): string {
+  const withoutDigest = ref.trim().toLowerCase().split("@", 1)[0];
   const tagAt = withoutDigest.indexOf(":", withoutDigest.lastIndexOf("/") + 1);
   const repository = tagAt === -1 ? withoutDigest : withoutDigest.slice(0, tagAt);
-  return repository.replace(/^(docker\.io|index\.docker\.io|registry-1\.docker\.io)\//, "")
-    === OPS_PROXY_REPOSITORY;
+  const hubPath = repository.replace(/^(docker\.io|index\.docker\.io|registry-1\.docker\.io)\//, "");
+  return /^library\/[^/]+$/.test(hubPath) ? hubPath.slice("library/".length) : hubPath;
+}
+
+// Compose hands `image` and `build.tags` to Buildx Bake, which expands `${…}` and `%{…}` in them
+// after this check, so the name-based rules below hold only for a literal reference.
+const LITERAL_IMAGE_REFERENCE = /^[A-Za-z0-9._\-/:@[\]]+$/;
+
+function validateLiteralImageNames(name: string, svc: Record<string, unknown>): void {
+  for (const ref of [svc.image, ...buildTags(svc.build)]) {
+    if (ref === undefined || (typeof ref === "string" && LITERAL_IMAGE_REFERENCE.test(ref))) continue;
+    throw new ComposeValidationError(
+      `Service \`${name}\`: image \`${showValue(ref)}\` is not a plain image reference. Write the name `
+      + "and tag literally, without `$`, `{`, `%`, quotes, or spaces.",
+    );
+  }
 }
 
 // The ops template's keys only: this container holds the socket.
@@ -1175,6 +1199,21 @@ function validateSocketJoins(services: [string, Record<string, unknown>][]): voi
         + "Docker socket. Give the service its own namespace.",
       );
     }
+  }
+}
+
+// A build tagged with one of these names moves the tag ShipIt starts that image from: the session
+// worker of every new session, its egress sidecar, or the Compose helper, which runs `up` as root
+// with the Docker socket (docs/318-compose-remaining-escapes).
+function validateReservedImageUse(services: [string, Record<string, unknown>][], reservedImages: readonly string[]): void {
+  const reserved = new Set(reservedImages.map(imageRepository));
+  for (const [name, svc] of services) {
+    const named = [svc.image, ...buildTags(svc.build)]
+      .find((ref) => typeof ref === "string" && reserved.has(imageRepository(ref)));
+    if (named === undefined) continue;
+    throw new ComposeValidationError(
+      `Service \`${name}\`: image \`${showValue(named)}\` is reserved for one of ShipIt's own images. Use another image name.`,
+    );
   }
 }
 
@@ -1591,7 +1630,7 @@ export interface SnapshotRewriteOptions {
   workspaceSubpath?: string;
   /** Daemon-side path of this session's workspace; required once a mount names a subdirectory of it. */
   workspaceDevice?: string;
-  /** Required when the model mounts or declares `persist`. */
+  /** Required when the model mounts `persist`. */
   persist?: PersistVolume;
   stackName?: string;
   /** The session's agent container has the GPU; otherwise GPU requests are removed. */
@@ -1619,8 +1658,8 @@ export interface SnapshotRewrite {
 
 /**
  * Step 4 of the before-`up` sequence (docs/318-compose-remaining-escapes): every in-workspace bind
- * becomes a volume subpath, `persist` becomes ShipIt's bind-backed volume, and the file that holds a
- * mount of a ShipIt volume declares it. Runs on a model `validateResolvedModel` accepted.
+ * and every `persist` mount becomes a volume subpath (docs/317), and the file that holds a mount of
+ * a ShipIt volume declares it. Runs on a model `validateResolvedModel` accepted.
  */
 export function rewriteResolvedModel(
   model: Record<string, unknown>,
@@ -1661,7 +1700,8 @@ export function rewriteResolvedModel(
     const existing = isMapping(decl) && isMapping(decl.labels) ? decl.labels : {};
     volumes[key] = { ...(isMapping(decl) ? decl : {}), labels: { ...existing, ...labels } };
   }
-  if (mounted.has(PERSIST_VOLUME) || (isMapping(out.volumes) && out.volumes[PERSIST_VOLUME] !== undefined)) {
+  // A `persist` the project declares for runs outside ShipIt is dropped, never created.
+  if (mounted.has(PERSIST_VOLUME)) {
     volumes[PERSIST_VOLUME] = persistVolumeDeclaration(opts.sessionId, opts.persist, labels);
   }
   if (mounted.has(WORKSPACE_VOLUME_ALIAS)) {
@@ -1713,9 +1753,7 @@ function rewriteResolvedMount(
 ): unknown {
   if (!isMapping(vol)) return vol;
   const persistSubpath = resolvedPersistSubpath(serviceName, vol);
-  if (persistSubpath !== null) {
-    return { ...vol, type: "volume", source: PERSIST_VOLUME, volume: persistVolumeOptions(vol.volume, persistSubpath) };
-  }
+  if (persistSubpath !== null) return rewritePersistMount(vol, persistSubpath, opts);
   if (vol.type !== "bind" || typeof vol.source !== "string" || vol.source === DOCKER_SOCKET_PATH) return vol;
   const relPath = path.posix.relative(opts.workspaceDir, vol.source);
   if (typeof vol.target === "string") records.push({ relPath, target: vol.target });
@@ -1723,6 +1761,63 @@ function rewriteResolvedMount(
   if (!opts.workspaceVolume) return vol;
   const { bind: _bindOptions, ...mount } = vol;
   return { ...mount, ...workspaceVolumeMount(relPath, opts.workspaceSubpath) };
+}
+
+/**
+ * All of /persist is a subpath of the shared volume, as in the agent container: the scratch
+ * directory cannot be replaced from a container, because its parent is never mounted. Anything
+ * below it can be a symlink, so a subdirectory is a subpath of the bind-backed `persist` volume.
+ */
+function rewritePersistMount(
+  vol: Record<string, unknown>,
+  subpath: string,
+  opts: SnapshotRewriteOptions,
+): Record<string, unknown> {
+  if (opts.workspaceVolume && subpath === "" && opts.persist?.volumeSubpath) {
+    const volume = persistVolumeOptions(vol.volume, opts.persist.volumeSubpath);
+    return { ...vol, type: "volume", source: WORKSPACE_VOLUME_ALIAS, volume };
+  }
+  return { ...vol, type: "volume", source: PERSIST_VOLUME, volume: persistVolumeOptions(vol.volume, subpath) };
+}
+
+/**
+ * The refusal for the first mount the rewrite would give a bind-backed volume — a subdirectory or
+ * file of the workspace or of /persist — or null. Docker Desktop looks such a volume's device up
+ * on the host, where it is missing, and a subpath of the shared volume would be confined only to
+ * its root, which holds every session (docs/317, "Docker Desktop").
+ */
+export function dockerDesktopRefusal(
+  model: Record<string, unknown>,
+  workspaceDir: string,
+): ComposeValidationError | null {
+  for (const [name, svc] of Object.entries(isMapping(model.services) ? model.services : {})) {
+    if (!isMapping(svc) || !Array.isArray(svc.volumes)) continue;
+    for (const vol of svc.volumes) {
+      if (!isMapping(vol)) continue;
+      const sub = resolvedPersistSubpath(name, vol);
+      if (sub) return dockerDesktopSubdirectoryRefusal(name, `${PERSIST_VOLUME}/${sub}`, PERSIST_VOLUME, sub);
+      if (sub !== null || vol.type !== "bind" || typeof vol.source !== "string" || vol.source === DOCKER_SOCKET_PATH) {
+        continue;
+      }
+      const relPath = path.posix.relative(workspaceDir, vol.source);
+      if (relPath) return dockerDesktopSubdirectoryRefusal(name, `./${relPath}`, ".", relPath);
+    }
+  }
+  return null;
+}
+
+function dockerDesktopSubdirectoryRefusal(
+  serviceName: string,
+  source: string,
+  whole: string,
+  subpath: string,
+): ComposeValidationError {
+  const place = whole === PERSIST_VOLUME ? "/persist" : "the workspace";
+  return new ComposeValidationError(
+    `Service \`${serviceName}\`: ShipIt cannot mount \`${source}\` on Docker Desktop. There it can mount `
+    + `only all of ${place}, because Docker Desktop cannot mount one subdirectory and keep a symlink in it `
+    + `from reaching other sessions' files. Mount \`${whole}:/mnt\` instead and use \`/mnt/${subpath}\`.`,
+  );
 }
 
 function shipitVolumeLabels(sessionId: string, stackName: string | undefined): Record<string, string> {
@@ -1736,8 +1831,8 @@ function persistVolumeDeclaration(
   persist: PersistVolume | undefined,
   labels: Record<string, string>,
 ): Record<string, unknown> {
-  if (!persist) {
-    throw new Error("The `persist` volume is declared, but this session's /persist could not be located.");
+  if (!persist?.device) {
+    throw new Error("A service mounts `persist`, but this session's /persist could not be located.");
   }
   return {
     // Distinct from `<project>_persist`, a plain volume an earlier file may already have created.

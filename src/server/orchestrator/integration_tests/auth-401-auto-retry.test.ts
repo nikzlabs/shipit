@@ -101,7 +101,6 @@ function makeDeps(
     listenerDeps: {
       sessionManager: {
         setAgentSessionId: vi.fn(),
-        clearAgentSessionId: vi.fn(),
         setLastTurnErrored: vi.fn(),
         get: vi.fn(),
         track: vi.fn(),
@@ -586,14 +585,15 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     runner.dispose({ force: true });
   });
 
-  it("clears a rejected resume id and re-dispatches the same turn once as a fresh conversation", async () => {
+  it("keeps a rejected resume id and ends the turn without a retry (docs/007)", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
+    const messages: { type: string; message?: string }[] = [];
+    runner.on("message", (m) => messages.push(m as never));
     const { deps } = makeDeps(agents, undefined);
     let agentSessionId: string | undefined = "rejected-resume-id";
     const sessionManager = deps.listenerDeps.sessionManager as any;
     sessionManager.get = vi.fn(() => ({ id: "s1", agentId: "claude", agentSessionId }));
-    sessionManager.clearAgentSessionId = vi.fn(() => { agentSessionId = undefined; });
     sessionManager.setAgentSessionId = vi.fn((_sid: string, next: string) => { agentSessionId = next; });
     deps.buildRunParams = vi.fn(async () => ({
       prompt: "do work",
@@ -607,32 +607,29 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     expect(agents[0]!.run).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "rejected-resume-id" }));
 
     agents[0]!.emit("log", "stderr", "No conversation found with session ID: rejected-resume-id");
+    agents[0]!.emit("event", { type: "agent_init", agentId: "claude", sessionId: "fresh-session-id", tools: [] });
     agents[0]!.emit("done", 1);
-    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "fresh-conversation retry");
-    expect(sessionManager.clearAgentSessionId).toHaveBeenCalledWith("s1");
-    expect(agents[1]!.run.mock.calls[0]![0]).not.toHaveProperty("sessionId");
+    await waitFor(() => !runner.running, "the turn ended");
+    await flush();
 
-    agents[1]!.emit("event", { type: "agent_init", agentId: "claude", sessionId: "fresh-session-id", tools: [] });
-    agents[1]!.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Recovered" }] });
-    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "fresh-session-id" });
-    agents[1]!.emit("done", 0);
-    await waitFor(() => !runner.running, "recovered turn finished");
-    expect(agentSessionId).toBe("fresh-session-id");
-    expect(agents).toHaveLength(2);
+    expect(agents[0]!.kill).not.toHaveBeenCalled();
+    expect(agents).toHaveLength(1);
+    expect(sessionManager.setAgentSessionId).not.toHaveBeenCalled();
+    expect(agentSessionId).toBe("rejected-resume-id");
+    const errors = messages.filter((m) => m.type === "error");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("fork the session");
 
     runner.dispose({ force: true });
   });
 
-  it("keeps first-attempt output durable when the fresh-conversation retry fails empty", async () => {
+  it("keeps first-attempt output durable when the CLI cannot resume", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
     const { deps } = makeDeps(agents, undefined);
-    let agentSessionId: string | undefined = "rejected-resume-id";
     let durableHistory: any[] = [];
     const sessionManager = deps.listenerDeps.sessionManager as any;
-    sessionManager.get = vi.fn(() => ({ id: "s1", agentId: "claude", agentSessionId }));
-    sessionManager.clearAgentSessionId = vi.fn(() => { agentSessionId = undefined; });
-    sessionManager.setAgentSessionId = vi.fn((_sid: string, next: string) => { agentSessionId = next; });
+    sessionManager.get = vi.fn(() => ({ id: "s1", agentId: "claude", agentSessionId: "rejected-resume-id" }));
     const history = deps.listenerDeps.chatHistoryManager as any;
     history.replaceInProgress = vi.fn((_sid: string, messages: any[]) => {
       durableHistory = [...durableHistory.filter((m) => !m.inProgress), ...messages];
@@ -641,11 +638,6 @@ describe("runtime-401 auto-retry (docs/179)", () => {
       durableHistory = durableHistory.map((m) => ({ ...m, inProgress: false }));
     });
     history.append = vi.fn((_sid: string, message: any) => { durableHistory.push(message); });
-    deps.buildRunParams = vi.fn(async () => ({
-      prompt: "do work",
-      cwd: "/tmp/s1",
-      ...(agentSessionId ? { sessionId: agentSessionId } : {}),
-    }));
     runner.setSystemTurnDeps(deps);
 
     runner.dispatch(testDispatch({ text: "do work" }));
@@ -653,14 +645,13 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     agents[0]!.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Work already shown" }] });
     agents[0]!.emit("log", "stderr", "No conversation found with session ID: rejected-resume-id");
     agents[0]!.emit("done", 1);
-    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "fresh retry");
+    await waitFor(() => !runner.running, "the turn ended");
+    await flush();
 
-    agents[1]!.emit("error", new Error("fresh retry failed"));
-    await waitFor(() => durableHistory.some((m) => m.isError), "durable retry error");
     expect(durableHistory.map((m) => m.text)).toContain("Work already shown");
-    expect(durableHistory.some((m) => String(m.text).includes("fresh retry failed"))).toBe(true);
+    expect(durableHistory.some((m) => m.isError && String(m.text).includes("fork the session"))).toBe(true);
     expect(durableHistory.every((m) => !m.inProgress)).toBe(true);
-    expect(agents).toHaveLength(2);
+    expect(agents).toHaveLength(1);
 
     runner.dispose({ force: true });
   });

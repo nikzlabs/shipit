@@ -93,7 +93,7 @@ Nothing enters the transcript at all, so none of the persisted-card machinery
 | Field | Limit | Meaning |
 |---|---|---|
 | `lastTurn` | optional, plain prose, ≤ 400 chars; **not a delta** — an accepted call that omits it CLEARS the stored line (req 31) | One or two sentences on what the agent did in the turn that is ending, or the direct answer when the user asked something. |
-| `status` | optional, markdown, ≤ 1200 chars; omitted: unchanged; required while no card is stored | What the session is about, how far it got, whether it is done or ready to merge, and agent work not yet started. The whole session, not the last turn. Markdown, so it may carry a short list (req 27). |
+| `status` | optional, markdown, ≤ 2000 chars, advertised as 1800 (req 49); omitted: unchanged; required while no card is stored | What the session is about, how far it got, whether it is done or ready to merge, and agent work not yet started. The whole session, not the last turn. Markdown, so it may carry a short list (req 27). |
 | `needsYou` | optional repeated field: a list of strings, each ≤ 1000 chars (req 45), at most 10; omitted: unchanged; `[]`: cleared (req 27) | One entry per decision or hand action only the user can take. Empty when nothing. |
 | `actions` | optional list; each item `id`, `label`, `description`, `defaultChecked?`, `payload` (≤ 4000 chars), `description` ≤ 1000 chars (req 45) — the `propose_actions` item shape, validated by `validateActionItems`, extracted from `propose-actions-validation.ts` and shared. `description` is REQUIRED here (req 26) and stays optional for `propose_actions`, so the rule is `requireOfferDescriptions` (`shared/session-status-offers.ts`), applied by the tool and by the route on the validated items rather than by the shared item validator, which serves both tools | Agent work the user approves with a click. |
 | `replaceActions` | optional boolean, default false | `false`: add the given items to the offered list. `true`: the given list becomes the offered list; an empty list clears it. |
@@ -180,7 +180,7 @@ runner's attach frames, because clients (the integration tests above all) read t
 first frame on connect as the runner being ready, and also on the failed-restore
 and archived paths, which attach no runner, so a lost workspace does not hide the
 card — and again each
-time `SessionManager.setSessionStatus`, `setAgentGoal` or `clearAgentSessionId`
+time `SessionManager.setSessionStatus`, `setAgentGoal` or `markRewound`
 reports a write through `onDetailsChanged` for the connection's active session.
 Each send reads the record when it is sent, on one socket, so the last frame to
 arrive is the newest; the attach send and the change sends cannot reorder the way
@@ -194,15 +194,13 @@ its card too; while the card rode the list rows, it had none.
 **Lifecycle.**
 
 - New session: no card until the first write (req 22).
-- Conversation reset and rewind: keep status and offers, mark stale. After a
-  rewind the card may describe work that is gone; "Stale" says so. The mark
-  lives inside `SessionManager.clearAgentSessionId`, beside the goal's clear,
-  because that one method is what every reset and rewind reaches — nine call
-  sites, of which a shared helper would only be remembered by some. The write
-  reaches the open viewers like any other, so a viewer cannot keep a card that
-  reads current. The two recovery paths that discard a thread —
-  `recoverMissingConversation` and the credential-repair `onRecover` — go
-  through `clearConversationThread` (`services/session-status.ts`) too.
+- Rewind: keep status and offers, mark stale. After a rewind the card may
+  describe work that is gone; "Stale" says so. The mark lives inside
+  `SessionManager.markRewound`, beside the shown goal's clear on a chat rewind,
+  which every in-place rewind calls. The write reaches the open viewers like any
+  other, so a viewer cannot keep a card that reads current. ShipIt never clears
+  the stored conversation (`docs/007-threads-checkpoints` req 2), so there is no
+  reset left to mark.
 - Fork (`forkSession`, `session-fork-merge.ts`): copy the parent's card,
   marked stale. It is the fork's starting point.
 - Archive: the row keeps the column; restore brings the card back.
@@ -1355,7 +1353,7 @@ whole of what req 35 asks the agent to reconcile.
   card's contents, and whether it currently reads stale changes none of them.
 - **The cap is 8000 characters** (`MAX_STATUS_CONTEXT_CHARS`), and **it falls on
   the payloads, not on the offers**. The fixed part is bounded by the field
-  limits the validator enforces — `status` 1200, ten `needsYou` entries of 1000
+  limits the validator enforces — `status` 2000, ten `needsYou` entries of 1000
   (req 45) — and the offer list, which has no count limit (req 18), is the part
   that grows. Since req 45 the fixed part alone can pass 8000 on a worst-case
   card; the block then lists no offers and forbids `replaceActions`, and runs
@@ -1409,8 +1407,8 @@ calls directly.
 ### The block belongs to the attempt, not to the turn
 
 A turn is submitted more than once. `executeAgentTurn` is re-entered, with the same
-`TurnInput`, by the quota failover (`retryOnNextAccount`), the auth heal, and the
-lost-conversation recovery (`recoverMissingConversation`) — and the first two can fire
+`TurnInput`, by the quota failover (`retryOnNextAccount`) and the auth heal (a third,
+lost-conversation recovery, was removed by docs/007) — and both can fire
 *after* the attempt has done real work, because the provider refuses on a later request
 in the same turn. The prompt was composed once, at the top of the turn, so the retried
 attempt read the card as it stood before any of that work: the `session_status` write
@@ -1422,7 +1420,7 @@ finished investigation and told the user about it twice.
 The stored card was never wrong — `sessions.session_status` held the newer write and the
 `takenAt` throughout. Every write that *merges* anything runs inside `runStatusExclusive`
 against a row it reads under the lock, with no await between the read and the write; the
-two writes outside that chain lose nothing — `clearAgentSessionId` reads the row itself to
+two writes outside that chain lose nothing — `markRewound` reads the row itself to
 flip one flag, and the fork copy writes the **new** session's row. Only what reached the
 agent had rewound. So the durability the tool promises is not a property of the store
 alone: it is a property of what the *next submission* shows, and a frozen prompt breaks it

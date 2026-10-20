@@ -25,16 +25,20 @@ export interface AgentRuntime {
   parallelSessionsSections: Map<AgentId, string>;
 }
 
-export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
+export function loginManagers(
+  deps: Omit<BuildAgentRuntimeDeps, "providerAccountManager">,
+): Map<LoginIntegrationId, AgentAuthManager> {
   const declared: (AgentAuthManager | undefined)[] = [
     deps.authManager,
     deps.codexAuthManager,
     deps.xaiAuthManager,
     deps.antigravityAuthManager,
   ];
-  const authManagers = new Map<LoginIntegrationId, AgentAuthManager>(
-    declared.filter((mgr) => mgr !== undefined).map((mgr) => [mgr.loginId, mgr]),
-  );
+  return new Map(declared.filter((mgr) => mgr !== undefined).map((mgr) => [mgr.loginId, mgr]));
+}
+
+export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
+  const authManagers = loginManagers(deps);
 
   const limitsProviders = new Map<AgentId, LimitsProvider>([
     ["claude", new claude.ClaudeLimitsProvider({

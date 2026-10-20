@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type Docker from "dockerode";
 import type { SessionIdentity } from "../shared/session-identity.js";
+import { isDockerDesktopInfo, type DockerInfo } from "./local-block.js";
 import { resolveVolumeMountpoint } from "./overlay-volume.js";
 import { applyDefaultGroupAcl, identityForTarget, sessionWorkerGid } from "./session-worker-uid.js";
 
@@ -93,7 +94,8 @@ export function mkdirAsSession(
 
 /**
  * Translate an orchestrator path inside the workspace volume (mounted at /workspace here) to the
- * daemon's path for it; a bind-backed volume's device is read by the daemon, not by us.
+ * daemon's path for it, the device of a bind-backed volume. Docker Desktop looks that device up
+ * on the host instead, where the path does not exist (`dockerDesktopCheck`).
  */
 export function workspaceVolumeDaemonPath(
   docker: Docker,
@@ -110,6 +112,28 @@ export function workspaceVolumeDaemonPath(
       throw err;
     });
     return path.posix.join(await mountpoint, rel);
+  };
+}
+
+/**
+ * Docker Desktop mounts a bind-backed volume's device from the host, and makes an empty directory
+ * for a path that is not there, so no directory of the workspace volume can be one (docs/317).
+ * A failed lookup fails the start rather than guess, and is asked again at the next one.
+ */
+export function dockerDesktopCheck(docker: Pick<Docker, "info">): () => Promise<boolean> {
+  let known: boolean | undefined;
+  return async () => {
+    if (known !== undefined) return known;
+    try {
+      known = isDockerDesktopInfo(await docker.info() as DockerInfo);
+      return known;
+    } catch (err) {
+      throw new Error(
+        "ShipIt could not ask Docker whether it is Docker Desktop, where it refuses a mount of one "
+        + `subdirectory: ${message(err)}`,
+        { cause: err },
+      );
+    }
   };
 }
 

@@ -90,6 +90,8 @@ export interface SessionInfo {
   warm?: boolean;
   branchRenamed?: boolean;
   conversationReplay?: string;
+  /** docs/007 — a rewind's message id: the next spawn forks the stored conversation there. */
+  agentResumeAt?: string;
   mergedAt?: string;
   closedAt?: string;
   model?: string;
@@ -132,6 +134,8 @@ export interface SessionInfo {
   mergeContinueDeclinedAnchor?: string;
   /** docs/218 req 6 — the merge whose compaction offer is spent (started, or unticked); same identity as above. */
   mergeContinueCompactedAnchor?: string;
+  /** docs/295-compact-context-on-merge req 5 — the user turned the post-merge compaction off for this session. */
+  compactAfterMergeOff?: boolean;
   /** Durable, last-write-wins notice consumed atomically by the next interactive turn. */
   pendingAgentNotice?: string;
   /** Pair witnessed by ShipIt opening the PR; never derive from general PR status. */
@@ -169,12 +173,13 @@ export interface SessionInfo {
 
 /**
  * A row of the session lists, which every tab receives again on each change. The
- * status card and the goal reach only the open session's viewer, on `session_details`;
- * the replay and the notice are for the agent.
+ * status card, the goal and the compaction choice reach only the open session's viewer,
+ * on `session_details` (the lists are filtered, so they can lack the open session);
+ * the replay, the rewind point and the notice are for the agent.
  */
 export type SessionListRow = Omit<
   SessionInfo,
-  "sessionStatus" | "agentGoal" | "conversationReplay" | "pendingAgentNotice"
+  "sessionStatus" | "agentGoal" | "conversationReplay" | "agentResumeAt" | "pendingAgentNotice" | "compactAfterMergeOff"
 >;
 
 /**

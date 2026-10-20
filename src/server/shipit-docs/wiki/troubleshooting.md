@@ -467,6 +467,18 @@ wider `default-address-pools` entry to the Docker daemon configuration —
 VPS setup script does this already; a local install has the daemon's default
 unless its user changed it.
 
+A second refusal comes from the host too: **on Docker Desktop, ShipIt refuses a
+mount of one subdirectory or one file** — `./frontend:/app`,
+`./nginx.conf:/etc/nginx/nginx.conf`, `persist/<dir>:/data`. Docker Desktop
+cannot mount one and keep it inside the session. The refusal names the service
+and the mount. Fix the compose file yourself: mount all of the workspace
+(`.:/src`) or all of `/persist` (`persist:/data`), and point the service at the
+path inside it (`/shipit-docs/compose.md`). A plugin that this repository
+develops for itself (`repo: self`) has the same limit: when one of its plugin
+services mounts a subdirectory, ShipIt starts none of the repository's plugin
+services, and the repository's card in the Plugins tab gives the reason. Fix the plugin's compose fragment: remove the
+mount and use the same files under `/plugin` (`/shipit-docs/plugin-authoring.md`).
+
 ## "Dictation isn't working"
 
 The voice panel replaces itself with the failure's own message and offers

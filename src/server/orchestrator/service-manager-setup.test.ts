@@ -138,6 +138,62 @@ describe("setupServiceManager trust gate (docs/178)", () => {
   });
 });
 
+// The production relay from the worker's install decision into adoption (docs/288).
+describe("setupServiceManager — activating a session with a pre-started warm stack", () => {
+  function activateWarm(decision: "skipped" | "started") {
+    repoStore.add(REMOTE);
+    repoStore.setTrusted(REMOTE, true);
+    fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "compose: docker-compose.yml\nagent:\n  install:\n    - npm ci\n");
+    fs.writeFileSync(path.join(tmpDir, "docker-compose.yml"), "services:\n  web:\n    image: node:22\n");
+    const runner = new ContainerSessionRunner({
+      sessionId: "s1",
+      sessionDir: tmpDir,
+      defaultAgentId: "claude",
+      workerUrl: "http://127.0.0.1:1",
+    });
+    vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
+    vi.spyOn(runner, "setServiceManager").mockImplementation(() => undefined);
+    vi.spyOn(runner, "runInstall").mockImplementation(async (_commands, opts) => {
+      opts?.onWorkerDecision?.(decision);
+      return { ok: true };
+    });
+    const mgr = Object.assign(new EventEmitter(), {
+      preStartedWarm: true,
+      installGateFailed: false,
+      reconcile: vi.fn(async () => { /* no compose stack in tests */ }),
+      stop: vi.fn(async () => { /* no compose stack in tests */ }),
+      updateComposeConfig: vi.fn(() => false),
+      setSecretsLoader: vi.fn(),
+      setInstallRunning: vi.fn(() => true),
+    });
+    const deps = makeDeps(REMOTE);
+    deps.serviceManagers.set("s1", mgr as unknown as ServiceManager);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    setupServiceManager(runner, deps);
+    return { runner, mgr, log };
+  }
+
+  it("leaves the stack running when the worker skips the install", async () => {
+    const { runner, mgr, log } = activateWarm("skipped");
+    await vi.waitFor(() => expect(runner.runInstall).toHaveBeenCalled());
+    await new Promise((r) => setImmediate(r));
+
+    expect(mgr.setInstallRunning).not.toHaveBeenCalled();
+    expect(log.mock.calls.map(([m]) => String(m))).toContainEqual(
+      expect.stringMatching(/install-decision for s1 decision=skipped warm-stack=yes/),
+    );
+  });
+
+  it("holds the gated services when the install really runs", async () => {
+    const { runner, mgr } = activateWarm("started");
+    await vi.waitFor(() => expect(runner.runInstall).toHaveBeenCalled());
+    await new Promise((r) => setImmediate(r));
+
+    expect(mgr.setInstallRunning).toHaveBeenNthCalledWith(1, true);
+    expect(mgr.setInstallRunning).toHaveBeenNthCalledWith(2, false, { failed: false });
+  });
+});
+
 describe("setupServiceManager — overlay publish gate", () => {
   function runnerWithInstall(): ContainerSessionRunner {
     fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  install:\n    - npm ci\n");

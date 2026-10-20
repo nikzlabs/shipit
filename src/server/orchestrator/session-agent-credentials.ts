@@ -235,6 +235,11 @@ export function ensureLocalWorkspaceTrust(
   LOCAL_WORKSPACE_TRUST[agentId]?.(home, workspaceDir);
 }
 
+// A source root's conversation state belongs to runs made in it, never to a session (planning#698).
+function copyProviderSubtree(sourceRoot: string, destRoot: string, rel: string): void {
+  copyCredentialPath(sourceRoot, destRoot, rel, SUBTREE_STATE_SUBPATHS[rel]);
+}
+
 function provisionAgentCredentialsFromRoot(
   credentialsRoot: string,
   sessionId: string,
@@ -253,7 +258,7 @@ function provisionAgentCredentialsFromRoot(
     if (replaceExistingProviderSubtree) {
       removeProviderSubtreeForReplacement(dir, rel);
     }
-    copyCredentialPath(sourceRoot, dir, rel);
+    copyProviderSubtree(sourceRoot, dir, rel);
   }
   // Create symlink targets even for key-only agents, before handing ownership to the worker.
   for (const rel of agentCredentialDirs(agentId)) {
@@ -337,7 +342,7 @@ export function provisionSubAgentSpawnHome(
   fs.mkdirSync(home, { recursive: true });
   // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
   for (const rel of subAgentId === "opencode" && accountId ? [] : AGENT_CREDENTIAL_PATHS[subAgentId]) {
-    copyCredentialPath(sourceRoot, home, rel);
+    copyProviderSubtree(sourceRoot, home, rel);
   }
   // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
   if (subAgentId === "opencode" && accountId) provisionOpenCodeAccount(sourceRoot, home, accountId);

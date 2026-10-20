@@ -6,6 +6,7 @@ import {
   type AgentSystemInstructionOptions,
 } from "./agent-instructions.js";
 import { operationsFor } from "./services/settings-operations.js";
+import { ADVERTISED_STATUS_LEN, MAX_STATUS_LEN } from "../shared/session-status-validation.js";
 
 describe("buildAgentSystemInstructions", () => {
   it("is static — every call returns the same string as AGENT_SYSTEM_INSTRUCTIONS", () => {
@@ -156,6 +157,15 @@ describe("buildAgentSystemInstructions", () => {
     }
   });
 
+  it("docs/305 req 6 — every session kind, ops included, gets the SSH destinations section", () => {
+    const fragment = fs.readFileSync(new URL("./prompts/ssh-hosts.md", import.meta.url), "utf8").trim();
+    for (const opts of [{}, { agentId: "claude" as const }, { agentId: "codex" as const }]) {
+      expect(buildAgentSystemInstructions(opts)).toContain(fragment);
+      expect(buildAgentSystemInstructions({ ...opts, isOps: true })).toContain(fragment);
+      expect(buildAgentSystemInstructions({ ...opts, isSandbox: true })).toContain(fragment);
+    }
+  });
+
   it("never tells an ops or sandbox agent that ShipIt commits for it", () => {
     const claim = fs
       .readFileSync(new URL("./prompts/git-workflow.md", import.meta.url), "utf8")
@@ -190,6 +200,12 @@ describe("buildAgentSystemInstructions", () => {
       expect(on).toContain(sessionStatus);
       expect(on).not.toContain(proposeActions);
     }
+  });
+
+  it("docs/303 req 49 — the status card prompt states the advertised status cap, not the enforced one", () => {
+    const sessionStatus = fs.readFileSync(new URL("./prompts/session-status.md", import.meta.url), "utf8");
+    expect(sessionStatus).toContain(String(ADVERTISED_STATUS_LEN));
+    expect(sessionStatus).not.toContain(String(MAX_STATUS_LEN));
   });
 
   it("makes the flag-off variant the default, and keeps each variant distinct", () => {

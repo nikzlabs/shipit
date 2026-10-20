@@ -226,6 +226,11 @@ describe("ops recipes run as written on any install", () => {
     }
   });
 
+  // docs/305-ssh-hosts req 6: an ops session can hold SSH grants, so a "no SSH" line contradicts them.
+  it("never tells the agent it has no SSH, because an ops session can be granted destinations", () => {
+    for (const [file, text] of Object.entries(texts)) expect(text, file).not.toMatch(/\bno SSH\b/i);
+  });
+
   it("checks for leaked host directories by mount point, not by any text on the line", () => {
     const awk = /mount \| awk '([^']+)'/.exec(texts["prompts/verify-ops-access.md"])?.[1];
     expect(awk, "the leak check of verify-ops-access.md").toBeDefined();

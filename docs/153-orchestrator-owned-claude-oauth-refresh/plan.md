@@ -821,11 +821,13 @@ Four rules, each where the fault was:
    CLIs rewrite the file's other keys.
 4. **An `authenticating` account is routed to only while it holds a credential**
    (`ProviderAccountManager.selectAccountForTurn`, asked through the login's
-   `isConfigured`). Claude's sign-in removes the credential at its start. So does
-   Codex's: `codex login --device-auth` removes `auth.json` within 0.5 s of its start,
-   before its first request is answered (measured offline on CLI 0.159.2, 2026-10-13;
-   until then this item named Codex's device flow as a sign-in that keeps the old
-   credential). A sign-in that keeps the old credential stays routable.
+   `isConfigured`). Claude's sign-in removes the credential at its start. Codex's
+   removes it after one request: `codex login --device-auth` first revokes the old
+   refresh token at the token host, keeps `auth.json` until that request has an answer
+   (at most 10 s without one), and removes it before it asks for a device code
+   (measured offline on CLI 0.160.1, 2026-10-15; docs/154-codex-oauth-refresh-readiness,
+   "The revoked line, and the account's row"). A sign-in that keeps the old credential
+   stays routable.
 
 And the announcement: `emitUnauthenticated` was latched after the first report. It now
 reports again when the account's row reads `ready`, because a sign-in's completion sets
@@ -1229,6 +1231,8 @@ the orphan is named `claude-default` because that is the migration's literal
 target; it holds the real credential and a multi-megabyte conversation because
 it *is* the moved home; and "no resumable jsonl on disk (DB pointed at `<id>`)"
 happened because the jsonl moved with it. The DB pointer was always correct.
+(That verdict, and the id clear it drove, were removed in docs/007: the repair never
+judges or touches the stored id.)
 
 **Fix — three independent layers**, since any one alone still leaves a live home
 reachable:

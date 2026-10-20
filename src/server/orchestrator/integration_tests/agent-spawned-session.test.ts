@@ -73,6 +73,8 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       tmpDir,
       repoUrl: SPAWN_REPO_URL,
       seedFiles: { "README.md": "# spawn-remote-test\n" },
+      // A spawn never takes the warm session, so it exercises the clone path.
+      bare: true,
     });
     repoStore.add(SPAWN_REPO_URL);
     repoStore.setReady(SPAWN_REPO_URL);
@@ -1446,6 +1448,29 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const parent = sessionManager.get(parentId)!;
     return { parentId, workspaceDir: parent.workspaceDir! };
   }
+
+  it("leaves the repo's warm session for a person (docs/288 req 12)", { timeout: 30_000 }, async () => {
+    const { parentId } = await claimGraduatedParent();
+    await waitFor(() => !!repoStore.get(SPAWN_REPO_URL)?.warmSessionId, 10000, "re-warm after parent claim");
+    const warmId = repoStore.get(SPAWN_REPO_URL)!.warmSessionId!;
+
+    const spawnRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "do the thing", title: "Do the thing" },
+    });
+    expect(spawnRes.statusCode).toBe(200);
+    const { sessionId: childId } = spawnRes.json() as { sessionId: string };
+    expect(childId).not.toBe(warmId);
+    expect(repoStore.get(SPAWN_REPO_URL)?.warmSessionId).toBe(warmId);
+
+    const claimRes = await app.inject({
+      method: "POST",
+      url: `/api/repos/${encodeURIComponent(SPAWN_REPO_URL)}/claim-session`,
+    });
+    expect(claimRes.statusCode).toBe(200);
+    expect((claimRes.json() as { sessionId: string }).sessionId).toBe(warmId);
+  });
 
   it("spawns the child branched off origin/main, NOT off parent's HEAD", { timeout: 30_000 }, async () => {
     const { parentId, workspaceDir: parentWorkspace } = await claimGraduatedParent();

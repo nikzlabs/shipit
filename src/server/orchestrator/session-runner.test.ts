@@ -747,7 +747,6 @@ describe("SessionRunner", () => {
       setAgentPinned: vi.fn(),
       setProviderRoute: vi.fn(),
       setAgentSessionId: vi.fn(),
-      clearAgentSessionId: vi.fn(),
       setLastTurnErrored: vi.fn(),
     } as any;
 

@@ -832,6 +832,78 @@ the link and the first draws separately, measure a warm load before you
 expect it to be faster, and record the load on the host with each run. Do not
 expect a page to keep its animation while it compiles on this route: measure
 its frames during the link and the first draws.
+In a sample of the browser's GPU process, the first draws were the compiler of
+the card's driver. In a Mesa program with no browser, that driver and DirectX
+asked for no cache file while they compiled 20 programs, so no cache of theirs
+was found that a directory could turn on. The variable of the next paragraph
+did not remove the link or the first draws (one browser each way).
+
+**Some uploads of texture and buffer data are slow without one variable in
+the browser's environment, and ShipIt sets it.** Mesa copies each upload into
+memory that Direct3D 12 maps for the card. For a copy of about 2 KiB to
+512 KiB, the `memcpy` of the image's C library (glibc 2.36) uses the CPU
+instruction `rep movsb`. On one host (a Ryzen 9 5950X, an RTX 4090, Mesa
+22.3.6) that instruction wrote this memory at 7 MB each second, and the other
+paths of `memcpy` wrote it at 300 MB each second. One layer of 256 × 256 RGBA8
+pixels is one copy of 256 KiB. So a WebGL 2 texture array of 145 such layers
+(36 MB) took 8.3 to 11.9 s to upload, against 0.07 s on SwiftShader.
+`GLIBC_TUNABLES=glibc.cpu.x86_rep_movsb_threshold=0x40000000` keeps `memcpy`
+off that instruction, and the same upload then took 0.26 to 0.30 s. ShipIt
+puts this variable into the environment of each container that has the two
+mounts, and the built-in browser starts with it. A browser that you start
+inherits it, with these conditions:
+
+- **The container has it.** `echo $GLIBC_TUNABLES` prints the value. A
+  container that was created before ShipIt had this remedy does not have it; a
+  restart of the container gets it (see "Restarting your agent container"
+  above).
+- **The start of the browser keeps the environment.** Playwright's
+  `launch({ env })` gives the browser only the variables of `env`, so write
+  `env: { ...process.env, MY_VARIABLE: "…" }`. A command that sets its own
+  `GLIBC_TUNABLES` replaces ShipIt's value: put both tunables into the one
+  variable, with a colon between them.
+- **To see what a running browser has,** read the environment of its main
+  process: `tr '\0' '\n' < /proc/<pid>/environ | grep GLIBC_TUNABLES`. The
+  main process is the child of the program that started the browser:
+  `ps -o pid,args --ppid <pid of that program>`. For the built-in browser,
+  that program is the `playwright-mcp` server. Each process of the browser,
+  the GPU process too, had the main process's environment.
+- **To find the GPU process itself** (for a CPU reading or a sampler), look in
+  that browser's process tree for the process whose `/proc/<pid>/maps` has the
+  renderer's library: `libd3d12.so` on the card, `libvk_swiftshader.so` on
+  SwiftShader. Do not look for `--type=gpu-process` on a command line. When
+  `GLIBC_TUNABLES` is in the browser's environment, also with an empty value,
+  each process that Chromium forks from a zygote keeps the zygote's command
+  line, `--type=zygote`: the GPU process, and the renderers too. So with
+  ShipIt's value in place, no process shows `--type=gpu-process`. The same
+  Chromium with no `GLIBC_TUNABLES` shows the types. The probable cause: the
+  C library moves that variable's text away from the command line in memory,
+  and Chromium then does not write the type over the command line.
+
+Without the variable, these uploads were slow on that host, each of 36 MB when
+no size is given: the texture array in one call (11.9 s) and in one call for
+each layer (14.0 s), 145 separate 2D textures of 256 × 256 pixels (7.3 s), 145
+`DYNAMIC_DRAW` buffers of 256 KiB (4.9 s), and one 2D texture of 1100 × 1100
+pixels, 4.6 MB (0.67 s). With the variable they took 0.03 to 0.35 s. One 2D
+texture of 4096 × 2320 pixels (0.39 s) and 145 `STATIC_DRAW` buffers of 256 KiB
+(0.17 s) were not slow without it. Mesa 25.0.7 has the same slow copy.
+
+What stayed with the variable on that host, and how to measure an upload:
+
+- **An upload cost about 3.5 ms for each MB,** because the card's memory took
+  300 MB each second. Chromium sent the data of a texture array to its GPU
+  process in parts of less than 16 MiB. With Mesa 22.3.6, when the first part
+  did not fill the texture level, the browser first made one upload of its own
+  for the full level. So a texture array of 16 MiB or more was copied two
+  times.
+- **`gl.finish()` does not wait for an upload.** Chromium makes it a flush. For
+  a texture array of 32 layers with no variable, `gl.finish()` returned after
+  14 ms, and a `readPixels` after it returned after 1.1 s. So time an upload to
+  the answer of a call that returns a value from the GPU process, `readPixels`
+  for example.
+- **The time of an upload shows at the next call that waits for the GPU
+  process,** whatever that call asks. A long time around another call can be
+  the upload before it.
 
 What this does not cover:
 

@@ -599,6 +599,8 @@ export interface PluginMountOptions {
   workspaceVolume?: string;
   workspaceSubpath?: string;
   pluginVolumes: ReadonlyMap<string, string>;
+  /** Whether the daemon is Docker Desktop, or why Docker could not say (`selfSubdirectoryMount`). */
+  dockerDesktop?: boolean | Error;
 }
 
 interface SessionVolume {
@@ -636,7 +638,17 @@ export function buildPluginComposeServices(
     return { services: [], issuesByRepo };
   }
 
+  // A plugin's services may depend on each other, so the whole repository is withheld.
+  const withheld = new Set<string>();
+  for (const fragment of volume ? fragments : []) {
+    const issue = dockerDesktopIssue(fragment, opts.dockerDesktop);
+    if (!issue) continue;
+    addIssue(fragment.repo, issue);
+    withheld.add(fragment.repo);
+  }
+
   for (const fragment of fragments) {
+    if (withheld.has(fragment.repo)) continue;
     const volumeName = fragment.self ? undefined : opts.pluginVolumes.get(fragment.repo);
     if (!fragment.self && !volumeName) {
       addIssue(
@@ -700,8 +712,7 @@ function rewriteFragmentVolume(
   const parsed = readVolumeEntry(entry);
   if (!parsed) return entry;
   const { source, target, readOnly } = parsed;
-  const relative = source === "." || source === "./" ? "" : source.slice(2);
-  const withinRepo = joinPosix(fragment.fragmentDir, relative);
+  const withinRepo = repoPathOf(fragment, source);
 
   if (volumeName) {
     return {
@@ -725,6 +736,44 @@ function rewriteFragmentVolume(
     target,
     ...(readOnly ? { read_only: true } : {}),
   };
+}
+
+function repoPathOf(fragment: PluginFragmentService, source: string): string {
+  const normalized = path.posix.normalize(joinPosix(fragment.fragmentDir, source.slice(2))).replace(/\/+$/, "");
+  return normalized === "." ? "" : normalized;
+}
+
+/**
+ * The first mount of a self fragment that names a subdirectory of the workspace, or null. It needs
+ * the bind-backed session workspace volume (`workspaceVolumeMount`), whose device Docker Desktop
+ * looks up on the host, so the service would get an empty directory there (docs/317).
+ */
+export function selfSubdirectoryMount(
+  fragment: PluginFragmentService,
+): { source: string; repoPath: string } | null {
+  if (!fragment.self) return null;
+  for (const entry of asArray(fragment.definition.volumes)) {
+    const parsed = readVolumeEntry(entry);
+    const repoPath = parsed ? repoPathOf(fragment, parsed.source) : "";
+    if (parsed && repoPath) return { source: parsed.source, repoPath };
+  }
+  return null;
+}
+
+function dockerDesktopIssue(
+  fragment: PluginFragmentService,
+  dockerDesktop: boolean | Error | undefined,
+): string | null {
+  if (!dockerDesktop) return null;
+  const mount = selfSubdirectoryMount(fragment);
+  if (!mount) return null;
+  const withheld = `\`${fragment.alias}\`: ShipIt starts none of this repository's plugin services`;
+  if (dockerDesktop instanceof Error) return `${withheld}: ${dockerDesktop.message}`;
+  return `${withheld}, because its service \`${fragment.name}\` mounts \`${mount.source}\` `
+    + `(\`${mount.repoPath}\` in this repository), and ShipIt cannot mount one subdirectory on Docker `
+    + "Desktop: there Docker cannot mount one and keep a symlink in it from reaching other sessions' "
+    + `files. Remove the mount and use \`/plugin/${mount.repoPath}\`: ShipIt mounts the whole `
+    + "repository at `/plugin`.";
 }
 
 function pluginTreeMount(

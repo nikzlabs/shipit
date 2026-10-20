@@ -227,20 +227,6 @@ export function takeOfferedActions(
 }
 
 /**
- * Conversation reset, rewind and the two recovery paths that discard the agent's thread.
- *
- * docs/303 — the card is kept and marked stale rather than cleared: after a rewind it may
- * describe work that is gone, and "Stale" is how it says so. The mark itself lives in
- * `clearAgentSessionId`, beside the goal's clear, so no caller can forget it.
- */
-export function clearConversationThread(
-  deps: { sessionManager: Pick<SessionManager, "clearAgentSessionId"> },
-  sessionId: string,
-): void {
-  deps.sessionManager.clearAgentSessionId(sessionId);
-}
-
-/**
  * docs/303 — what a settling turn knew about itself, taken before its drain step: the
  * drained successor resets the runner state these three come from, and it starts before
  * the network post-turn work and `idle`.
@@ -514,7 +500,7 @@ export function locateStatusContext(
 
 /**
  * docs/303 req 35 — the block is a snapshot of standing state, and a TURN IS SUBMITTED
- * MORE THAN ONCE: a quota failover, an auth heal and the lost-conversation recovery all
+ * MORE THAN ONCE: a quota failover and an auth heal both
  * re-enter `executeAgentTurn` with the prompt composed for the first attempt. Frozen, that
  * prompt hands the retried attempt the card as it stood before the failed attempt's work —
  * the `session_status` write the tool reported as saved reads as discarded, and an offer

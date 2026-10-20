@@ -48,6 +48,8 @@ import {
   createDepCacheDirHelper,
   createWarmPool,
   createWarmPreviewStarter,
+  warmPreviewState,
+  warmPreviewWanted,
   runRepoMigration,
   runRemoteCredentialScrub,
   clearUnrecordedRepoAddresses,
@@ -86,6 +88,7 @@ import { MergeWatchManager } from "./merge-watch.js";
 import { QuotaContinuationManager } from "./services/quota-continuation.js";
 import { runRequestedRestart, type RequestedRestartTurn } from "./services/agent-restart-request.js";
 import { runRequestedCompaction } from "./services/agent-compaction-request.js";
+import { IdleCompaction } from "./services/idle-compaction.js";
 import { reportStoppedBackgroundJobs, type StoppedBackgroundJobsReport } from "./services/stopped-background-jobs.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { CleanupContainerManager, CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
@@ -128,6 +131,7 @@ import {
 } from "./service-manager-setup.js";
 import { releaseSessionNetworkQueued } from "./session-network-release.js";
 import { composeRegistryLoginDir } from "./compose-helper.js";
+import { dockerDesktopCheck } from "./compose-persist.js";
 import { createPluginInstallRunner, PLUGIN_INSTALL_NETWORK } from "./plugin-install.js";
 import { registerExistingPluginNetworks } from "./plugin-container.js";
 import { createGenerationDeletionLease } from "./plugin-leases.js";
@@ -274,6 +278,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       sessionManager,
     });
   }
+  // docs/333-idle-compaction — built once the registry exists; the enforcer reads it at call time.
+  const idleCompactionRef: { ref: IdleCompaction | null } = { ref: null };
   // Reuse the enforcer: its state prevents repeated reclaim against a stale memory reading.
   let idleEnforcer: (() => void) | null = null;
   const enforceIdleContainerLimit = () => {
@@ -301,6 +307,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       poolWarmSessionIds: () => new Set(
         repoStore.list().flatMap((repo) => (repo.warmSessionId ? [repo.warmSessionId] : [])),
       ),
+      idleCompaction: {
+        isWaiting: (sessionId) => idleCompactionRef.ref?.isWaiting(sessionId) ?? false,
+        fire: (sessionId) => idleCompactionRef.ref?.fire(sessionId) ?? Promise.resolve(),
+      },
     });
     idleEnforcer();
   };
@@ -490,6 +500,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       });
   };
 
+  const pluginDockerDesktop = containerManager ? dockerDesktopCheck(containerManager.dockerClient) : undefined;
   const resolvePluginServices = (
     sessionId: string,
     workspaceDir: string,
@@ -500,6 +511,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       ...(containerManager?.workspaceVolumeName
         ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
         : {}),
+      ...(pluginDockerDesktop ? { isDockerDesktop: pluginDockerDesktop } : {}),
       containEgress: containerManager?.isEgressContained(sessionId) ?? false,
       stackName: process.env.DOCKER_STACK,
       projectCompose: projectComposeAccess(sessionId, workspaceDir),
@@ -775,6 +787,20 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     },
   });
   registryHolder.ref = runnerRegistry;
+
+  const idleCompaction = new IdleCompaction({
+    isEnabled: () => credentialStore.getIdleCompaction(),
+    liveSteering: () => credentialStore.getLiveSteering(),
+    defaultAgentId,
+    sessionManager,
+    usageManager,
+    chatHistoryManager,
+    runnerRegistry,
+    containerManager,
+  });
+  idleCompactionRef.ref = idleCompaction;
+  // Before any turn can end: an adopted turn's result arms a deadline too.
+  usageManager.onAnchoredTurn((turn) => idleCompaction.arm(turn));
 
   const repoPrefetcher: RepoPrefetcher | null = isTestMode ? null : createRepoPrefetcher({
     repoStore, getBareCacheDir, createRepoGit, githubAuthManager,
@@ -1053,13 +1079,20 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       })
     : undefined;
 
-  const { warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession } = createWarmPool({
+  const {
+    warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession, repairWarmPreview, refreshWarmSession,
+  } = createWarmPool({
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, containerManager,
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
     oomBreaker,
     getMemoryStats: () => latestMemoryStats.value,
     ...(preStartWarmPreview ? { preStartPreview: preStartWarmPreview } : {}),
+    previewWanted: (target) => warmPreviewWanted(target, { repoStore, serviceManagers }),
+    // The claim service is built below and needs this pool; the sweep calls this only after startup.
+    refreshWarmClone: (repoUrl: string, sessionId: string) =>
+      claimSessionService.refreshWarm(repoUrl, sessionId),
+    previewGate: (sessionId: string) => serviceManagers.get(sessionId),
   });
 
   // Scrub before migration creates repo rows; move directories keyed by the old URL hash too.
@@ -1096,6 +1129,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     ...(repoPrefetcher ? { shouldSkipClaimFetch: (url: string) => repoPrefetcher.coveredRecently(url) } : {}),
     ...(containerManager ? { containerManager } : {}),
     egressAllowlistStore,
+    previewState: (sessionId: string) => warmPreviewState(serviceManagers.get(sessionId)),
   });
 
   // docs/324-scheduled-sessions — runs start through the same headless start as Quick Capture.
@@ -1177,6 +1211,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     });
   } catch (err: unknown) {
     console.error("[turn-reattach] startup sweep failed:", err);
+  }
+  // After adoption: a fire that is due at once must see the turns the sweep adopted as running.
+  try {
+    idleCompaction.rederive();
+  } catch (err: unknown) {
+    console.error("[idle-compaction] re-deriving the deadlines at boot failed:", err);
   }
   void reconcileAgentMergeClaims({
     claims: agentMergeClaims,
@@ -1270,13 +1310,14 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     runRequestedRestartForTurn,
     runRequestedCompactionForTurn,
     reportStoppedBackgroundJobsForTurn,
+    idleCompaction,
     prStatusPoller,
     releaseStatusPoller,
     limitsRegistry,
     recordAgentRateLimits,
     markSessionAccountExhausted,
     createSessionDir,
-    warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession, preStartWarmPreview,
+    warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession, repairWarmPreview, refreshWarmSession,
     migratedRepoUrls,
     startupTimer,
     agentMergeClaims,

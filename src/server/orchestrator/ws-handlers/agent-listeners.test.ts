@@ -138,6 +138,94 @@ describe("wireAgentListeners", () => {
     runner.dispose({ force: true });
   });
 
+  describe("the idle-compaction anchor (docs/333-idle-compaction)", () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    function wire(opts: { compactionTurn?: boolean; maintenanceTurn?: boolean; anchorUnknown?: boolean } = {}) {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-10-19T10:00:00.000Z"));
+      const agent = new FakeAgent("claude");
+      const runner = new SessionRunner({ sessionId: "session-1", sessionDir: "/tmp/session-1", defaultAgentId: "claude" });
+      const d = deps();
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+        ...opts,
+      });
+      const toolResult = (parentToolUseId?: string): void => {
+        agent.emit("event", {
+          type: "agent_tool_result",
+          content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }],
+          ...(parentToolUseId ? { parentToolUseId } : {}),
+        } satisfies AgentEvent);
+      };
+      const result = (tokens = { input: 10, output: 5, cacheRead: 240_000 }): void => {
+        agent.emit("event", {
+          type: "agent_result", status: "success", sessionId: "s", tokens, contextTokens: 240_010, cacheTtl: "1h",
+        } satisfies AgentEvent);
+      };
+      const recorded = () => (d.usageManager.record as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[5] as
+        { cacheScope?: { agentId: string; model: string | null }; cacheAnchorAt?: number; cacheTtl?: string } | undefined;
+      return { agent, runner, d, toolResult, result, recorded };
+    }
+
+    it("anchors on the last tool result, a subagent's included, and writes the cache lifetime", () => {
+      const { runner, toolResult, result, recorded } = wire();
+      const start = Date.now();
+      vi.setSystemTime(start + 60_000);
+      toolResult();
+      vi.setSystemTime(start + 90_000);
+      toolResult("toolu_sub");
+      vi.setSystemTime(start + 300_000);
+      result();
+      expect(recorded()).toMatchObject({
+        cacheScope: { agentId: "claude", model: null },
+        cacheAnchorAt: start + 90_000,
+        cacheTtl: "1h",
+      });
+      runner.dispose({ force: true });
+    });
+
+    it("anchors on the turn's start when it had no tool result", () => {
+      const { runner, result, recorded } = wire();
+      const start = Date.now();
+      vi.setSystemTime(start + 300_000);
+      result();
+      expect(recorded()?.cacheAnchorAt).toBe(start);
+      runner.dispose({ force: true });
+    });
+
+    it("writes no anchor for a compaction turn, nor for a turn that read nothing", () => {
+      const compaction = wire({ compactionTurn: true });
+      compaction.result();
+      expect(compaction.recorded()?.cacheAnchorAt).toBeUndefined();
+      compaction.runner.dispose({ force: true });
+
+      const refused = wire();
+      refused.result({ input: 0, output: 0, cacheRead: 0 });
+      expect(refused.recorded()?.cacheAnchorAt).toBeUndefined();
+      refused.runner.dispose({ force: true });
+    });
+
+    it("writes no anchor for a turn adopted after a restart, whose events are replayed", () => {
+      const { runner, result, recorded } = wire({ anchorUnknown: true });
+      result();
+      expect(recorded()?.cacheAnchorAt).toBeUndefined();
+      runner.dispose({ force: true });
+    });
+
+    it("a silent compaction leaves the session's last use and its last turn's error state alone", () => {
+      const { runner, d, result } = wire({ compactionTurn: true, maintenanceTurn: true });
+      runner.lastTurnErrored = true;
+      result();
+      expect(d.sessionManager.touchUnlessResolved).not.toHaveBeenCalled();
+      expect(d.sessionManager.setLastTurnErrored).not.toHaveBeenCalled();
+      expect(runner.lastTurnErrored).toBe(true);
+      runner.dispose({ force: true });
+    });
+  });
+
   it("prices a subscription turn's long prompts the same live as on reload (docs/329-tiered-model-pricing)", () => {
     const agent = new FakeAgent("claude");
     const runner = new SessionRunner({
@@ -1115,58 +1203,158 @@ describe("wireAgentListeners", () => {
     });
   });
 
-  describe("unrecoverable stale resume", () => {
-    it("persists the couldn't-resume error instead of only emitting it", async () => {
+  describe("a conversation the CLI cannot resume (docs/007)", () => {
+    it("persists one card that says the conversation was kept and points at fork", () => {
       const agent = new FakeAgent();
       const runner = new SessionRunner({
         sessionId: "session-1",
         sessionDir: "/tmp/session-1",
-        defaultAgentId: "codex",
+        defaultAgentId: "claude",
       });
       runner.running = true;
       const emitted: { type?: string; message?: string }[] = [];
       runner.on("message", (m) => emitted.push(m as { type?: string; message?: string }));
       const d = deps();
+      const onConversationNotFound = vi.fn();
       wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
         capturedSessionId: "session-1",
         isNewSession: false,
         persistUserMessage: vi.fn(),
-        recoverMissingConversation: () => false,
+        onConversationNotFound,
       });
 
       agent.emit("log", "stderr", "No conversation found with session ID: abc-123");
+      agent.emit("log", "stderr", "No conversation found with session ID: abc-123");
 
-      expect(emitted.find((m) => m.type === "error")?.message).toContain("Couldn't resume");
+      const message = emitted.find((m) => m.type === "error")?.message ?? "";
+      expect(message).toContain("could not resume");
+      expect(message).toContain("fork the session");
       expect(runner.recordedCards).toHaveLength(1);
       expect(runner.recordedCards[0]!.message).toEqual(
-        expect.objectContaining({ isError: true, text: expect.stringContaining("Couldn't resume") }),
+        expect.objectContaining({ isError: true, text: expect.stringContaining("fork the session") }),
       );
       expect(d.chatHistoryManager.replaceInProgress).toHaveBeenCalled();
+      expect(onConversationNotFound).toHaveBeenCalledTimes(1);
       runner.dispose({ force: true });
     });
 
-    it("stays silent when the executor claims the recovery", () => {
+    it("finds the CLI's line when the pipe splits it across chunks", () => {
       const agent = new FakeAgent();
       const runner = new SessionRunner({
         sessionId: "session-1",
         sessionDir: "/tmp/session-1",
-        defaultAgentId: "codex",
+        defaultAgentId: "claude",
       });
-      const emitted: { type?: string }[] = [];
-      runner.on("message", (m) => emitted.push(m as { type?: string }));
+      runner.running = true;
+      const d = deps();
+      const onConversationNotFound = vi.fn();
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+        onConversationNotFound,
+      });
+
+      // Chunks arrive trimmed, so a split at a space loses the space.
+      agent.emit("log", "stderr", "No conversation found with");
+      agent.emit("log", "stderr", "session ID: abc-123");
+
+      expect(onConversationNotFound).toHaveBeenCalledTimes(1);
+      expect(runner.recordedCards).toHaveLength(1);
+      runner.dispose({ force: true });
+    });
+
+    it("never writes the id of the conversation the failed spawn reports", () => {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "claude",
+      });
+      runner.running = true;
       const d = deps();
       wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
         capturedSessionId: "session-1",
         isNewSession: false,
         persistUserMessage: vi.fn(),
-        recoverMissingConversation: () => true,
       });
 
+      agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "fresh-id", tools: [] } as AgentEvent);
       agent.emit("log", "stderr", "No conversation found with session ID: abc-123");
+      agent.emit("event", { type: "agent_result", status: "error", sessionId: "fresh-id" } as AgentEvent);
 
-      expect(emitted.find((m) => m.type === "error")).toBeUndefined();
-      expect(runner.recordedCards).toHaveLength(0);
+      expect(d.sessionManager.setAgentSessionId).not.toHaveBeenCalled();
       runner.dispose({ force: true });
+    });
+  });
+
+  describe("the agent session id is stored once the conversation answered (docs/007)", () => {
+    const wire = (session?: { agentSessionId?: string; conversationReplay?: string }) => {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "claude",
+      });
+      runner.running = true;
+      const d = deps();
+      (d.sessionManager.get as ReturnType<typeof vi.fn>).mockReturnValue(
+        session ? { id: "session-1", ...session } : undefined,
+      );
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+      });
+      return { agent, runner, d };
+    };
+
+    it("does not store the id of a refused first attempt, so a fork keeps its replay", () => {
+      const { agent, runner, d } = wire({ conversationReplay: "User: the parent's transcript" });
+
+      agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "refused-id", tools: [] } as AgentEvent);
+      // A refusal: the CLI's own text, then an error result.
+      agent.emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text: "API Error: 500" }],
+        synthetic: true,
+      } as AgentEvent);
+      agent.emit("event", { type: "agent_result", status: "error", sessionId: "refused-id" } as AgentEvent);
+
+      expect(d.sessionManager.setAgentSessionId).not.toHaveBeenCalled();
+      runner.dispose({ force: true });
+    });
+
+    it("never lets an unanswered failure replace a stored id", () => {
+      const { agent, runner, d } = wire({ agentSessionId: "stored-id" });
+
+      agent.emit("event", { type: "agent_result", status: "error", sessionId: "other-id" } as AgentEvent);
+
+      expect(d.sessionManager.setAgentSessionId).not.toHaveBeenCalled();
+      runner.dispose({ force: true });
+    });
+
+    it("stores a new session's first conversation even when it was stopped before an answer", () => {
+      const { agent, runner, d } = wire({});
+
+      agent.emit("event", { type: "agent_init", agentId: "codex", sessionId: "first-thread", tools: [] } as AgentEvent);
+      agent.emit("event", { type: "agent_result", status: "error", sessionId: "first-thread" } as AgentEvent);
+
+      expect(d.sessionManager.setAgentSessionId).toHaveBeenCalledWith("session-1", "first-thread");
+      runner.dispose({ force: true });
+    });
+
+    it("stores it at the first answer, and on a successful result", () => {
+      const answered = wire({ conversationReplay: "User: the parent's transcript" });
+      answered.agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "new-id", tools: [] } as AgentEvent);
+      answered.agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "On it." }] } as AgentEvent);
+      expect(answered.d.sessionManager.setAgentSessionId).toHaveBeenCalledWith("session-1", "new-id");
+      answered.runner.dispose({ force: true });
+
+      const quiet = wire({ agentSessionId: "stored-id" });
+      quiet.agent.emit("event", { type: "agent_result", status: "success", sessionId: "stored-id" } as AgentEvent);
+      expect(quiet.d.sessionManager.setAgentSessionId).toHaveBeenCalledWith("session-1", "stored-id");
+      quiet.runner.dispose({ force: true });
     });
   });
 

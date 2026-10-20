@@ -220,11 +220,10 @@ Rewinding to the gap above the first message truncates the chat to an empty arra
 
 `buildConversationReplay` (`services/replay.ts`) flattens each message to `User: …` / `Assistant: …` — tool calls, tool results, images, and file references are dropped. For tool-heavy sessions, where assistant turns can be purely tool-use with no narrative text, the replay reduces to `"Assistant: "` placeholders, which is worse than no replay at all. Any rewind/fork that resets the agent session loses that context, and Claude's continuation is markedly less informed than the pre-rewind turn was.
 
-Two further losses sit in the same builder. The replay carries **the turn's own user
-message**: `executeAgentTurn` persists the user row before `prepareAgentEnv` runs, so the
-replay ends with the text that immediately follows it as the prompt and the agent reads it
-twice. And `requireReply` demanded non-empty assistant *text*, which a tool-only turn never
-has — so the transcript that most needs replaying was the one it refused to arm.
+Two further losses sat in the automatic re-arming that docs/007 later removed: a replay
+built mid-turn carried the turn's own user message, and `requireReply` refused a
+transcript whose replies were tool-only. Neither applies to a replay built by a rewind or
+a fork, which runs before any turn.
 
 **Fix (shipped).** Each message carries indented detail lines under its `User:` /
 `Assistant:` head: `[tool] <name> <input>`, `[result] …`, and `[attached] …` naming files,
@@ -240,13 +239,9 @@ so files from an earlier build are unreachable and would otherwise accumulate. W
 usable directory a long payload degrades to a 500-character excerpt, which is still more
 than the text-only replay carried.
 
-`buildConversationReplay` also takes `dropTrailingUserText`. It removes the **last user
-row**, not the last row: a recovery finalizes the failed attempt's partial assistant output
-into history before rebuilding, so this turn's own message is no longer at the end. And it
-matches on **text** rather than position, because on the new-session path the row is
-persisted *after* the replay is built and dropping by position there would discard real
-history. Two user rows with identical text are indistinguishable to it; the later is
-dropped.
+The whole replay is bounded too: over 256 KiB it keeps the most recent messages inline
+and writes the whole transcript to `transcript.md` beside the spilled payloads (docs/007 →
+Size).
 
 The container-mode answer that picks `/persist` over a host path is read **at handler
 entry** and captured (docs/095). A fork clones before its replay is built, and a parent
@@ -254,11 +249,11 @@ whose viewer disconnected can be reclaimed during that await — re-resolving th
 afterwards reads the absent one as local and hands the child paths it cannot open.
 
 Per-turn arguments to `prepareSessionAgentEnvironment` go through `agentEnvTurnArgs`
-(`session-agent-env.ts`). Both wiring sites rebuilt that object by hand and drifted:
-`ownUserText` reached the dispatched path and not the interactive one, so the fix covered
-half the turns.
+(`session-agent-env.ts`). Both wiring sites rebuilt that object by hand and drifted: an
+option reached the dispatched path and not the interactive one, so the fix covered half
+the turns.
 
-**Key files.** `services/replay.ts` (builder, arming, own-message drop),
+**Key files.** `services/replay.ts` (builder, size bound),
 `services/replay-detail.ts` (detail lines, spill writer, `replaySpillDirs`).
 
 ## Design decisions (resolved before Landing 2)
@@ -279,11 +274,13 @@ See B5. One number, one meaning. A gap at `gapPosition === messages.length` mean
 
 **Rendering of gap-0.** D1 adds an explicit synthetic gap above the first non-notice message so gap-0 has a UI surface whenever the chat contains any real turns — it follows intermediate-gap styling, and its menu has the full four actions (see below). When the chat is effectively empty (no non-notice messages) there is no separate gap-0 row — the gap-after-last *is* the gap at position 0, and it inherits gap-after-last styling (fork-only menu per D6). The "non-notice" qualifier matters: after U6's empty-chat notice lands, `messages` is `[notice]` (length 1), but boundary computation is notice-stripped (D1), so the visible state is still "effectively empty" and only the gap-after-last renders — no competing intermediate gap-0 above the notice. The empty-chat case has nothing to rewind from in any of the three non-fork actions, so showing them disabled would be noise. "Rewind to empty" only makes sense when the chat is *non-empty*; once the rewind completes, U6's notice lands and the next render shows the empty-chat gap (fork-only). The transient state where the user opens the menu at non-empty gap-0 and picks "Rewind chat" is the one where all four actions are present.
 
+**Since `docs/007-threads-checkpoints` req 9,** "Rewind chat" and "Rewind chat and code" at gap 0 are disabled with a reason that names fork: the agent's conversation has no message to be cut at, and ShipIt never starts an empty one in place. A fork from gap 0 gives the empty chat. The paragraph below is the original design.
+
 **Menu actions at non-empty gap-0:** "Rewind chat" empties history; "Rewind code" resets HEAD to the session's first committed state — the `parentCommitHash` of the earliest message that has one (a forward-walking loop, distinct from the backward-walking `findCommitBeforeMessage` helper; the existing code-path that uses this is `handleRewindToMessage`'s fallback at `rewind-handlers.ts:84-91`, which walks forward from `messageIndex` looking for the first `parentCommitHash`). If no message carries a `parentCommitHash` either, the action is unavailable and the menu surfaces a disabled item with tooltip "No earlier code state to reset to". "Rewind chat and code" does both; "Fork" forks from an empty kept slice (the child opens with no chat; the user's first message there is the start of the new conversation). We deliberately do *not* use `git rev-list --max-parents=0 HEAD` for "session's first commit" — that returns the repo's root commit, which for forked or worktree-derived sessions discards everything the parent had committed before the fork.
 
 **Menu items at the gap-after-last.** When `gapPosition === messages.length` the three rewind actions are no-ops by construction (there's nothing past the gap to discard or reset), so the menu shows only the fork action — not all four with three of them disabled. The accompanying confirmation modal, when opened, shows the fork-name input instead of the rewind summary. D6's prominent visual treatment is *because* this gap is fork-only; rendering grayed-out rewind items there would muddle the affordance. The boundary case is enforced server-side too: a `rewind_at_gap` with `action: "chat" | "code" | "both"` and `gapPosition === messages.length` returns `{ type: "error", message: "Nothing to rewind from the current state." }` so a stale client that opened the menu before a streaming turn appended new messages can't no-op the server into corrupted state.
 
-**Trailing-user-message edge case (intermediate gaps).** If the kept slice ends on a user message with no following assistant turn (the agent errored, was interrupted, or never started a response despite the user message persisting), the fork includes that pending prompt in the persisted history copied to the child. The conversation replay (`services/replay.ts`) carries it as context in the child's first agent system prompt — `buildConversationReplay` formats the kept messages as system-prompt context rather than auto-issuing a turn — so the child opens with the trailing user message visible but the user must send a follow-up (or the agent must be explicitly nudged) to actually drive a turn. We deliberately do not strip the trailing user message: the user explicitly chose to fork from this point, and stripping the prompt would silently change the kept slice in a way the gap geometry doesn't communicate.
+**Trailing-user-message edge case (intermediate gaps).** If the kept slice ends on a user message with no following assistant turn (the agent errored, was interrupted, or never started a response despite the user message persisting), the fork includes that pending prompt in the persisted history copied to the child. The conversation replay (`services/replay.ts`) carries it as context at the head of the child's first user message (`docs/007-threads-checkpoints` req 8) rather than auto-issuing a turn — so the child opens with the trailing user message visible but the user must send a follow-up (or the agent must be explicitly nudged) to actually drive a turn. We deliberately do not strip the trailing user message: the user explicitly chose to fork from this point, and stripping the prompt would silently change the kept slice in a way the gap geometry doesn't communicate.
 
 ### D3 — Streaming-turn behavior is specified
 
@@ -580,8 +577,7 @@ Landing 3 has no Landing-1 or Landing-2 hard dependencies — its items (U8 rich
 
   All six conversions live in the same callback as the old `send(...)` call so the off-by-one bug class B5 calls out can't reappear. Behavioral details the new handlers must preserve under the unified actions:
 
-  - **All four actions (`chat`, `code`, `both`, `fork`)** call `clearAgentSessionId(sessionId)` and (where the kept slice changes) `setConversationReplay(...)` for chat-mutating modes, matching today's `fork_chat` / `rewind_all` / `rollback_code_and_chat` flows (`rewind-handlers.ts:106-108, 140`, `rollback-handlers.ts:68`). Forgetting `clearAgentSessionId` on the `chat` action would let the next user message resume the existing CLI session whose memory still includes the discarded turns — silent context bleed.
-  - **`action: "code"` calls `clearAgentSessionId` in the new model** — this is a deliberate change from today (`rewind-handlers.ts:113-122` only resets git, leaving the CLI session alive). The new design dims the stale turns past the divider (U5), which means the agent's CLI memory now holds tool calls and edits the visible UI says are reverted; the next user message would resume that CLI session and produce a response that "remembers" reverted work as if it were still in effect. Clearing the agent session forces the next turn to start fresh with the conversation-replay context only, which matches what the dimmed UI tells the user is happening. `setConversationReplay` is also called for `code` so the next turn has the pre-rewind context (notice-stripped, with the dimmed turns included as historical context). This is the only behavioral change relative to today's `rewind_code` and is part of the U5 trade-off — keeping the old "leave the CLI session" behavior here would re-create the silent-context-bleed bug B7 explicitly tests for.
+  - **Superseded (`docs/007-threads-checkpoints`, 2026-10-15).** These two bullets once had every action clear the stored agent session id and arm a replay, and `code` clear it too. The owner's rule replaced both: ShipIt never clears or replaces the stored id. A chat or chat-and-code rewind now has Claude Code fork its conversation at the gap's message, a code rewind keeps the conversation and queues a one-line notice for the next prompt, and only a fork carries a replay. `docs/007-threads-checkpoints/plan.md` → "What each action does to the conversation".
   - **Fork** in Landing 1 needs a `branchName`. Since U7's name input ships in Landing 2, the Landing 1 conversion derives a placeholder branch (`fork-<8-char-uuid>`, the same shape `handleForkSessionFromMessage` uses today at `rollback-handlers.ts:101-102`).
 
   Old WS messages stay alive in this landing — they're removed in Landing 2 once the gap UI is live.

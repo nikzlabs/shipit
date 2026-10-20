@@ -2,6 +2,7 @@ import type { AgentId, AgentProcess } from "../shared/types.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { executeAgentTurn } from "./turn-executor.js";
 import { finalizeTurnRows } from "./chat-card-persistence.js";
+import { compactionCardBefore, noteMissedCompaction } from "./compact-before-turn.js";
 import { stopOwnTurnWhileAwaitingAnswer } from "./ws-handlers/agent-listeners.js";
 import {
   startQueuedMessage,
@@ -16,6 +17,8 @@ export interface InFlightTurnInfo {
   streaming: boolean;
   /** The CLI started this turn on its own; "unheard" when this adoption is the first any orchestrator knows of it. */
   ownTurn?: "heard" | "unheard";
+  /** docs/333-idle-compaction — a silent compaction, adopted as maintenance with its missed-card check. */
+  silentCompaction?: boolean;
 }
 
 /** Install the agent in the runner before adoption, and wire listeners before SSE replay. */
@@ -38,7 +41,14 @@ export async function adoptInFlightTurn(
     }
   }
 
+  const chatHistory = deps.listenerDeps.chatHistoryManager;
+  const cardBefore = info.silentCompaction ? compactionCardBefore(chatHistory, sessionId) : null;
+  let compactionChecked = false;
   const drainNext = async (): Promise<void> => {
+    if (info.silentCompaction && !compactionChecked) {
+      compactionChecked = true;
+      noteMissedCompaction(runner, chatHistory, sessionId, cardBefore);
+    }
     // A rebase flow releases the queue when it settles.
     if (runner.sessionHold) return;
     const next = takeRunnableQueuedTurn(runner);
@@ -70,6 +80,9 @@ export async function adoptInFlightTurn(
     continuesTurn: info.ownTurn !== "unheard",
     ...(info.deliveryId !== undefined ? { deliveryId: info.deliveryId } : {}),
     ...(rebound ? { onTurnComplete: rebound } : {}),
+    ...(info.silentCompaction
+      ? { compact: true, silent: true, harnessCommand: true, activity: "Compacting context…" }
+      : {}),
     prompt: "",
     userText: "",
     emitUserEcho: false,

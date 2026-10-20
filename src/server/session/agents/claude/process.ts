@@ -78,6 +78,7 @@ function consumeAuthFailureEvent(event: ClaudeEvent, raiseAuthRequiredOnce: () =
 export interface ClaudeRunOptions {
   prompt: string;
   sessionId?: string;
+  resumeAt?: string;
   systemPrompt?: string;
   images?: ImageAttachment[];
   cwd?: string;
@@ -95,6 +96,16 @@ export interface ClaudeRunOptions {
   guardDestructiveGit?: boolean;
   permissionPromptTool?: string;
   toolsOff?: boolean;
+}
+
+/**
+ * docs/007 — a rewind point forks the stored conversation at that message, leaving the
+ * stored file as it was. `--resume-session-at` is not in `--help`; verified on 2.1.300.
+ */
+export function resumeArgs(sessionId: string, resumeAt: string | undefined): string[] {
+  return resumeAt
+    ? ["--resume", sessionId, "--resume-session-at", resumeAt, "--fork-session"]
+    : ["--resume", sessionId];
 }
 
 // Files avoid Linux's 128 KiB limit per argument. The caller deletes the file.
@@ -188,7 +199,7 @@ export class ClaudeProcess extends EventEmitter {
     }
 
     if (sessionId) {
-      args.push("--resume", sessionId);
+      args.push(...resumeArgs(sessionId, opts.resumeAt));
     }
 
     if (mcpConfigPath) {
@@ -478,7 +489,7 @@ export class StreamingClaudeProcess extends EventEmitter {
     }
 
     if (serviceRouting) args.push(...PARTIAL_MESSAGE_ARGS);
-    if (sessionId) args.push("--resume", sessionId);
+    if (sessionId) args.push(...resumeArgs(sessionId, opts.resumeAt));
     if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath);
     if (permissionPromptTool) args.push("--permission-prompt-tool", permissionPromptTool);
     if (model) args.push("--model", claudeModelArg(model));

@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import type { WsClientMessage } from "../../shared/types.js";
+import type { AgentId, WsClientMessage } from "../../shared/types.js";
 import type { ConnectionCtx, AppCtx, RunnerCtx } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 import { buildConversationReplay, replaySpillDirs } from "../services/replay.js";
@@ -9,7 +9,9 @@ import { archiveSession, forkSession, forkReportSinks } from "../services/sessio
 import { gitRemoteCredentialResolver } from "../services/github.js";
 import type { PersistedMessage, RewindSnapshotInfo } from "../chat-history.js";
 import { resolveRunner } from "./resolve-runner.js";
-import { clearConversationThread } from "../services/session-status.js";
+import { codeRollbackNotice, planChatRewind } from "../services/rewind-conversation.js";
+import { retireResident } from "../resident-spawn-guard.js";
+import type { SessionRunnerInterface } from "../session-runner.js";
 import { generateBranchSlug, generateBranchPrefix } from "../git-utils.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import { onWorkspaceRewritten, type WorkspaceRewriteRunner } from "../workspace-rewrite.js";
@@ -20,16 +22,11 @@ type WsRewindRestoreRequest = Extract<WsClientMessage, { type: "rewind_restore_r
 
 type RewindCtx = ConnectionCtx & RunnerCtx & AppCtx;
 
-const sessionRoot = (workspaceDir: string | null): string | null =>
-  workspaceDir ? path.dirname(workspaceDir) : null;
-
 /**
- * A rewind or fork leaves the replay as the only memory the next agent has, so its tool
- * payloads are spilled into the TARGET session's scratch directory — the child's own, on a
- * fork, since the parent's is not mounted there.
+ * A fork leaves the replay as the only memory its agent has, so its tool payloads are
+ * spilled into the child's own scratch directory, since the parent's is not mounted there.
  */
-function replayOptsFor(sessionRootDir: string | null, containerized: boolean): ReplayOptions {
-  if (!sessionRootDir) return {};
+function replayOptsFor(sessionRootDir: string, containerized: boolean): ReplayOptions {
   return { spill: replaySpillDirs(sessionRootDir, { containerized }) };
 }
 
@@ -139,6 +136,38 @@ function clearQueuedMessages(ctx: RewindCtx, sessionId: string): void {
   });
 }
 
+const agentOf = (ctx: RewindCtx, sessionId: string): AgentId =>
+  ctx.sessionManager.get(sessionId)?.agentId ?? ctx.getActiveAgentId();
+
+/**
+ * docs/007 reqs 4, 7 — the next spawn forks the stored conversation at the point. An idle
+ * resident still holds the conversation from before, and a turn its CLI starts on its own
+ * (a background task finishing) would continue that one, so it goes now.
+ */
+function applyChatRewind(
+  ctx: RewindCtx,
+  sessionId: string,
+  resumeAt: string,
+  runner: SessionRunnerInterface | null | undefined,
+): void {
+  ctx.sessionManager.setAgentResumeAt(sessionId, resumeAt);
+  ctx.sessionManager.markRewound(sessionId, { chat: true });
+  // A turn admitted during the rewind's awaits owns the process now; the next turn's start
+  // retires it instead (`releaseResidentOnPendingRewind`).
+  if (runner && !runner.running && retireResident(runner)) {
+    console.log(`[rewind] retired the resident agent of ${sessionId}: its conversation predates the rewind`);
+  }
+}
+
+/** A fork's rows name messages of the parent's conversation, which the child does not have. */
+const withoutAgentMessageIds = (messages: PersistedMessage[]): PersistedMessage[] =>
+  messages.map((message) => {
+    if (message.agentMessageId === undefined) return message;
+    const copy = { ...message };
+    delete copy.agentMessageId;
+    return copy;
+  });
+
 function emitSnapshotAvailable(ctx: RewindCtx, snapshot: RewindSnapshotInfo): void {
   const message = {
     type: "rewind_snapshot_available" as const,
@@ -188,11 +217,15 @@ export async function handleRewindPreviewRequest(ctx: RewindCtx, msg: WsRewindPr
   const fileCount = rollbackHash && headHash
     ? (await ctx.getActiveGitManager().diffNameStatus(rollbackHash, headHash)).length
     : 0;
+  const chatPlan = action === "chat" || action === "both"
+    ? planChatRewind(agentOf(ctx, sessionId), allMessages, gapPosition)
+    : null;
 
   ctx.send({
     ...response,
     discardedTurnGroupCount: countTurnGroups(allMessages.slice(gapPosition)),
     ...(action === "code" || action === "both" ? { fileCount } : {}),
+    ...(chatPlan && "refusal" in chatPlan ? { unavailableReason: chatPlan.refusal } : {}),
   });
 }
 
@@ -236,18 +269,31 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
     return;
   }
 
+  // docs/007 reqs 6, 9 — refused before anything changes, so a refused "both" resets no code.
+  const chatPlan = action === "chat" || action === "both"
+    ? planChatRewind(agentOf(ctx, sessionId), allMessages, gapPosition)
+    : null;
+  if (chatPlan && "refusal" in chatPlan) {
+    ctx.send({ type: "error", message: chatPlan.refusal });
+    return;
+  }
+  // The pending point the undo restores: normally none, another rewind's when two run back to back.
+  const priorResumeAt = ctx.sessionManager.get(sessionId)?.agentResumeAt ?? null;
+
   try {
     if (action !== "fork") clearQueuedMessages(ctx, sessionId);
 
-    if (action === "chat") {
+    if (action === "chat" && chatPlan) {
       const truncated = allMessages.slice(0, gapPosition);
       const removed = allMessages.slice(gapPosition);
-      const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "chat", messages: allMessages });
+      const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, {
+        action: "chat",
+        messages: allMessages,
+        resumeAt: priorResumeAt,
+      });
       if (sessionDir) await deleteUploadsFromMessages(removed, truncated, path.join(path.dirname(sessionDir), "uploads"));
       ctx.chatHistoryManager.saveMessages(sessionId, truncated);
-      const replay = buildConversationReplay(truncated, replayOptsFor(sessionRoot(sessionDir), containerized));
-      if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-      clearConversationThread(ctx, sessionId);
+      applyChatRewind(ctx, sessionId, chatPlan.resumeAt, runner);
       ctx.send({
         type: "rewind_complete",
         gapPosition,
@@ -299,7 +345,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
         gitRemoteCredentialResolver(ctx.githubAuthManager),
         forkReportSinks({ sessionManager: ctx.sessionManager, sseBroadcast: ctx.sseBroadcast }),
       );
-      const truncatedMessages = allMessages.slice(0, gapPosition);
+      const truncatedMessages = withoutAgentMessageIds(allMessages.slice(0, gapPosition));
       ctx.chatHistoryManager.saveMessages(result.session.id, truncatedMessages);
       await copyUploadsForFork(truncatedMessages, path.join(path.dirname(sessionDir), "uploads"), path.join(ctx.sessionsRoot, result.session.id, "uploads"));
       const replay = buildConversationReplay(truncatedMessages, replayOptsFor(path.join(ctx.sessionsRoot, result.session.id), containerized));
@@ -334,15 +380,17 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
 
     const rollbackHash = findCommitBeforeGap(allMessages, gapPosition);
     if (!rollbackHash) {
-      if (action === "both") {
+      if (action === "both" && chatPlan) {
         const truncated = allMessages.slice(0, gapPosition);
         const removed = allMessages.slice(gapPosition);
-        const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "chat", messages: allMessages });
+        const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, {
+          action: "chat",
+          messages: allMessages,
+          resumeAt: priorResumeAt,
+        });
         if (sessionDir) await deleteUploadsFromMessages(removed, truncated, path.join(path.dirname(sessionDir), "uploads"));
         ctx.chatHistoryManager.saveMessages(sessionId, truncated);
-        const replay = buildConversationReplay(truncated, replayOptsFor(sessionRoot(sessionDir), containerized));
-        if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-        clearConversationThread(ctx, sessionId);
+        applyChatRewind(ctx, sessionId, chatPlan.resumeAt, runner);
         ctx.send({
           type: "rewind_complete",
           gapPosition,
@@ -371,10 +419,17 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       }
       await rollbackAndRestoreLfs(ctx.getActiveGitManager(), sessionDir, rollbackHash, ctx.getRunnerRegistry().get(sessionId));
       const flippedMessageIds = ctx.chatHistoryManager.markRolledBackFromIndex(sessionId, gapPosition, rollbackHash);
-      const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "code", headHash, flippedMessageIds });
-      const replay = buildConversationReplay(allMessages, replayOptsFor(sessionRoot(sessionDir), containerized));
-      if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-      clearConversationThread(ctx, sessionId);
+      // docs/007 req 3 — the conversation stays; the next prompt says what changed under it.
+      const agentNotice = codeRollbackNotice(rollbackHash);
+      const alreadyPending = ctx.sessionManager.get(sessionId)?.pendingAgentNotice?.includes(agentNotice) ?? false;
+      ctx.sessionManager.appendPendingAgentNotice(sessionId, agentNotice);
+      const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, {
+        action: "code",
+        headHash,
+        flippedMessageIds,
+        ...(alreadyPending ? {} : { agentNotice }),
+      });
+      ctx.sessionManager.markRewound(sessionId, { chat: false });
       ctx.send({
         type: "rewind_complete",
         gapPosition,
@@ -387,13 +442,18 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       return;
     }
 
-    if (action === "both") {
+    if (action === "both" && chatPlan) {
       const headHash = await ctx.getActiveGitManager().getHeadHash();
       if (!headHash) {
         ctx.send({ type: "error", message: "No current code state available to restore." });
         return;
       }
-      const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "both", messages: allMessages, headHash });
+      const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, {
+        action: "both",
+        messages: allMessages,
+        headHash,
+        resumeAt: priorResumeAt,
+      });
       await rollbackAndRestoreLfs(ctx.getActiveGitManager(), sessionDir, rollbackHash, ctx.getRunnerRegistry().get(sessionId));
       const truncated = allMessages.slice(0, gapPosition);
       const removed = allMessages.slice(gapPosition);
@@ -405,9 +465,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
         notice: true,
         noticeLevel: "info",
       });
-      const replay = buildConversationReplay(truncated, replayOptsFor(sessionRoot(sessionDir), containerized));
-      if (replay) ctx.sessionManager.setConversationReplay(sessionId, replay);
-      clearConversationThread(ctx, sessionId);
+      applyChatRewind(ctx, sessionId, chatPlan.resumeAt, runner);
       ctx.send({
         type: "rewind_complete",
         gapPosition,
@@ -433,7 +491,6 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
   }
 
   const runner = resolveRunner(ctx, targetSessionId);
-  const containerized = runsInContainer(runner);
   if (runner?.running) {
     ctx.send({ type: "error", message: "Cannot recover rewind while a turn is running." });
     return;
@@ -450,11 +507,11 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
   }
 
   try {
+    // docs/007 req 4 — no turn ran since the rewind (D8), so the stored conversation still
+    // holds every restored message; only the point the rewind left goes.
     if (snapshot.action === "chat") {
       ctx.chatHistoryManager.saveMessages(targetSessionId, snapshot.messages);
-      const replay = buildConversationReplay(snapshot.messages, replayOptsFor(path.join(ctx.sessionsRoot, targetSessionId), containerized));
-      if (replay) ctx.sessionManager.setConversationReplay(targetSessionId, replay);
-      clearConversationThread(ctx, targetSessionId);
+      ctx.sessionManager.setAgentResumeAt(targetSessionId, snapshot.resumeAt ?? null);
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "chat" });
       return;
     }
@@ -471,16 +528,14 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       if (!git) throw new Error("No workspace available for code restore");
       await rollbackAndRestoreLfs(git, restoreDir, snapshot.headHash, ctx.getRunnerRegistry().get(targetSessionId));
       ctx.chatHistoryManager.clearRolledBack(targetSessionId, snapshot.flippedMessageIds);
-      clearConversationThread(ctx, targetSessionId);
+      if (snapshot.agentNotice) ctx.sessionManager.removePendingAgentNotice(targetSessionId, snapshot.agentNotice);
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "code" });
       return;
     }
 
     if (snapshot.action === "both") {
       ctx.chatHistoryManager.saveMessages(targetSessionId, snapshot.messages);
-      const replay = buildConversationReplay(snapshot.messages, replayOptsFor(path.join(ctx.sessionsRoot, targetSessionId), containerized));
-      if (replay) ctx.sessionManager.setConversationReplay(targetSessionId, replay);
-      clearConversationThread(ctx, targetSessionId);
+      ctx.sessionManager.setAgentResumeAt(targetSessionId, snapshot.resumeAt ?? null);
       if (!git) throw new Error("No workspace available for code restore");
       await rollbackAndRestoreLfs(git, restoreDir, snapshot.headHash, ctx.getRunnerRegistry().get(targetSessionId));
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "both" });

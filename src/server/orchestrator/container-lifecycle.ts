@@ -88,7 +88,8 @@ import { WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 import { CPU_PERIOD_US as DEFAULT_CPU_PERIOD, SESSION_CPU_SHARES } from "./container-config-builder.js";
 import { RUN_NOTES_CONTAINER_DIR } from "./schedule-notes.js";
 import {
-  GPU_DEVICE_REQUEST, GPU_GRAPHICS_REASON_ENV, gpuEnv, gpuGraphicsBinds, gpuReason, type SessionGpu,
+  GPU_DEVICE_REQUEST, GPU_GRAPHICS_ENV, GPU_GRAPHICS_REASON_ENV, gpuEnv, gpuGraphicsBinds, gpuReason,
+  type SessionGpu,
 } from "./session-gpu.js";
 
 export const OPS_DOCKER_HOST = `tcp://${OPS_DOCKER_PROXY_DNS_NAME}:2375`;
@@ -880,7 +881,7 @@ export async function createContainer(
       const graphicsBinds = gpuGraphicsBinds();
       if (graphicsBinds.length === 0) return createAndStart({ state: "granted" });
       try {
-        return await createAndStart({ state: "granted" }, graphicsBinds);
+        return await createAndStart({ state: "granted" }, graphicsBinds, [...GPU_GRAPHICS_ENV]);
       } catch (err) {
         if (err instanceof ContainerCreateCancelledError) throw err;
         const reason = gpuReason(err);
@@ -1011,9 +1012,10 @@ export async function createContainer(
     if (!deps.skipHealthCheck) {
       await waitForWorkerHealth(sc.workerUrl);
     }
-    sc.status = "running";
 
-    // Stamp after start pins the lower layer, but before returning lets the worker run install.
+    // Stamp after start pins the lower layer, and before "running" hands a claiming runner the
+    // worker: an install started meanwhile would delete the marker, and a stamp landing after that
+    // survives the install's failure.
     if (config.overlaySpecs && config.overlaySpecs.length > 0 && deps.stateDir) {
       try {
         const stamped = await preStampInstallMarker({
@@ -1031,6 +1033,7 @@ export async function createContainer(
         );
       }
     }
+    sc.status = "running";
 
     abortIfTornDown("before returning a ready container");
 
