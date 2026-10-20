@@ -155,6 +155,22 @@ export function currentTurnPhase(runner: object): object | undefined {
   return phases.get(runner);
 }
 
+/**
+ * planning#703 — the CLI started a turn of its own after `claim` was made, so its process is
+ * not the claiming turn's to take: the turn marked the claim submitted, or the claim was let go.
+ */
+export function claimTakenBeforeSubmit(runner: object, claim: object | undefined): boolean {
+  const phase = phases.get(runner);
+  return phase !== undefined && (phase !== claim || phase.submitted);
+}
+
+/** A setup that fails lets go of its own claim, never of one a turn of the CLI's own took. */
+export function endOwnClaim(runner: { running: boolean }, claim: object | undefined): boolean {
+  if (claimTakenBeforeSubmit(runner, claim)) return false;
+  runner.running = false;
+  return true;
+}
+
 export function noteUserStop(runner: object): void {
   const phase = phases.get(runner);
   if (phase) phase.stoppedByUser = true;

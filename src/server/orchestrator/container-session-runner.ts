@@ -32,7 +32,7 @@ import { TurnAccumulator } from "./turn-accumulator.js";
 import type { CommittedBodyIds } from "./transcript-projection.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 import { stopTokenWriteBackWatch } from "./session-token-publisher.js";
-import { beginTurnSetup, turnAwaitsAgent } from "./turn-stop-request.js";
+import { beginTurnSetup, turnAwaitsAgent, turnInSetup } from "./turn-stop-request.js";
 import { readAnswerHold } from "./turn-admission.js";
 import { forgetHeldEntries } from "./held-turns.js";
 import { modelListField } from "../shared/catalogue/model-list.js";
@@ -883,7 +883,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // The process this reading describes may be the one that was killed meanwhile.
     if (this._kills !== killsBefore) return "unread";
 
-    if (status.turnActive === true && !this._agent && !this._isRunning) {
+    // A claim still in setup waits for that turn (planning#703).
+    if (status.turnActive === true && !this._agent && (!this._isRunning || turnInSetup(this))) {
       await this.adoptWorkerTurn(status);
       return status;
     }
@@ -1013,6 +1014,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       return false;
     }
     if (this._agent || this._disposed || this._unfollowedResident !== resident) return false;
+    // planning#703 — the CLI started a turn of its own that the stream has not delivered yet:
+    // follow it now, as its first event would. The turn that called this then waits for it.
+    if (
+      status.runToken === resident.runToken && status.running && status.streaming === true
+      && (status.turnActive === true || status.selfWakeActive === true)
+    ) {
+      this.adoptOwnTurn(status.resident ? { ...resident, spawn: status.resident } : resident);
+      return false;
+    }
     // The first connect's reading can be old, and an unfollowed process that exited told no one.
     const spawn = status.runToken === resident.runToken ? attachableResident(status) : null;
     if (!spawn) {
@@ -1816,6 +1826,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const resident = this._unfollowedResident;
     if (!resident || this._disposed || event.type !== "agent_event") return;
     if (data.runToken !== resident.runToken || !startsOwnTurn(resident.agentId, data)) return;
+    this.adoptOwnTurn(resident);
+  }
+
+  private adoptOwnTurn(resident: UnfollowedResident): void {
     console.log(
       `[container-runner:${this.sessionId}] adopting a turn the CLI started on its own (agent=${resident.agentId})`,
     );

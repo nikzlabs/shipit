@@ -13,7 +13,8 @@ import { resolveFileAttachments, resolveUploadRefs, formatFileContext } from "./
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "./prompt-assembly.js";
 import { imageHash, imageUrl } from "./transcript-projection.js";
 import { TURN_STEERED } from "./turn-settlement.js";
-import { queueEntryId } from "./queue-identity.js";
+import { nextSendOrder, queueEntryId } from "./queue-identity.js";
+import { releaseQueuedTurn } from "./queue-drain.js";
 import { returnQueueSentBeforeStop } from "./queue-return.js";
 import { isCompactCommand } from "../shared/compact-command.js";
 import { parseGoalCommand } from "../shared/goal-command.js";
@@ -175,6 +176,11 @@ export function userMessageWaits(runner: Pick<SessionRunnerInterface, "messageQu
   return runner.messageQueue.some(isWaitingUserMessage);
 }
 
+/** What a delivery reads: the steering inputs, and the history it saves the steer to. */
+export type SteerDeliveryDeps = Pick<SystemTurnDeps, "steerInputs"> & {
+  listenerDeps: Pick<SystemTurnDeps["listenerDeps"], "chatHistoryManager">;
+};
+
 /** The turn attempt that a delivery runs for now. */
 const delivering = new WeakMap<object, object | undefined>();
 
@@ -193,7 +199,7 @@ const unprepared = new WeakSet<QueuedMessage>();
  */
 export async function deliverWaitingMessages(
   runner: SessionRunnerInterface,
-  deps: SystemTurnDeps,
+  deps: SteerDeliveryDeps,
 ): Promise<void> {
   const steer = deps.steerInputs?.();
   if (!steer) return;
@@ -273,7 +279,7 @@ export async function deliverWaitingMessages(
 
 function recordDelivered(
   runner: SessionRunnerInterface,
-  deps: SystemTurnDeps,
+  deps: SteerDeliveryDeps,
   entry: QueuedMessage,
   prepared: PreparedSteer,
 ): void {
@@ -300,5 +306,39 @@ function recordDelivered(
     })),
     files: prepared.files,
     uploadPaths: prepared.uploadPaths,
+  });
+}
+
+/**
+ * planning#703 — a turn of the CLI's own took the claim of a turn still in setup. The message
+ * goes back to the head of the queue, not started, and reaches the agent as one sent during
+ * that turn does: steered in, or run after it through the queue's gates. When that turn has
+ * already ended, its drain is past, so the head is released here.
+ */
+export function requeueDisplacedTurn(
+  runner: SessionRunnerInterface,
+  entry: QueuedMessage | undefined,
+  deps: SteerDeliveryDeps,
+): void {
+  if (entry) {
+    const queued = { ...entry, sendOrder: entry.sendOrder ?? nextSendOrder() };
+    runner.messageQueue.unshift(queued);
+    runner.emitMessage({
+      type: "message_queued",
+      sessionId: runner.sessionId,
+      id: queueEntryId(queued),
+      text: queued.text,
+      position: 1,
+    });
+  }
+  console.log(
+    `[queue] runner=${runner.sessionId} put a turn back in the queue — the agent started a turn of its own during its setup`,
+  );
+  if (!runner.running) {
+    releaseQueuedTurn(runner);
+    return;
+  }
+  void deliverWaitingMessages(runner, deps).catch((err: unknown) => {
+    console.error(`[queue] delivering the waiting messages of ${runner.sessionId} failed:`, err);
   });
 }

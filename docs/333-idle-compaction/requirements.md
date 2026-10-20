@@ -125,9 +125,10 @@ a hazard a ShipIt design must also answer.
     open, and automatic work that waits behind it still waits.
 
 13. A session whose container a ShipIt update destroyed gets no idle
-    compaction. This is an exception to requirement 2: a new agent process
-    writes the whole conversation to the cache again, so a compaction there
-    would cost what the user's next turn costs and save nothing.
+    compaction. This is an exception to requirement 2: an update usually
+    changes what the agent CLI sends — its version, or ShipIt's
+    instructions — which makes the cache cold, so a compaction there would
+    mostly cost what the user's next turn costs and save nothing.
 
 14. OpenCode stays in requirement 9's scope. Before OpenCode sessions get an
     idle compaction, ShipIt stops changing OpenCode's prompt between turns
@@ -242,3 +243,16 @@ None.
   docs/334's probe also found that, through ShipIt's own spawn path, a new
   process reads the conversation warm, which the reason given in requirements
   13 and 16 assumes it does not; requirement 13 is not changed here.
+- 2026-10-20 — Requirement 13's reason did not hold: through ShipIt's own
+  spawn path a new process reads the conversation from the cache as well as
+  the old one, also at 179K tokens with tool calls and a 12-minute gap
+  (docs/334 plan, "Probe"; plan.md, "Verify first"). What can still make the
+  cache cold after an update is a change to what the CLI sends: in the 30
+  days to 2026-10-20 there were 3 releases, 8 agent-CLI version bumps and 24
+  prompt-file changes. Does a session whose container an update destroyed
+  get its idle compaction in a new container? Offered "keep skipping, with
+  the reason corrected" (recommended), "compact only when the update kept
+  the CLI version and the instructions" (more saving, new mechanism to
+  compare them), or "always compact" (after most updates the compaction is
+  itself cold). The user chose to keep skipping. Requirement 13 keeps its
+  rule; its reason is rewritten.

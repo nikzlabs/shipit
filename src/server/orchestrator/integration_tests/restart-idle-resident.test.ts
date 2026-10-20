@@ -14,6 +14,8 @@ import { forgetStatusCardSpawn, statusCardSpawnValue } from "../session-status-s
 import { forgetServiceMcpSpawn, serviceMcpSetKey, serviceMcpSpawnKey } from "../service-mcp.js";
 import { residentBackgroundWork } from "../turn-admission.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
+import type { TurnOutcome } from "../turn-settlement.js";
+import type { SSEEvent } from "../sse-client.js";
 import { PLACEHOLDER_WORKER_URL } from "../worker-http.js";
 import type {
   AgentProcess,
@@ -85,6 +87,10 @@ describe("Integration: the next turn after a restart takes over the idle residen
   let runners: ContainerSessionRunner[];
   let commits: string[];
   let workBeforeCompactionDecision: string[] | null;
+  let setupGate: { reached: boolean; open: Promise<void> } | null;
+  let commitGate: Promise<void> | null;
+  let compactNext: boolean;
+  let setupFails: boolean;
 
   const resident = () => allAgents[0]!;
   const identity = () => sessionSpawnIdentity(sessionManager.get(SESSION_ID)!, "claude");
@@ -96,6 +102,10 @@ describe("Integration: the next turn after a restart takes over the idle residen
     forgetStatusCardSpawn(SESSION_ID);
     forgetServiceMcpSpawn(SESSION_ID);
     workBeforeCompactionDecision = null;
+    setupGate = null;
+    commitGate = null;
+    compactNext = false;
+    setupFails = false;
     vi.spyOn(console, "warn").mockImplementation(() => {});
     worker = new SessionWorker({
       agentFactory: (agentId) => {
@@ -137,6 +147,7 @@ describe("Integration: the next turn after a restart takes over the idle residen
       }),
       scheduleAutoPush: () => {},
       commitTurn: async ({ summary }) => {
+        if (commitGate) await commitGate;
         commits.push(summary);
         return `commit-${commits.length}`;
       },
@@ -144,7 +155,14 @@ describe("Integration: the next turn after a restart takes over the idle residen
       steerInputs: () => ({ liveSteering: true, steeringCapable: true }),
       shouldCompactBeforeTurn: async (r) => {
         workBeforeCompactionDecision = residentBackgroundWork(r);
-        return false;
+        if (setupGate) {
+          setupGate.reached = true;
+          await setupGate.open;
+        }
+        if (setupFails) throw new Error("setup failed");
+        const compact = compactNext;
+        compactNext = false;
+        return compact;
       },
       statusCardEnabled: () => false,
       answerHold: sessionManager,
@@ -186,6 +204,8 @@ describe("Integration: the next turn after a restart takes over the idle residen
       confirmDelayMs: 0,
     });
   }
+
+  const history = () => chatHistoryManager.load(SESSION_ID).map((m) => m.text ?? "").join("\n");
 
   const workerStatus = async () => (await fetch(`${workerUrl}/agent/status`)).json() as Promise<WorkerAgentStatus>;
 
@@ -466,6 +486,286 @@ describe("Integration: the next turn after a restart takes over the idle residen
     runners.push(runner);
     expect(runner.residentToAttach).toBe(false);
     expect(await runner.attachIdleResident()).toBe(false);
+  });
+
+  // planning#703 — the CLI starts a turn of its own while the next turn sets up.
+  async function cliTurnDuringSetup(
+    runner: ContainerSessionRunner,
+    commitsBefore: number,
+    startsWith: "wake" | "output" = "wake",
+  ): Promise<void> {
+    let open!: () => void;
+    setupGate = { reached: false, open: new Promise<void>((r) => { open = r; }) };
+    const outcomes: TurnOutcome[] = [];
+    const sentBefore = resident().sentMessages.length;
+    runner.dispatch(testDispatch({ text: "next task", onTurnComplete: (o) => outcomes.push(o) }));
+    await waitFor(() => setupGate!.reached, 3000, "the turn is in its setup");
+
+    if (startsWith === "wake") resident().emit("event", { type: "agent_self_wake", taskId: "task-1", status: "completed" });
+    resident().emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "WAKE_TEXT" }, { type: "tool_use", id: "w1", name: "Bash", input: { command: "ls" } }],
+    });
+    resident().emit("event", { type: "agent_tool_result", content: [{ type: "tool_result", tool_use_id: "w1", content: "ok" }] });
+    await waitFor(() => history().includes("WAKE_TEXT"), 3000, "the CLI's own turn saved its first rows");
+    open();
+
+    await waitFor(() => runner.queueLength === 1, 3000, "the message waits behind the CLI's own turn");
+    expect(resident().sentMessages).toHaveLength(sentBefore);
+    resident().emit("event", { type: "agent_assistant", content: [{ type: "text", text: "WAKE_END" }] });
+    endTurn();
+    await waitFor(() => resident().sentMessages.length === sentBefore + 1, 3000, "the message ran after the CLI's own turn");
+    expect(resident().sentMessages.at(-1)).toContain("next task");
+    expect(outcomes, "the CLI's own result is not this turn's").toEqual([]);
+
+    endTurn("NEXT_TEXT");
+    await turnEnds(runner, commitsBefore + 2);
+    expect(outcomes.map((o) => o.status)).toEqual(["completed"]);
+    expect(history()).toContain("WAKE_TEXT");
+    expect(history()).toContain("WAKE_END");
+    expect(history()).toContain("NEXT_TEXT");
+    expect(allAgents).toHaveLength(1);
+  }
+
+  it("lets a turn the CLI starts during the setup of the first turn after a restart finish first (planning#703)", async () => {
+    await turnOfThePreviousOrchestrator();
+    await cliTurnDuringSetup(makeRunner(), 0);
+  });
+
+  it("lets a turn the CLI starts during the next turn's setup finish first, on a process the runner holds (planning#703)", async () => {
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    runner.dispatch(testDispatch({ text: "first task" }));
+    await waitFor(() => resident().sentMessages.length === 1, 3000, "the first turn took the process");
+    endTurn();
+    await turnEnds(runner, 1);
+    await cliTurnDuringSetup(runner, 1);
+  });
+
+  it("follows a turn of the CLI's own that the take-over's reading sees before the stream does (planning#703)", async () => {
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    expect(await runner.resumeInFlightTurn()).toBe(false);
+    const stream = runner as unknown as { handleSSEEvent(event: SSEEvent): void };
+    const route = stream.handleSSEEvent.bind(runner);
+    const late: SSEEvent[] = [];
+    stream.handleSSEEvent = (event) => { late.push(event); };
+    resident().emit("event", { type: "agent_self_wake", taskId: "task-1", status: "completed" });
+    expect((await workerStatus()).selfWakeActive).toBe(true);
+
+    const outcomes: TurnOutcome[] = [];
+    runner.dispatch(testDispatch({ text: "next task", onTurnComplete: (o) => outcomes.push(o) }));
+    await waitFor(() => runner.queueLength === 1, 3000, "the message waits behind the CLI's own turn");
+    expect(allAgents).toHaveLength(1);
+    expect(resident().killed).toBe(false);
+
+    stream.handleSSEEvent = route;
+    for (const event of late) route(event);
+    resident().emit("event", { type: "agent_assistant", content: [{ type: "text", text: "WAKE_TEXT" }] });
+    endTurn();
+    await waitFor(() => resident().sentMessages.length === 1, 3000, "the message ran after the CLI's own turn");
+    expect(outcomes).toEqual([]);
+    endTurn("NEXT_TEXT");
+    await turnEnds(runner, 2);
+    expect(outcomes.map((o) => o.status)).toEqual(["completed"]);
+    expect(history()).toContain("WAKE_TEXT");
+    expect(history()).toContain("NEXT_TEXT");
+  });
+
+  it("waits for a turn that the first status reading finds live while the message sets up (planning#703)", async () => {
+    await turnOfThePreviousOrchestrator({ ends: false });
+    const outcomes: TurnOutcome[] = [];
+    const runner = makeRunner();
+    runner.dispatch(testDispatch({ text: "next task", onTurnComplete: (o) => outcomes.push(o) }));
+    await waitFor(() => runner.queueLength === 1, 3000, "the message waits behind the live turn");
+    expect(allAgents).toHaveLength(1);
+    expect(resident().killed).toBe(false);
+
+    endTurn("FIRST_END");
+    await waitFor(() => resident().sentMessages.length === 1, 3000, "the message ran after that turn");
+    expect(outcomes).toEqual([]);
+    endTurn("NEXT_TEXT");
+    await turnEnds(runner, 2);
+    expect(outcomes.map((o) => o.status)).toEqual(["completed"]);
+    expect(history()).toContain("FIRST_END");
+    expect(history()).toContain("NEXT_TEXT");
+  });
+
+  it("runs the message only after the commit of a CLI turn that ended during its setup (planning#703)", async () => {
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    runner.dispatch(testDispatch({ text: "first task" }));
+    await waitFor(() => resident().sentMessages.length === 1, 3000, "the first turn took the process");
+    endTurn();
+    await turnEnds(runner, 1);
+
+    let openSetup!: () => void;
+    setupGate = { reached: false, open: new Promise<void>((r) => { openSetup = r; }) };
+    let openCommit!: () => void;
+    commitGate = new Promise<void>((r) => { openCommit = r; });
+    runner.dispatch(testDispatch({ text: "next task" }));
+    await waitFor(() => setupGate!.reached, 3000, "the turn is in its setup");
+    resident().emit("event", { type: "agent_self_wake", taskId: "task-1", status: "completed" });
+    endTurn("WAKE_TEXT");
+    await waitFor(() => !runner.running && runner.turnCommitPending, 3000, "the CLI's turn ended with its commit open");
+
+    openSetup();
+    await waitFor(() => runner.queueLength === 1, 3000, "the message waits for that commit");
+    expect(resident().sentMessages).toHaveLength(1);
+    openCommit();
+    await waitFor(() => resident().sentMessages.length === 2, 3000, "the message ran after the commit");
+    expect(commits).toHaveLength(2);
+    endTurn("NEXT_TEXT");
+    await turnEnds(runner, 3);
+    expect(history()).toContain("WAKE_TEXT");
+  });
+
+  // The held process after one turn of this runner, with the next message gated in its setup.
+  async function heldProcessWithNextTurnInSetup(): Promise<{ runner: ContainerSessionRunner; openSetup: () => void }> {
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    runner.dispatch(testDispatch({ text: "first task" }));
+    await waitFor(() => resident().sentMessages.length === 1, 3000, "the first turn took the process");
+    endTurn();
+    await turnEnds(runner, 1);
+    let openSetup!: () => void;
+    setupGate = { reached: false, open: new Promise<void>((r) => { openSetup = r; }) };
+    runner.dispatch(testDispatch({ text: "next task" }));
+    await waitFor(() => setupGate!.reached, 3000, "the turn is in its setup");
+    return { runner, openSetup };
+  }
+
+  it("runs the message when the CLI turn and its commit both ended during its setup (planning#703)", async () => {
+    const { runner, openSetup } = await heldProcessWithNextTurnInSetup();
+    resident().emit("event", { type: "agent_self_wake", taskId: "task-1", status: "completed" });
+    endTurn("WAKE_TEXT");
+    await waitFor(() => !runner.running && !runner.turnCommitPending && commits.length === 2, 3000, "the CLI's turn ended and committed");
+
+    openSetup();
+    await waitFor(() => resident().sentMessages.length === 2, 3000, "the message ran");
+    expect(resident().sentMessages[1]).toContain("next task");
+    endTurn("NEXT_TEXT");
+    await turnEnds(runner, 3);
+  });
+
+  it("starts no compaction before the commit of a CLI turn that ended during the decision (planning#703)", async () => {
+    const { runner, openSetup } = await heldProcessWithNextTurnInSetup();
+    let openCommit!: () => void;
+    commitGate = new Promise<void>((r) => { openCommit = r; });
+    compactNext = true;
+    resident().emit("event", { type: "agent_self_wake", taskId: "task-1", status: "completed" });
+    endTurn("WAKE_TEXT");
+    await waitFor(() => !runner.running && runner.turnCommitPending, 3000, "the CLI's turn ended with its commit open");
+
+    openSetup();
+    await waitFor(() => runner.queueLength === 1, 3000, "the message waits for that commit");
+    await new Promise((r) => setTimeout(r, 200));
+    expect(resident().sentMessages, "neither a compaction nor the message").toHaveLength(1);
+    openCommit();
+    await waitFor(() => resident().sentMessages.length === 2, 3000, "the message ran after the commit");
+    expect(resident().sentMessages[1]).toContain("next task");
+  });
+
+  it("does not queue again a message whose sender was told during its setup that it was dropped (planning#703)", async () => {
+    await turnOfThePreviousOrchestrator();
+    let open!: () => void;
+    setupGate = { reached: false, open: new Promise<void>((r) => { open = r; }) };
+    const outcomes: TurnOutcome[] = [];
+    const runner = makeRunner();
+    runner.dispatch(testDispatch({ text: "next task", onTurnComplete: (o) => outcomes.push(o) }));
+    await waitFor(() => setupGate!.reached, 3000, "the turn is in its setup");
+    resident().emit("event", { type: "agent_self_wake", taskId: "task-1", status: "completed" });
+    resident().emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "WAKE_TEXT" }, { type: "tool_use", id: "w1", name: "Bash", input: { command: "ls" } }],
+    });
+    resident().emit("event", { type: "agent_tool_result", content: [{ type: "tool_result", tool_use_id: "w1", content: "ok" }] });
+    await waitFor(() => history().includes("WAKE_TEXT"), 3000, "the CLI's own turn is followed");
+    runner.emit("turn_abandoned");
+    expect(outcomes.map((o) => o.status)).toEqual(["dropped"]);
+
+    open();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(runner.queueLength).toBe(0);
+    endTurn();
+    await turnEnds(runner, 1);
+    expect(resident().sentMessages).toEqual([]);
+  });
+
+  it("does not settle a message waiting behind its compaction when that turn is abandoned (planning#703)", async () => {
+    await turnOfThePreviousOrchestrator();
+    const outcomes: TurnOutcome[] = [];
+    const runner = makeRunner();
+    compactNext = true;
+    runner.dispatch(testDispatch({ text: "next task", onTurnComplete: (o) => outcomes.push(o) }));
+    await waitFor(() => runner.queueLength === 1 && resident().sentMessages.length === 1, 3000, "the compaction took the process");
+
+    runner.emit("turn_abandoned");
+    expect(outcomes).toEqual([]);
+  });
+
+  it("leaves the CLI's own turn running when the setup it displaced fails (planning#703)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await turnOfThePreviousOrchestrator();
+    let open!: () => void;
+    setupGate = { reached: false, open: new Promise<void>((r) => { open = r; }) };
+    const outcomes: TurnOutcome[] = [];
+    const runner = makeRunner();
+    runner.dispatch(testDispatch({ text: "next task", onTurnComplete: (o) => outcomes.push(o) }));
+    await waitFor(() => setupGate!.reached, 3000, "the turn is in its setup");
+    resident().emit("event", { type: "agent_self_wake", taskId: "task-1", status: "completed" });
+    resident().emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "WAKE_TEXT" }, { type: "tool_use", id: "w1", name: "Bash", input: { command: "ls" } }],
+    });
+    resident().emit("event", { type: "agent_tool_result", content: [{ type: "tool_result", tool_use_id: "w1", content: "ok" }] });
+    await waitFor(() => history().includes("WAKE_TEXT"), 3000, "the CLI's own turn is followed");
+
+    setupFails = true;
+    open();
+    await waitFor(() => outcomes.length === 1, 3000, "the failed setup settled its message");
+    expect(outcomes[0]!.status).toBe("errored");
+    expect(runner.running, "the CLI's own turn still runs").toBe(true);
+    endTurn("WAKE_END");
+    await turnEnds(runner, 1);
+    expect(history()).toContain("WAKE_END");
+  });
+
+  it("does not settle a message that went back to the queue when the CLI's turn is abandoned (planning#703)", async () => {
+    await turnOfThePreviousOrchestrator();
+    let open!: () => void;
+    setupGate = { reached: false, open: new Promise<void>((r) => { open = r; }) };
+    const outcomes: TurnOutcome[] = [];
+    const runner = makeRunner();
+    runner.dispatch(testDispatch({ text: "next task", onTurnComplete: (o) => outcomes.push(o) }));
+    await waitFor(() => setupGate!.reached, 3000, "the turn is in its setup");
+    resident().emit("event", { type: "agent_self_wake", taskId: "task-1", status: "completed" });
+    resident().emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "WAKE_TEXT" }, { type: "tool_use", id: "w1", name: "Bash", input: { command: "ls" } }],
+    });
+    resident().emit("event", { type: "agent_tool_result", content: [{ type: "tool_result", tool_use_id: "w1", content: "ok" }] });
+    await waitFor(() => history().includes("WAKE_TEXT"), 3000, "the CLI's own turn is followed");
+    open();
+    await waitFor(() => runner.queueLength === 1, 3000, "the message waits behind the CLI's own turn");
+
+    runner.emit("turn_abandoned");
+    expect(outcomes).toEqual([]);
+    endTurn();
+    await waitFor(() => resident().sentMessages.length === 1, 3000, "the message ran after the CLI's own turn");
+    endTurn("NEXT_TEXT");
+    await turnEnds(runner, 2);
+    expect(outcomes.map((o) => o.status)).toEqual(["completed"]);
+  });
+
+  it("does the same when the CLI's own turn begins with output and no wake event (planning#703)", async () => {
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    runner.dispatch(testDispatch({ text: "first task" }));
+    await waitFor(() => resident().sentMessages.length === 1, 3000, "the first turn took the process");
+    endTurn();
+    await turnEnds(runner, 1);
+    await cliTurnDuringSetup(runner, 1, "output");
   });
 
   it("restores the spawn facts of an adopted turn, so a later change replaces its process (req 3)", async () => {

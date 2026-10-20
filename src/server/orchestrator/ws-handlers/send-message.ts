@@ -555,12 +555,12 @@ async function decideAndRunSend(
   // The claim is visible now: the next send should see it and queue, not wait
   // out the turn. No await may come between the claim and this release.
   releaseTurnClaim();
-  await endClaimIfSetupFails(turnRunner, async () => {
+  await endClaimIfSetupFails(turnRunner, async (claim) => {
     if (
       turnRunner && activeId && activeDir && !isCompactRequest
       && await decideCompactBeforeTurn(ctx, turnRunner, activeId, activeDir, msg.compactContext)
     ) {
-      await runCompactionAhead(ctx, turnRunner, toQueuedMessage(typedDispatch()), msg.permissionMode);
+      await runCompactionAhead(ctx, turnRunner, toQueuedMessage(typedDispatch()), msg.permissionMode, claim);
       return;
     }
 
@@ -577,6 +577,8 @@ async function decideAndRunSend(
       ...(msg.dictated ? { dictated: true } : {}),
       compact: isCompactRequest,
       userEcho: { ...(msg.requestId ? { clientRequestId: msg.requestId } : {}) },
+      queued: toQueuedMessage(typedDispatch()),
+      claim,
     });
   });
 }
@@ -588,11 +590,11 @@ async function decideAndRunSend(
  */
 async function endClaimIfSetupFails(
   runner: SessionRunnerInterface | null | undefined,
-  run: () => Promise<void>,
+  run: (claim: object | undefined) => Promise<void>,
 ): Promise<void> {
   const claim = runner ? currentTurnPhase(runner) : undefined;
   try {
-    await run();
+    await run(claim);
   } catch (err) {
     if (runner?.running && turnInSetup(runner) && currentTurnPhase(runner) === claim) {
       runner.running = false;
@@ -707,7 +709,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     });
   }
 
-  await endClaimIfSetupFails(turnRunner, () => runAgentWithMessage(ctx, {
+  await endClaimIfSetupFails(turnRunner, (claim) => runAgentWithMessage(ctx, {
     userText: answerText,
     validatedFiles: [],
     ...(agentSessionId !== undefined ? { agentSessionId } : {}),
@@ -716,5 +718,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     ...(msg.dictated ? { dictated: true } : {}),
     isNewSession: false,
     userEcho: { ...(msg.requestId ? { clientRequestId: msg.requestId } : {}) },
+    ...(turnRunner ? { queued: toQueuedMessage(answerDispatch(turnRunner)) } : {}),
+    claim,
   }));
 }

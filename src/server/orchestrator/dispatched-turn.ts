@@ -19,6 +19,7 @@ import type {
 } from "./session-runner.js";
 import type { PreparedDispatch } from "./prepared-dispatch.js";
 import { queuedMessageToDispatchOptions, takeRunnableQueuedTurn } from "./queue-drain.js";
+import { requeueDisplacedTurn } from "./dispatch-steering.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
 import { toQueuedMessage } from "./session-runner.js";
 import {
@@ -32,6 +33,7 @@ import {
   createPromptTakeLedger,
   settleDispatchSetupFailure,
   settleWhenRunnerLetsGo,
+  stopLetGoWatch,
   type PromptTakeLedger,
   type TurnOutcome,
 } from "./turn-settlement.js";
@@ -39,6 +41,7 @@ import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protoc
 import { formatSessionMessagePrompt } from "./session-message-origin.js";
 import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
 import { residentBackgroundWork } from "./turn-admission.js";
+import { claimTakenBeforeSubmit, currentTurnPhase, endOwnClaim } from "./turn-stop-request.js";
 import { isCompactCommand } from "../shared/compact-command.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 import { loadPrompt } from "./load-prompt.js";
@@ -53,6 +56,18 @@ function supersedeRetiredTurn(outgoing: AgentProcess): void {
   outgoing.emit("superseded");
 }
 
+// planning#703 — a message whose sender was already told it was dropped is not queued again.
+function yieldToTurnThatTookTheClaim(
+  runner: SessionRunnerInterface,
+  deps: SystemTurnDeps,
+  opts: PreparedDispatch,
+): void {
+  if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
+    runner.activeDeliveryId = undefined;
+  }
+  requeueDisplacedTurn(runner, stopLetGoWatch(opts.onTurnComplete) ? toQueuedMessage(opts) : undefined, deps);
+}
+
 // Reserve the runner during setup, before the executor owns failure cleanup.
 export async function runDispatchedTurn(
   runner: SessionRunnerInterface,
@@ -63,13 +78,14 @@ export async function runDispatchedTurn(
 ): Promise<void> {
   runner.running = true;
   runner.activeDeliveryId = opts.deliveryId;
+  const claim = currentTurnPhase(runner);
   // planning#609 — composition's one-shot takes are owned here until the prompt reaches
   // the executor, so a throw anywhere before that hands every one of them back.
   const takes = createPromptTakeLedger();
   try {
-    await runDispatchedTurnInner(runner, deps, agentId, opts, createAgent, takes);
+    await runDispatchedTurnInner(runner, deps, agentId, opts, createAgent, takes, claim);
   } catch (err) {
-    runner.running = false;
+    endOwnClaim(runner, claim);
     if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
       runner.activeDeliveryId = undefined;
     }
@@ -86,6 +102,7 @@ async function runDispatchedTurnInner(
   opts: PreparedDispatch,
   createAgent: (agentId: AgentId) => AgentProcess,
   takes: PromptTakeLedger,
+  claim: object | undefined,
 ): Promise<void> {
   // Queued and recovered turns must recheck admission.
   runner.assertCanDispatch();
@@ -120,7 +137,14 @@ async function runDispatchedTurnInner(
       runner, agentId, runner.sessionId, sessionDir, opts.compactContext, startedUnattended(opts),
     ) ?? Promise.resolve(false))
   ) {
-    runner.messageQueue.unshift({ ...toQueuedMessage(opts), compactContext: false });
+    // planning#703 — the decision awaited: a turn of the CLI's own may hold the process now.
+    if (claimTakenBeforeSubmit(runner, claim)) {
+      yieldToTurnThatTookTheClaim(runner, deps, opts);
+      return;
+    }
+    if (stopLetGoWatch(opts.onTurnComplete)) {
+      runner.messageQueue.unshift({ ...toQueuedMessage(opts), compactContext: false });
+    }
     // Its dispatch was already reported as started; say that it is waiting after all.
     console.log(
       `[dispatch] re-queued the dispatch for ${runner.sessionId} at position 1 — a compaction turn runs first`,
@@ -223,15 +247,23 @@ async function runDispatchedTurnInner(
         runner, runner.sessionId, sessionDir, opts.resetMergedBranch,
       )
     : undefined;
+  // The ledger covers setup failing before the executor takes over — past that point the
+  // executor reparks, because it is the one that knows whether the prompt was ever
+  // submitted (planning#609).
+  takes.add(reset?.repark);
+
+  // planning#703 — after the last await of the setup, so nothing can come between this and the
+  // take below, and before the spawn guards, which could end that turn's process.
+  if (claimTakenBeforeSubmit(runner, claim)) {
+    yieldToTurnThatTookTheClaim(runner, deps, opts);
+    reset?.ensureRecorded?.(runner.sessionId);
+    return;
+  }
 
   const pendingNotice = opts.postTurn !== "none" && !isCompactRequest
     ? deps.consumePendingAgentNotice?.(runner.sessionId) ?? ""
     : "";
-  // Consumption clears the notice; restore it if the turn never reaches an agent. The
-  // ledger covers setup failing before the executor takes over — past that point the
-  // executor reparks, because it is the one that knows whether the prompt was ever
-  // submitted (planning#609).
-  takes.add(reset?.repark);
+  // Consumption clears the notice; restore it if the turn never reaches an agent.
   if (pendingNotice) {
     takes.add(createPromptRepark(
       `the pending agent notice for ${runner.sessionId}`,

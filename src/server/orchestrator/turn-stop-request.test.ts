@@ -2,7 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   TURN_SETUP_MAX_MS,
   beginTurnSetup,
+  claimTakenBeforeSubmit,
   currentTurnAttempt,
+  endOwnClaim,
+  currentTurnPhase,
   noteCompactionTurn,
   noteSubmissionRejected,
   noteTurnReady,
@@ -160,5 +163,47 @@ describe("the turn phase: ready and compaction", () => {
     runner.running = false;
 
     expect(turnAwaitsAgent(runner)).toBe(false);
+  });
+});
+
+// planning#703 — a turn the CLI starts during another turn's setup.
+describe("claimTakenBeforeSubmit", () => {
+  it("is false while the claim is in setup", () => {
+    const runner = {};
+    beginTurnSetup(runner);
+    expect(claimTakenBeforeSubmit(runner, currentTurnPhase(runner))).toBe(false);
+  });
+
+  it("is true once a turn of the CLI's own marked the claim submitted", () => {
+    const runner = {};
+    beginTurnSetup(runner);
+    const claim = currentTurnPhase(runner);
+    noteTurnSubmitted(runner);
+    expect(claimTakenBeforeSubmit(runner, claim)).toBe(true);
+  });
+
+  it("is true when another claim replaced it", () => {
+    const runner = {};
+    beginTurnSetup(runner);
+    const claim = currentTurnPhase(runner);
+    beginTurnSetup(runner);
+    expect(claimTakenBeforeSubmit(runner, claim)).toBe(true);
+  });
+
+  it("is false for a runner that keeps no phase", () => {
+    expect(claimTakenBeforeSubmit({}, undefined)).toBe(false);
+  });
+
+  it("lets a failed setup end its own claim only", () => {
+    const runner = { running: true };
+    beginTurnSetup(runner);
+    const claim = currentTurnPhase(runner);
+    noteTurnSubmitted(runner);
+    expect(endOwnClaim(runner, claim)).toBe(false);
+    expect(runner.running).toBe(true);
+
+    beginTurnSetup(runner);
+    expect(endOwnClaim(runner, currentTurnPhase(runner))).toBe(true);
+    expect(runner.running).toBe(false);
   });
 });

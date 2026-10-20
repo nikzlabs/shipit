@@ -4,7 +4,7 @@ import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
-import { noteTurnReady, noteTurnSubmitted, setSteerRefused } from "../turn-stop-request.js";
+import { noteTurnReady, noteTurnSubmitted, setSteerRefused, turnInSetup } from "../turn-stop-request.js";
 import { queueEntryId, requeueInSendOrder } from "../queue-identity.js";
 import { returnQueueSentBeforeStop } from "../queue-return.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
@@ -201,8 +201,11 @@ export function wireAgentListeners(
 
   const adoptCliStartedTurn = (reason: string): void => {
     if (!runner) return;
-    // Task notifications also arrive mid-turn; resetting then would erase its history.
-    const startsTurn = !runner.running;
+    // Task notifications also arrive mid-turn; resetting then would erase its history. A claim
+    // still in setup is no turn yet: the claiming turn waits for this one (planning#703). Only on
+    // a resident process — no next turn takes a one-shot one.
+    const startsTurn = !runner.running
+      || (opts.useStreaming === true && sawTurnResult && turnInSetup(runner));
     if (startsTurn) {
       resetRunnerTurnState(runner);
       wiredTurnEpoch = runner.turnEpoch;
@@ -630,8 +633,8 @@ export function wireAgentListeners(
     if (event.type === "agent_assistant") {
       // Adopt before accumulation resets history. Init alone can be a mode-change response.
       if (
-        opts.adoptsCliStartedTurns && sawTurnResult && runner && !runner.running
-        && !event.parentToolUseId
+        opts.adoptsCliStartedTurns && sawTurnResult && runner
+        && (!runner.running || turnInSetup(runner)) && !event.parentToolUseId
       ) {
         adoptCliStartedTurn("post-result assistant output");
       }
