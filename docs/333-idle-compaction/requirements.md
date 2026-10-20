@@ -124,11 +124,9 @@ a hazard a ShipIt design must also answer.
     idle compaction does not count as the user's response: the question stays
     open, and automatic work that waits behind it still waits.
 
-13. A session whose container a ShipIt update destroyed gets no idle
-    compaction. This is an exception to requirement 2: an update usually
-    changes what the agent CLI sends — its version, or ShipIt's
-    instructions — which makes the cache cold, so a compaction there would
-    mostly cost what the user's next turn costs and save nothing.
+13. A session whose container a ShipIt update destroyed also gets an idle
+    compaction (requirement 2), although ShipIt must start its container again
+    for it.
 
 14. OpenCode stays in requirement 9's scope. Before OpenCode sessions get an
     idle compaction, ShipIt stops changing OpenCode's prompt between turns
@@ -144,8 +142,9 @@ a hazard a ShipIt design must also answer.
     Claude agent process, that session gets no idle compaction until its next
     turn. This is an exception to requirements 1 and 2: the restarted
     orchestrator has no link to the process that holds the warm cache, and a
-    new process would write the whole conversation to the cache again
-    (requirement 13's reason). The exception ends when ShipIt can reconnect
+    new process would write the whole conversation to the cache again (the
+    reason requirement 13 then gave, disproved later; below). The exception
+    ends when ShipIt can reconnect
     to that process (planning#700). No longer applies since 2026-10-19
     (docs/334, below).
 
@@ -154,7 +153,8 @@ a hazard a ShipIt design must also answer.
 Requirements 1 and 2 come from what the user asked for: the user wants ShipIt
 users to get the benefit of the CLI's compaction before the cache expires,
 even though ShipIt can stop a container before that time. Requirements 5 to
-16 come from the user's answers and instructions on 2026-10-19 (below).
+16 come from the user's answers and instructions on 2026-10-19 and 2026-10-20
+(below).
 Requirements 3 and 4 were
 not asked for: each keeps a guarantee that already ships from becoming weaker —
 docs/178 for how a compaction appears, and docs/295 req 9 and docs/324 req 6
@@ -256,3 +256,19 @@ None.
   compare them), or "always compact" (after most updates the compaction is
   itself cold). The user chose to keep skipping. Requirement 13 keeps its
   rule; its reason is rewritten.
+- 2026-10-20 — The answers on record differed: on 2026-10-19 the user had
+  removed requirement 13's exception (planning#704), and the answer above
+  kept it. The planning#704 probe through ShipIt's own spawn path (plan.md,
+  "Verify first" 1) found that the reason above does not hold: the CLI
+  builds a resumed request from the system prompt and tool list it stored in
+  the transcript, so a conversation built on CLI 2.1.293 and resumed on
+  2.1.300 read 94,254 tokens from the cache and wrote 73, and one resumed
+  after a line was added to ShipIt's instructions read 94,302 and wrote 73.
+  On a 303K-token conversation built from 13 tool calls, the first resume in
+  a new process read 303,085 of 303,135 tokens from the cache (48 written),
+  and a new process that started 50 minutes later with `/compact` as its
+  first message read 303,133 and wrote 5. Offered "remove the exception"
+  (recommended; what planning#704 implements; cost: one container start for
+  each such session after an update) or "keep the exception" with that
+  container-start cost as its reason. The user chose to remove the
+  exception. Requirement 13 changed.

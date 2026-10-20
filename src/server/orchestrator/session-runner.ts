@@ -808,6 +808,8 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   attachIdleResident?(): Promise<boolean>;
   /** planning#700 — no agent here, and the worker holds a process the next turn can take over, or is not read yet. */
   readonly residentToAttach?: boolean;
+  /** The worker and the install, which a fresh agent process waits for before it starts. */
+  whenReadyForAgent?(): Promise<void>;
 
   setSystemTurnDeps(deps: SystemTurnDeps): void;
   assertCanDispatch(): void;

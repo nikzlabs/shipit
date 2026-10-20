@@ -5,6 +5,7 @@ import type { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
 import type { DockerMemoryStats, SessionInfo } from "../shared/types.js";
+import type { WokenSession } from "./services/idle-compaction.js";
 
 const ID = "22222222-2222-4222-8222-222222222222";
 
@@ -266,12 +267,20 @@ describe("docs/333-idle-compaction req 8 — sessions that wait for their idle c
     turnEpoch: number;
   }
 
-  function pressure(waiting: string[]) {
+  function pressure(waiting: string[], wokenIds: string[] = [], previews: string[] = []) {
     const runners = new Map<string, PressureRunner>(IDS.map((id, i) => [id, {
       viewerCount: 0, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 1_000 * (i + 1), turnEpoch: 4,
     }]));
     const stopped = new Set<string>();
     const waits = new Set(waiting);
+    const sessions = new Map(IDS.map((id) => [id, { id, lastUsedAt: "2026-10-20T09:00:00.000Z" } as SessionInfo]));
+    // As the fire records it, before the wake; the wake's runner is new.
+    const woken = new Map<string, WokenSession>(wokenIds.map((id) => {
+      runners.get(id)!.lastViewerDetachAt = 0;
+      return [id, { lastUsedAt: sessions.get(id)!.lastUsedAt, previewBefore: previews.includes(id) }];
+    }));
+    const starting = new Set<string>();
+    const preserved: string[] = [];
     const containerIds = new Map(IDS.map((id) => [id, `container-${id}`]));
     const containerManager = {
       get: (id: string) => (stopped.has(id) ? undefined : { sessionId: id, id: containerIds.get(id) }),
@@ -291,7 +300,9 @@ describe("docs/333-idle-compaction req 8 — sessions that wait for their idle c
       },
       dispose: (id: string) => {
         const r = runners.get(id);
-        if (r && !r.agentBusy) r.disposed = true;
+        if (!r || r.agentBusy) return;
+        r.disposed = true;
+        if ((r as { preserveComposeOnDispose?: boolean }).preserveComposeOnDispose) preserved.push(id);
       },
     } as unknown as SessionRunnerRegistry;
     // The compaction is a turn: it makes the session busy until it ends.
@@ -304,9 +315,18 @@ describe("docs/333-idle-compaction req 8 — sessions that wait for their idle c
     const enforce = createIdleEnforcer({
       containerManager,
       runnerRegistry,
-      sessionManager: { listAll: () => [], listWarm: () => [], get: () => undefined } as unknown as SessionManager,
+      sessionManager: {
+        listAll: () => [], listWarm: () => [], get: (id: string) => sessions.get(id),
+      } as unknown as SessionManager,
+      services: { liveSessions: () => [], has: (id) => previews.includes(id), stop: vi.fn() },
       getMemoryStats: () => stats,
-      idleCompaction: { isWaiting: (id) => waits.has(id), fire },
+      idleCompaction: {
+        isWaiting: (id) => waits.has(id),
+        fire,
+        wokenSessions: () => woken,
+        forgetWoken: (id) => { woken.delete(id); },
+        isStarting: (id) => starting.has(id),
+      },
     });
     /** A fresh reading `overMb` over the budget, each session's agent taking `agentMb`. */
     const pass = async (overMb: number, agentMb = 100): Promise<void> => {
@@ -325,7 +345,7 @@ describe("docs/333-idle-compaction req 8 — sessions that wait for their idle c
       await new Promise((r) => setImmediate(r));
     };
     return {
-      pass, fire, stopped, runners, waits, containerIds,
+      pass, fire, stopped, runners, waits, containerIds, woken, sessions, starting, preserved,
       destroyed: containerManager.destroyAgentContainer as ReturnType<typeof vi.fn>,
     };
   }
@@ -430,5 +450,89 @@ describe("docs/333-idle-compaction req 8 — sessions that wait for their idle c
     await pass(50);
     expect(destroyed).not.toHaveBeenCalled();
     expect(fire.mock.calls.map(([id]) => id)).toEqual([OLDEST, MIDDLE]);
+  });
+
+  describe("a container an idle compaction started (req 13)", () => {
+    it("is stopped again once its compaction is over, under the budget too", async () => {
+      const { pass, runners, woken, destroyed } = pressure([], [OLDEST]);
+      const oldest = runners.get(OLDEST)!;
+      oldest.agentBusy = true;
+      oldest.turnEpoch += 1;
+      await pass(-100);
+      expect(destroyed, "not while it compacts").not.toHaveBeenCalled();
+
+      oldest.agentBusy = false;
+      await pass(-100);
+      expect(destroyed.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+      expect(oldest.disposed).toBe(true);
+      expect(woken.size).toBe(0);
+    });
+
+    it("is stopped again when no compaction ran after the wake", async () => {
+      const { pass, destroyed } = pressure([], [OLDEST]);
+      await pass(-100);
+      expect(destroyed.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+    });
+
+    it("is not counted as idle while its fire starts it, also over the budget", async () => {
+      const { pass, starting, woken, destroyed } = pressure([], [OLDEST]);
+      starting.add(OLDEST);
+      await pass(250);
+      expect(destroyed.mock.calls.map(([id]) => id)).not.toContain(OLDEST);
+      expect(woken.has(OLDEST)).toBe(true);
+    });
+
+    it("keeps a preview that ran before the wake", async () => {
+      const { pass, preserved, destroyed } = pressure([], [OLDEST], [OLDEST]);
+      await pass(-100);
+      expect(destroyed.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+      expect(preserved).toEqual([OLDEST]);
+    });
+
+    it("stops the preview the wake started with the container", async () => {
+      const { pass, preserved, destroyed } = pressure([], [OLDEST]);
+      await pass(-100);
+      expect(destroyed.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+      expect(preserved).toEqual([]);
+    });
+
+    it("is not stopped for a retry of the compaction turn: only another turn is use", async () => {
+      const { pass, runners, destroyed } = pressure([], [OLDEST]);
+      runners.get(OLDEST)!.turnEpoch += 3;
+      await pass(-100);
+      expect(destroyed.mock.calls.map(([id]) => id)).toEqual([OLDEST]);
+    });
+
+    it.each([
+      ["the user came back to", (r: PressureRunner) => { r.viewerCount = 1; }],
+      ["the user visited and left", (r: PressureRunner) => { r.lastViewerDetachAt = 9_000; }],
+      ["ran another turn", (_r: PressureRunner, s: SessionInfo) => { s.lastUsedAt = "2026-10-20T09:30:00.000Z"; }],
+    ] as [string, (r: PressureRunner, s: SessionInfo) => void][])(
+      "is kept, and forgotten, when %s",
+      async (_label, use) => {
+        const { pass, runners, sessions, woken, destroyed } = pressure([], [OLDEST]);
+        use(runners.get(OLDEST)!, sessions.get(OLDEST)!);
+        await pass(-100);
+        expect(destroyed).not.toHaveBeenCalled();
+        expect(woken.size).toBe(0);
+      },
+    );
+
+    it("keeps the mark while its container is still being created", async () => {
+      const { pass, stopped, runners, woken, destroyed } = pressure([], [OLDEST]);
+      stopped.add(OLDEST);
+      (runners.get(OLDEST)! as PressureRunner & { awaitingContainer?: boolean }).awaitingContainer = true;
+      await pass(-100);
+      expect(destroyed).not.toHaveBeenCalled();
+      expect(woken.has(OLDEST)).toBe(true);
+    });
+
+    it("is forgotten when its container is gone", async () => {
+      const { pass, stopped, woken, destroyed } = pressure([], [OLDEST]);
+      stopped.add(OLDEST);
+      await pass(-100);
+      expect(destroyed).not.toHaveBeenCalled();
+      expect(woken.size).toBe(0);
+    });
   });
 });

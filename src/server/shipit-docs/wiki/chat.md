@@ -349,11 +349,13 @@ ways it happens:
   `shipit settings get advanced.idleCompaction`. It also runs while you wait for
   the user's answer to a question or a plan, which stays open. It skips a done
   session, a cache that lives under 30 minutes (Claude on an API key, or a
-  Claude model through OpenCode), Grok sessions, and a Claude session whose
-  agent process — or ShipIt itself — has restarted since its last turn: a new
-  process reads the whole conversation again, so compacting there saves
-  nothing, and after a ShipIt restart nothing reconnects to the old one yet.
-  A message the user sends meanwhile waits for the compaction, then runs.
+  Claude model through OpenCode), Grok sessions, and a session whose next turn
+  would run on another account than its last one, because a cache belongs to
+  the account. When ShipIt has stopped the session's container — a ShipIt
+  update does that to idle sessions — it starts the container for the
+  compaction and stops it again afterwards, unless someone used the session
+  meanwhile. A message the user sends meanwhile waits for the compaction, then
+  runs.
 
 Whichever way it happened, a **Context compacted** card is left in the
 transcript — with the before and after token counts where the harness reports

@@ -72,15 +72,7 @@ export async function wakeSessionWithTurn(
   if (!session.workspaceDir) {
     throw new Error(`session ${session.id} has no workspace`);
   }
-  const {
-    sessionManager,
-    runnerRegistry,
-    containerManager,
-    credentialsDir,
-    credentialStore,
-    providerAccountManager,
-    defaultAgentId,
-  } = deps;
+  const { sessionManager } = deps;
 
   // docs/322 — nothing may run before the user replies, so nothing is booted to wait.
   const answerHeld = readAnswerHold({ answerHold: sessionManager }, session.id);
@@ -103,6 +95,42 @@ export async function wakeSessionWithTurn(
       }
       return settlement;
     }
+  }
+
+  const runner = await bootSessionRunner(deps, session);
+  if (opts.stillWanted && !opts.stillWanted()) {
+    const settlement = createTurnSettlement();
+    settlement.noteAdmission("refused");
+    settlement.settle(turnRefused("the wake is no longer wanted"));
+    return settlement;
+  }
+
+  const prepared = wakeDispatch(session.id, opts);
+  if (opts.releaseHold && !opts.startOrRefuse) return queueAheadAndRelease(runner, opts.releaseHold, prepared);
+  opts.releaseHold?.release();
+  // A wake is work of its own: it waits for a running turn and is never steered into it.
+  return runner.dispatch(prepared, { whenBusy: opts.startOrRefuse ? "refuse" : "queue" });
+}
+
+/**
+ * The session's runner, with a container started for it when none runs. Throws when the
+ * container could not be resumed.
+ */
+export async function bootSessionRunner(
+  deps: WakeSessionDeps,
+  session: SessionInfo,
+): Promise<SessionRunnerInterface> {
+  const {
+    sessionManager,
+    runnerRegistry,
+    containerManager,
+    credentialsDir,
+    credentialStore,
+    providerAccountManager,
+    defaultAgentId,
+  } = deps;
+  if (!session.workspaceDir) {
+    throw new Error(`session ${session.id} has no workspace`);
   }
 
   // Recreate reclaimed workspaces before booting a container against them.
@@ -153,18 +181,7 @@ export async function wakeSessionWithTurn(
   if (runner.disposed) {
     throw new Error(`session ${session.id} container could not be resumed; wake-turn not delivered`);
   }
-  if (opts.stillWanted && !opts.stillWanted()) {
-    const settlement = createTurnSettlement();
-    settlement.noteAdmission("refused");
-    settlement.settle(turnRefused("the wake is no longer wanted"));
-    return settlement;
-  }
-
-  const prepared = wakeDispatch(session.id, opts);
-  if (opts.releaseHold && !opts.startOrRefuse) return queueAheadAndRelease(runner, opts.releaseHold, prepared);
-  opts.releaseHold?.release();
-  // A wake is work of its own: it waits for a running turn and is never steered into it.
-  return runner.dispatch(prepared, { whenBusy: opts.startOrRefuse ? "refuse" : "queue" });
+  return runner;
 }
 
 function queueAheadAndRelease(
