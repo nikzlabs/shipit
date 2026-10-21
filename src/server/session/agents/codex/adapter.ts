@@ -509,18 +509,13 @@ export class CodexAdapter
       "# ShipIt-managed MCP servers. This block is regenerated before each Codex turn.",
     ];
 
-    // Codex forwards only allowlisted environment variables to MCP children.
+    // Codex forwards only allowlisted variables to MCP children; the launch command exports the browser's own.
     lines.push(
       "",
       "[mcp_servers.playwright]",
       `command = ${tomlString(PLAYWRIGHT_MCP_COMMAND)}`,
       `args = ${tomlArray([...PLAYWRIGHT_MCP_ARGS])}`,
     );
-    const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH;
-    if (browsersPath) {
-      runtimeEnv.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
-      lines.push(`env_vars = ${tomlArray(["PLAYWRIGHT_BROWSERS_PATH"])}`);
-    }
 
     if (ctx.shipitBridge) {
       runtimeEnv.SHIPIT_MCP_TOOLS = shipitToolSpec("present,voice,ask,bug,propose_actions,propose_repo_session,propose_session_message", ctx);

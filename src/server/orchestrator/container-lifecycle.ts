@@ -18,6 +18,7 @@ import {
   DEP_CACHE_CONTAINER_PATH,
 } from "../shared/fs-constants.js";
 import { sessionNpmCacheDir } from "../shared/npm-cache.js";
+import { SESSION_PLAYWRIGHT_BROWSERS_DIR } from "../shared/playwright-browsers.js";
 import { pluginsRoot } from "./plugin-generations.js";
 import {
   CONTAINER_SESSION_STATE_DIR,
@@ -160,8 +161,6 @@ interface MountSpec {
 }
 
 export { DEP_CACHE_CONTAINER_PATH };
-
-export const PLAYWRIGHT_BROWSERS_PATH = "/opt/playwright-browsers";
 
 export const ANDROID_SDK_ROOT = "/opt/android-sdk";
 export const JAVA_HOME = "/opt/java";
@@ -376,7 +375,8 @@ export function buildEnv(
     "WORKER_MODE=session",
     `HOME=${home}`,
     `AGENT_HOME=${home}`,
-    `PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH}`,
+    // Writable so a project's `playwright install` works; the worker links the baked builds in.
+    `PLAYWRIGHT_BROWSERS_PATH=${SESSION_PLAYWRIGHT_BROWSERS_DIR}`,
     `ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}`,
     `ANDROID_HOME=${ANDROID_SDK_ROOT}`,
     `JAVA_HOME=${JAVA_HOME}`,

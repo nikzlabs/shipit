@@ -66,6 +66,8 @@ What this means in practice:
 | `/dep-cache` | Shared download cache across sessions for the same repo: yarn's cache and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). |
 | `/workspace/.pnpm-store` | **This session's own pnpm store.** Not shared with any other session — see [The pnpm store is yours alone](#the-pnpm-store-is-yours-alone). |
 | `/session-state/npm-cache` | **`npm_config_cache` points here** — your session's own npm cache. Private to this session. |
+| `/session-state/playwright-browsers` | **`PLAYWRIGHT_BROWSERS_PATH` points here** — browser builds for the project's Playwright. Private to this session, writable, and kept across container restarts. See [Playwright](#playwright). |
+| `/opt/playwright-browsers` | The image's browser builds. **Read-only.** |
 | `/home/shipit` | Your home directory. Agent credentials (via symlink), npm global prefix, and caches live here. |
 
 ### The npm cache is split
@@ -201,7 +203,7 @@ This section is about the Claude agent. The other harnesses were not measured.
   - **ChatGPT subscription** (preferred). The user signs in with `Sign in with ChatGPT` in the UI; the credentials are written to `~/.codex/auth.json` (a symlink onto the credentials volume). Bills against their ChatGPT plan / Codex credits.
   - **OpenCode with ChatGPT** reuses the same connected OpenAI account and quota. The image keeps the Codex CLI as a login and renewal dependency even when only the OpenCode harness is selected. This does not add Codex to the session picker. It gives OpenCode only an access token, account identity, and expiry; Codex's account machinery owns renewal. Managed OpenCode runs use a private XDG data root under `HOME/.local/share/opencode/shipit-data`. Terminal OpenCode logins do not configure this route. Use ShipIt's account settings and model selection; do not copy auth files. Existing conversation state is migrated automatically.
   - **`OPENAI_API_KEY` env var**. Bills against their OpenAI Platform account. ShipIt only injects this into the agent process when no ChatGPT login is present — when both are configured, the env var is stripped so the user isn't double-billed.
-- **Playwright** with headless Chrome (available via browser tools)
+- **Playwright** — the built-in browser behind your browser tools, and the Chromium builds of the current stable Playwright release for a project's own tests. See [Playwright](#playwright) below.
 - **Android build toolchain** — JDK 17 (`JAVA_HOME=/opt/java`), the Android SDK (`ANDROID_SDK_ROOT=/opt/android-sdk` — `sdkmanager`, `adb`, platforms 34/35, build-tools), and Gradle 8.7. Always present, so any Android/Gradle repo builds, lints, and runs JVM/snapshot tests with no per-repo setup (no `shipit.yaml` Android fields). See [android.md](android.md).
 
 ## Node version
@@ -239,6 +241,66 @@ never silently ignored — if `node -v` surprises you, that panel says why.
 Changing `.nvmrc` mid-session does not re-provision; the pin is resolved once at
 container start. To pick up a new pin, restart the agent container — see
 [Restarting your agent container](#restarting-your-agent-container).
+
+## Playwright
+
+The image has Chromium builds for two Playwright versions:
+
+- **The built-in browser's build.** Your browser tools use it. It comes from a
+  pre-release of Playwright, so no project uses it, and nothing a project does
+  can change or remove it.
+- **A stable Playwright release's build** — Chromium and the headless shell.
+  ShipIt pins that release and moves the pin to a newer stable release once
+  that release is at least seven days old and a person merges the update. So
+  the covered release can trail the newest one. A project on the covered
+  release runs `npx playwright test` with no setup step.
+
+Read the covered release — do not assume it — and the build your project needs:
+
+```bash
+node -p 'require("/opt/agent-cli/node_modules/playwright-stable/package.json").version'
+npx playwright install --dry-run chromium   # "Install location" names the build the project needs
+ls "$PLAYWRIGHT_BROWSERS_PATH"               # the builds this session has
+```
+
+Patch releases of one minor release usually use the same build, so a project on
+`1.N.0` often matches a covered `1.N.1`. The build number is what decides.
+
+**`PLAYWRIGHT_BROWSERS_PATH` is `/session-state/playwright-browsers`.** That
+directory is this session's own: it is writable, and it stays across container
+restarts. At each container start ShipIt links every build of the image into
+it, so Playwright finds them there, and you can install more.
+
+**A project on another Playwright version** stops at launch with
+`Executable doesn't exist at /session-state/playwright-browsers/…`. Do what
+that message says:
+
+```bash
+npx playwright install chromium                  # Chromium and the headless shell
+npx playwright install chromium-headless-shell   # headless runs only: about 110 MB to download
+```
+
+The build goes into the same directory and stays there for this session. A new
+session does not have it. For a project that stays on another version, put the
+command in `agent.install` ([shipit-yaml.md](shipit-yaml.md)), or tell the user
+that an upgrade of `@playwright/test` to the covered release removes the
+download. Do not upgrade it yourself only for this reason.
+
+The download comes from `cdn.playwright.dev`. Some builds, such as `ffmpeg` and
+those of older releases, also try `playwright.download.prss.microsoft.com`. If
+the download fails with `ENOTFOUND`, `EAI_AGAIN` or another DNS error, read the
+session's egress allowlist with `shipit settings list`. If the host is not in
+it, propose it with `shipit settings propose` (see [settings.md](settings.md)).
+
+Two things not to do:
+
+- **Do not point `PLAYWRIGHT_BROWSERS_PATH` at `/opt/playwright-browsers`.** That
+  is the image's read-only store. `playwright install` there waits about ten
+  minutes for a lock it cannot take, and then fails.
+- **Do not run `npx playwright uninstall --all` to clean up.** It removes the
+  links to the image's builds from this session's directory, until the next
+  container start puts them back. Plain `npx playwright uninstall` keeps them.
+  The built-in browser does not use that directory in either case.
 
 ## Automatic behaviors
 

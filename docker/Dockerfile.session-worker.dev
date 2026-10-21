@@ -34,10 +34,12 @@ RUN chmod 0755 /usr/local/bin/install-agent-clis
 RUN --mount=type=cache,target=/root/.npm install-agent-clis
 ENV PATH="/opt/agent-cli/node_modules/.bin:${PATH}"
 
+# Beside the MCP's own build, the pinned stable release's, for a project's Playwright (docs/335).
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN mkdir -p /opt/playwright-browsers \
  && playwright install-deps chromium \
  && HOME=/opt/playwright-browsers playwright-mcp install-browser chrome-for-testing \
+ && node /opt/agent-cli/node_modules/playwright-stable/cli.js install chromium \
  && chmod -R a+rX /opt/playwright-browsers
 
 RUN apt-get update && apt-get install -y openjdk-17-jdk-headless \

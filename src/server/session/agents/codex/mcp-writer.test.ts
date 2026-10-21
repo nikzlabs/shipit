@@ -48,34 +48,16 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, planning#130)
     expect(cfg).toContain("--browser chromium");
   });
 
-  it("forwards PLAYWRIGHT_BROWSERS_PATH to the playwright MCP server (SHI-#1558)", () => {
-    const prev = process.env.PLAYWRIGHT_BROWSERS_PATH;
-    process.env.PLAYWRIGHT_BROWSERS_PATH = "/opt/playwright-browsers";
+  it("starts the playwright server on the image's browser store, not the session's (SHI-#1558, docs/335)", () => {
+    vi.stubEnv("PLAYWRIGHT_BROWSERS_PATH", "/session-state/playwright-browsers");
     try {
       const runtimeEnv = write([], null);
       const cfg = configText();
-      expect(cfg).toContain('env_vars = ["PLAYWRIGHT_BROWSERS_PATH"]');
-      expect(runtimeEnv).toMatchObject({
-        PLAYWRIGHT_BROWSERS_PATH: "/opt/playwright-browsers",
-      });
-    } finally {
-      if (prev === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
-      else process.env.PLAYWRIGHT_BROWSERS_PATH = prev;
-    }
-  });
-
-  it("omits playwright env_vars when PLAYWRIGHT_BROWSERS_PATH is unset", () => {
-    const prev = process.env.PLAYWRIGHT_BROWSERS_PATH;
-    delete process.env.PLAYWRIGHT_BROWSERS_PATH;
-    try {
-      const runtimeEnv = write([], null);
-      const cfg = configText();
-      expect(cfg).toContain("[mcp_servers.playwright]");
+      expect(cfg).toContain("export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers");
       expect(cfg).not.toContain('env_vars = ["PLAYWRIGHT_BROWSERS_PATH"]');
       expect(runtimeEnv?.PLAYWRIGHT_BROWSERS_PATH).toBeUndefined();
     } finally {
-      if (prev === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
-      else process.env.PLAYWRIGHT_BROWSERS_PATH = prev;
+      vi.unstubAllEnvs();
     }
   });
 
