@@ -17,6 +17,27 @@ export function mobileChatInFront(state: {
   return (state.showHomeScreen && !state.showNewSessionView) || state.activePanel === "chat";
 }
 
+/**
+ * Whether the chat column shows the home screen, which on desktop also drops the
+ * workspace column and every retained preview iframe in it.
+ *
+ * A session URL never shows it just because the store has no session yet. The
+ * URL and the store do not change in one commit: React Router renders a
+ * navigation as a transition, after the store writes beside it, and Back is a
+ * popstate the store follows from an effect. One such commit on the way to
+ * `/{slug}/new` was enough to reload the preview
+ * (docs/089-persistent-preview-iframes).
+ */
+export function homeScreenShown(state: {
+  showNewSessionView: boolean;
+  urlSessionId: string | undefined;
+  sessionId: string | undefined;
+  templatesForEmptySession: boolean;
+}): boolean {
+  if (state.showNewSessionView) return false;
+  return (!state.sessionId && !state.urlSessionId) || state.templatesForEmptySession;
+}
+
 interface ContentPanelsProps {
   isMobile: boolean;
   showHomeScreen: boolean;
