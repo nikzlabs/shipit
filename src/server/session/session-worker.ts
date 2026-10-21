@@ -21,6 +21,7 @@ import {
   startNodeRuntimeProvisioning,
 } from "./node-runtime.js";
 import { linkSessionNpmCache } from "../shared/npm-cache.js";
+import { linkBakedPlaywrightBrowsers } from "../shared/playwright-browsers.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { ClaudeProcess } from "./agents/claude/process.js";
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
@@ -654,6 +655,9 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   // docs/276 H1 — before the listener opens, so no install, terminal or service can
   // reach npm while the private index still lacks its link to the shared content store.
   linkSessionNpmCache(nodeStateDir);
+
+  // Before the listener opens, so no turn, terminal or install starts Playwright first.
+  linkBakedPlaywrightBrowsers();
 
   startNodeRuntimeProvisioning({
     workspaceDir,

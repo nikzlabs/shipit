@@ -523,7 +523,8 @@ describe("buildEnv", () => {
     const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {} as NodeJS.ProcessEnv);
     expect(env).toContain("HOME=/home/shipit");
     expect(env).toContain("AGENT_HOME=/home/shipit");
-    expect(env).toContain("PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers");
+    // docs/335: the session's own writable store, not the image's read-only one.
+    expect(env).toContain("PLAYWRIGHT_BROWSERS_PATH=/session-state/playwright-browsers");
   });
 
   it("docs/213: sets ANDROID_SDK_ROOT, ANDROID_HOME, and JAVA_HOME for the baked Android toolchain", () => {
