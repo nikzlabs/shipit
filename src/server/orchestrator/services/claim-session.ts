@@ -10,6 +10,7 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { RepoStore } from "../repo-store.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
+import type { CreateSessionDir } from "../session-dir-factory.js";
 import { ServiceError } from "./types.js";
 import {
   generateBranchPrefix,
@@ -29,11 +30,7 @@ export interface ClaimSessionDeps {
   createRepoGit: (dir: string) => RepoGit;
   githubAuthManager: GitHubAuthManager;
   getSharedRepoDir: (repoUrl: string) => string;
-  createSessionDirFull: (title: string) => Promise<{
-    appSessionId: string;
-    sessionDir: string;
-    workspaceDir: string;
-  }>;
+  createSessionDirFull: CreateSessionDir;
   sseBroadcast: (event: string, data: unknown) => void;
   warmSessionForRepo?: (repoUrl: string) => Promise<void>;
   waitForWarmSession?: (repoUrl: string) => Promise<void> | undefined;
@@ -279,7 +276,8 @@ export function createClaimSessionService(deps: ClaimSessionDeps): Required<Clai
         if (opts?.isCancelled?.()) throw new ClaimAbortedError();
         const cacheDir = deps.getSharedRepoDir(url);
         const branchPrefix = generateBranchPrefix();
-        const created = await deps.createSessionDirFull("Warm session");
+        // Warm until its first message: a spawned child clones here for seconds before it has a title.
+        const created = await deps.createSessionDirFull("Warm session", { warm: true });
         const { appSessionId, workspaceDir } = created;
 
         try {
@@ -333,15 +331,13 @@ export function createClaimSessionService(deps: ClaimSessionDeps): Required<Clai
           handWorkspaceBackToWorker(workspaceDir);
 
           deps.sessionManager.setBranch(appSessionId, branchPrefix);
-          deps.sessionManager.setWarm(appSessionId, true);
 
           rewarmPool(url);
 
           return { sessionId: appSessionId, workspaceDir, fetchDurationMs };
         } catch (err) {
-          // The row is visible from creation; left behind, it opens as a session with no workspace.
+          // Left behind, the row opens as a session with no workspace.
           deps.sessionManager.delete(appSessionId);
-          deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
           throw err;
         }
       };

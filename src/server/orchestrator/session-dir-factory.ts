@@ -12,14 +12,19 @@ export interface SessionDirDeps {
   sessionManager: SessionManager;
 }
 
-export function createSessionDirFactory(
-  dirDeps: SessionDirDeps,
-): (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }> {
+/**
+ * `warm` creates the row hidden from the session list. A row created visible and marked warm
+ * later shows in the sidebar for the whole clone in between.
+ */
+export type CreateSessionDir = (
+  title: string,
+  opts?: { warm?: boolean },
+) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
+
+export function createSessionDirFactory(dirDeps: SessionDirDeps): CreateSessionDir {
   const { sessionsRoot, sessionManager } = dirDeps;
 
-  return async (
-    title: string,
-  ): Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }> => {
+  return async (title, opts) => {
     const appSessionId = crypto.randomUUID();
     const sessionDir = path.join(sessionsRoot, appSessionId);
     const workspaceDir = path.join(sessionDir, SESSION_WORKSPACE_SUBDIR);
@@ -32,7 +37,7 @@ export function createSessionDirFactory(
     if (allocateAndSealSessionDir(sessionDir) !== null) {
       chownTreeToSessionWorker(sessionDir);
     }
-    sessionManager.track(appSessionId, title, workspaceDir);
+    sessionManager.track(appSessionId, title, workspaceDir, { warm: opts?.warm === true });
     console.log("[server] Created session directory:", sessionDir);
 
     return { appSessionId, sessionDir, workspaceDir };
