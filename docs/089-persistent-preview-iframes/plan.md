@@ -99,6 +99,17 @@ session's preview snapshot, so the next return to a retained slot starts with
 no service rows (see "A missing row is a gap" below). Only
 `clearPreviewPaths()`, called from `fullResetAllStores`, empties it.
 
+The URL and the session store do not change in one commit. React Router renders
+a navigation as a transition, after the store writes beside it, so
+`handleNewSessionForRepo` (store cleared, then `navigate`) commits once with the
+old `/session/:id` URL and no session; Back is a popstate the store follows from
+an effect. On desktop, a missing session used to mean the home screen, so that
+one commit unmounted the panel and the pool, and every return from a new-session
+page reloaded the preview. `homeScreenShown` (`ContentPanels.tsx`) therefore
+never shows the home screen while the URL names a session.
+`PreviewFrame/new-session-round-trip.test.tsx` drives both paths through the
+real router.
+
 The path is authored by the previewed page, so it is untrusted:
 `sanitizePreviewPath` requires a same-document absolute path and caps its
 length, on both the message and the localStorage-load path. "Absolute path" is
