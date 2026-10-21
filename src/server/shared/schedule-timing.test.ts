@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  LATEST_TIME_ZONE,
   dueSlots,
   nextRuns,
   normalizeTimeZone,
@@ -30,6 +31,7 @@ describe("presets (req 16)", () => {
     expect(timingToCron({ kind: "weekdays", hour: 9, minute: 30 })).toBe("30 9 * * 1-5");
     expect(timingToCron({ kind: "weekly", weekday: 1, hour: 9, minute: 0 })).toBe("0 9 * * 1");
     expect(timingToCron(cron("  0 9 * * *  "))).toBe("0 9 * * *");
+    expect(timingToCron({ kind: "once", date: "2026-03-05", hour: 9, minute: 30 })).toBe("30 9 5 3 *");
   });
 
   it("run when they say", () => {
@@ -86,6 +88,53 @@ describe("due slots", () => {
   it("throw on a timing that timingProblem refuses", () => {
     expect(() => dueSlots(schedule(cron("hello"), "UTC", "2026-10-07T00:00:00Z"), null)).toThrow();
     expect(() => nextRuns(cron("0 9 * * *"), "Mars/Olympus", 1)).toThrow();
+    expect(() => dueSlots(schedule({ kind: "once", date: "2026-02-30", hour: 9, minute: 0 }, "UTC", "2026-01-01T00:00:00Z"), null))
+      .toThrow();
+  });
+});
+
+describe("a schedule that runs once (req 34)", () => {
+  const once = { kind: "once", date: "2026-10-22", hour: 9, minute: 0 } as const;
+  const created = schedule(once, BERLIN, "2026-10-21T12:00:00.000Z");
+
+  it("has one run, at the date and time in its zone, and none after it", () => {
+    expect(iso(nextRuns(once, BERLIN, 3, at("2026-10-21T12:00:00Z")))).toEqual(["2026-10-22T07:00:00.000Z"]);
+    expect(iso(nextRuns(once, "UTC", 3, at("2026-10-21T12:00:00Z")))).toEqual(["2026-10-22T09:00:00.000Z"]);
+    expect(nextRuns(once, BERLIN, 3, at("2026-10-22T07:00:00Z"))).toEqual([]);
+    // Not the same day a year later: the date names its year.
+    expect(nextRuns(once, BERLIN, 1, at("2026-10-23T00:00:00Z"))).toEqual([]);
+  });
+
+  it("finds the date in the zones furthest ahead of UTC and furthest behind it", () => {
+    const midnight = { kind: "once", date: "2026-10-22", hour: 0, minute: 0 } as const;
+    const lateEvening = { kind: "once", date: "2026-10-22", hour: 23, minute: 59 } as const;
+    expect(iso(nextRuns(midnight, "Pacific/Kiritimati", 1, at("2026-10-01T00:00:00Z")))).toEqual(["2026-10-21T10:00:00.000Z"]);
+    expect(iso(nextRuns(lateEvening, "Etc/GMT+12", 1, at("2026-10-01T00:00:00Z")))).toEqual(["2026-10-23T11:59:00.000Z"]);
+  });
+
+  it("is due once at its time, and never again after its slot is claimed", () => {
+    expect(dueSlots(created, null, at("2026-10-22T06:59:59Z"))).toBeNull();
+    expect(dueSlots(created, null, at("2026-10-22T07:00:00Z"))).toEqual({ latest: at("2026-10-22T07:00:00Z") });
+    expect(dueSlots(created, "2026-10-22T07:00:00.000Z", at("2027-10-22T08:00:00Z"))).toBeNull();
+  });
+
+  it("runs when ShipIt is back after missing its time, with nothing reported missed (req 15)", () => {
+    expect(dueSlots(created, null, at("2026-10-25T12:00:00Z"))).toEqual({ latest: at("2026-10-22T07:00:00Z") });
+  });
+
+  it("does not run when its time passed while it was paused", () => {
+    const resumed = schedule(once, BERLIN, "2026-10-23T00:00:00.000Z");
+    expect(dueSlots(resumed, null, at("2026-10-23T00:01:00Z"))).toBeNull();
+  });
+
+  it("follows req 29 on daylight-saving days: a missing time runs an hour later, a repeated one once", () => {
+    const spring = { kind: "once", date: "2026-03-29", hour: 2, minute: 30 } as const;
+    expect(local(nextRuns(spring, BERLIN, 2, at("2026-03-01T00:00:00Z")), BERLIN)).toEqual(["2026-03-29 03:30"]);
+    const autumn = { kind: "once", date: "2026-10-25", hour: 2, minute: 30 } as const;
+    expect(iso(nextRuns(autumn, BERLIN, 2, at("2026-10-01T00:00:00Z")))).toEqual(["2026-10-25T00:30:00.000Z"]);
+    // The same instant the daily 02:30 gets that day.
+    expect(nextRuns(autumn, BERLIN, 1, at("2026-10-01T00:00:00Z")))
+      .toEqual(nextRuns({ kind: "daily", hour: 2, minute: 30 }, BERLIN, 1, at("2026-10-24T12:00:00Z")));
   });
 });
 
@@ -243,6 +292,36 @@ describe("timingProblem", () => {
     expect(timingProblem(cron("0 9 30 2 *"), BERLIN, NOW)).toBe('"0 9 30 2 *" never runs.');
   });
 
+  describe("once (req 34)", () => {
+    const once = (date: string, hour = 9, minute = 0): ScheduleTiming => ({ kind: "once", date, hour, minute });
+
+    it("accepts a time still to come", () => {
+      expect(timingProblem(once("2026-10-07"), BERLIN, NOW)).toBeNull();
+      expect(timingProblem(once("2027-02-28", 23, 59), BERLIN, NOW)).toBeNull();
+    });
+
+    it("refuses a time that has passed, or is now", () => {
+      expect(timingProblem(once("2026-10-07", 8, 0), BERLIN, NOW)).toBe("2026-10-07 08:00 has already passed in Europe/Berlin.");
+      expect(timingProblem(once("2026-10-07", 8, 10), BERLIN, NOW)).toMatch(/has already passed/);
+      expect(timingProblem(once("2025-10-07"), BERLIN, NOW)).toMatch(/has already passed/);
+    });
+
+    it("refuses only a time that has passed in every zone when checked in LATEST_TIME_ZONE", () => {
+      // 06:10 UTC is 18:10 the day before at UTC−12: 2026-10-06 20:00 there is still to come.
+      expect(timingProblem(once("2026-10-06", 20, 0), LATEST_TIME_ZONE, NOW)).toBeNull();
+      expect(timingProblem(once("2026-10-06", 18, 0), LATEST_TIME_ZONE, NOW))
+        .toBe("2026-10-06 18:00 has already passed in every time zone.");
+    });
+
+    it("refuses what is not a calendar date, and times out of range", () => {
+      for (const date of ["2026-02-30", "2026-13-01", "26-10-07", "tomorrow", ""]) {
+        expect(timingProblem(once(date), BERLIN, NOW)).toMatch(/is not a date/);
+      }
+      expect(timingProblem(once("2026-10-08", 24, 0), BERLIN, NOW)).toMatch(/hour/);
+      expect(timingProblem(once("2026-10-08", 9, 60), BERLIN, NOW)).toMatch(/minute/);
+    });
+  });
+
   describe("one hour apart (req 17)", () => {
     it("accepts runs exactly an hour apart", () => {
       expect(timingProblem(cron("0 * * * *"), BERLIN, NOW)).toBeNull();
@@ -305,6 +384,7 @@ describe("parseScheduleTiming", () => {
       { kind: "daily", hour: 9, minute: 0 },
       { kind: "weekdays", hour: 9, minute: 0 },
       { kind: "weekly", weekday: 1, hour: 9, minute: 0 },
+      { kind: "once", date: "2026-10-22", hour: 9, minute: 0 },
       cron("0 9 * * *"),
     ] satisfies ScheduleTiming[]) {
       expect(parseScheduleTiming(JSON.parse(JSON.stringify(timing)))).toEqual(timing);
@@ -313,7 +393,15 @@ describe("parseScheduleTiming", () => {
   });
 
   it("gives null for what is not a timing", () => {
-    for (const value of [null, "daily", 9, { kind: "daily", hour: "9", minute: 0 }, { kind: "cron" }, { kind: "monthly", day: 1 }]) {
+    for (const value of [
+      null,
+      "daily",
+      9,
+      { kind: "daily", hour: "9", minute: 0 },
+      { kind: "cron" },
+      { kind: "monthly", day: 1 },
+      { kind: "once", hour: 9, minute: 0 },
+    ]) {
       expect(parseScheduleTiming(value)).toBeNull();
     }
   });

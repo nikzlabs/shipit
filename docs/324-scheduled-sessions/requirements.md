@@ -15,8 +15,9 @@ session start UI and these current sessions should be consistent. I should be
 able to collect all the regular parameters, the role, and maybe also the prompt
 … it's not very convenient to create a role for every job. So I would say it
 would be a separate prompt. For example, 'Check current security PRs and merge
-them.'" Requirements 1–7 come from this request; 8 and later from the user's
-answers on the same day (see "Resolved questions").
+them.'" Requirements 1–7 come from this request; 8 to 33 from the user's
+answers on the same day (see "Resolved questions"). Requirement 34 comes from
+the user's request on 2026-10-21: "support one-off scheduled jobs".
 
 1. The user can set up a session that ShipIt starts by itself on a schedule the
    user chooses — for example, every day.
@@ -104,6 +105,8 @@ answers on the same day (see "Resolved questions").
 33. The user can stop a run that is not finished. A run the user stops is
     finished, so it does not block Delete (req 32). The stop control inside the
     run's session stops the run too.
+34. A schedule can run only once, at a date and time the user sets, and not
+    repeat.
 
 ## Open questions
 

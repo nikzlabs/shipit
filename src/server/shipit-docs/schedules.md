@@ -1,7 +1,7 @@
 # Scheduled sessions
 
 A **schedule** makes ShipIt start a session by itself at set times — for
-example every weekday at 09:00. Each run is a new session with the schedule's
+example every weekday at 09:00 — or once, at one date and time. Each run is a new session with the schedule's
 target (a repository, or a sandbox with its grants), its session-start
 parameters (model, role, permission mode, …) and its prompt, which is the
 task for that run. The user can open a run and work in it like any other
@@ -9,6 +9,7 @@ session.
 
 **You propose, the user confirms.** When the user asks for something to happen
 regularly ("every morning, check the security PRs and merge the green ones"),
+or once at a later time ("tomorrow at 07:00, rerun the nightly benchmark"),
 post a proposal card. Nothing is saved until the user clicks **Confirm** on
 the card, and you have no way to save, pause, run or delete a schedule
 yourself. So a run never gets more access than the user approved.
@@ -55,7 +56,7 @@ enabled: true                    # optional; false proposes it paused
 | Field | Value |
 |---|---|
 | `name` | One line, at most 120 characters. |
-| `when` | `hourly :MM`, `daily HH:MM`, `weekdays HH:MM`, `weekly <weekday> HH:MM` (`monday` or `mon`), or a five-field cron expression as `{ cron: "0 9 * * 1-5" }`. The time is wall-clock time in the schedule's time zone. Runs must come at least one hour apart. |
+| `when` | `hourly :MM`, `daily HH:MM`, `weekdays HH:MM`, `weekly <weekday> HH:MM` (`monday` or `mon`), `once YYYY-MM-DD HH:MM` for one run that does not repeat, or a five-field cron expression as `{ cron: "0 9 * * 1-5" }`. The time is wall-clock time in the schedule's time zone. Runs must come at least one hour apart. A `once` time must still be to come; if the proposal names no `timeZone`, ShipIt checks it in the user's zone when they confirm. |
 | `timeZone` | An IANA name such as `Europe/Berlin`. A new schedule without one gets the time zone of the user's browser when they confirm. |
 | `target` | `{ repo: <URL> }` for a repository added to ShipIt, or `sandbox`, or `{ sandbox: { git, docker, network, dangerousGitHubOps } }` with `true` or `false` for each grant you name. Grants you leave out are `git: false`, `docker: false`, `network: true`, `dangerousGitHubOps: false` (it needs `git`). |
 | `params` | The session-start parameters, below. `null` means not set. |
@@ -92,6 +93,8 @@ EOF
 - A sandbox's grants merge the same way. `{ repo: … }` replaces the target.
 - `enabled: false` pauses the schedule, `enabled: true` resumes it.
 - The time zone stays as it is unless you give one.
+- A `once` schedule whose time has passed has no next run. To run it again,
+  propose a new `when`.
 
 The card shows each changed value before → after. If the schedule changes
 again before the user confirms, ShipIt refuses the card, because its "before"

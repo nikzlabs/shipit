@@ -57,10 +57,17 @@ const TIMING_KINDS: { kind: ScheduleTiming["kind"]; label: string }[] = [
   { kind: "daily", label: "Every day" },
   { kind: "weekdays", label: "Weekdays" },
   { kind: "weekly", label: "Every week" },
+  { kind: "once", label: "Once" },
   { kind: "cron", label: "Cron expression" },
 ];
 
 const pad = (n: number) => String(n).padStart(2, "0");
+
+function tomorrow(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 let zoneList: string[] | undefined;
 /** The browser's list leaves out UTC, which a schedule may well use. */
@@ -81,6 +88,8 @@ function withTimingKind(prev: ScheduleTiming, kind: ScheduleTiming["kind"]): Sch
       return { kind, hour, minute };
     case "weekly":
       return { kind, weekday: prev.kind === "weekly" ? prev.weekday : 1, hour, minute };
+    case "once":
+      return { kind, date: prev.kind === "once" ? prev.date : tomorrow(), hour, minute };
     case "cron":
       return { kind, expression: timingToCron(prev) };
   }
@@ -139,7 +148,12 @@ export function ScheduleEditor({ schedule, onClose }: { schedule: ScheduleView; 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
 
-  const problem = useMemo(() => timingProblem(timing, timeZone), [timing, timeZone]);
+  // As on the server, an unchanged timing is not checked again: a once time that has passed stays editable.
+  const timingChanged = JSON.stringify(timing) !== JSON.stringify(schedule.timing) || timeZone !== schedule.timeZone;
+  const problem = useMemo(
+    () => (timingChanged ? timingProblem(timing, timeZone) : null),
+    [timing, timeZone, timingChanged],
+  );
   const upcoming = useMemo(() => {
     if (problem) return [];
     try {
@@ -322,7 +336,7 @@ function TimingFields({ timing, onChange }: { timing: ScheduleTiming; onChange: 
       <select
         value={timing.kind}
         onChange={(e) => onChange(withTimingKind(timing, e.target.value as ScheduleTiming["kind"]))}
-        aria-label="Repeats"
+        aria-label="How often"
         className={INPUT_CLASS}
         data-testid="schedule-editor-repeats"
       >
@@ -354,7 +368,20 @@ function TimingFields({ timing, onChange }: { timing: ScheduleTiming; onChange: 
           {WEEKDAYS.map((day, i) => <option key={day} value={i}>{day}</option>)}
         </select>
       )}
-      {(timing.kind === "daily" || timing.kind === "weekdays" || timing.kind === "weekly") && (
+      {timing.kind === "once" && (
+        <>
+          <span className="text-xs text-(--color-text-tertiary)">on</span>
+          <input
+            type="date"
+            value={timing.date}
+            onChange={(e) => onChange({ ...timing, date: e.target.value })}
+            aria-label="Date"
+            className={INPUT_CLASS}
+            data-testid="schedule-editor-date"
+          />
+        </>
+      )}
+      {(timing.kind === "daily" || timing.kind === "weekdays" || timing.kind === "weekly" || timing.kind === "once") && (
         <>
           <span className="text-xs text-(--color-text-tertiary)">at</span>
           {time(timing)}
