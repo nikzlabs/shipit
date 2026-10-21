@@ -17,6 +17,8 @@ export function describeTiming(timing: ScheduleTiming): string {
       return `Weekdays at ${pad(timing.hour)}:${pad(timing.minute)}`;
     case "weekly":
       return `Every ${WEEKDAY_NAMES[timing.weekday] ?? `day ${timing.weekday}`} at ${pad(timing.hour)}:${pad(timing.minute)}`;
+    case "once":
+      return `Once, on ${timing.date} at ${pad(timing.hour)}:${pad(timing.minute)}`;
     case "cron":
       return `Cron ${timing.expression.trim()}`;
   }
@@ -32,6 +34,8 @@ export function formatWhen(timing: ScheduleTiming): string {
       return `${timing.kind} ${pad(timing.hour)}:${pad(timing.minute)}`;
     case "weekly":
       return `weekly ${(WEEKDAY_NAMES[timing.weekday] ?? String(timing.weekday)).toLowerCase()} ${pad(timing.hour)}:${pad(timing.minute)}`;
+    case "once":
+      return `once ${timing.date} ${pad(timing.hour)}:${pad(timing.minute)}`;
     case "cron":
       return `{ cron: ${JSON.stringify(timing.expression.trim())} }`;
   }

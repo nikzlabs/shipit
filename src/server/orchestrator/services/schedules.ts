@@ -159,7 +159,8 @@ function readTiming(value: unknown): ScheduleTiming {
   if (!timing) {
     throw new ServiceError(
       400,
-      'The timing must be a preset ({ kind: "hourly" | "daily" | "weekdays" | "weekly", … }) '
+      'The timing must be a preset ({ kind: "hourly" | "daily" | "weekdays" | "weekly", … }), '
+        + 'one run ({ kind: "once", date: "YYYY-MM-DD", hour, minute }) '
         + 'or a cron expression ({ kind: "cron", expression }).',
     );
   }

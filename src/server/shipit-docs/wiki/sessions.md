@@ -436,22 +436,28 @@ of the sender's next turn says what the user did, so the agent never asks.
 ## Scheduled sessions
 
 A **schedule** makes ShipIt start a session by itself at set times — every
-weekday at 09:00, say. Each start is a **run**: an ordinary session in the
+weekday at 09:00, say — or once, at one date and time. Each start is a **run**: an ordinary session in the
 schedule's repository, or a sandbox with the grants the schedule names, started
 with the schedule's model, role and other session-start choices, and sent the
 schedule's prompt as its first message. The user can open a run and work in it
 like in any other session.
 
 **Setting one up is a request to you.** The message box has no schedule
-control. When the user asks for something to happen regularly, propose the
-schedule with `shipit schedule propose` (`/shipit-docs/schedules.md`); it is
+control. When the user asks for something to happen regularly, or once at a
+later time, propose the schedule with `shipit schedule propose`
+(`/shipit-docs/schedules.md`); it is
 saved only when the user presses **Confirm** on the card. A change — another
 time, another prompt, a pause — is a proposal too. `shipit schedule list` says
 what each schedule is now.
 
 When a schedule runs is a preset — every hour, every day, weekdays, every week —
-or a cron expression, in a time zone, so a 09:00 run stays at 09:00 local time
-across daylight-saving changes. Its run times must be at least an hour apart.
+a cron expression, or **once** on a date, in a time zone, so a 09:00 run stays
+at 09:00 local time across daylight-saving changes. Its run times must be at
+least an hour apart. A once schedule runs one time; after its time it stays in
+Settings → Schedules with its run and notes, shows that the time has passed,
+and comes due again only when its date and time are edited — **Run now** still
+starts a run at any time. If ShipIt was down at that time, the run starts when
+ShipIt is back.
 
 **Settings → Schedules** lists every schedule with when it runs, what it starts,
 its next run, and its state: *Paused*, or the reason its last start failed.

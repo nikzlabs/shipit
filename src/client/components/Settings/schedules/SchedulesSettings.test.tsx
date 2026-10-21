@@ -112,6 +112,24 @@ describe("SchedulesSettings — the list (reqs 10, 18)", () => {
     expect(screen.getByTestId("schedule-pause-b").textContent).toContain("Resume");
   });
 
+  it("shows a once schedule's date, its next run, and that its time has passed once it has (req 34)", () => {
+    useScheduleStore.setState({
+      schedules: [
+        schedule("a", { timing: { kind: "once", date: "2099-03-05", hour: 7, minute: 30 } }),
+        schedule("b", { timing: { kind: "once", date: "2001-01-01", hour: 9, minute: 0 }, nextRuns: [] }),
+      ],
+    });
+    render(<SchedulesSettings />);
+
+    const a = screen.getByTestId("schedule-a");
+    expect(a.textContent).toContain("Once, on 2099-03-05 at 07:30");
+    expect(a.textContent).toContain("next");
+    expect(within(a).queryByTestId("schedule-once-passed-a")).toBeNull();
+    const b = screen.getByTestId("schedule-b");
+    expect(b.textContent).not.toContain("next");
+    expect(screen.getByTestId("schedule-once-passed-b").textContent).toContain("the time has passed");
+  });
+
   it("says how to make one when there is none (req 8)", () => {
     useScheduleStore.setState({ schedules: [] });
     render(<SchedulesSettings />);

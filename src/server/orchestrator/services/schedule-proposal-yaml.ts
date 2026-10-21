@@ -35,7 +35,7 @@ const CAPABILITY_KEYS: readonly (keyof SessionCapabilities)[] = ["git", "docker"
 
 const WHEN_HELP =
   'when must be a preset — "hourly :15", "daily 09:00", "weekdays 09:00", "weekly monday 09:00" — '
-  + 'or a cron expression as { cron: "0 9 * * 1-5" }.';
+  + 'one run as "once 2026-10-22 09:00", or a cron expression as { cron: "0 9 * * 1-5" }.';
 
 const TARGET_HELP =
   "target must be { repo: <repository URL> }, sandbox, or { sandbox: { git, docker, network, "
@@ -86,6 +86,12 @@ export function parseWhen(value: unknown): ScheduleTiming {
       const weekday = words.length === 3 ? weekdayOf(words[1]) : null;
       const at = words.length === 3 ? time(words[2]) : null;
       if (weekday !== null && at) return { kind: "weekly", weekday, ...at };
+      break;
+    }
+    case "once": {
+      const date = words.length === 3 && /^\d{4}-\d{2}-\d{2}$/.test(words[1]) ? words[1] : null;
+      const at = words.length === 3 ? time(words[2]) : null;
+      if (date && at) return { kind: "once", date, ...at };
       break;
     }
   }

@@ -164,6 +164,16 @@ function nextRunOf(schedule: ScheduleView): Date | string | undefined {
   }
 }
 
+/** Req 34 — a schedule that runs once has no run left after its time, paused or not. */
+function oncePassed(schedule: ScheduleView): boolean {
+  if (schedule.timing.kind !== "once") return false;
+  try {
+    return nextRuns(schedule.timing, schedule.timeZone, 1).length === 0;
+  } catch {
+    return false;
+  }
+}
+
 /** What the run starts on, in the words `START_PARAM_LABELS` gives the cards. */
 function startParamsInWords(params: SessionStartParams): string {
   if (params.role) return `Role ${START_PARAM_LABELS.role.describe(params.role)}`;
@@ -233,6 +243,11 @@ function ScheduleCard({
             {describeTiming(schedule.timing)}{zone}
             {next && (
               <span className="text-(--color-text-tertiary)"> · next {formatRunTime(next)}{zone && " your time"}</span>
+            )}
+            {oncePassed(schedule) && (
+              <span className="text-(--color-text-tertiary)" data-testid={`schedule-once-passed-${schedule.id}`}>
+                {" "}· the time has passed
+              </span>
             )}
           </p>
           <p className="mt-0.5 truncate text-xs text-(--color-text-tertiary)">

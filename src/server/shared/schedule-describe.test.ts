@@ -8,6 +8,7 @@ describe("describeTiming", () => {
     expect(describeTiming({ kind: "weekdays", hour: 18, minute: 30 })).toBe("Weekdays at 18:30");
     expect(describeTiming({ kind: "weekly", weekday: 0, hour: 7, minute: 15 })).toBe("Every Sunday at 07:15");
     expect(describeTiming({ kind: "cron", expression: " 0 9 * * 1-5 " })).toBe("Cron 0 9 * * 1-5");
+    expect(describeTiming({ kind: "once", date: "2026-10-22", hour: 9, minute: 5 })).toBe("Once, on 2026-10-22 at 09:05");
   });
 });
 

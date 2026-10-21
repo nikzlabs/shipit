@@ -100,8 +100,8 @@ optional (req 6).
 
 Orchestrator SQLite, migrations in `database.ts`:
 
-- **`schedules`** — `id`, `name`, `enabled`, `timing` (JSON: a preset or a cron
-  expression), `time_zone` (IANA name), `spec` (JSON `SessionStartSpec`),
+- **`schedules`** — `id`, `name`, `enabled`, `timing` (JSON: a preset, a cron
+  expression, or one date and time — "Runs once" below), `time_zone` (IANA name), `spec` (JSON `SessionStartSpec`),
   `active_since`, `needs_user_reason` (req 18), `created_at`, `updated_at`.
 - **`schedule_runs`** — `id`, `schedule_id`, `slot_at` (null for Run now),
   `spec` (the copy this run starts with), `outcome` (`starting` | `started` |
@@ -172,7 +172,7 @@ column fall back to the schedule's zone.
 - **List**: name, when (in words), target, next run, and a state — Paused, or
   the req 18 reason. Row actions: Run now, Pause / Resume, Edit, Delete.
 - **Editor**: name; when — a preset (hourly, daily, weekdays, weekly) with time
-  and weekday, or a cron field; time zone (default: the browser's); target — a
+  and weekday, **Once** with a date and a time, or a cron field; time zone (default: the browser's); target — a
   repository, or Sandbox with its grants; the parameter controls above; the
   prompt; the next three run times.
 - **Runs**, newest first. Each row shows the time, a state, a one-line result,
@@ -275,6 +275,40 @@ counted, so a timing is accepted or refused the same on every date. On a day
 with a 30-minute clock change, a moved run (req 29) can come 30 minutes before
 the next one; the overlap rule (req 14) still skips the next while the moved
 run is going. Run now is not counted (req 26).
+
+### Runs once (req 34)
+
+A fifth timing kind, `{ kind: "once", date: "YYYY-MM-DD", hour, minute }`, a
+wall-clock time in the schedule's zone like the presets. Everything above reads
+run times only through `nextRuns` and `dueSlots` (`schedule-timing.ts`), so the
+once kind lives there and the scheduler, the store and the routes do not
+change:
+
+- **Its one run time** comes from the same forward walk as every other timing,
+  over the yearly cron of its day and month (`m h D M *`), started a day
+  before the date and kept only inside it. So a time that a clock change skips
+  or repeats is handled as for a daily run (req 29).
+- **Due once.** `dueSlots` yields that time while it is after `active_since`
+  and the latest claimed slot. After the claim nothing is due again, also a
+  year later. When ShipIt was down at that time, the next pass runs it, with no
+  missed runs to record (req 15). A time that passed while the schedule was
+  paused does not run, as for every timing.
+- **Saving.** `timingProblem` refuses a date that is not a calendar day and a
+  time that has already passed; there is no spacing to check (req 17). As for
+  every timing, the check runs only when the timing or the zone changes, so a
+  once schedule whose time has passed can still have its prompt or target
+  edited. The Settings editor does the same.
+- **A proposal with no zone** is checked in UTC−12 (`LATEST_TIME_ZONE`), where a
+  wall-clock time comes last, so it is refused at once only when the time has
+  passed in every zone; Confirm checks it again in the browser's zone and ends
+  the card `refused` with the reason.
+- **After its time** the schedule stays, with no next run: only the user deletes
+  a schedule (req 32), and deleting would take the run's link and notes (reqs
+  25, 27). The list says "the time has passed". Editing the date and time arms
+  it again (`active_since` moves, as on any timing edit); Run now runs it at any
+  time (req 26).
+- **In words**: "Once, on 2026-10-22 at 09:00" on the cards and in the list;
+  `once 2026-10-22 09:00` in the proposal YAML and `shipit schedule list`.
 
 **Run now (req 26)** goes through the queue without steps 1–4. Before it
 starts, the control checks every run of the schedule — archived ones included
@@ -558,6 +592,7 @@ this is the limit it already has.
 | 14, 23 | Scheduler step 4; `awaiting_answer` never counts as still going |
 | 15 | Step 2 |
 | 16, 29 | IANA zone; due slots by stepping `nextRun` forward |
+| 34 | The `once` timing kind in `schedule-timing.ts`; Once in the editor; `once` in the proposal YAML |
 | 17 | The spacing check at save and propose, clock changes not counted; catch-ups and Run now not counted |
 | 18 | Pre-flight, the re-check, the first-turn watch, `needs_user_reason` |
 | 19 | Run now / Pause / Edit; the spec is copied into the run row |
