@@ -51,3 +51,4 @@
 - [x] Req 34 (runs once): `once` timing kind, its run time from the forward walk, due once, refused when passed or not a date; proposal with no zone checked in UTC−12
 - [x] Req 34: **Once** in the editor (date and time), no re-check of an unchanged timing, "the time has passed" in the list, `once` in the proposal YAML
 - [x] Req 34: shipit-docs `schedules.md` and the wiki section; tests (timing, YAML, proposal Confirm, editor, list, one run through the scheduler)
+- [x] Req 34: independent review (three findings: one clock read for the check and `active_since`, the open list renders again at the next run time, the editor test checks the exact run time), all fixed

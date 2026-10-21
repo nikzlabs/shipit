@@ -294,19 +294,22 @@ change:
   missed runs to record (req 15). A time that passed while the schedule was
   paused does not run, as for every timing.
 - **Saving.** `timingProblem` refuses a date that is not a calendar day and a
-  time that has already passed; there is no spacing to check (req 17). As for
-  every timing, the check runs only when the timing or the zone changes, so a
-  once schedule whose time has passed can still have its prompt or target
-  edited. The Settings editor does the same.
+  time that has already passed; there is no spacing to check (req 17). The
+  check and the new `active_since` read one clock, on create and on a timing
+  edit: with two reads, a time between them was accepted and then never ran.
+  As for every timing, the check runs only when the timing or the zone
+  changes, so a once schedule whose time has passed can still have its prompt
+  or target edited. The Settings editor does the same.
 - **A proposal with no zone** is checked in UTC−12 (`LATEST_TIME_ZONE`), where a
   wall-clock time comes last, so it is refused at once only when the time has
   passed in every zone; Confirm checks it again in the browser's zone and ends
   the card `refused` with the reason.
 - **After its time** the schedule stays, with no next run: only the user deletes
   a schedule (req 32), and deleting would take the run's link and notes (reqs
-  25, 27). The list says "the time has passed". Editing the date and time arms
-  it again (`active_since` moves, as on any timing edit); Run now runs it at any
-  time (req 26).
+  25, 27). The list says "the time has passed"; it renders again at the
+  earliest coming run time of its schedules, so this shows while it is open.
+  Editing the date and time arms it again (`active_since` moves, as on any
+  timing edit); Run now runs it at any time (req 26).
 - **In words**: "Once, on 2026-10-22 at 09:00" on the cards and in the list;
   `once 2026-10-22 09:00` in the proposal YAML and `shipit schedule list`.
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SchedulesSettings } from "./SchedulesSettings.js";
 import { useScheduleStore } from "../../../stores/schedule-store.js";
@@ -128,6 +128,25 @@ describe("SchedulesSettings — the list (reqs 10, 18)", () => {
     const b = screen.getByTestId("schedule-b");
     expect(b.textContent).not.toContain("next");
     expect(screen.getByTestId("schedule-once-passed-b").textContent).toContain("the time has passed");
+  });
+
+  it("marks a once time passed when it comes while the list is open (req 34)", () => {
+    vi.useFakeTimers({ now: new Date("2026-10-22T08:59:58Z") });
+    try {
+      useScheduleStore.setState({
+        schedules: [schedule("a", { timing: { kind: "once", date: "2026-10-22", hour: 9, minute: 0 }, timeZone: "UTC" })],
+      });
+      render(<SchedulesSettings />);
+      expect(screen.getByTestId("schedule-a").textContent).toContain("next");
+      expect(screen.queryByTestId("schedule-once-passed-a")).toBeNull();
+
+      act(() => { vi.advanceTimersByTime(4000); });
+
+      expect(screen.getByTestId("schedule-once-passed-a")).toBeTruthy();
+      expect(screen.getByTestId("schedule-a").textContent).not.toContain("next");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says how to make one when there is none (req 8)", () => {

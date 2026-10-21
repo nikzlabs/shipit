@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ScheduleEditor } from "./ScheduleEditor.js";
+import { formatRunTime } from "./schedule-format.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { useRepoStore } from "../../../stores/repo-store.js";
@@ -276,7 +277,9 @@ describe("ScheduleEditor — the rest of a schedule (req 11)", () => {
     fireEvent.change(screen.getByTestId("schedule-editor-date"), { target: { value: "2099-03-05" } });
     fireEvent.change(screen.getByTestId("schedule-editor-time"), { target: { value: "07:30" } });
 
-    expect(screen.getByTestId("schedule-editor-next-runs").textContent?.split("·")).toHaveLength(1);
+    // The schedule's zone is UTC; the editor names run times in the browser's.
+    const run = formatRunTime(new Date("2099-03-05T07:30:00Z"));
+    expect(screen.getByTestId("schedule-editor-next-runs").textContent?.replace(" (your time)", "")).toBe(`Next runs: ${run}`);
     await userEvent.click(screen.getByTestId("schedule-editor-save"));
     await waitFor(() => expect(saved).toHaveLength(1));
     expect(saved[0]!.timing).toEqual({ kind: "once", date: "2099-03-05", hour: 7, minute: 30 });
