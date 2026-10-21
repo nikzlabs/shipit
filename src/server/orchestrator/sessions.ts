@@ -532,7 +532,8 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET last_used_at = ? WHERE id = ?").run(new Date().toISOString(), id);
   }
 
-  track(id: string, title?: string, workspaceDir?: string): SessionInfo {
+  /** `warm` applies only to a new row, so it is warm from its first read. */
+  track(id: string, title?: string, workspaceDir?: string, opts?: { warm?: boolean }): SessionInfo {
     const now = new Date().toISOString();
     const existing = this.get(id);
     if (existing) {
@@ -552,9 +553,9 @@ export class SessionManager {
     }
 
     this.db.prepare(`
-      INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, title || "New session", now, now, workspaceDir ?? null);
+      INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, warm)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, title || "New session", now, now, workspaceDir ?? null, opts?.warm ? 1 : 0);
     return this.get(id)!;
   }
 

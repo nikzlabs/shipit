@@ -11,6 +11,7 @@ import type { RepoGit } from "../repo-git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { SessionContainerManager } from "../session-container.js";
 import { createClaimSessionService } from "./claim-session.js";
+import { createSessionDirFactory } from "../session-dir-factory.js";
 
 describe("createClaimSessionService", () => {
   let tmpDir: string;
@@ -22,7 +23,7 @@ describe("createClaimSessionService", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("stamps the repo as used before re-cloning a reclaimed cache, and leaves no session when the clone fails", async () => {
+  it("stamps the repo as used before re-cloning a reclaimed cache, never lists the cloning row, and leaves no session when the clone fails", async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "claim-session-"));
     dbManager = new DatabaseManager(path.join(tmpDir, "test.db"));
     const sessionManager = new SessionManager(dbManager);
@@ -34,8 +35,8 @@ describe("createClaimSessionService", () => {
     dbManager.db.prepare("UPDATE repos SET last_used_at = ? WHERE url = ?").run(longAgo, url);
 
     let lastUsedAtDuringClone: string | undefined;
-    let lastSessionList: { id: string }[] | undefined;
-    const workspaceDir = path.join(tmpDir, "sessions", "claimed", "workspace");
+    let rowsDuringClone: string[] | undefined;
+    let listedDuringClone: string[] | undefined;
     const service = createClaimSessionService({
       sessionManager,
       repoStore,
@@ -43,28 +44,25 @@ describe("createClaimSessionService", () => {
       createRepoGit: () => ({
         cloneBare: () => {
           lastUsedAtDuringClone = repoStore.get(url)!.lastUsedAt;
+          rowsDuringClone = sessionManager.listAllIncludingWarm().map((s) => s.id);
+          listedDuringClone = sessionManager.list().map((s) => s.id);
           return Promise.reject(new Error("fetch-pack: invalid index-pack output"));
         },
       }) as unknown as RepoGit,
       githubAuthManager: { authenticated: false } as unknown as GitHubAuthManager,
       getSharedRepoDir: () => path.join(tmpDir, "repo-cache", "dormant"),
-      createSessionDirFull: (title) => {
-        sessionManager.track("claimed", title, workspaceDir);
-        return Promise.resolve({ appSessionId: "claimed", sessionDir: path.dirname(workspaceDir), workspaceDir });
-      },
-      sseBroadcast: (event, data) => {
-        if (event === "session_list") lastSessionList = (data as { sessions: { id: string }[] }).sessions;
-      },
+      createSessionDirFull: createSessionDirFactory({ sessionsRoot: path.join(tmpDir, "sessions"), sessionManager }),
+      sseBroadcast: () => {},
     });
 
     await expect(service.claim(url)).rejects.toThrow("invalid index-pack output");
 
     expect(lastUsedAtDuringClone).toBeDefined();
     expect(Date.parse(lastUsedAtDuringClone!)).toBeGreaterThan(Date.parse(longAgo));
-    expect(sessionManager.get("claimed")).toBeUndefined();
-    // A sidebar that saw the row while the clone ran must be told it is gone.
-    expect(lastSessionList).toBeDefined();
-    expect(lastSessionList!.map((s) => s.id)).not.toContain("claimed");
+    // Any session list built during the clone feeds the sidebar, which must not show the row.
+    expect(rowsDuringClone).toHaveLength(1);
+    expect(listedDuringClone).toEqual([]);
+    expect(sessionManager.listAllIncludingWarm()).toEqual([]);
   });
 
   it("never takes the warm session when told to skip it, whose standby lacks a run's notes mount", async () => {
@@ -89,10 +87,10 @@ describe("createClaimSessionService", () => {
       createRepoGit: () => ({ cloneBare: () => Promise.reject(new Error("no clone here")) }) as unknown as RepoGit,
       githubAuthManager: { authenticated: false } as unknown as GitHubAuthManager,
       getSharedRepoDir: () => path.join(tmpDir, "repo-cache", "app"),
-      createSessionDirFull: (title) => {
+      createSessionDirFull: (title, opts) => {
         slowClones += 1;
         const workspaceDir = path.join(tmpDir, "sessions", "fresh", "workspace");
-        sessionManager.track("fresh", title, workspaceDir);
+        sessionManager.track("fresh", title, workspaceDir, opts);
         return Promise.resolve({ appSessionId: "fresh", sessionDir: path.dirname(workspaceDir), workspaceDir });
       },
       sseBroadcast: () => {},
