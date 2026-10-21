@@ -169,8 +169,10 @@ describe("a new-session page between two visits to a session", () => {
 
     await click("New session");
     await act(async () => {
+      // jsdom traverses history in a later task; a timer can lose that race.
+      const popped = new Promise((resolve) => window.addEventListener("popstate", resolve, { once: true }));
       window.history.back();
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await popped;
     });
     expect(window.location.pathname).toBe("/session/A");
     await serverAttach("A");
