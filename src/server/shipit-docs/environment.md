@@ -63,7 +63,7 @@ What this means in practice:
 | `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts and checkout reclaim, but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). It is kept while the session is in use. After the session is archived or finished, ShipIt deletes it when a retention period ends — see [What survives what](#what-survives-what). A Compose service can mount it too: the `persist` volume in [compose.md](compose.md). |
 | `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. It has the same retention period as `/persist`. |
 | `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Write-protected (see below). |
-| `/dep-cache` | Shared download cache across sessions for the same repo: yarn's cache and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). |
+| `/dep-cache` | Shared download cache across sessions for the same repo: yarn's cache and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). Also the place for a lock between those sessions — see [A lock shared by the repo's sessions](#a-lock-shared-by-the-repos-sessions). |
 | `/workspace/.pnpm-store` | **This session's own pnpm store.** Not shared with any other session — see [The pnpm store is yours alone](#the-pnpm-store-is-yours-alone). |
 | `/session-state/npm-cache` | **`npm_config_cache` points here** — your session's own npm cache. Private to this session. |
 | `/session-state/playwright-browsers` | **`PLAYWRIGHT_BROWSERS_PATH` points here** — browser builds for the project's Playwright. Private to this session, writable, and kept across container restarts. See [Playwright](#playwright). |
@@ -159,6 +159,37 @@ rest of the tree is the shared base. So expect the first install after a contain
 some real work rather than finish instantly, and expect a native package to be compiled or
 downloaded in this session; that is the design, not a cache miss. Nothing about it needs
 configuring, and every `pnpm` command still behaves normally.
+
+### A lock shared by the repo's sessions
+
+`/dep-cache` is one directory on the host, mounted into every session of the same repo, so a
+lock file in it is a lock all of those sessions see. Use it when only one session of the repo
+may do something at a time — a test run against a shared external account, a deploy to one
+target, a heavy run the project wants to run alone:
+
+```bash
+flock -o -w 300 /dep-cache/deploy.lock ./scripts/deploy.sh
+```
+
+- **Always pass `-o`.** Without it the command inherits the lock, and so does anything it
+  leaves running — a Gradle or Turbo daemon, a `&` child — which then holds the lock after the
+  command exits and blocks every other session indefinitely.
+- **Always pass `-w <seconds>`.** The wait counts against your shell tool's foreground limit
+  (10 minutes for Claude's Bash tool), so leave room for the command itself, or run the line as
+  a background job (what that does and does not guarantee is under *Session container
+  lifecycle* below). On timeout `flock` exits 1 without running the command.
+- **Never delete or replace the lock file.** Every session of the repo can delete files in
+  `/dep-cache`, and a new file is a new lock: the next session takes it while the old holder is
+  still running, and both commands run at once.
+- **It binds only sessions of this repo that use the same file name.** Other repos' sessions
+  have their own `/dep-cache`, and a command run without `flock` is not stopped. "This repo"
+  means the same remote URL, as written: one repository added once over SSH and once over HTTPS
+  gets two folders, and so two locks.
+- **No mount, no lock.** A sandbox session has no shared directory; its `/dep-cache` is a plain
+  directory inside the container. `mountpoint -q /dep-cache` tells you which you have.
+
+The kernel releases the lock when the process holding it exits, including when ShipIt removes
+the container, so a stopped session never leaves a stale lock behind.
 
 ### Write-protected paths
 
