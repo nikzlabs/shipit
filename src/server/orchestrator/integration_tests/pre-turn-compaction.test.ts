@@ -297,7 +297,21 @@ describe("Integration: the pre-turn compaction of a merged session (docs/295)", 
    * An automatic turn whose steer the CLI did not take comes back as an "interactive"
    * queue entry (`steerToQueuedMessage`), so this drain decides for it, not the dispatched one.
    */
-  it("applies the 50k floor to an automatic entry that this drain runs (req 15)", async () => {
+  it("does not compact a typed message under 200K tokens, though its box is ticked (req 15)", async () => {
+    (app as unknown as { usageManager: UsageManager }).usageManager
+      .record(SESSION_ID, 0, 1000, 100, 10, { contextTokens: 199_999 });
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "next slice", compactContext: true });
+    const turn = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    expect(turn.lastPrompt).toContain("next slice");
+    expect(spawns.some((s) => s.lastCompact)).toBe(false);
+
+    client.close();
+  });
+
+  it("applies the 200K floor to an automatic entry that this drain runs (req 15)", async () => {
     beforeMerge();
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();

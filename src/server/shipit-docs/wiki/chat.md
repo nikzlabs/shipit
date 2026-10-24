@@ -328,7 +328,9 @@ ways it happens:
   *Let the agent compact its own context* (Settings → Advanced, off by default)
   allows it; read it with `shipit settings get advanced.agentCompaction`. It runs
   after your turn ends; your next turn starts with your instructions word for
-  word, and with a note you continue on your own. When the user says context is
+  word, and with a note you continue on your own. It compacts only a context of
+  200K tokens or more when your turn ends; under that, nothing is compacted and
+  your next turn says so. When the user says context is
   the problem, do this if the setting is on; if it is off, propose turning it on
   with `shipit settings propose`, or let them type `/compact`. Details:
   `/shipit-docs/sessions.md` → *Compacting your own context*.
@@ -339,7 +341,8 @@ ways it happens:
   what it changed, keeping their standing preferences and anything unresolved.
   Offered only where the harness supports compaction. The user can untick it,
   and the choice is kept for the session — the pull request's **⋮** menu shows
-  it as **Compact after merge**.
+  it as **Compact after merge**. Ticked or not, it does not compact a context
+  under 200K tokens.
 - **While the session is idle.** With the user's setting *Compact idle sessions
   before the prompt cache expires* (Settings → Advanced, off by default) on,
   ShipIt compacts a session whose context is 200K tokens or more shortly before

@@ -667,6 +667,11 @@ compacting would genuinely help, propose it with
   running, a merge holds the session, you are waiting for the user's answer, or
   you have background work in flight when your turn ends, the compaction waits
   for the next turn's end.
+- **It compacts only a context of 200,000 tokens or more**, measured when your
+  turn ends — the same minimum as every other compaction ShipIt starts by
+  itself. Under that, nothing is compacted, the user sees no card, and your
+  next turn starts with a notice that gives the size. A `--note` still gives you
+  that turn. Only the user's `/compact` compacts a smaller context.
 - **`INSTRUCTIONS`** (optional, quote them as one argument) say what the
   compaction must keep: decisions, the user's standing instructions, the plan
   for what comes next. Claude and Grok honour them; Codex and OpenCode compact

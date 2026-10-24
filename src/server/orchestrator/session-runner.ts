@@ -525,7 +525,6 @@ export interface SystemTurnDeps {
     sessionId: string,
     sessionDir: string,
     intent?: boolean,
-    unattended?: boolean,
   ) => Promise<boolean>;
   consumePendingAgentNotice?: (sessionId: string) => string | undefined;
   /** Restore a consumed notice if setup fails before the agent receives it. */

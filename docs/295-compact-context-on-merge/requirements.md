@@ -31,7 +31,8 @@ later turn, and the agent reads them as live work in progress.
    percentage of the window.
 
 4. When the control is ticked and the user sends the message, the agent's
-   context is compacted before the turn runs.
+   context is compacted before the turn runs, if the context is large enough
+   (requirement 15).
 
 5. The user can untick the control. The choice is kept for the session: after
    the session's next pull request merges, the control shows the choice that
@@ -81,10 +82,14 @@ later turn, and the agent reads them as live work in progress.
     starts with no ShipIt view in front of the user — a wake turn after a
     merge, a message from another session — stays under requirement 13.
 
-15. A continuation that has no checkbox (requirement 13) does not compact when
-    the agent's context is smaller than 50,000 tokens. Its branch is still
-    reset. The control of requirements 1 to 3 is not changed by this: it is
-    offered whatever the size of the context.
+15. A continuation does not compact when the agent's context is smaller than
+    200,000 tokens. This applies when the control of requirements 1 to 3 is
+    ticked, and to a continuation that has no checkbox (requirement 13). Its
+    branch is still reset. The control is still offered whatever the size of
+    the context (requirement 3). Under that size, only a `/compact` that the
+    user sends compacts the context. The 200,000 tokens are the same minimum as
+    docs/333-idle-compaction req 6 and docs/324-agent-requested-compaction
+    req 12.
 
 16. The user can also see and change the session's compaction choice of
     requirement 5 in the pull request card's menu. The menu and the composer
@@ -173,3 +178,15 @@ None.
   user chose "Yes, they skip it too". Recorded as requirement 17, and
   requirement 13 now names it. This gives the wake turn of the 2026-10-12
   answer above the off switch that answer said it lacked.
+
+- **2026-10-24 — Must the floor of requirement 15 also apply where the checkbox
+  is shown, the case the 2026-10-12 answer left unasked?** Yes, and the floor
+  is 200,000 tokens. The user: "let's have a single value of 200k for
+  compaction threshold: auto-compaction would always not do anything if the
+  threshold is not reached, even if the 'compact' checkbox is ticked. The only
+  way to compact in this case would be an explicit '/compact' command."
+  Requirement 15 now applies to every continuation at 200,000 tokens, and
+  requirement 4 names it. Requirement 3 stands: the floor gates the
+  compaction, not the control. The same minimum now governs
+  docs/324-agent-requested-compaction (its req 12) and was already
+  docs/333-idle-compaction req 6.

@@ -26,7 +26,6 @@ import {
   POST_MERGE_COMPACT_PROMPT,
   compactionCardBefore,
   noteMissedCompaction,
-  startedUnattended,
 } from "./compact-before-turn.js";
 import {
   createPromptRepark,
@@ -134,7 +133,7 @@ async function runDispatchedTurnInner(
     sessionDir && opts.postTurn !== "none" && !isCompactRequest
     && residentBackgroundWork(runner).length === 0
     && await (deps.shouldCompactBeforeTurn?.(
-      runner, agentId, runner.sessionId, sessionDir, opts.compactContext, startedUnattended(opts),
+      runner, agentId, runner.sessionId, sessionDir, opts.compactContext,
     ) ?? Promise.resolve(false))
   ) {
     // planning#703 — the decision awaited: a turn of the CLI's own may hold the process now.

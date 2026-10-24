@@ -1,6 +1,9 @@
 // docs/324-agent-requested-compaction — the agent compacts its own context after its turn.
+import { AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS } from "../../shared/compaction-threshold.js";
 import { fail, parseFlags, success } from "./shim-common.js";
 import { formatError, REJECTED_HELP, type RunDeps } from "./shipit.js";
+
+const MINIMUM = AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS.toLocaleString("en-US");
 
 export const COMPACT_USAGE = `shipit compact [INSTRUCTIONS] [--note "TEXT"] [--json]
 
@@ -9,6 +12,10 @@ feature and start the next. INSTRUCTIONS say what the compaction must keep.
 With --note, ShipIt gives you a new turn after the compaction with the note,
 and you continue. Without one, the session waits for the user's next message.
 Either way, your next turn starts with your INSTRUCTIONS, word for word.
+
+ShipIt compacts only a context of ${MINIMUM} tokens or more, measured when this
+turn ends. Under that, nothing is compacted, your next turn says so, and a
+--note still gives you that turn.
 
   shipit compact 'Keep the API contract for /orders and the naming rules the user set' \\
     --note 'Start feature B: the CSV export.'
@@ -61,6 +68,7 @@ export async function handleCompact(args: string[], deps: RunDeps): Promise<void
     [
       "compact: requested",
       "when:    after this turn ends. Nothing is compacted while you are still working.",
+      `minimum: ${MINIMUM} tokens of context when this turn ends. Under that, nothing is compacted.`,
       `then:    ${then}`,
       "now:     finish this piece of work and end your turn. Say in your reply that you compact and why.",
     ].join("\n"),

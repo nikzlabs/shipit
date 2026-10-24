@@ -3,7 +3,9 @@ import { compactAfterMergeEnabled, useSessionStore } from "../stores/session-sto
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { isCompactCommand } from "../../server/shared/compact-command.js";
+import { AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS } from "../../server/shared/compaction-threshold.js";
 import { isGoalCommand } from "../../server/shared/goal-command.js";
+import { turnContextTokens } from "../../server/shared/types.js";
 import { getSavedMergeContinueOptOut, readOptOutSessionKey } from "./local-storage.js";
 
 /**
@@ -71,16 +73,17 @@ export function mergeContinueFrameFields(
  * running, so it belongs in the queue strip from the first frame rather than as
  * a bubble that collapses into one (`utils/predicted-queue.ts`).
  *
- * It answers from the only evidence the user has — the state of the controls
- * they are looking at — so it is true exactly when the composer is offering the
+ * It answers from the evidence the user has: the composer is offering the
  * compaction control (`MessageInput`'s `showCompactControl`) with its box still
- * ticked. It reads that tick through `compactAfterMergeEnabled`, which is what
- * the box itself shows.
+ * ticked, and the context dial does not show a context under the minimum
+ * (docs/295-compact-context-on-merge req 15). It reads that tick through
+ * `compactAfterMergeEnabled`, which is what the box itself shows.
  *
  * The server decides for real, in `shouldCompactBeforeTurn`, and the clauses it
  * adds are invisible here: a replay seed, background work the resident process
- * would lose, a merge whose state will not settle, and an eligibility that has
- * gone stale since it was last pushed. Those make this answer wrong sometimes,
+ * would lose, a merge whose state will not settle, an eligibility that has
+ * gone stale since it was last pushed, and a compaction since the last turn's
+ * reading, which the server counts as the size. Those make this answer wrong sometimes,
  * which is survivable because every wrong answer is corrected by a server
  * message that was already being sent — see `predicted-queue.ts`.
  *
@@ -108,7 +111,19 @@ export function compactRunsBeforeTurn(sessionId: string | undefined, text: strin
   const supportsCompaction =
     ui.agentList.find((a) => a.id === ui.activeAgentId)?.supportsCompaction ?? false;
   if (!supportsCompaction) return false;
+  const context = lastContextReading(sessionId);
+  if (context !== undefined && context < AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS) return false;
   return compactAfterMergeEnabled(useSessionStore.getState(), sessionId);
+}
+
+/** The last turn that read a context size, as `UsageManager.latestContextTokens` takes it. */
+function lastContextReading(sessionId: string): number | undefined {
+  const turns = useSessionStore.getState().turnUsage[sessionId] ?? [];
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const tokens = turnContextTokens(turns[i]);
+    if (tokens > 0) return tokens;
+  }
+  return undefined;
 }
 
 /**

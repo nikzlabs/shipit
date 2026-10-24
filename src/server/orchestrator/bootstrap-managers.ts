@@ -717,6 +717,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       runnerRegistry: registry,
       chatHistoryManager,
       isEnabled: () => credentialStore.getAgentCompaction(),
+      getContextTokens: (id) => usageManager.latestContextTokens(id, chatHistoryManager.latestCompactionCard(id)),
     }, turn);
   };
 

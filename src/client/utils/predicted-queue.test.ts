@@ -60,9 +60,13 @@ beforeEach(() => {
   useUiStore.setState({ agentList: [agent()], activeAgentId: "claude" });
   useSessionStore.setState({
     sessionId: "s1", messages: [], queuedMessages: [], isLoading: false,
-    sessionDetails: {}, pendingCompactAfterMerge: {},
+    sessionDetails: {}, pendingCompactAfterMerge: {}, turnUsage: {},
   });
   localStorage.clear();
+});
+
+const usage = (contextTokens: number) => ({
+  inputTokens: 0, outputTokens: 0, costUsd: 0, timestamp: "2026-10-24T00:00:00.000Z", contextTokens,
 });
 
 describe("compactRunsBeforeTurn", () => {
@@ -101,6 +105,14 @@ describe("compactRunsBeforeTurn", () => {
       sessionDetails: { s1: { sessionStatus: null, agentGoal: null, compactAfterMergeOff: true } },
     });
     expect(compactRunsBeforeTurn("s1", "next slice")).toBe(false);
+  });
+
+  it("is false when the last reading is under 200K tokens, though the box is ticked (docs/295 req 15)", () => {
+    offeringCompaction();
+    useSessionStore.setState({ turnUsage: { s1: [usage(300_000), usage(199_999), usage(0)] } });
+    expect(compactRunsBeforeTurn("s1", "next slice")).toBe(false);
+    useSessionStore.setState({ turnUsage: { s1: [usage(200_000)] } });
+    expect(compactRunsBeforeTurn("s1", "next slice")).toBe(true);
   });
 
   it("is false for the commands the server skips the whole hook for", () => {

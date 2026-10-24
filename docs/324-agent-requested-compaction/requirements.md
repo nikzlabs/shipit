@@ -59,9 +59,16 @@ instructions (in addition to the harness-native compaction)."
 11. The feature is behind a setting, off by default. While the setting is off,
     the agent cannot compact its own context with the command.
 
+12. The compaction runs only when the agent's context is 200,000 tokens or
+    more, the same minimum as docs/295-compact-context-on-merge req 15 and
+    docs/333-idle-compaction req 6. Under that size the command compacts
+    nothing: only a `/compact` that the user sends compacts a smaller context.
+    Requirement 8 is not changed: with a note, the agent still gets its new
+    turn.
+
 ## Requirement provenance
 
-Requirements 1 to 4 and 8 to 11 come from what the user asked for and decided.
+Requirements 1 to 4 and 8 to 12 come from what the user asked for and decided.
 Requirements 5 to 7 were
 not asked for: each keeps a guarantee that already ships from becoming weaker —
 docs/178 for how a compaction appears, docs/295 req 9 for a failed compaction,
@@ -100,3 +107,10 @@ None.
 - 2026-10-07 — After the first implementation, the user asked: "Make this
   feature behind a setting, off by default." An instruction, not an answer to an
   open question; recorded here as its receipt. Requirement 11 added.
+- 2026-10-24 — The user: "let's have a single value of 200k for compaction
+  threshold: auto-compaction would always not do anything if the threshold is
+  not reached, even if the 'compact' checkbox is ticked. The only way to
+  compact in this case would be an explicit '/compact' command." An
+  instruction, not an answer to an open question; recorded here as its
+  receipt. `shipit compact` is not an explicit `/compact`, so the minimum
+  covers it. Requirement 12 added.

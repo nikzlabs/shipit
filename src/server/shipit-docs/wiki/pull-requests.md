@@ -316,9 +316,12 @@ button on a ShipIt card, and a message that a page you built sends through
 `window.shipit`. A turn that starts with nobody at the composer — a wake after a
 merge, a message from another session — has no tick to read, so the setting
 decides and it resets and compacts — unless the session's compaction choice is
-off, which holds for these turns too. One more exception: such a turn does not
-compact a context under 50,000 tokens, so a session that was compacted not long
-before is only reset.
+off, which holds for these turns too.
+
+No continuation compacts a context under 200,000 tokens — not even one sent
+with **Compact the context** ticked. The box is still shown, and the branch is
+still reset; only the compaction is left out. Under that size, the context is
+compacted only when the user sends `/compact`.
 
 The context is compacted at most once for each merge: after a message
 compacted it, or was sent with **Compact the context** unticked, that box does
