@@ -76,8 +76,8 @@ export const GLOBAL_SETTINGS = {
     description:
       "Lets the agent compact its context itself with the shipit compact command, at a point it chooses — "
       + "for example between two features — keeping the instructions it names. The compaction "
-      + "runs after the agent's turn. The harness's automatic compaction and your own /compact "
-      + "work either way.",
+      + "runs after the agent's turn, and only on a context of 200K tokens or more. The "
+      + "harness's automatic compaction and your own /compact work either way.",
     type: bool({ default: false }),
     store: { kind: "credential-store", field: "agentCompaction" },
     wire: "agentCompaction",
@@ -205,8 +205,9 @@ export const GLOBAL_SETTINGS = {
     description:
       "When you continue a session whose PR already merged and the branch hasn't moved since, "
       + "this does two things before the next turn: resets the branch to the latest base, so the "
-      + "agent builds on current code, and compacts the agent's context, so the shipped work stops "
-      + "filling it. A checkbox in the composer skips the reset for one message, and another "
+      + "agent builds on current code, and compacts the agent's context when it is 200K tokens or "
+      + "more, so the shipped work stops filling it. A checkbox in the composer skips the reset for "
+      + "one message, and another "
       + "turns the compaction off for that session until you turn it on again.",
     type: bool({ default: true }),
     store: { kind: "credential-store", field: "autoResetMergedBranch" },

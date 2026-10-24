@@ -13,7 +13,6 @@ import {
   shouldCompactBeforeTurn,
   compactionCardBefore,
   noteMissedCompaction,
-  startedUnattended,
   POST_MERGE_COMPACT_PROMPT,
 } from "../compact-before-turn.js";
 import { emitResetEligible } from "../services/pre-turn-reset.js";
@@ -148,8 +147,6 @@ export async function decideCompactBeforeTurn(
   sessionId: string,
   sessionDir: string,
   intent: boolean | undefined,
-  // A typed send is never this; a queued entry can be (an automatic turn whose steer was not taken).
-  unattended = false,
 ): Promise<boolean> {
   await attachIdleResidentForTurn(ctx, runner);
   return shouldCompactBeforeTurn({
@@ -172,7 +169,6 @@ export async function decideCompactBeforeTurn(
     sessionId,
     sessionDir,
     ...(intent !== undefined ? { intent } : {}),
-    ...(unattended ? { unattended } : {}),
   });
 }
 
@@ -232,9 +228,7 @@ async function runQueuedInteractiveMessage(
 ): Promise<void> {
   if (
     capturedSessionId && capturedSessionDir && !isCompactCommandFor(ctx, next.text)
-    && await decideCompactBeforeTurn(
-      ctx, runner, capturedSessionId, capturedSessionDir, next.compactContext, startedUnattended(next),
-    )
+    && await decideCompactBeforeTurn(ctx, runner, capturedSessionId, capturedSessionDir, next.compactContext)
   ) {
     await runCompactionAhead(ctx, runner, next, next.permissionMode, claim);
     return;

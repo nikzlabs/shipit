@@ -259,7 +259,7 @@ describe("wakeSessionWithTurn while the agent waits for an answer (docs/322)", (
       expect.objectContaining({
         text: "Child PR #42 merged",
         automatic: true,
-        // docs/295-compact-context-on-merge req 15 — every wake says nobody was at the composer.
+        // Every wake says ShipIt started it, for the docs/235 one-shot turn note.
         unattended: true,
         deliveryId: "watch-1:1",
       }),

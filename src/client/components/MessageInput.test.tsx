@@ -894,9 +894,42 @@ describe("MessageInput", () => {
     afterEach(() => {
       usePrStore.setState({ resetEligibleBySession: {}, mergeContinueOptOutBySession: {} });
       useSettingsStore.setState({ autoResetMergedBranch: true });
-      useSessionStore.setState({ sessionDetails: {}, pendingCompactAfterMerge: {} });
+      useSessionStore.setState({ sessionDetails: {}, pendingCompactAfterMerge: {}, turnUsage: {} });
       vi.unstubAllGlobals();
       localStorage.clear();
+    });
+
+    const lastContext = (contextTokens: number) => {
+      useSessionStore.setState({
+        turnUsage: {
+          s1: [{ inputTokens: 0, outputTokens: 0, costUsd: 0, timestamp: "2026-10-24T00:00:00.000Z", contextTokens }],
+        },
+      });
+    };
+
+    it("is still offered under 200K tokens, with a hint that it compacts nothing (reqs 3, 18)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      lastContext(199_999);
+      renderComposer();
+      expect(screen.getByTestId("compact-context-control")).toBeInTheDocument();
+      const hint = screen.getByTestId("compact-context-under-minimum");
+      expect(hint).toHaveTextContent("under 200K tokens, so no compaction runs");
+      expect(hint).toHaveTextContent("/compact");
+    });
+
+    it("shows no hint at 200K tokens (req 18)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      lastContext(200_000);
+      renderComposer();
+      expect(screen.getByTestId("compact-context-control")).toBeInTheDocument();
+      expect(screen.queryByTestId("compact-context-under-minimum")).not.toBeInTheDocument();
+    });
+
+    it("shows no hint when the size is not known, which still compacts (req 18)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      renderComposer();
+      expect(screen.getByTestId("compact-context-control")).toBeInTheDocument();
+      expect(screen.queryByTestId("compact-context-under-minimum")).not.toBeInTheDocument();
     });
 
     it("is offered whenever the reset control is, and ticked by default (reqs 1, 2)", () => {

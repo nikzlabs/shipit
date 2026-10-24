@@ -7,6 +7,7 @@ import { modelIdentityFor } from "../../shared/catalogue/index.js";
 import { getAgentCapabilities } from "../../shared/agent-registry.js";
 import { GLOBAL_SETTINGS } from "../../shared/settings-catalogue/global-settings.js";
 import { doneSessionTest } from "../../shared/session-resolution.js";
+import { AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS } from "../../shared/compaction-threshold.js";
 import type { CompactionCard, SessionInfo } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import type { AnchoredTurn, CacheTtl, UsageManager } from "../usage.js";
@@ -22,8 +23,6 @@ import { MISSED_COMPACTION_NOTICE } from "../compact-before-turn.js";
 import { getErrorMessage } from "../validation.js";
 import { busyReason } from "./agent-compaction-request.js";
 
-/** req 6 */
-export const IDLE_COMPACTION_MIN_CONTEXT_TOKENS = 200_000;
 /** req 11 — a shorter cache would be compacted while the user may still read the reply. */
 export const IDLE_COMPACTION_MIN_LIFETIME_MINUTES = 30;
 /** req 10 */
@@ -272,12 +271,13 @@ export class IdleCompaction {
     };
   }
 
-  // A compaction since the reading (`/compact`, docs/295, docs/324) answers with its own size.
+  // req 6. A compaction since the reading (`/compact`, docs/295, docs/324) answers with its own
+  // size. An unknown size never wakes a container.
   private contextLargeEnough(sessionId: string): boolean {
     const context = this.deps.usageManager.latestContextTokens(
       sessionId, this.deps.chatHistoryManager.latestCompactionCard(sessionId),
     );
-    return context !== undefined && context >= IDLE_COMPACTION_MIN_CONTEXT_TOKENS;
+    return context !== undefined && context >= AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS;
   }
 
   private blockedReason(

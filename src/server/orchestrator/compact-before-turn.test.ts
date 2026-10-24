@@ -69,7 +69,6 @@ function ask(over: {
   conversationReplay?: string;
   unsettled?: boolean;
   marked?: string[];
-  unattended?: boolean;
   context?: number;
 } = {}): Promise<boolean> {
   const unsettled = over.unsettled === true;
@@ -115,7 +114,6 @@ function ask(over: {
     sessionId: "s1",
     sessionDir: "/w/s1",
     ...(over.intent !== undefined ? { intent: over.intent } : {}),
-    ...(over.unattended ? { unattended: true } : {}),
   });
 }
 
@@ -139,7 +137,7 @@ describe("shouldCompactBeforeTurn", () => {
     const off = makeSession({ compactAfterMergeOff: true });
     const marked: string[] = [];
     expect(await ask({ session: off, marked })).toBe(false);
-    expect(await ask({ session: off, unattended: true, context: 200_000 })).toBe(false);
+    expect(await ask({ session: off, intent: undefined, context: 200_000 })).toBe(false);
     expect(marked).toHaveLength(1);
   });
 
@@ -168,20 +166,17 @@ describe("shouldCompactBeforeTurn", () => {
     expect(await ask({ session: { ...session, mergeContinueCompactedAnchor: "an-earlier-merge" } })).toBe(true);
   });
 
-  it("says no for an unattended turn under the 50k floor, and spends nothing (req 15)", async () => {
+  it("says no under 200K tokens, also with the box ticked, and spends nothing (req 15)", async () => {
     const marked: string[] = [];
-    expect(await ask({ unattended: true, context: 49_999, marked })).toBe(false);
-    // Nothing was offered, so a later message of the same merge can still compact.
+    expect(await ask({ intent: true, context: 199_999, marked })).toBe(false);
+    expect(await ask({ intent: undefined, context: 199_999, marked })).toBe(false);
+    // Nothing was compacted, so a later message of the same merge can still compact.
     expect(marked).toEqual([]);
   });
 
-  it("says yes for an unattended turn at the floor, or when the size is not known", async () => {
-    expect(await ask({ unattended: true, context: 50_000 })).toBe(true);
-    expect(await ask({ unattended: true })).toBe(true);
-  });
-
-  it("does not apply the floor when someone is at the composer (req 3)", async () => {
-    expect(await ask({ context: 10 })).toBe(true);
+  it("says yes at 200K tokens, or when the size is not known", async () => {
+    expect(await ask({ intent: true, context: 200_000 })).toBe(true);
+    expect(await ask({ intent: true })).toBe(true);
   });
 
   it("says no when the shared setting is off (req 11)", async () => {

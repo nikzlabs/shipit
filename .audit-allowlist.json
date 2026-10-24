@@ -1,1 +1,8 @@
-[]
+[
+  {
+    "advisory": "GHSA-27r3-jxmh-p828",
+    "package": "body-parser",
+    "reason": "The fix, body-parser 2.4.0, was published 2026-10-22. The repo's .npmrc min-release-age=7 refuses to resolve it before 2026-10-29. Pin it in package.json overrides then and delete this entry. Reached only through express in @modelcontextprotocol/sdk; ShipIt's production code uses the SDK's stdio server and HTTP client, not its express server.",
+    "expires": "2026-11-05"
+  }
+]
