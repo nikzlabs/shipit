@@ -429,7 +429,7 @@ compaction. In ShipIt (traced in source):
 | The user sends a message | Queued (`turnTakesMessages` is false during a compaction); the drain runs it after. The user waits for the compaction first. |
 | The user presses **Stop** | The compaction is interrupted. Queued user messages go back to the input box (docs/330); the warn notice follows (req 4). The user's choice. |
 | CI fix, conflict fix (docs/146, docs/186) | Wait for `idle`, which is not emitted while a turn runs. |
-| A merge wakes the session (docs/196) | Queued behind the compaction. Its own docs/295 compaction then stands down: the new card's `postTokens` is under the 50K floor. |
+| A merge wakes the session (docs/196) | Queued behind the compaction. Its own docs/295 compaction then stands down: the new card's `postTokens` is under the 200K floor. |
 | The idle enforcer | Cannot stop it: the session is `agentBusy`. |
 | Archive, full reset, shutdown | Forced disposal ends it, as it ends any turn. |
 | An orchestrator restart | Adopted with its class (piece 4). A message queued behind it is lost, as a message queued behind **any** running turn is today (docs/324, docs/329). Req 4 keeps the existing guarantee and this design does not weaken it. |

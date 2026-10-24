@@ -115,6 +115,19 @@ describe("compactRunsBeforeTurn", () => {
     expect(compactRunsBeforeTurn("s1", "next slice")).toBe(true);
   });
 
+  it("reads a compaction newer than the last reading as the size, as the server does", () => {
+    offeringCompaction();
+    const card = (createdAt: string) => ({
+      role: "assistant" as const, text: "", compaction: { id: "c1", postTokens: 42_000, createdAt },
+    });
+    useSessionStore.setState({
+      turnUsage: { s1: [usage(300_000)] }, messages: [card("2026-10-24T01:00:00.000Z")],
+    });
+    expect(compactRunsBeforeTurn("s1", "next slice")).toBe(false);
+    useSessionStore.setState({ messages: [card("2026-10-23T23:00:00.000Z")] });
+    expect(compactRunsBeforeTurn("s1", "next slice")).toBe(true);
+  });
+
   it("is false for the commands the server skips the whole hook for", () => {
     offeringCompaction();
     expect(compactRunsBeforeTurn("s1", "/compact tighten it up")).toBe(false);

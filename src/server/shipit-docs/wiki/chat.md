@@ -327,10 +327,10 @@ ways it happens:
   at a point you choose — between two features, say — when the user's setting
   *Let the agent compact its own context* (Settings → Advanced, off by default)
   allows it; read it with `shipit settings get advanced.agentCompaction`. It runs
-  after your turn ends; your next turn starts with your instructions word for
-  word, and with a note you continue on your own. It compacts only a context of
-  200K tokens or more when your turn ends; under that, nothing is compacted and
-  your next turn says so. When the user says context is
+  after your turn ends, and with a note you continue on your own. It compacts
+  only a context of 200K tokens or more when your turn ends: then your next turn
+  starts with your instructions word for word; under that, nothing is compacted
+  and your next turn says so. When the user says context is
   the problem, do this if the setting is on; if it is off, propose turning it on
   with `shipit settings propose`, or let them type `/compact`. Details:
   `/shipit-docs/sessions.md` → *Compacting your own context*.

@@ -99,9 +99,15 @@ later turn, and the agent reads them as live work in progress.
     continuation that has no checkbox (requirement 13) — a wake turn after a
     merge, a message from another session — does not compact either.
 
+18. When the context is smaller than the minimum of requirement 15, the
+    composer shows a short hint by the compaction control. The hint says that
+    the context is under 200,000 tokens, so no compaction runs, and that a
+    `/compact` that the user sends still compacts. The control itself is still
+    offered (requirement 3).
+
 ## Requirement provenance
 
-Requirements 1 to 6, 11 and 13 to 17 come from what the user asked for and decided.
+Requirements 1 to 6, 11 and 13 to 18 come from what the user asked for and decided.
 Requirements 7 to 10 and 12 were not asked for: each one keeps a guarantee that
 already ships (docs/218 for the merge notice, docs/178 for how a compaction
 appears and for the `/compact` boundary) from becoming weaker. They are recorded
@@ -190,3 +196,9 @@ None.
   compaction, not the control. The same minimum now governs
   docs/324-agent-requested-compaction (its req 12) and was already
   docs/333-idle-compaction req 6.
+
+- **2026-10-24 — The user approved the offered follow-up "Show a hint by
+  Compact the context under 200K":** a hint by the control, when the context
+  is under the minimum, that says no compaction runs and that `/compact`
+  still compacts. An instruction, not an answer to an open question; recorded
+  here as its receipt. Requirement 18 added.

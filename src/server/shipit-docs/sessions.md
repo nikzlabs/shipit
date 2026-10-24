@@ -675,9 +675,9 @@ compacting would genuinely help, propose it with
 - **`INSTRUCTIONS`** (optional, quote them as one argument) say what the
   compaction must keep: decisions, the user's standing instructions, the plan
   for what comes next. Claude and Grok honour them; Codex and OpenCode compact
-  on their own terms. On **every** harness, your next turn starts with the
-  instructions handed back to you word for word, so what they name survives
-  either way.
+  on their own terms. After a compaction, on **every** harness, your next turn
+  starts with the instructions handed back to you word for word, so what they
+  name survives either way.
 - **`--note`** (optional) is what to do after the compaction. With a note,
   ShipIt gives you a new turn with it and you continue on your own. Without
   one, the session waits for the user's next message.
@@ -687,8 +687,8 @@ compacting would genuinely help, propose it with
 - A second call in the same turn replaces the first. Refused at once on a
   harness that cannot compact its context.
 
-The user sees a **Context compacted** card in the transcript. Say in your reply
-that you compact and why.
+When a compaction runs, the user sees a **Context compacted** card in the
+transcript. Say in your reply that you asked for a compaction and why.
 
 ## Chaining several PRs from one session
 

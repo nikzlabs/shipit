@@ -205,7 +205,7 @@ export async function runRequestedCompaction(
   // req 8 — right behind the compaction, so it runs after it whether that completes, fails
   // or is cut short. A started compaction has left the queue; a queued one is at its tail.
   if (request.note !== undefined) {
-    const entry = markCompactionContinuation(continuationEntry(deps, sessionId, request.note));
+    const entry = markCompactionContinuation(toQueuedMessage(continuationDispatch(deps, sessionId, request.note)));
     if (handle.admitted === "started") runner.messageQueue.unshift(entry);
     else runner.messageQueue.push(entry);
     runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
@@ -227,10 +227,6 @@ export function busyReason(
   // A turn of the CLI's own could come between the compaction and its continuation.
   const work = residentBackgroundWork(runner);
   return work.length > 0 ? `the resident agent has background work in flight (${work.join(", ")})` : null;
-}
-
-function continuationEntry(deps: CompactionStepDeps, sessionId: string, note: string) {
-  return toQueuedMessage(continuationDispatch(deps, sessionId, note));
 }
 
 function continuationDispatch(deps: CompactionStepDeps, sessionId: string, note: string) {
@@ -258,7 +254,7 @@ function continuationDispatch(deps: CompactionStepDeps, sessionId: string, note:
     deliveryId: undefined,
     dictated: undefined,
     resetMergedBranch: undefined,
-    // The context was just compacted; a merged session must not compact it again (docs/295).
+    // Compacted just now, or under the minimum (req 12): a merged session must not compact here.
     compactContext: false,
     silent: undefined,
   });

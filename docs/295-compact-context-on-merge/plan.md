@@ -475,9 +475,17 @@ took for that is gone. The dispatch mark stays: the one-shot turn note of
 docs/235 reads it. The reset is not touched, and nothing is recorded against the
 merge: nothing was compacted, so nothing is spent.
 
-The client predicts the same answer (`compactRunsBeforeTurn`), from the last
-turn of `turnUsage` that read a size, so a message under the minimum is shown
-as a bubble and not as a queue row.
+The client reads the size with the server's own function: `latestContextTokens`
+moved from `UsageManager` to `shared/compaction-threshold.ts`, and
+`contextUnderCompactionMinimum` (`client/stores/session-store.ts`) gives it the
+session's `turnUsage` and the newest compaction card of the transcript on
+screen. Two readers use it:
+
+- `compactRunsBeforeTurn` predicts no compaction under the minimum, so such a
+  message is shown as a bubble and not as a queue row.
+- The composer shows a hint under **Compact the context** (req 18): the context
+  is under 200K tokens, so no compaction runs, and `/compact` still compacts.
+  The box stays (req 3). An unknown size shows no hint, because it compacts.
 
 **Which size.** `UsageManager.latestContextTokens`: the last turn that read a
 context size, the number the context dial shows. Right after a compaction that
@@ -560,8 +568,10 @@ compact (reqs 10, 11).
 | `orchestrator/compact-before-turn.ts` | The decision, which also records that this merge's compaction offer is spent; the post-merge `/compact` prompt; `noteMissedCompaction`. |
 | `orchestrator/services/pre-turn-reset.ts` | `compactedThisMerge`, `compactionSpent` on the eligibility signal; the `reset-failed` skip. |
 | `orchestrator/usage.ts`, `orchestrator/chat-history.ts` | `latestContextTokens` and `latestCompactionCard`: the size req 15's floor reads. |
-| `shared/compaction-threshold.ts` | `AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS`, req 15's floor, shared with docs/324 and docs/333. |
+| `shared/compaction-threshold.ts` | `AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS`, req 15's floor, shared with docs/324 and docs/333; `latestContextTokens`, the size it is compared to, for the server and the client. |
+| `client/stores/session-store.ts` | `contextUnderCompactionMinimum`: the client's reading of req 15. |
 | `client/utils/merge-continue-intent.ts` | `compactRunsBeforeTurn`: the client's prediction, which reads the floor too. |
+| `client/components/MessageInput/MessageInput.tsx` | The control, and req 18's hint under it. |
 | `client/stores/pr-store.ts`, `client/hooks/message-handlers/reset-eligible.ts` | `compactionSpentBySession`, set from the signal. |
 | `orchestrator/integration_tests/pre-turn-compaction-dispatched.test.ts` | The dispatched path against a real `origin`: reset, req 14's untick, a failed reset. |
 | `orchestrator/ws-handlers/send-message.ts` | The interactive takeover. |
