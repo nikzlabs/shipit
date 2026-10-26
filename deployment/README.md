@@ -373,7 +373,7 @@ above. It then automatically:
 - Install Docker
 - Configure host limits needed for session containers and file watching
 - Install the selected access path:
-  - Cloudflare: install `cloudflared`, authenticate, create a Zero Trust Access application + policy via the Cloudflare API, create a tunnel, configure DNS routes, and lock down the firewall
+  - Cloudflare: install `cloudflared` from Cloudflare's apt repository, authenticate, create a Zero Trust Access application + policy via the Cloudflare API, create a tunnel, configure DNS routes, and lock down the firewall
   - Tailscale: install Tailscale, authenticate the VPS, run a Host-preserving forwarder on the node's tailnet IP, and print an sslip.io access URL (app + subdomain previews) that works with no further setup
 - Build and start ShipIt
 
@@ -548,6 +548,18 @@ journalctl -u shipit-updater -f
 ```bash
 bash /opt/shipit/deployment/vps/deploy.sh
 systemctl restart cloudflared
+```
+
+**Upgrade cloudflared:** ShipIt's updater does not touch it, and it does not update itself. Upgrade it with apt, then restart it; the tunnel drops for a few seconds and the UI reconnects.
+```bash
+apt-get update && apt-get install -y cloudflared
+systemctl restart cloudflared
+cloudflared --version
+```
+A host set up before `cloudflare.sh` used Cloudflare's apt repository has cloudflared from a one-off `.deb` and no repository to upgrade from. Add the repository once, then run the commands above:
+```bash
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
+echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" > /etc/apt/sources.list.d/cloudflared.list
 ```
 
 **Check session containers:**

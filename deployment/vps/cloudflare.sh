@@ -156,14 +156,16 @@ ZERO_TRUST_DONE="${ZERO_TRUST_DONE:-}"
 EOC
 chmod 600 "$CONFIG_FILE"
 
-if command -v cloudflared &>/dev/null; then
-  echo "==> cloudflared already installed, skipping."
-else
-  echo "==> Installing cloudflared..."
-  curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
-  dpkg -i /tmp/cloudflared.deb
-  rm /tmp/cloudflared.deb
-fi
+# Cloudflare's apt repository, not a one-off .deb: the .deb never updates itself,
+# and a security fix must reach existing hosts through a rerun or apt upgrade.
+echo "==> Installing or upgrading cloudflared from Cloudflare's apt repository..."
+install -m 0755 -d /usr/share/keyrings
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
+chmod a+r /usr/share/keyrings/cloudflare-main.gpg
+echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" > /etc/apt/sources.list.d/cloudflared.list
+apt-get update -qq
+apt-get install -y -qq cloudflared
+echo "    $(cloudflared --version)"
 
 if [ -f /root/.cloudflared/cert.pem ]; then
   echo "==> Already authenticated with Cloudflare, skipping."
@@ -297,7 +299,7 @@ else
 fi
 
 if systemctl is-enabled cloudflared &>/dev/null; then
-  echo "==> cloudflared service already installed, restarting to pick up config changes..."
+  echo "==> cloudflared service already installed, restarting to pick up config and version changes..."
   systemctl restart cloudflared
 else
   echo "==> Installing cloudflared as a system service..."
