@@ -559,6 +559,7 @@ cloudflared --version
 A host set up before `cloudflare.sh` used Cloudflare's apt repository has cloudflared from a one-off `.deb` and no repository to upgrade from. Add the repository once, then run the commands above:
 ```bash
 curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
+chmod a+r /usr/share/keyrings/cloudflare-main.gpg
 echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" > /etc/apt/sources.list.d/cloudflared.list
 ```
 

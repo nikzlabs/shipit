@@ -160,11 +160,15 @@ chmod 600 "$CONFIG_FILE"
 # and a security fix must reach existing hosts through a rerun or apt upgrade.
 echo "==> Installing or upgrading cloudflared from Cloudflare's apt repository..."
 install -m 0755 -d /usr/share/keyrings
-curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg
-chmod a+r /usr/share/keyrings/cloudflare-main.gpg
-echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" > /etc/apt/sources.list.d/cloudflared.list
-apt-get update -qq
-apt-get install -y -qq cloudflared
+CF_KEYRING=/usr/share/keyrings/cloudflare-main.gpg
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o "$CF_KEYRING.new"
+chmod a+r "$CF_KEYRING.new"
+mv "$CF_KEYRING.new" "$CF_KEYRING"
+echo "deb [signed-by=$CF_KEYRING] https://pkg.cloudflare.com/cloudflared any main" > /etc/apt/sources.list.d/cloudflared.list
+# Without --error-on=any an unreachable repository is only a warning, and the old version stays.
+apt-get update -qq --error-on=any
+# The service restart below is the only one; needrestart would add a second.
+NEEDRESTART_SUSPEND=1 apt-get install -y -qq cloudflared
 echo "    $(cloudflared --version)"
 
 if [ -f /root/.cloudflared/cert.pem ]; then
