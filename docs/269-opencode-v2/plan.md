@@ -8,7 +8,9 @@ description: What OpenCode 2 is (released 2026-09-11 as `@opencode/cli`), how st
 
 Implements [requirements.md](./requirements.md). Nothing here is implemented
 yet; the tracked work item is planning#411. The requirements have no open
-questions; implementation starts with the Phase 0 checks below.
+questions. An upstream race makes MCP tools miss the first step of every
+`run --standalone` turn; the integration shape below works around it (see
+"MCP tools miss the first step of every turn").
 
 **Settled direction (user decision, 2026-08-16): ShipIt will run OpenCode 1
 and OpenCode 2 integrations AT THE SAME TIME, fully separate if needed** —
@@ -58,14 +60,15 @@ re-verify anything volatile before acting on it.
 - **Install shape** is unchanged from v1: a postinstall selects the native
   platform binary, so the docs/268 gated `npm rebuild` exception carries over.
 - **Instructions and MCP.** v2 reads `AGENTS.md` only, with no `CLAUDE.md`
-  fallback. MCP `codemode` defaults to true: MCP tools are reached through
-  one JavaScript `execute` tool instead of the provider's native tool list.
+  fallback. MCP `codemode` defaults to true: MCP tools are meant to be reached
+  through one JavaScript `execute` tool — but see "MCP tools miss the first
+  step of every turn".
 
 ## How stable the API is
 
 | Surface | Verdict | Why |
 |---|---|---|
-| `opencode run --format json` | Likely stable enough; not yet proven | Read from the 2.2.0 binary: v1's line types and `step_finish` token fields, but a changed error line. No live turn captured yet (Phase 0) |
+| `opencode run --format json` | Usable, with gaps | Captured live on 2.1.1 (Phase 0 findings): v1's line types and fields, but the final `step_finish` never arrives, the error line changed, and `callID` moved to `part.id` |
 | Server HTTP API + `@opencode/client` | Not yet | Self-declared experimental; minor releases break it |
 | Config file | Stable enough | v1-shaped `opencode.json` is still accepted and translated |
 
@@ -95,29 +98,134 @@ only experimental items; and the event fields an adapter needs (step end
 tokens and cost, text, execution, idle, status) did not change in any 2.x
 release. But nothing upstream promises it.
 
-## Integration shape: spawn-per-turn
+## Integration shape: a private server per turn
 
-The v2 harness spawns `opencode2 run --format json` once per turn, like the v1
-adapter. This mostly answers the "load-bearing unknown" this doc carried as a
-beta: the JSONL run mode still exists, and the 2.2.0 binary keeps v1's line
-types. If a live capture confirms it (Phase 0), the v2 adapter can share
-docs/268's `shared/opencode-stream.ts` and `shared/opencode-spawn-shaping.ts`,
-parameterized by harness. Attach-to-server waits (below).
+A live capture on 2.1.1 against a mock OpenAI-compatible provider (ShipIt's v1
+config shape and spawn env) answers the "load-bearing unknown" this doc
+carried as a beta: the JSONL run mode keeps v1's line types, so the v2 adapter
+can share docs/268's `shared/opencode-stream.ts` and
+`shared/opencode-spawn-shaping.ts`, parameterized by harness — with the
+differences below.
 
-Differences from v1 the adapter must handle:
+Each turn still gets its own process tree with the turn's env and config, as
+on v1, but the adapter starts the server itself instead of using
+`run --standalone`, because `--standalone` loses MCP tools on the first step
+(next section). Per turn, measured on 2.1.1 and 2.2.0:
 
+1. Start `opencode2 serve --port <free>` with the turn's env (`HOME`,
+   `XDG_DATA_HOME`, `PWD`, `OPENCODE_CONFIG`, credentials) and an
+   `OPENCODE_PASSWORD`; it logs `Server listening on http://127.0.0.1:<port>`
+   and answers `GET /api/info` in ~0.3 s.
+2. Poll `GET /api/mcp?location[directory]=<cwd>` (Basic auth, user
+   `opencode`) until every server reports `connected`, `failed`, `disabled` or
+   `needs_auth` (~0.6 s with one stdio server). This call also boots the
+   directory's Location. Then wait ~300 ms for the debounced tool reload.
+3. Run `opencode2 run --server <url> --format json --auto --model …` from the
+   cwd, with the prompt on stdin and stdin closed. With an open stdin, `run`
+   blocks reading it.
+4. After the run, read per-step usage from
+   `GET /api/session/<id>/message?location[directory]=<cwd>`: every assistant
+   message carries `tokens` and `cost`, including the last step, whose
+   `step_finish` the stream never sends.
+5. Kill the server's process tree (docs/289); its MCP children go with it.
+
+This adds about 0.9 s per turn. It touches three server routes — `/api/info`,
+`/api/mcp`, `/api/session/<id>/message` — none under `/api/experimental/`, but
+the whole API is still self-declared experimental; client and server are the
+same pinned binary, so a version bump re-verifies all three. It is not the
+deferred attach-to-server shape (below): the server lives for one turn only.
+
+Differences from v1, all observed live on 2.1.1:
+
+- **The final `step_finish` never arrives.** Every turn's last step ends
+  after its `text` line (4 of 4 text turns, and after a tool step); exit is 0.
+  Intermediate `step_finish` lines keep v1's `reason`, `cost` and disjoint
+  `tokens` (`tokens.total` is gone; ShipIt does not read it). So the last
+  step's usage is lost from the stream and `sawFinalStop` never sets. The
+  synthesized result from exit (docs/268 req 4) still ends the turn, and the
+  per-turn server supplies the usage (step 4 above).
+- **Error lines** are `{type:"error", error:{type, message, status,
+  response:{body}}}` — `provider.auth` (401), `provider.internal` (500),
+  `provider.no-route` (unknown model) — not v1's `{name, data:{message,
+  statusCode}}`. The parser must read `error.message`, and the ChatGPT 401
+  check (`adapter.ts`) must read `error.status`.
+- **No post-error hang.** The CLI exits 1 right after the error line. A 500 is
+  retried 11 times over ~87 s, each retry emitting a new `step_start` (v1
+  retried silently).
+- **Tools** are `shell` (was `bash`), `subagent` (was `task`), `question`,
+  `websearch` and Code Mode's `execute` (new), plus `edit`, `glob`, `grep`,
+  `read`, `skill`, `webfetch`, `write`; `todowrite` is gone. The tool
+  normalizer needs the new names. `part.callID` is gone and `part.id` now
+  holds the provider's call id, which the adapter's fallback already reads;
+  `state` keeps `status`, `input` (an object), `output`, `title`, `time`.
 - **Reasoning effort** moved into the model string: `--model
-  provider/model#variant`. There is no `--variant` flag.
-- **Server mode.** By default `run` connects to a shared background server.
-  The adapter passes `--standalone` so each turn owns a private server inside
-  its own process tree (docs/289 teardown).
-- **Error lines** are `{type,message}`, not v1's `{name,data:{message}}`.
-  Without a parser change the user sees only the generic "OpenCode reported an
-  error".
-- **MCP `codemode: false`** must be set, or ShipIt's MCP tools arrive as one
-  `execute` call and its tool cards break.
-- **Config.** `OPENCODE_CONFIG` is not in the v2 docs. A v1-shaped config file
-  loads and is translated (`whitelist` is silently dropped).
+  provider/model#high` put `reasoning_effort: "high"` on the wire (title call
+  included). There is no `--variant` flag.
+- **Server mode.** By default `run` connects to a shared background server;
+  `--standalone` spawns a child `opencode serve --stdio` as a private one.
+  The adapter uses neither (see the integration shape above).
+- **Config.** `OPENCODE_CONFIG` still selects the file (without it the model
+  is `provider.no-route`). ShipIt's v1 provider block works unchanged —
+  `{env:NAME}` keys, `variants`, `modalities` — and `instructions: [file]`
+  still delivers the system prompt.
+- **Instructions and skills.** `AGENTS.md` is read and `CLAUDE.md` is not.
+  Skills under `.agents/skills`, `.claude/skills` and `.opencode/skills` are
+  all disclosed.
+- **`$PWD` still beats the real cwd** (the project was the `PWD` directory),
+  so the adapter keeps pinning `PWD`.
+- **Env.** `OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_DISABLE_MODELS_FETCH` and
+  `OPENCODE_CONFIG_CONTENT` exist; `OPENCODE_DISABLE_LSP_DOWNLOAD`,
+  `_SHARE`, `_DEFAULT_PLUGINS` and `OPENCODE_AUTH_CONTENT` are gone and do
+  nothing.
+- **Unchanged:** no block-buffered stdout seen (`step_start` at 1.9 s of an
+  11 s turn); `text` is one whole block, not deltas; the prompt can come on
+  stdin; `--session <id>` resumes with history.
+
+## MCP tools miss the first step of every turn (2.1.1 and 2.2.0; worked around)
+
+A stdio MCP server in either config shape (v1 `mcp.<name>`, v2
+`mcp.servers.<name>`) is started, initialized and listed — the log says
+`mcp connected server=probe tools=1` — and is shut down with the turn, so the
+docs/268 keep-alive hang is gone. But **the first model request of a fresh
+`run --standalone` never includes its tools**, with `codemode` default or
+`false`, with an explicit allow permission, and through Code Mode (`execute`
+answers "Unknown tool"; its only namespaces are `opencode` and `browser`).
+**Later steps of the same turn do get them:** after an 8 s tool call, the next
+request had 13 tools including `probe_phase0_ping`. A one-step turn therefore
+never sees MCP tools. The same server on v1 1.19.0 exposes its tool on the
+first request. ShipIt's own tools and the browser are MCP servers, so the
+harness cannot launch on `run --standalone`.
+
+**Cause — a race in upstream code** (v2.1.1 source; unchanged on 2.2.0 and on
+`dev` at d76552c):
+
+- `core/src/tool/mcp.ts` registers MCP tools once, from `mcp.tools()`, and
+  afterwards only on `McpEvent.ToolsChanged`, debounced 100 ms, then
+  `tools.reload()`.
+- `mcp.tools()` (`core/src/mcp/index.ts`) returns only connected servers, and
+  initial connections are deliberately asynchronous.
+- `SessionContext.select()` (`core/src/session/context.ts`) awaits
+  `mcpTools.flush` — which waits only for that first, empty registration — and
+  then takes the step's tool snapshot. The connect's debounced reload lands
+  after the first request is built ("mcp connected" was 58–70 ms before it).
+  `callTool` waits on each server's `startup` latch; the snapshot does not.
+- No config key makes startup blocking: the MCP options are only timeouts
+  (`startup`, `catalog`, `execution`).
+
+**Workarounds measured:**
+
+- **Works — a private server per turn with a readiness wait** (the
+  integration shape above): the first step had the MCP tool in 3 of 3 runs on
+  2.1.1 and 1 of 1 on 2.2.0.
+- Fails — delaying the prompt on stdin with `run --standalone`: `run` reads
+  the prompt before it boots the Location.
+- Partial — one resident `opencode serve` for all turns: the first turn in a
+  directory still misses the tools; later turns have them. It would also make
+  per-turn config, credentials and the MCP set server-lifetime.
+
+The proper fix is upstream — wait for each enabled server's `startup` latch,
+bounded by `timeout.startup`, before the first snapshot — but it has not been
+reported there.
 
 ## Keeping OpenCode 1 intact (req 2)
 
@@ -125,16 +233,21 @@ Upstream no longer separates the two, so ShipIt must:
 
 - **Install.** Pin `@opencode/cli` at an exact, ≥7-day-old version BESIDE
   `opencode-ai` in `docker/agent-cli/package.json` (2.1.1 qualifies on
-  2026-10-27; 2.1.0 → 2.1.4 had no breaking change in the client types). Its
-  `opencode` bin collides with v1's in `node_modules/.bin`, and the v1 harness
-  links `node_modules/.bin/opencode` (`install-agent-clis.sh`,
-  `harness_link_target`). The v1 link must resolve to `opencode-ai` whichever
-  package npm links there — link it to the package's own bin rather than
-  `.bin` if npm's choice is not deterministic. The v2 harness uses the
-  `opencode2` bin.
+  2026-10-27; 2.1.0 → 2.1.4 had no breaking change in the client types).
+  **Measured:** with both installed, `node_modules/.bin/opencode` points at
+  `@opencode/cli` after `npm install`, `npm ci`, and any rebuild that includes
+  it, in either dependency order — npm links by path, and `@opencode/…` sorts
+  first. Only a single-package `npm rebuild opencode-ai` run last points it
+  back at v1. `node_modules/.bin` precedes `/usr/local/bin` on PATH
+  (`Dockerfile.session-worker.prod`) and ShipIt spawns `opencode` by bare name
+  (`adapter.ts`, `compaction.ts`, `session-namer.ts`), so without a fix the v1
+  harness silently runs v2. The installer must point `.bin/opencode` at
+  `node_modules/opencode-ai/bin/opencode.exe` after every rebuild, as it
+  already removes the grok shim. The v2 harness uses the `opencode2` bin.
 - **Prune.** v1's prefix `opencode` globs `node_modules/opencode*`, which never
   touches `node_modules/@opencode/`. The v2 id needs its own prefix covering
-  `@opencode/cli` and its platform payload packages.
+  `@opencode/cli` and its `cli-linux-*` payload packages, plus
+  `.bin/opencode2`.
 - **Data.** v2 gets its own data, config, cache and state roots, never v1's.
   Pointed at v1's root, v2 would migrate v1's database and history.
   `AGENT_CREDENTIAL_PATHS`, the Dockerfile `/credentials/.local/share/opencode`
@@ -148,9 +261,12 @@ Upstream no longer separates the two, so ShipIt must:
 - **Sign-ins (req 4).** API keys and the ChatGPT subscription, as on v1
   (docs/295). The ChatGPT half needs a new token delivery path — v1's does not
   work on v2 (next section).
-- **OpenCode 2 first (req 5).** v1 and v2 are expected to offer the same
-  models (Phase 0 measures it). Every site that picks a harness from a model
-  on its own must rank `opencode2` ahead of `opencode`. Most take the first
+- **OpenCode 2 first (req 5).** Both harnesses run exactly the models
+  ShipIt's provider block declares (v2 ran ShipIt's v1-shaped rows unchanged),
+  so keeping the two model sets equal is the catalogue's job; the ChatGPT
+  route's model ids on v2 belong to the real-account check. Every site that
+  picks a harness from a model on its own must rank `opencode2` ahead of
+  `opencode`. Most take the first
   matching harness in list order — `agentIdForModel` over `AGENT_DEFS`
   (`shared/agent-registry.ts`) and `harnessesForSelection` over
   `allHarnesses()` (`non-turn-model.ts`) — so the list order decides them.
@@ -158,8 +274,8 @@ Upstream no longer separates the two, so ShipIt must:
   derivation (`services/reviewer-settings.ts`), the model-owner fallback in
   `services/child-sessions.ts`, model ownership in
   `services/headless-sessions.ts`, and the client model picker
-  (`client/utils/agent-for-model.ts`). Phase 0 must find the full list. An
-  explicit harness choice (session, role) is unaffected.
+  (`client/utils/agent-for-model.ts`). The implementation must find the full
+  list. An explicit harness choice (session, role) is unaffected.
 - **Two existing rules stay ahead of req 5.** The reviewer moves the
   implementer's harness last (`harnessesPreferring`), so an implementer on
   OpenCode 2 gets an OpenCode 1 reviewer for a shared model. A child session
@@ -167,7 +283,7 @@ Upstream no longer separates the two, so ShipIt must:
   (`child-sessions.ts`), so an OpenCode 1 parent keeps OpenCode 1 children.
   Neither needs a change: list order applies only after these rules.
 
-## ChatGPT token delivery (tested 2026-10-27, CLI 2.2.0)
+## ChatGPT token delivery (tested 2026-10-27, CLI 2.2.0 and 2.1.1)
 
 On v1, ShipIt delivers the ChatGPT token by writing `auth.json` under a
 managed XDG root and rewriting it on every Codex refresh
@@ -192,26 +308,30 @@ shape, under `--standalone`, no model call:
   `[{id, integrationID: "openai", label, active: true, value: {type: "oauth",
   methodID: "chatgpt-browser", refresh: "", access, expires,
   metadata: {accountID}}}]`.
+- **No gap:** import the new token under a new id (it lands inactive), then
+  `opencode auth switch openai <new-id>` makes it active, then `logout` the
+  old one. The logout-then-import pair leaves ~1.5 s with no credential.
+- **A running turn picks up the swap.** Measured on 2.1.1 with an api-key
+  credential: a replacement made during an 8 s tool call reached the same
+  turn's next model request (key A → key B), with no database lock error. The
+  turn's private server reads the credential on each request.
+- `auth` commands need the turn's `OPENCODE_CONFIG` when the integration is a
+  config-defined provider; without it they answer "Integration not found".
 
-The open points are Phase 0 item 2.
+Open: whether the ChatGPT backend accepts the delivered token (Phase 0 item 1).
 
-## Phase 0 unknowns (empirical, before code)
+## Phase 0 status (2.1.1, 2026-10-27)
 
-Run every check against the version actually pinned; the tests in this doc
-used 2.2.0.
+Answered above: the live JSONL capture, `OPENCODE_CONFIG`, the
+`.bin/opencode` winner, model sets, the docs/268 workarounds, the mid-turn
+credential swap and import race, `$PWD`, env names, skills and instructions,
+MCP tools on the first step (worked around), and the last step's usage (from
+the per-turn server). Still open:
 
-1. A live JSONL capture and conformance lock, including the error line shape.
-2. Token delivery: whether a turn's running private server sees a credential
-   replaced mid-turn (it may cache); whether the token is accepted on the wire
-   (needs a real ChatGPT account and a model call); an import racing a turn's
-   server on the same database.
-3. Which package wins `node_modules/.bin/opencode` when both are installed.
-4. Whether `OPENCODE_CONFIG` still selects the config file.
-5. Whether v1 and v2 offer the same model sets.
-6. Re-test each docs/268 workaround (post-error hang, block-buffered stdout,
-   MCP keep-alive, missing final `step_finish`) and adopt or drop it on
-   evidence.
-7. `$PWD` resolution, `OPENCODE_DISABLE_*` env names, skills disclosure.
+1. **Real-account ChatGPT check:** the token accepted on the wire, the v2
+   ChatGPT route config (v1's uses `OPENCODE_CONFIG_CONTENT` with the built-in
+   `openai` provider and sets `OPENCODE_DISABLE_DEFAULT_PLUGINS=0`, a variable
+   v2 no longer has), and its model ids. Needs the user's account.
 
 ## Attach-to-server: deferred
 

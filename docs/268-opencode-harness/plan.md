@@ -649,7 +649,8 @@ carries the signal the stream cannot.
   this one — [docs/269-opencode-v2](../269-opencode-v2/plan.md) (planning#411)
   holds the fact sheet, the API-stability verdict and the requirements. Two
   v2 facts can reach this harness: `@opencode/cli` also declares an `opencode`
-  bin, which can take over the `node_modules/.bin/opencode` link this harness
-  resolves, and v2 defaults to this harness's data root and migrates it.
+  bin, which takes over the `node_modules/.bin/opencode` link this harness
+  resolves whenever both are installed (measured), and v2 defaults to this
+  harness's data root and migrates it.
 - The post-error hang and stdout buffering (findings above) are upstream bugs
   worked around, not fixed; re-test on every version bump.
