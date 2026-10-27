@@ -7,8 +7,8 @@ description: What OpenCode 2 is (released 2026-09-11 as `@opencode/cli`), how st
 # OpenCode 2 — fact sheet and integration shape
 
 Implements [requirements.md](./requirements.md). Nothing here is implemented
-yet; the tracked work item is planning#411. Implementation code waits until
-the requirements' open questions are resolved.
+yet; the tracked work item is planning#411. The requirements have no open
+questions; implementation starts with the Phase 0 checks below.
 
 **Settled direction (user decision, 2026-08-16): ShipIt will run OpenCode 1
 and OpenCode 2 integrations AT THE SAME TIME, fully separate if needed** —
@@ -144,6 +144,21 @@ Upstream no longer separates the two, so ShipIt must:
 - **Catalogue.** A new `HarnessDef` row (proposed id `opencode2`, display
   name "OpenCode 2", `binary: "opencode2"`) with capabilities verified from
   scratch; nothing observed against v1 carries over on trust.
+
+## Sign-ins and shared models (reqs 4, 5)
+
+- **Sign-ins (req 4).** API keys and the ChatGPT subscription, as on v1
+  (docs/295). The ChatGPT half depends on Phase 0 item 1 below; if v2 does not
+  pick up a refreshed token from `auth.json`, the launch needs a new delivery
+  path first.
+- **OpenCode 2 first (req 5).** v1 and v2 offer identical model sets — the
+  strongest same-model, different-harness overlap ShipIt has had. Every site
+  that resolves a harness from a model on its own must rank `opencode2` ahead
+  of `opencode`. Known sites: `selectReviewer` and its harness-only tie-break
+  (`reviewer-model.ts`, planning#408), the harness derivation in
+  `services/reviewer-settings.ts`, and first-harness-wins in
+  `services/child-sessions.ts` (both flagged in docs/266). Phase 0 must find
+  the full list. An explicit harness choice (session, role) is unaffected.
 
 ## Phase 0 unknowns (empirical, before code)
 
