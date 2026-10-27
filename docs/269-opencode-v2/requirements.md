@@ -43,9 +43,9 @@ None.
   OpenCode 1?** The user: "let's keep opencode1 intact" (req 2).
 - **2026-10-27 — Which sign-in routes must OpenCode 2 offer at launch: the
   same as OpenCode 1, API keys only, or also GitHub Copilot?** The user: the
-  same as OpenCode 1 (req 4). Constraint: whether v2 picks up a refreshed
-  ChatGPT token is unverified (plan.md, Phase 0 item 1), so that check gates
-  the launch.
+  same as OpenCode 1 (req 4). Constraint: v1's ChatGPT token delivery does
+  not work on v2, so req 4 needs a new delivery path (plan.md, "ChatGPT token
+  delivery").
 - **2026-10-27 — When both OpenCode harnesses offer a model and ShipIt picks
   a harness by itself, which one wins: OpenCode 1, OpenCode 2, or the
   existing tie-break?** The user: OpenCode 2 first (req 5).

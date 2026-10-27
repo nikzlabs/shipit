@@ -51,9 +51,10 @@ re-verify anything volatile before acting on it.
 - **Same data root as v1.** `~/.local/share/opencode` (now holding
   `opencode.db`), plus `~/.config/opencode`, `~/.cache/opencode` and
   `~/.local/state/opencode`. Credentials live in the SQLite database
-  (`OPENCODE_DB` / `XDG_DATA_HOME` override it). v2 imports a legacy
-  `auth.json` but never writes back to it, and `serve` runs a v1-to-v2
-  history migration on the data root it is given.
+  (`OPENCODE_DB` / `XDG_DATA_HOME` override it). v2 reads a legacy
+  `auth.json` at most once, inside a database migration, and never writes
+  back to it (see "ChatGPT token delivery"). `serve` runs a v1-to-v2 history
+  migration on the data root it is given.
 - **Install shape** is unchanged from v1: a postinstall selects the native
   platform binary, so the docs/268 gated `npm rebuild` exception carries over.
 - **Instructions and MCP.** v2 reads `AGENTS.md` only, with no `CLAUDE.md`
@@ -148,9 +149,8 @@ Upstream no longer separates the two, so ShipIt must:
 ## Sign-ins and shared models (reqs 4, 5)
 
 - **Sign-ins (req 4).** API keys and the ChatGPT subscription, as on v1
-  (docs/295). The ChatGPT half depends on Phase 0 item 1 below; if v2 does not
-  pick up a refreshed token from `auth.json`, the launch needs a new delivery
-  path first.
+  (docs/295). The ChatGPT half needs a new token delivery path — v1's does not
+  work on v2 (next section).
 - **OpenCode 2 first (req 5).** v1 and v2 offer identical model sets — the
   strongest same-model, different-harness overlap ShipIt has had. Every site
   that resolves a harness from a model on its own must rank `opencode2` ahead
@@ -160,14 +160,40 @@ Upstream no longer separates the two, so ShipIt must:
   `services/child-sessions.ts` (both flagged in docs/266). Phase 0 must find
   the full list. An explicit harness choice (session, role) is unaffected.
 
+## ChatGPT token delivery (tested 2026-10-27, CLI 2.2.0)
+
+On v1, ShipIt delivers the ChatGPT token by writing `auth.json` under a
+managed XDG root and rewriting it on every Codex refresh
+(`shared/opencode-account.ts`, `orchestrator/openai-account-delivery.ts`).
+**That does not work on v2.** Tested with fake tokens in ShipIt's exact file
+shape, under `--standalone`, no model call:
+
+- The import is the database migration
+  `20260805200742_import_legacy_credentials`. A NEW database is created by a
+  one-step schema bootstrap that marks every migration done, so the import
+  never runs: a fresh v2 data root ignores `auth.json` entirely.
+- On an upgraded v1 data root the migration runs once and imports the token.
+  A rewritten `auth.json` is then ignored: the database kept token A while the
+  file held token B.
+- `opencode auth import <file>` does not replace a credential whose id is
+  present ("skipped 1 already present"), and one with a new id is added
+  inactive.
+- **What works:** `opencode auth logout openai <credential-id>` followed by
+  `opencode auth import <file>`. The credential is replaced and active, on an
+  upgraded database and on a fresh one in a separate XDG root (v1's root
+  untouched). About 1.4 s for the pair. The import file is ShipIt-built:
+  `[{id, integrationID: "openai", label, active: true, value: {type: "oauth",
+  methodID: "chatgpt-browser", refresh: "", access, expires,
+  metadata: {accountID}}}]`.
+
+Still untested: whether a turn's running private server sees a credential
+replaced mid-turn (it may cache), whether the token is accepted on the wire
+(needs a real ChatGPT account and a model call), and an import racing a turn's
+server on the same database.
+
 ## Phase 0 unknowns (empirical, before code)
 
-1. **ChatGPT token refresh.** ShipIt delivers the ChatGPT token by writing
-   `auth.json` under a managed XDG root (`shared/opencode-account.ts`). v2
-   imports `auth.json` and then reads SQLite. Does v2 re-import a refreshed
-   `auth.json`? If not, delivery has to go through v2's own surface
-   (`opencode auth import` is a candidate, unverified). This decides whether
-   the subscription route is viable at all.
+1. The three untested points above.
 2. Which package wins `node_modules/.bin/opencode` when both are installed.
 3. Whether `OPENCODE_CONFIG` still selects the config file.
 4. A live JSONL capture and conformance lock, including the error line shape.
