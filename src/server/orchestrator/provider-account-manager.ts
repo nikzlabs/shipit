@@ -1,4 +1,5 @@
 import type { LoginIntegrationId } from "../shared/catalogue/types.js";
+import { isOpenCodeHarness } from "../shared/opencode-harness.js";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -34,6 +35,7 @@ const PROVIDER_LABEL: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
   opencode: "OpenCode",
+  opencode2: "OpenCode 2",
   grok: "Grok Build",
   antigravity: "Antigravity",
 };
@@ -42,6 +44,7 @@ const LEGACY_CREDENTIAL_PATHS: Record<AgentId, readonly LegacyCredentialPath[]> 
   claude: [{ rel: ".claude", kind: "dir" }, { rel: ".claude.json", kind: "file" }],
   codex: [{ rel: ".codex", kind: "dir" }],
   opencode: [],
+  opencode2: [],
   grok: [],
   antigravity: [],
 };
@@ -60,6 +63,7 @@ const LEGACY_CREDENTIAL_MARKERS: Record<AgentId, readonly string[]> = {
   ],
   codex: [path.join(".codex", "auth.json")],
   opencode: [],
+  opencode2: [],
   grok: [],
   antigravity: [],
 };
@@ -99,9 +103,9 @@ function requireHarness(serviceId: string): AgentId {
   return harness;
 }
 
-// OpenCode consumes the existing OpenAI login; Zen remains its native service.
+// Both OpenCode harnesses consume the existing OpenAI login; Zen remains their native service.
 export function accountOwnerHarness(provider: AgentId): AgentId {
-  return provider === "opencode" ? "codex" : provider;
+  return isOpenCodeHarness(provider) ? "codex" : provider;
 }
 
 export function accountServiceForHarness(provider: AgentId): string {

@@ -76,8 +76,8 @@ and never write it to a file, a log, or a commit.
 ### Which agent CLIs
 
 A harness is an agent CLI plus the adapter that normalizes its events. The
-default set is **Claude Code, Codex, and OpenCode**; Grok Build and Antigravity
-are offered but not preselected, so an update never adds a CLI to the images
+default set is **Claude Code, Codex, and OpenCode**; OpenCode 2, Grok Build and
+Antigravity are offered but not preselected, so an update never adds a CLI to the images
 behind the user's back. Narrowing the set is worth it if image size or build
 time matters.
 

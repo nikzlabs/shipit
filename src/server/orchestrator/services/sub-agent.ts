@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isOpenCodeHarness } from "../../shared/opencode-harness.js";
 import { resolveTurnCost, turnAttributionFor } from "../turn-attribution.js";
 import { selectRouteForSelection, serviceRoutingForSelection } from "../service-routing.js";
 import type {
@@ -316,8 +317,8 @@ async function runSubAgentInSlot(
   // re-copied under a CLI that is starting in it, and two Codex processes that start in one
   // home race to create its state databases (planning#572).
   const isContainer = runner instanceof ContainerSessionRunner;
-  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-  const provisioned = (isContainer || subAgentId === "opencode") && !!deps.credentialsDir;
+  // OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  const provisioned = (isContainer || isOpenCodeHarness(subAgentId)) && !!deps.credentialsDir;
   const credentialsDir = deps.credentialsDir;
 
   const spawnId = randomUUID();
@@ -329,8 +330,7 @@ async function runSubAgentInSlot(
   const originatingTurnEpoch = runner.turnEpoch ?? 0;
 
   const provisionAttempt = async (): Promise<void> => {
-    // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-    if (subAgentId === "opencode" && accountId && deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", accountId)) throw new ServiceError(401, "ChatGPT account renewal failed.");
+    if (isOpenCodeHarness(subAgentId) && accountId && deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", accountId)) throw new ServiceError(401, "ChatGPT account renewal failed.");
     if (!provisioned || !credentialsDir) return;
     console.log(
       `[sub-agent] provision-spawn-home session=${sessionId} spawn=${spawnId} agent=${subAgentId} `

@@ -1,4 +1,5 @@
 import { provisionOpenCodeAccount, revokeOpenCodeAccount } from "./openai-account-delivery.js";
+import { isOpenCodeHarness } from "../shared/opencode-harness.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
@@ -41,9 +42,9 @@ export function provisionProviderAccountCredentials(
   agentId: AgentId,
   accountId: string,
 ): void {
-  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-  if (agentId === "opencode") {
-    provisionOpenCodeAccount(providerAccountCredentialRoot(credentialsRoot, agentId, accountId), perSessionCredentialsDir(credentialsRoot, sessionId), accountId);
+  // OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  if (isOpenCodeHarness(agentId)) {
+    provisionOpenCodeAccount(providerAccountCredentialRoot(credentialsRoot, agentId, accountId), perSessionCredentialsDir(credentialsRoot, sessionId), accountId, undefined, agentId);
     chownSessionCredentialsTree(credentialsRoot, sessionId);
   } else {
     provisionAgentCredentialsFromRoot(
@@ -113,8 +114,8 @@ export function ensureSessionAccountCredentials(
 ): "match" | "provisioned" | "adopted" | "replaced" {
   const recorded = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
   if (recorded === accountId) {
-    // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-    if (agentId === "opencode") provisionOpenCodeAccount(providerAccountCredentialRoot(credentialsRoot, agentId, accountId), perSessionCredentialsDir(credentialsRoot, sessionId), accountId);
+    // OpenCode needs an access-only ChatGPT projection in a private XDG home.
+    if (isOpenCodeHarness(agentId)) provisionOpenCodeAccount(providerAccountCredentialRoot(credentialsRoot, agentId, accountId), perSessionCredentialsDir(credentialsRoot, sessionId), accountId, undefined, agentId);
     return "match";
   }
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
@@ -153,9 +154,9 @@ export function revokeSessionProviderCredentials(
   sessionId: string,
   agentId: AgentId,
 ): void {
-  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-  if (agentId === "opencode") {
-    revokeOpenCodeAccount(perSessionCredentialsDir(credentialsRoot, sessionId));
+  // OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  if (isOpenCodeHarness(agentId)) {
+    revokeOpenCodeAccount(perSessionCredentialsDir(credentialsRoot, sessionId), undefined, agentId);
     writeSessionAccountMarker(credentialsRoot, sessionId, agentId, null);
     return;
   }
@@ -340,12 +341,12 @@ export function provisionSubAgentSpawnHome(
   const home = subAgentSpawnHomeDir(credentialsRoot, sessionId, spawnId);
   fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(home, { recursive: true });
-  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-  for (const rel of subAgentId === "opencode" && accountId ? [] : AGENT_CREDENTIAL_PATHS[subAgentId]) {
+  // OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  const projected = isOpenCodeHarness(subAgentId) && accountId !== undefined;
+  for (const rel of projected ? [] : AGENT_CREDENTIAL_PATHS[subAgentId]) {
     copyProviderSubtree(sourceRoot, home, rel);
   }
-  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-  if (subAgentId === "opencode" && accountId) provisionOpenCodeAccount(sourceRoot, home, accountId);
+  if (projected && isOpenCodeHarness(subAgentId)) provisionOpenCodeAccount(sourceRoot, home, accountId, undefined, subAgentId);
   // Record provenance only after copying; partial copies must never be published.
   fs.writeFileSync(
     path.join(home, SPAWN_HOME_PROVENANCE),
@@ -372,6 +373,7 @@ export function releaseSubAgentSpawnHome(
 
 function releaseSpawnHomeAt(credentialsRoot: string, sessionId: string, home: string): void {
   revokeOpenCodeAccount(home);
+  revokeOpenCodeAccount(home, undefined, "opencode2");
   const provenance = readSpawnHomeProvenance(home);
   let safeToDelete = true;
   if (provenance) {
@@ -427,6 +429,7 @@ export function removeSubAgentSpawnHomesOf(
     if (provenance?.agentId !== subAgentId) continue;
     if (accountIds && !(provenance.accountId !== null && accountIds.has(provenance.accountId))) continue;
     revokeOpenCodeAccount(home);
+    revokeOpenCodeAccount(home, undefined, "opencode2");
     try {
       fs.rmSync(home, { recursive: true, force: true });
     } catch {

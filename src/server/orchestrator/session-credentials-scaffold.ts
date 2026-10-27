@@ -15,6 +15,8 @@ export const AGENT_CREDENTIAL_PATHS: Record<AgentId, readonly string[]> = {
   claude: [".claude", ".claude.json"],
   codex: [".codex"],
   opencode: [".local/share/opencode"],
+  // Never v1's root: pointed at it, OpenCode 2 migrates v1's database (docs/269 req 2).
+  opencode2: [".local/share/opencode2"],
   grok: [".grok"],
   // The token sits a level below, at .gemini/antigravity-cli/antigravity-oauth-token.
   antigravity: [".gemini"],

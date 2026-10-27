@@ -188,7 +188,7 @@ in `/shipit-docs/`, or a live command to run rather than a page to read.
 |---|---|
 | Ten settings tabs: Model providers, Roles, Integrations, Git, Instructions, Skills, Keyboard, Voice, Network, Advanced | [settings-and-accounts.md](settings-and-accounts.md), and `shipit settings list` for the live values |
 | Project Settings, per repository — secrets, agent permissions, sidebar colour | [repos-and-sandboxes.md](repos-and-sandboxes.md) |
-| Several agent harnesses — Claude Code, Codex, OpenCode, Grok, Antigravity | [settings-and-accounts.md](settings-and-accounts.md), and `shipit agent params` |
+| Several agent harnesses — Claude Code, Codex, OpenCode, OpenCode 2, Grok, Antigravity | [settings-and-accounts.md](settings-and-accounts.md), and `shipit agent params` |
 | Sign in with an existing subscription, or an API key as a fallback | [settings-and-accounts.md](settings-and-accounts.md) — Settings → Model providers, **not** Integrations, which holds GitHub, Linear and MCP servers |
 | Several accounts per provider, in a fallback order | [settings-and-accounts.md](settings-and-accounts.md) — Settings → Model providers |
 | Usage and subscription limits, visible before they bite | [settings-and-accounts.md](settings-and-accounts.md) |

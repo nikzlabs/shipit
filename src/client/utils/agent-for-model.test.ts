@@ -14,6 +14,15 @@ describe("agentIdForModel", () => {
     expect(agentIdForModel("gpt-5.3-codex", AGENTS)).toBe("codex");
   });
 
+  it("prefers an installed harness over an uninstalled one listed first (docs/269 req 5)", () => {
+    const shared: AgentOption[] = [
+      { id: "opencode2", name: "OpenCode 2", installed: false, hasRunnableModels: false, models: ["kimi-k3"], supportsReview: true },
+      { id: "opencode", name: "OpenCode", installed: true, hasRunnableModels: true, models: ["kimi-k3"], supportsReview: true },
+    ];
+    expect(agentIdForModel("kimi-k3", shared)).toBe("opencode");
+    expect(agentIdForModel("kimi-k3", shared.map((a) => ({ ...a, installed: true })))).toBe("opencode2");
+  });
+
   it("returns undefined for an unknown model so callers can fall back", () => {
     expect(agentIdForModel("gpt-9", AGENTS)).toBeUndefined();
   });

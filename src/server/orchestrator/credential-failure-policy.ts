@@ -1,4 +1,5 @@
 import type { BillingMode } from "../shared/catalogue/index.js";
+import { isOpenCodeHarness } from "../shared/opencode-harness.js";
 import { getService, loginIntegrationForService, nativeServiceForHarness } from "../shared/catalogue/index.js";
 import type { SessionInfo } from "../shared/types.js";
 
@@ -28,8 +29,8 @@ export function credentialFailurePolicyForRoute(
     stopsOnFailure: billingMode === "key",
     vendorOwnedRecovery:
       serviceId === undefined
-      // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-      || ((serviceId === nativeService || (agentId === "opencode" && serviceId === "openai" && billingMode === "sub")) && loginIntegrationForService(serviceId) !== undefined),
+      // OpenCode needs an access-only ChatGPT projection in a private XDG home.
+      || ((serviceId === nativeService || (isOpenCodeHarness(agentId) && serviceId === "openai" && billingMode === "sub")) && loginIntegrationForService(serviceId) !== undefined),
   };
 }
 

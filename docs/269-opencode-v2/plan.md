@@ -6,11 +6,12 @@ description: What OpenCode 2 is (released 2026-09-11 as `@opencode/cli`), how st
 
 # OpenCode 2 — fact sheet and integration shape
 
-Implements [requirements.md](./requirements.md). Nothing here is implemented
-yet; the tracked work item is planning#411. The requirements have no open
-questions. An upstream race makes MCP tools miss the first step of every
-`run --standalone` turn; the integration shape below works around it (see
-"MCP tools miss the first step of every turn").
+Implements [requirements.md](./requirements.md); the tracked work item is
+planning#411, and the build steps are in [checklist.md](./checklist.md). The
+harness is implemented on `@opencode/cli` 2.1.1 (see "Implementation"). An
+upstream race makes MCP tools miss the first step of every `run --standalone`
+turn; the integration shape below works around it (see "MCP tools miss the
+first step of every turn").
 
 **Settled direction (user decision, 2026-08-16): ShipIt will run OpenCode 1
 and OpenCode 2 integrations AT THE SAME TIME, fully separate if needed** —
@@ -248,12 +249,13 @@ Upstream no longer separates the two, so ShipIt must:
   touches `node_modules/@opencode/`. The v2 id needs its own prefix covering
   `@opencode/cli` and its `cli-linux-*` payload packages, plus
   `.bin/opencode2`.
-- **Data.** v2 gets its own data, config, cache and state roots, never v1's.
-  Pointed at v1's root, v2 would migrate v1's database and history.
-  `AGENT_CREDENTIAL_PATHS`, the Dockerfile `/credentials/.local/share/opencode`
-  symlinks and the entrypoint prep block need a per-id answer.
-- **Catalogue.** A new `HarnessDef` row (proposed id `opencode2`, display
-  name "OpenCode 2", `binary: "opencode2"`) with capabilities verified from
+- **Data.** v2 gets its own data, config and state roots, never v1's.
+  Pointed at v1's root, v2 would migrate v1's database and history. The cache
+  stays shared (see "Implementation"). `AGENT_CREDENTIAL_PATHS`, the
+  Dockerfile `/credentials/.local/share/opencode2` symlinks and the entrypoint
+  prep block have their own `opencode2` entries.
+- **Catalogue.** A new `HarnessDef` row (id `opencode2`, display name
+  "OpenCode 2", `binary: "opencode2"`) with capabilities verified from
   scratch; nothing observed against v1 carries over on trust.
 
 ## Sign-ins and shared models (reqs 4, 5)
@@ -320,7 +322,7 @@ shape, under `--standalone`, no model call:
 
 Open: whether the ChatGPT backend accepts the delivered token (Phase 0 item 1).
 
-## Phase 0 status (2.1.1, 2026-10-27)
+## Phase 0 status (2.1.1, 2026-10-27, before the build)
 
 Answered above: the live JSONL capture, `OPENCODE_CONFIG`, the
 `.bin/opencode` winner, model sets, the docs/268 workarounds, the mid-turn
@@ -332,6 +334,88 @@ the per-turn server). Still open:
    ChatGPT route config (v1's uses `OPENCODE_CONFIG_CONTENT` with the built-in
    `openai` provider and sets `OPENCODE_DISABLE_DEFAULT_PLUGINS=0`, a variable
    v2 no longer has), and its model ids. Needs the user's account.
+
+## Implementation (`@opencode/cli` 2.1.1)
+
+Harness id `opencode2`, display name "OpenCode 2", binary `opencode2`, opt-in
+(not in `DEFAULT_HARNESSES`). Key files:
+
+| File | What it holds |
+|---|---|
+| `session/agents/opencode2/adapter.ts` | The turn: config and env, the per-turn server, the `run --server` client, the synthesized result, interrupt and teardown |
+| `session/agents/opencode2/server.ts` | `serve --port 0` start-up, the MCP readiness wait, per-step usage from the message list, compaction |
+| `session/agents/opencode2/account.ts` | ChatGPT token delivery into the v2 database |
+| `session/agents/opencode2/opencode2-tool-normalizer.ts` | 2.x tool names and arguments onto transcript names |
+| `shared/opencode-harness.ts` | `isOpenCodeHarness()` and v2's roots |
+| `orchestrator/agents/opencode2/` | Run-params prep and the parallel-sessions prompt |
+
+Shared with v1 without changing v1's behaviour: `shared/opencode-stream.ts`
+(now also reads the flat 2.x error line, and `replaceSteps()` takes the
+server's per-step usage), `shared/opencode-spawn-shaping.ts` (a `harness`
+parameter and `opencode2ModelArg()`), `opencode/turn-files.ts`,
+`opencode/subscription-limits.ts`, and the orchestrator's ChatGPT projection
+(`openai-account-delivery.ts`, now with a `harness` parameter).
+
+Decisions made during the build:
+
+- **Roots (req 2).** Everything lives under the credential root
+  `~/.local/share/opencode2`: `XDG_DATA_HOME=shipit-data`,
+  `XDG_STATE_HOME=shipit-state`, `OPENCODE_CONFIG_DIR=shipit-config`, and the
+  orchestrator's ChatGPT projection in `shipit-account`, outside the CLI's own
+  data root. `XDG_CACHE_HOME` is left alone: every shell command of the turn
+  inherits it, and v2's cache subpaths (`npm/`, `skills/`, `bin/rg`) do not
+  collide with v1's (`node_modules/`). `OPENCODE_CONFIG_DIR` is used instead
+  of `XDG_CONFIG_HOME` for the same reason. v2 runs a config migration on its
+  global config dir, so that dir must never be v1's.
+- **Tools.** Every turn sets `tools: {question: false, websearch: false,
+  execute: false}`. `run` cancels `question`, and `websearch` asks the user to
+  pick a provider, so both fail in a turn with nobody to answer. Code Mode's
+  `execute` would hide edits from the transcript. So every MCP server, ShipIt's
+  and the user's, sets `codemode: false`. A tools-off run sets
+  `tools: {"*": false}`; measured on 2.1.1, that sends no tool at all, MCP
+  tools included.
+- **Credentials through the turn's server.** Without `--server`, `opencode2
+  auth` reaches for a shared background service. The adapter runs `auth
+  import`, `switch` and `logout` with `--server <the turn's server>`, after the
+  server is up and before `run`. It watches the projection during the turn and
+  imports a renewal with no gap. The credential id follows the token, so an
+  unchanged token needs no command. A non-ChatGPT turn removes ShipIt's
+  credential. A logout that fails is kept and retried by every later turn,
+  and no `auth` output is ever logged, because an import failure can echo
+  the token.
+- **Compaction.** The run that compacts starts the server, then `POST
+  /api/session/{id}/model` (compaction otherwise runs on the session's last
+  model, which this run's config may not declare), then `POST /compact`, then
+  polls the compaction message until it is `completed` or `failed`.
+- **Session naming** uses `run --standalone`: naming starts no MCP server, so
+  the race cannot occur. On the ChatGPT route it imports the token with
+  `auth import` / `switch --standalone` into a throwaway root first.
+- **OpenCode 1's own prompt is unchanged** (req 2). The other four backends'
+  prompts now name `opencode2` among the CLIs not to run directly.
+- **Req 5 on a default install.** `opencode2` sits before `opencode` in
+  `HARNESSES`. Three sites took the first harness that lists a model,
+  installed or not: `agentIdForModel` (shared), the WebSocket connect, and the
+  client's `agentIdForModel`. With OpenCode 2 opt-in, they would have named a
+  harness the install lacks. They now prefer an installed owner. As a result,
+  `harnessForNativeService("opencode")` returns `opencode2`. Its callers ask
+  only about services with an account sign-in, and Zen has none.
+
+Verified against the real 2.1.1 binary through the adapter and a mock
+provider (the scratch harness is not committed): a text turn with an MCP tool
+on the first step, and its usage; a tool turn (`shell` → Bash, `part.id` as
+the call id, both steps counted); a 401 as an error result; compaction; an
+interrupt that leaves no server behind; an image read by `read` reaching the
+model; `anthropic-messages` reaching `<base>/v1/messages` with `x-api-key`;
+`openai-responses` reaching `<base>/v1/responses`; and the ChatGPT route. With
+a fake token, the import made the credential active, the request reached the
+ChatGPT backend, which refused the token, and the adapter raised
+`auth_required`. The installer was run for real for `opencode`, `opencode2`
+and both: with both, `opencode` reports 1.19.0 and `opencode2` reports 2.1.1.
+
+Not yet verified: the real-account ChatGPT turn, a dogfood turn per auth mode,
+`shipit agent run` in both directions, the depth-0 review probe, and whether a
+new process reads the previous turn's prompt cache. Until that last one is
+probed, idle compaction skips OpenCode 2.
 
 ## Attach-to-server: deferred
 

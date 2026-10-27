@@ -20,6 +20,8 @@ export function agentIdForModel(
   agents: AgentOption[],
 ): AgentId | undefined {
   if (!model) return undefined;
-  const owner = agents.find((a) => a.models.includes(model));
+  // Installed first: list order alone would name an opt-in harness this install lacks.
+  const owner = agents.find((a) => a.installed && a.models.includes(model))
+    ?? agents.find((a) => a.models.includes(model));
   return owner?.id as AgentId | undefined;
 }

@@ -182,6 +182,7 @@ shipit_json_options() {
 HARNESS_ROWS=(
   "claude|Claude Code|Anthropic's CLI"
   "codex|Codex|OpenAI's CLI"
+  "opencode2|OpenCode 2|open-source, bring your own provider (2.x)"
   "opencode|OpenCode|open-source, bring your own provider"
   "grok|Grok Build|xAI's CLI"
   "antigravity|Antigravity|Google's CLI"

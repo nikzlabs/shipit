@@ -3,7 +3,7 @@ import type { ImageAttachment, PermissionMode } from "./attachment-types.js";
 import type { ApiStyle, BillingMode, CredentialTarget } from "../catalogue/types.js";
 import type { McpServerConfig, McpServerStatus, ServiceMcpServer } from "./mcp-types.js";
 
-export type AgentId = "claude" | "codex" | "opencode" | "grok" | "antigravity";
+export type AgentId = "claude" | "codex" | "opencode" | "opencode2" | "grok" | "antigravity";
 
 export const CLAUDE_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded"];
 

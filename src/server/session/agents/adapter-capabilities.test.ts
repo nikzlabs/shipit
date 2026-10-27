@@ -4,6 +4,7 @@ import { ClaudeAdapter } from "./claude/adapter.js";
 import { CodexAdapter } from "./codex/adapter.js";
 import { GrokAdapter } from "./grok/adapter.js";
 import { OpencodeAdapter } from "./opencode/adapter.js";
+import { Opencode2Adapter } from "./opencode2/adapter.js";
 import { HARNESSES } from "../../shared/catalogue/harnesses.js";
 import type { AgentCapabilities } from "../../shared/types/agent-types.js";
 import type { AgentId } from "../../shared/types/agent-types.js";
@@ -45,6 +46,7 @@ const ADAPTERS: Record<AgentId, () => { capabilities: AgentCapabilities }> = {
   claude: () => new ClaudeAdapter(),
   codex: () => new CodexAdapter(),
   opencode: () => new OpencodeAdapter(),
+  opencode2: () => new Opencode2Adapter(),
   grok: () => new GrokAdapter(),
   antigravity: () => new AntigravityAdapter(),
 };

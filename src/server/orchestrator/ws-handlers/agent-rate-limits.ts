@@ -6,6 +6,7 @@ const AGENT_LIMIT_LABELS: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
   opencode: "OpenCode",
+  opencode2: "OpenCode 2",
   grok: "Grok Build",
   antigravity: "Antigravity",
 };

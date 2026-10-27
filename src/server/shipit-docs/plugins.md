@@ -422,7 +422,7 @@ the tools. Until the service answers, the server has no tools.
   the tools appear as soon as the service answers — also in the middle of a
   turn.
 - On an agent that starts a new process each turn (Codex, Grok, OpenCode,
-  Antigravity, and Claude with live steering off), they are there from the
+  OpenCode 2, Antigravity, and Claude with live steering off), they are there from the
   first turn that starts while the service answers. Do not count on them in
   the middle of a turn there.
 - A new session often starts its agent before the plugin's version is live. A

@@ -164,8 +164,12 @@ never finished, signed out, refused — reads *Connect*, and one mid-sign-in rea
 
 ## Harnesses, and why there is no control for them
 
-A harness is the agent CLI that actually runs a turn. Five exist: **Claude
-Code**, **Codex**, **OpenCode**, **Grok Build** and **Antigravity**.
+A harness is the agent CLI that actually runs a turn. Six exist: **Claude
+Code**, **Codex**, **OpenCode**, **OpenCode 2**, **Grok Build** and
+**Antigravity**. OpenCode 1 and OpenCode 2 are separate harnesses that can be
+installed side by side; when ShipIt picks a harness for a model both of them
+run, it picks OpenCode 2, unless the reviewer rule or a parent session's
+harness decides first.
 
 **Which of them a given install has is decided when the image is built, and
 there is no control in Settings — or anywhere else — that adds one.** The

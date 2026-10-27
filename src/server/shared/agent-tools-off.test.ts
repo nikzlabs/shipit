@@ -70,17 +70,18 @@ describe("tools-off shaping", () => {
 
   it("no harness answers tools-off with an empty arg list alone", () => {
     // The failure the refusal exists to prevent: an empty list compiles and
-    // reads as "tools are off" while the harness keeps every tool. OpenCode is
-    // the only harness whose empty list is a real answer, because its config
-    // file carries the switch; any other must carry a refusal instead.
+    // reads as "tools are off" while the harness keeps every tool. The OpenCode
+    // harnesses are the only ones whose empty list is a real answer, because their
+    // config file carries the switch (OpenCode 2: `tools: {"*": false}` measured on
+    // 2.1.1 to send no tool at all); any other must carry a refusal instead.
     for (const { id } of allHarnesses()) {
       if (toolsOffRefusal(id)) continue;
-      if (toolsOffArgs(id).length === 0) expect(id).toBe("opencode");
+      if (toolsOffArgs(id).length === 0) expect(["opencode", "opencode2"]).toContain(id);
     }
   });
 
   it("a measured harness carries no refusal", () => {
-    for (const id of ["claude", "codex", "grok", "opencode"] as const) {
+    for (const id of ["claude", "codex", "grok", "opencode", "opencode2"] as const) {
       expect(toolsOffRefusal(id)).toBeUndefined();
     }
   });

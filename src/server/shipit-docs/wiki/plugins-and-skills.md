@@ -31,11 +31,11 @@ files, where they came from, and who can invoke them:
 
 | Kind | Lives in | Invoked as | Who may edit it |
 |---|---|---|---|
-| **Written here** | `.claude/skills/<name>/` in the project — on a Codex session `.codex/skills/`, on Grok `.grok/skills/`, on OpenCode `.opencode/skills/`, and on Antigravity `.claude/skills/` again | `/<name>` | Anyone — it is an ordinary file in the repository |
+| **Written here** | `.claude/skills/<name>/` in the project — on a Codex session `.codex/skills/`, on Grok `.grok/skills/`, on OpenCode and OpenCode 2 `.opencode/skills/`, and on Antigravity `.claude/skills/` again | `/<name>` | Anyone — it is an ordinary file in the repository |
 | **Installed from a catalogue** | `<agent dir>/skills/<plugin>__<skill>/`, with a `.shipit-installed.json` marker recording its source, version and a checksum of the body | `/<plugin>:<skill>` | Leave it alone — fork it into a new directory instead |
 | **Brought by a plugin** | Materialized by ShipIt outside git, marked `.shipit-plugin-skill.json` | Disclosed to you under a namespaced name (`plugins--<alias>--<skill>-…`) — **yours to run, not the user's**; the transcript shows it as `<alias>/<skill>` | Nobody here: fix it in the plugin's own repository |
 
-The invocation prefix follows the harness: `/` on Claude, OpenCode, Grok and
+The invocation prefix follows the harness: `/` on Claude, both OpenCodes, Grok and
 Antigravity, and **`$` on a Codex session**. On a Codex session the menu also
 lists the skills that CLI bundles, alongside the project's own.
 

@@ -20,6 +20,18 @@ const HARNESS_CREDENTIAL_VARS: Record<AgentId, readonly string[]> = {
     "OPENROUTER_API_KEY",
     "GEMINI_API_KEY",
   ],
+  opencode2: [
+    "OPENCODE_PROVIDER_API_KEY",
+    "OPENCODE_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GEMINI_API_KEY",
+    // Measured on 2.1.1: `auth list` reports this one as an environment credential too.
+    "XAI_API_KEY",
+  ],
   grok: ["XAI_API_KEY", "GROK_AUTH", "GROK_AUTH_PATH"],
   // GOOGLE_API_KEY and the ADC variables can bill a different Google account.
   antigravity: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "AGY_ADC_AUTH"],
