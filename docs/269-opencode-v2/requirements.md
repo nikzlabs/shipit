@@ -27,14 +27,13 @@ whether the OpenCode 2 API is stable enough to integrate.
 5. **OpenCode 2 first for a shared model.** When ShipIt picks a harness for a
    model by itself — reviewer selection, child sessions, routing — and both
    OpenCode harnesses offer that model, it picks OpenCode 2. OpenCode 1 stays
-   available when someone selects it.
+   available when someone selects it. Two existing rules still come first: a
+   reviewer runs on a different harness from the implementer, and a child
+   session keeps its parent's harness.
 
 ## Open questions
 
-- **Req 5 against two existing rules.** The reviewer avoids the implementer's
-  harness, so an implementer on OpenCode 2 gets an OpenCode 1 reviewer for a
-  model both offer. A child session keeps its parent's harness, so an OpenCode
-  1 parent keeps OpenCode 1 children. Does req 5 override either rule?
+None.
 
 ## Resolved questions
 
@@ -50,3 +49,6 @@ whether the OpenCode 2 API is stable enough to integrate.
 - **2026-10-27 — When both OpenCode harnesses offer a model and ShipIt picks
   a harness by itself, which one wins: OpenCode 1, OpenCode 2, or the
   existing tie-break?** The user: OpenCode 2 first (req 5).
+- **2026-10-27 — Does req 5 override the reviewer's rule of avoiding the
+  implementer's harness, or a child session keeping its parent's harness?**
+  The user: keep both rules (req 5).

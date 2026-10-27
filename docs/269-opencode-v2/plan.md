@@ -7,8 +7,8 @@ description: What OpenCode 2 is (released 2026-09-11 as `@opencode/cli`), how st
 # OpenCode 2 — fact sheet and integration shape
 
 Implements [requirements.md](./requirements.md). Nothing here is implemented
-yet; the tracked work item is planning#411. Implementation code waits for the
-open question in requirements.md; the Phase 0 checks below can start now.
+yet; the tracked work item is planning#411. The requirements have no open
+questions; implementation starts with the Phase 0 checks below.
 
 **Settled direction (user decision, 2026-08-16): ShipIt will run OpenCode 1
 and OpenCode 2 integrations AT THE SAME TIME, fully separate if needed** —
@@ -160,12 +160,12 @@ Upstream no longer separates the two, so ShipIt must:
   `services/headless-sessions.ts`, and the client model picker
   (`client/utils/agent-for-model.ts`). Phase 0 must find the full list. An
   explicit harness choice (session, role) is unaffected.
-- **Two existing rules can still land on OpenCode 1.** The reviewer moves the
+- **Two existing rules stay ahead of req 5.** The reviewer moves the
   implementer's harness last (`harnessesPreferring`), so an implementer on
   OpenCode 2 gets an OpenCode 1 reviewer for a shared model. A child session
   keeps its parent's harness when that harness offers the model
   (`child-sessions.ts`), so an OpenCode 1 parent keeps OpenCode 1 children.
-  Whether req 5 overrides these rules is an open question in requirements.md.
+  Neither needs a change: list order applies only after these rules.
 
 ## ChatGPT token delivery (tested 2026-10-27, CLI 2.2.0)
 
