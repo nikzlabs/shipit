@@ -8,8 +8,9 @@ description: What OpenCode 2 is (released 2026-09-11 as `@opencode/cli`), how st
 
 Implements [requirements.md](./requirements.md). Nothing here is implemented
 yet; the tracked work item is planning#411. The requirements have no open
-questions, but the harness is blocked: MCP tools do not reach the model in
-v2's run mode (see that section). Implementation waits for it.
+questions, but the harness is blocked: MCP tools miss the first step of
+every v2 turn, an upstream race (see that section). Implementation waits for
+an upstream fix or an accepted workaround.
 
 **Settled direction (user decision, 2026-08-16): ShipIt will run OpenCode 1
 and OpenCode 2 integrations AT THE SAME TIME, fully separate if needed** —
@@ -60,8 +61,8 @@ re-verify anything volatile before acting on it.
   platform binary, so the docs/268 gated `npm rebuild` exception carries over.
 - **Instructions and MCP.** v2 reads `AGENTS.md` only, with no `CLAUDE.md`
   fallback. MCP `codemode` defaults to true: MCP tools are meant to be reached
-  through one JavaScript `execute` tool — but see "MCP tools do not reach the
-  model".
+  through one JavaScript `execute` tool — but see "MCP tools miss the first
+  step of every turn".
 
 ## How stable the API is
 
@@ -105,8 +106,8 @@ adapter. A live capture on 2.1.1 against a mock OpenAI-compatible provider
 this doc carried as a beta: the JSONL run mode keeps v1's line types, so the
 v2 adapter can share docs/268's `shared/opencode-stream.ts` and
 `shared/opencode-spawn-shaping.ts`, parameterized by harness — with the
-differences below. One finding blocks the harness: MCP tools do not reach the
-model (next section). Attach-to-server waits (below).
+differences below. One finding blocks the harness: MCP tools miss the first
+step of every turn (next section). Attach-to-server waits (below).
 
 Differences from v1, all observed live on 2.1.1:
 
@@ -154,19 +155,50 @@ Differences from v1, all observed live on 2.1.1:
   11 s turn); `text` is one whole block, not deltas; the prompt can come on
   stdin; `--session <id>` resumes with history.
 
-## MCP tools do not reach the model (blocker; 2.1.1 and 2.2.0)
+## MCP tools miss the first step of every turn (blocker; 2.1.1 and 2.2.0)
 
 A stdio MCP server in either config shape (v1 `mcp.<name>`, v2
 `mcp.servers.<name>`) is started, initialized and listed — the log says
 `mcp connected server=probe tools=1` — and is shut down with the turn, so the
-docs/268 keep-alive hang is gone. But its tool never reaches the model: not in
-the request's tool list with `codemode` default or `false`, not with an
-explicit allow permission, not on a resumed second turn, and not through Code
-Mode (`execute` answers "Unknown tool"; its only namespaces are `opencode` and
-`browser`, and `search` finds nothing). The same server on v1 1.19.0 exposes
-`probe_phase0_ping`. ShipIt's own tools and the browser are MCP servers, so
-the harness cannot launch until this works. No upstream report was found on
-2026-10-27.
+docs/268 keep-alive hang is gone. But **the first model request of a fresh
+`run --standalone` never includes its tools**, with `codemode` default or
+`false`, with an explicit allow permission, and through Code Mode (`execute`
+answers "Unknown tool"; its only namespaces are `opencode` and `browser`).
+**Later steps of the same turn do get them:** after an 8 s tool call, the next
+request had 13 tools including `probe_phase0_ping`. A one-step turn therefore
+never sees MCP tools. The same server on v1 1.19.0 exposes its tool on the
+first request. ShipIt's own tools and the browser are MCP servers, so the
+harness cannot launch with this.
+
+**Cause — a race in upstream code** (v2.1.1 source; unchanged on 2.2.0 and on
+`dev` at d76552c):
+
+- `core/src/tool/mcp.ts` registers MCP tools once, from `mcp.tools()`, and
+  afterwards only on `McpEvent.ToolsChanged`, debounced 100 ms, then
+  `tools.reload()`.
+- `mcp.tools()` (`core/src/mcp/index.ts`) returns only connected servers, and
+  initial connections are deliberately asynchronous.
+- `SessionContext.select()` (`core/src/session/context.ts`) awaits
+  `mcpTools.flush` — which waits only for that first, empty registration — and
+  then takes the step's tool snapshot. The connect's debounced reload lands
+  after the first request is built ("mcp connected" was 58–70 ms before it).
+  `callTool` waits on each server's `startup` latch; the snapshot does not.
+- No config key makes startup blocking: the MCP options are only timeouts
+  (`startup`, `catalog`, `execution`).
+
+**Workarounds measured:**
+
+- A resident `opencode serve` with `run --server <url>` per turn: the first
+  turn in a project directory still misses the tools (the directory's Location
+  and its MCP connections boot at that request), and the second turn has them;
+  the MCP server started once. `opencode mcp list` has no `--server` flag, so
+  it cannot warm a Location up; no warm-up path was found. A resident server
+  also changes the adapter's shape (per-turn config, credentials and MCP set
+  become server-lifetime), which this plan deferred.
+- The fix belongs upstream: wait for each enabled server's `startup` latch
+  (bounded by `timeout.startup`) before the first snapshot. A minimal
+  ShipIt-free reproduction and an issue draft exist; filing them is the user's
+  act.
 
 ## Keeping OpenCode 1 intact (req 2)
 
@@ -268,7 +300,8 @@ Answered above: the live JSONL capture, `OPENCODE_CONFIG`, the
 credential swap and import race, `$PWD`, env names, skills and instructions.
 Still open:
 
-1. **MCP tools reaching the model** — the blocker above.
+1. **MCP tools on the first step** — the upstream race above; waits for a fix
+   upstream or a workaround the user accepts.
 2. **Real-account ChatGPT check:** the token accepted on the wire, the v2
    ChatGPT route config (v1's uses `OPENCODE_CONFIG_CONTENT` with the built-in
    `openai` provider and sets `OPENCODE_DISABLE_DEFAULT_PLUGINS=0`, a variable
