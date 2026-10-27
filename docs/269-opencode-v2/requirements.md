@@ -31,7 +31,10 @@ whether the OpenCode 2 API is stable enough to integrate.
 
 ## Open questions
 
-None.
+- **Req 5 against two existing rules.** The reviewer avoids the implementer's
+  harness, so an implementer on OpenCode 2 gets an OpenCode 1 reviewer for a
+  model both offer. A child session keeps its parent's harness, so an OpenCode
+  1 parent keeps OpenCode 1 children. Does req 5 override either rule?
 
 ## Resolved questions
 
@@ -43,9 +46,7 @@ None.
   OpenCode 1?** The user: "let's keep opencode1 intact" (req 2).
 - **2026-10-27 — Which sign-in routes must OpenCode 2 offer at launch: the
   same as OpenCode 1, API keys only, or also GitHub Copilot?** The user: the
-  same as OpenCode 1 (req 4). Constraint: v1's ChatGPT token delivery does
-  not work on v2, so req 4 needs a new delivery path (plan.md, "ChatGPT token
-  delivery").
+  same as OpenCode 1 (req 4).
 - **2026-10-27 — When both OpenCode harnesses offer a model and ShipIt picks
   a harness by itself, which one wins: OpenCode 1, OpenCode 2, or the
   existing tie-break?** The user: OpenCode 2 first (req 5).

@@ -7,8 +7,8 @@ description: What OpenCode 2 is (released 2026-09-11 as `@opencode/cli`), how st
 # OpenCode 2 — fact sheet and integration shape
 
 Implements [requirements.md](./requirements.md). Nothing here is implemented
-yet; the tracked work item is planning#411. The requirements have no open
-questions; implementation starts with the Phase 0 checks below.
+yet; the tracked work item is planning#411. Implementation code waits for the
+open question in requirements.md; the Phase 0 checks below can start now.
 
 **Settled direction (user decision, 2026-08-16): ShipIt will run OpenCode 1
 and OpenCode 2 integrations AT THE SAME TIME, fully separate if needed** —
@@ -65,7 +65,7 @@ re-verify anything volatile before acting on it.
 
 | Surface | Verdict | Why |
 |---|---|---|
-| `opencode run --format json` | Stable enough | A v1-compatible JSONL layer whose keys did not change across 2.x |
+| `opencode run --format json` | Likely stable enough; not yet proven | Read from the 2.2.0 binary: v1's line types and `step_finish` token fields, but a changed error line. No live turn captured yet (Phase 0) |
 | Server HTTP API + `@opencode/client` | Not yet | Self-declared experimental; minor releases break it |
 | Config file | Stable enough | v1-shaped `opencode.json` is still accepted and translated |
 
@@ -98,9 +98,10 @@ release. But nothing upstream promises it.
 ## Integration shape: spawn-per-turn
 
 The v2 harness spawns `opencode2 run --format json` once per turn, like the v1
-adapter. This answers the "load-bearing unknown" this doc carried as a beta:
-the JSONL run mode survived, so the v2 adapter can share docs/268's
-`shared/opencode-stream.ts` and `shared/opencode-spawn-shaping.ts`,
+adapter. This mostly answers the "load-bearing unknown" this doc carried as a
+beta: the JSONL run mode still exists, and the 2.2.0 binary keeps v1's line
+types. If a live capture confirms it (Phase 0), the v2 adapter can share
+docs/268's `shared/opencode-stream.ts` and `shared/opencode-spawn-shaping.ts`,
 parameterized by harness. Attach-to-server waits (below).
 
 Differences from v1 the adapter must handle:
@@ -116,11 +117,7 @@ Differences from v1 the adapter must handle:
 - **MCP `codemode: false`** must be set, or ShipIt's MCP tools arrive as one
   `execute` call and its tool cards break.
 - **Config.** `OPENCODE_CONFIG` is not in the v2 docs. A v1-shaped config file
-  loads and is translated (`whitelist` is silently dropped); whether the env
-  var still selects the file is untested.
-- **Flags** (2.2.0, verbatim from `run --help`): `--continue`, `--session`,
-  `--fork`, `--model`, `--agent`, `--format`, `--file`, `--title`,
-  `--thinking`, `--auto`; global `--standalone`, `--server`.
+  loads and is translated (`whitelist` is silently dropped).
 
 ## Keeping OpenCode 1 intact (req 2)
 
@@ -128,13 +125,13 @@ Upstream no longer separates the two, so ShipIt must:
 
 - **Install.** Pin `@opencode/cli` at an exact, ≥7-day-old version BESIDE
   `opencode-ai` in `docker/agent-cli/package.json` (2.1.1 qualifies on
-  2026-10-27; 2.1.0 → 2.1.4 had no breaking change). Its `opencode` bin
-  collides with v1's in `node_modules/.bin`, and the v1 harness links
-  `node_modules/.bin/opencode` (`install-agent-clis.sh`,
-  `harness_link_target`). Which package npm links there is unverified; the v1
-  link must resolve to `opencode-ai` regardless — link it to the package's own
-  bin rather than `.bin` if npm's choice is not deterministic. The v2 harness
-  uses the `opencode2` bin.
+  2026-10-27; 2.1.0 → 2.1.4 had no breaking change in the client types). Its
+  `opencode` bin collides with v1's in `node_modules/.bin`, and the v1 harness
+  links `node_modules/.bin/opencode` (`install-agent-clis.sh`,
+  `harness_link_target`). The v1 link must resolve to `opencode-ai` whichever
+  package npm links there — link it to the package's own bin rather than
+  `.bin` if npm's choice is not deterministic. The v2 harness uses the
+  `opencode2` bin.
 - **Prune.** v1's prefix `opencode` globs `node_modules/opencode*`, which never
   touches `node_modules/@opencode/`. The v2 id needs its own prefix covering
   `@opencode/cli` and its platform payload packages.
@@ -151,14 +148,24 @@ Upstream no longer separates the two, so ShipIt must:
 - **Sign-ins (req 4).** API keys and the ChatGPT subscription, as on v1
   (docs/295). The ChatGPT half needs a new token delivery path — v1's does not
   work on v2 (next section).
-- **OpenCode 2 first (req 5).** v1 and v2 offer identical model sets — the
-  strongest same-model, different-harness overlap ShipIt has had. Every site
-  that resolves a harness from a model on its own must rank `opencode2` ahead
-  of `opencode`. Known sites: `selectReviewer` and its harness-only tie-break
-  (`reviewer-model.ts`, planning#408), the harness derivation in
-  `services/reviewer-settings.ts`, and first-harness-wins in
-  `services/child-sessions.ts` (both flagged in docs/266). Phase 0 must find
-  the full list. An explicit harness choice (session, role) is unaffected.
+- **OpenCode 2 first (req 5).** v1 and v2 are expected to offer the same
+  models (Phase 0 measures it). Every site that picks a harness from a model
+  on its own must rank `opencode2` ahead of `opencode`. Most take the first
+  matching harness in list order — `agentIdForModel` over `AGENT_DEFS`
+  (`shared/agent-registry.ts`) and `harnessesForSelection` over
+  `allHarnesses()` (`non-turn-model.ts`) — so the list order decides them.
+  Known callers: `selectReviewer` (`reviewer-model.ts`), the reviewer settings
+  derivation (`services/reviewer-settings.ts`), the model-owner fallback in
+  `services/child-sessions.ts`, model ownership in
+  `services/headless-sessions.ts`, and the client model picker
+  (`client/utils/agent-for-model.ts`). Phase 0 must find the full list. An
+  explicit harness choice (session, role) is unaffected.
+- **Two existing rules can still land on OpenCode 1.** The reviewer moves the
+  implementer's harness last (`harnessesPreferring`), so an implementer on
+  OpenCode 2 gets an OpenCode 1 reviewer for a shared model. A child session
+  keeps its parent's harness when that harness offers the model
+  (`child-sessions.ts`), so an OpenCode 1 parent keeps OpenCode 1 children.
+  Whether req 5 overrides these rules is an open question in requirements.md.
 
 ## ChatGPT token delivery (tested 2026-10-27, CLI 2.2.0)
 
@@ -186,24 +193,25 @@ shape, under `--standalone`, no model call:
   methodID: "chatgpt-browser", refresh: "", access, expires,
   metadata: {accountID}}}]`.
 
-Still untested: whether a turn's running private server sees a credential
-replaced mid-turn (it may cache), whether the token is accepted on the wire
-(needs a real ChatGPT account and a model call), and an import racing a turn's
-server on the same database.
+The open points are Phase 0 item 2.
 
 ## Phase 0 unknowns (empirical, before code)
 
-1. The three untested points above.
-2. Which package wins `node_modules/.bin/opencode` when both are installed.
-3. Whether `OPENCODE_CONFIG` still selects the config file.
-4. A live JSONL capture and conformance lock, including the error line shape.
-5. Re-test each docs/268 workaround (post-error hang, block-buffered stdout,
+Run every check against the version actually pinned; the tests in this doc
+used 2.2.0.
+
+1. A live JSONL capture and conformance lock, including the error line shape.
+2. Token delivery: whether a turn's running private server sees a credential
+   replaced mid-turn (it may cache); whether the token is accepted on the wire
+   (needs a real ChatGPT account and a model call); an import racing a turn's
+   server on the same database.
+3. Which package wins `node_modules/.bin/opencode` when both are installed.
+4. Whether `OPENCODE_CONFIG` still selects the config file.
+5. Whether v1 and v2 offer the same model sets.
+6. Re-test each docs/268 workaround (post-error hang, block-buffered stdout,
    MCP keep-alive, missing final `step_finish`) and adopt or drop it on
-   evidence. Upstream has open reports of the last one (#59652), a hang before
-   session creation over non-interactive SSH (#59287), an intermittent
-   `--standalone` boot deadlock (#59645), and a dead turn that leaves the
-   session busy (#59559).
-6. `$PWD` resolution, `OPENCODE_DISABLE_*` env names, skills disclosure.
+   evidence.
+7. `$PWD` resolution, `OPENCODE_DISABLE_*` env names, skills disclosure.
 
 ## Attach-to-server: deferred
 
