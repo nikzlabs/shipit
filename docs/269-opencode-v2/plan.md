@@ -8,9 +8,9 @@ description: What OpenCode 2 is (released 2026-09-11 as `@opencode/cli`), how st
 
 Implements [requirements.md](./requirements.md). Nothing here is implemented
 yet; the tracked work item is planning#411. The requirements have no open
-questions, but the harness is blocked: MCP tools miss the first step of
-every v2 turn, an upstream race (see that section). Implementation waits for
-an upstream fix or an accepted workaround.
+questions. An upstream race makes MCP tools miss the first step of every
+`run --standalone` turn; the integration shape below works around it (see
+"MCP tools miss the first step of every turn").
 
 **Settled direction (user decision, 2026-08-16): ShipIt will run OpenCode 1
 and OpenCode 2 integrations AT THE SAME TIME, fully separate if needed** —
@@ -98,16 +98,42 @@ only experimental items; and the event fields an adapter needs (step end
 tokens and cost, text, execution, idle, status) did not change in any 2.x
 release. But nothing upstream promises it.
 
-## Integration shape: spawn-per-turn
+## Integration shape: a private server per turn
 
-The v2 harness spawns `opencode2 run --format json` once per turn, like the v1
-adapter. A live capture on 2.1.1 against a mock OpenAI-compatible provider
-(ShipIt's v1 config shape and spawn env) answers the "load-bearing unknown"
-this doc carried as a beta: the JSONL run mode keeps v1's line types, so the
-v2 adapter can share docs/268's `shared/opencode-stream.ts` and
+A live capture on 2.1.1 against a mock OpenAI-compatible provider (ShipIt's v1
+config shape and spawn env) answers the "load-bearing unknown" this doc
+carried as a beta: the JSONL run mode keeps v1's line types, so the v2 adapter
+can share docs/268's `shared/opencode-stream.ts` and
 `shared/opencode-spawn-shaping.ts`, parameterized by harness — with the
-differences below. One finding blocks the harness: MCP tools miss the first
-step of every turn (next section). Attach-to-server waits (below).
+differences below.
+
+Each turn still gets its own process tree with the turn's env and config, as
+on v1, but the adapter starts the server itself instead of using
+`run --standalone`, because `--standalone` loses MCP tools on the first step
+(next section). Per turn, measured on 2.1.1 and 2.2.0:
+
+1. Start `opencode2 serve --port <free>` with the turn's env (`HOME`,
+   `XDG_DATA_HOME`, `PWD`, `OPENCODE_CONFIG`, credentials) and an
+   `OPENCODE_PASSWORD`; it logs `Server listening on http://127.0.0.1:<port>`
+   and answers `GET /api/info` in ~0.3 s.
+2. Poll `GET /api/mcp?location[directory]=<cwd>` (Basic auth, user
+   `opencode`) until every server reports `connected`, `failed`, `disabled` or
+   `needs_auth` (~0.6 s with one stdio server). This call also boots the
+   directory's Location. Then wait ~300 ms for the debounced tool reload.
+3. Run `opencode2 run --server <url> --format json --auto --model …` from the
+   cwd, with the prompt on stdin and stdin closed. With an open stdin, `run`
+   blocks reading it.
+4. After the run, read per-step usage from
+   `GET /api/session/<id>/message?location[directory]=<cwd>`: every assistant
+   message carries `tokens` and `cost`, including the last step, whose
+   `step_finish` the stream never sends.
+5. Kill the server's process tree (docs/289); its MCP children go with it.
+
+This adds about 0.9 s per turn. It touches three server routes — `/api/info`,
+`/api/mcp`, `/api/session/<id>/message` — none under `/api/experimental/`, but
+the whole API is still self-declared experimental; client and server are the
+same pinned binary, so a version bump re-verifies all three. It is not the
+deferred attach-to-server shape (below): the server lives for one turn only.
 
 Differences from v1, all observed live on 2.1.1:
 
@@ -115,9 +141,9 @@ Differences from v1, all observed live on 2.1.1:
   after its `text` line (4 of 4 text turns, and after a tool step); exit is 0.
   Intermediate `step_finish` lines keep v1's `reason`, `cost` and disjoint
   `tokens` (`tokens.total` is gone; ShipIt does not read it). So the last
-  step's usage is lost and `sawFinalStop` never sets. The synthesized result
-  from exit (docs/268 req 4) still ends the turn; the last step's tokens and
-  cost need another source.
+  step's usage is lost from the stream and `sawFinalStop` never sets. The
+  synthesized result from exit (docs/268 req 4) still ends the turn, and the
+  per-turn server supplies the usage (step 4 above).
 - **Error lines** are `{type:"error", error:{type, message, status,
   response:{body}}}` — `provider.auth` (401), `provider.internal` (500),
   `provider.no-route` (unknown model) — not v1's `{name, data:{message,
@@ -135,9 +161,9 @@ Differences from v1, all observed live on 2.1.1:
 - **Reasoning effort** moved into the model string: `--model
   provider/model#high` put `reasoning_effort: "high"` on the wire (title call
   included). There is no `--variant` flag.
-- **Server mode.** By default `run` connects to a shared background server.
-  With `--standalone`, `run` spawns a child `opencode serve --stdio` as its
-  private server, so teardown must kill the tree (docs/289).
+- **Server mode.** By default `run` connects to a shared background server;
+  `--standalone` spawns a child `opencode serve --stdio` as a private one.
+  The adapter uses neither (see the integration shape above).
 - **Config.** `OPENCODE_CONFIG` still selects the file (without it the model
   is `provider.no-route`). ShipIt's v1 provider block works unchanged —
   `{env:NAME}` keys, `variants`, `modalities` — and `instructions: [file]`
@@ -155,7 +181,7 @@ Differences from v1, all observed live on 2.1.1:
   11 s turn); `text` is one whole block, not deltas; the prompt can come on
   stdin; `--session <id>` resumes with history.
 
-## MCP tools miss the first step of every turn (blocker; 2.1.1 and 2.2.0)
+## MCP tools miss the first step of every turn (2.1.1 and 2.2.0; worked around)
 
 A stdio MCP server in either config shape (v1 `mcp.<name>`, v2
 `mcp.servers.<name>`) is started, initialized and listed — the log says
@@ -168,7 +194,7 @@ answers "Unknown tool"; its only namespaces are `opencode` and `browser`).
 request had 13 tools including `probe_phase0_ping`. A one-step turn therefore
 never sees MCP tools. The same server on v1 1.19.0 exposes its tool on the
 first request. ShipIt's own tools and the browser are MCP servers, so the
-harness cannot launch with this.
+harness cannot launch on `run --standalone`.
 
 **Cause — a race in upstream code** (v2.1.1 source; unchanged on 2.2.0 and on
 `dev` at d76552c):
@@ -188,17 +214,18 @@ harness cannot launch with this.
 
 **Workarounds measured:**
 
-- A resident `opencode serve` with `run --server <url>` per turn: the first
-  turn in a project directory still misses the tools (the directory's Location
-  and its MCP connections boot at that request), and the second turn has them;
-  the MCP server started once. `opencode mcp list` has no `--server` flag, so
-  it cannot warm a Location up; no warm-up path was found. A resident server
-  also changes the adapter's shape (per-turn config, credentials and MCP set
-  become server-lifetime), which this plan deferred.
-- The fix belongs upstream: wait for each enabled server's `startup` latch
-  (bounded by `timeout.startup`) before the first snapshot. A minimal
-  ShipIt-free reproduction and an issue draft exist; filing them is the user's
-  act.
+- **Works — a private server per turn with a readiness wait** (the
+  integration shape above): the first step had the MCP tool in 3 of 3 runs on
+  2.1.1 and 1 of 1 on 2.2.0.
+- Fails — delaying the prompt on stdin with `run --standalone`: `run` reads
+  the prompt before it boots the Location.
+- Partial — one resident `opencode serve` for all turns: the first turn in a
+  directory still misses the tools; later turns have them. It would also make
+  per-turn config, credentials and the MCP set server-lifetime.
+
+The proper fix is upstream — wait for each enabled server's `startup` latch,
+bounded by `timeout.startup`, before the first snapshot — but it has not been
+reported there.
 
 ## Keeping OpenCode 1 intact (req 2)
 
@@ -291,22 +318,20 @@ shape, under `--standalone`, no model call:
 - `auth` commands need the turn's `OPENCODE_CONFIG` when the integration is a
   config-defined provider; without it they answer "Integration not found".
 
-Open: whether the ChatGPT backend accepts the delivered token (Phase 0 item 2).
+Open: whether the ChatGPT backend accepts the delivered token (Phase 0 item 1).
 
 ## Phase 0 status (2.1.1, 2026-10-27)
 
 Answered above: the live JSONL capture, `OPENCODE_CONFIG`, the
 `.bin/opencode` winner, model sets, the docs/268 workarounds, the mid-turn
-credential swap and import race, `$PWD`, env names, skills and instructions.
-Still open:
+credential swap and import race, `$PWD`, env names, skills and instructions,
+MCP tools on the first step (worked around), and the last step's usage (from
+the per-turn server). Still open:
 
-1. **MCP tools on the first step** — the upstream race above; waits for a fix
-   upstream or a workaround the user accepts.
-2. **Real-account ChatGPT check:** the token accepted on the wire, the v2
+1. **Real-account ChatGPT check:** the token accepted on the wire, the v2
    ChatGPT route config (v1's uses `OPENCODE_CONFIG_CONTENT` with the built-in
    `openai` provider and sets `OPENCODE_DISABLE_DEFAULT_PLUGINS=0`, a variable
    v2 no longer has), and its model ids. Needs the user's account.
-3. A source for the last step's tokens and cost.
 
 ## Attach-to-server: deferred
 
