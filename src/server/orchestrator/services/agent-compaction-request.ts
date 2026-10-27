@@ -5,6 +5,7 @@ import type { AgentId } from "../../shared/types.js";
 import { getAgentCapabilities } from "../../shared/agent-registry.js";
 import { GLOBAL_SETTINGS } from "../../shared/settings-catalogue/global-settings.js";
 import { settingPath } from "../../shared/settings-catalogue/tabs.js";
+import { AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS } from "../../shared/compaction-threshold.js";
 import type { PendingCompaction, SessionManager } from "../sessions.js";
 import type { PersistedMessage } from "../chat-history.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
@@ -26,6 +27,7 @@ import { ServiceError } from "./types.js";
 const INSTRUCTIONS = loadPrompt(import.meta.url, "../prompts/agent-compaction-instructions.md").trim();
 const NOTE = loadPrompt(import.meta.url, "../prompts/agent-compaction-note.md").trim();
 const NOT_STARTED = loadPrompt(import.meta.url, "../prompts/agent-compaction-not-started.md").trim();
+const UNDER_MINIMUM = loadPrompt(import.meta.url, "../prompts/agent-compaction-under-minimum.md").trim();
 const COMPACTION_ACTIVITY = "Compacting context…";
 const FOLLOWUP_ACTIVITY = "Continuing after the compaction…";
 const MAX_CHARS = 4000;
@@ -99,6 +101,8 @@ export interface CompactionStepDeps {
   runnerRegistry: Pick<SessionRunnerRegistry, "get">;
   chatHistoryManager: { append(sessionId: string, message: PersistedMessage): unknown };
   isEnabled: () => boolean;
+  /** `UsageManager.latestContextTokens`, which by now has the requesting turn's row. */
+  getContextTokens: (sessionId: string) => number | undefined;
 }
 
 /**
@@ -159,6 +163,12 @@ export async function runRequestedCompaction(
     notStarted(deps, runner, request, "this session cannot start a turn of its own");
     return;
   }
+  // req 12; an unknown size compacts.
+  const context = deps.getContextTokens(sessionId);
+  if (context !== undefined && context < AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS) {
+    skipUnderMinimum(deps, runner, request, context);
+    return;
+  }
 
   // req 9 — persisted, so it survives a restart, and taken by whichever turn comes next.
   if (request.instructions) parkNotice(deps, sessionId, buildInstructionsNotice(request.instructions));
@@ -195,7 +205,7 @@ export async function runRequestedCompaction(
   // req 8 — right behind the compaction, so it runs after it whether that completes, fails
   // or is cut short. A started compaction has left the queue; a queued one is at its tail.
   if (request.note !== undefined) {
-    const entry = markCompactionContinuation(continuationEntry(deps, sessionId, request.note));
+    const entry = markCompactionContinuation(toQueuedMessage(continuationDispatch(deps, sessionId, request.note)));
     if (handle.admitted === "started") runner.messageQueue.unshift(entry);
     else runner.messageQueue.push(entry);
     runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
@@ -219,9 +229,9 @@ export function busyReason(
   return work.length > 0 ? `the resident agent has background work in flight (${work.join(", ")})` : null;
 }
 
-function continuationEntry(deps: CompactionStepDeps, sessionId: string, note: string) {
+function continuationDispatch(deps: CompactionStepDeps, sessionId: string, note: string) {
   const text = buildContinuationPrompt(note);
-  return toQueuedMessage(prepareDispatch({
+  return prepareDispatch({
     text,
     agentInterface: undefined,
     execution: undefined,
@@ -244,10 +254,38 @@ function continuationEntry(deps: CompactionStepDeps, sessionId: string, note: st
     deliveryId: undefined,
     dictated: undefined,
     resetMergedBranch: undefined,
-    // The context was just compacted; a merged session must not compact it again (docs/295).
+    // Compacted just now, or under the minimum (req 12): a merged session must not compact here.
     compactContext: false,
     silent: undefined,
-  }));
+  });
+}
+
+/**
+ * req 12 — nothing to compact and nothing to warn the user about. The agent learns it on its
+ * next turn, and a note still starts that turn (req 8).
+ */
+function skipUnderMinimum(
+  deps: CompactionStepDeps,
+  runner: SessionRunnerInterface,
+  request: PendingCompaction,
+  context: number,
+): void {
+  const { sessionId } = runner;
+  console.log(
+    `[agent-compaction] not compacting ${sessionId}: the context is ${context} tokens `
+    + `(minimum ${AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS})`,
+  );
+  parkNotice(deps, sessionId, `[System] ${fillPromptTokens(UNDER_MINIMUM, {
+    TOKENS: context.toLocaleString("en-US"),
+    MINIMUM: AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS.toLocaleString("en-US"),
+  })}`);
+  if (request.note === undefined) return;
+  try {
+    runner.dispatch(continuationDispatch(deps, sessionId, request.note));
+  } catch (err) {
+    console.error(`[agent-compaction] the continuation of ${sessionId} did not start:`, getErrorMessage(err));
+    parkNotice(deps, sessionId, `[System] ${buildContinuationPrompt(request.note)}`);
+  }
 }
 
 /** No compaction turn ran: tell the user, and leave the note for the next turn (req 6). */

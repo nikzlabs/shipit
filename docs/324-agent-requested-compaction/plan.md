@@ -86,6 +86,26 @@ continuation of an earlier compaction, the usual case in an autonomous run)
 still owns its hold here, which settling releases. If the release started a
 queued entry, the request waits for it.
 
+**3b. The minimum (req 12).** After the setting, harness and runner checks, the
+step reads the context size (`UsageManager.latestContextTokens`, with a
+compaction card newer than the reading taking its place). By then it counts the
+requesting turn: the listener records the usage row synchronously at the
+result (`agent-listeners.ts`), and the step runs only after the awaited commit
+(`turn-executor.ts`). Under `AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS` (200,000,
+`shared/compaction-threshold.ts`, the minimum docs/295 and docs/333 read too)
+the request is cleared and no compaction turn runs. The step parks
+`prompts/agent-compaction-under-minimum.md`, which gives the size, and parks no
+instructions, because the context still holds them. With a note it dispatches
+the continuation at once, so an autonomous run goes on; it takes the parked
+notice. The user gets no warn notice: nothing failed, and the other two
+automatic compactions are silent under the minimum as well. An unknown size
+compacts, as on the docs/295 path.
+
+The command cannot refuse at once, as it does for req 7: no usage row exists
+for the turn that runs it, and one turn can grow a 30K context past 200K, so a
+check at the command would refuse the compactions an autonomous run needs most.
+The command's help and output name the minimum instead.
+
 **4. The compaction turn (req 3, 4, 5).** A dispatch with text
 `/compact INSTRUCTIONS` (or `/compact`), `systemTurn`, `automatic` and `silent`
 — the docs/295 compaction turn, so it shows no user bubble, says "Compacting
@@ -214,7 +234,8 @@ step posts it.
 | `src/server/shared/database.ts`, `src/server/orchestrator/sessions.ts` | `pending_compaction` and `pending_compaction_notice` columns; the notice is delivered by `consumePendingAgentNotice` |
 | `src/server/orchestrator/services/agent-compaction-request.ts` | The request, and the step: checks, settle, parked instructions, compaction turn, queued continuation, failure |
 | `src/server/orchestrator/services/agent-compaction-stop.ts` | What Stop ends: the pending note and a queued continuation |
-| `src/server/orchestrator/prompts/agent-compaction-*.md` | The instructions notice, the continuation, the not-started notice |
+| `src/server/orchestrator/prompts/agent-compaction-*.md` | The instructions notice, the continuation, the not-started notice, the under-minimum notice |
+| `src/server/shared/compaction-threshold.ts` | The 200,000-token minimum (req 12) |
 | `src/server/orchestrator/turn-executor.ts` | Call the step after the restart step |
 | `src/server/orchestrator/session-runner.ts`, `ws-handlers/types.ts` | The `runRequestedCompaction` seam |
 | `src/server/orchestrator/bootstrap-managers.ts`, `runner-registry-factory.ts`, `route-registry.ts`, `ws-handlers/agent-execution.ts` | Build and wire the step |

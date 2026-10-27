@@ -123,6 +123,7 @@ describe("buildMounts", () => {
     expect(result.binds).not.toContain("/credentials:/credentials:rw");
   });
 
+  // The cross-session lock in shipit-docs/environment.md needs /dep-cache writable and shared.
   it("mounts depCacheDir at /dep-cache as bind mount when no volume", () => {
     const config = baseConfig({ depCacheDir: "/workspace/dep-cache/abc123" });
     const result = buildMounts(config, undefined, undefined);
@@ -146,6 +147,7 @@ describe("buildMounts", () => {
     expect(depMount).toBeDefined();
     expect(depMount!.Source).toBe("my-workspace-vol");
     expect(depMount!.VolumeOptions?.Subpath).toBe("dep-cache/abc123");
+    expect(depMount!.ReadOnly).toBeFalsy();
   });
 
   // Every session's own store maps to the SAME container path: pnpm records storeDir in
@@ -523,7 +525,8 @@ describe("buildEnv", () => {
     const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {} as NodeJS.ProcessEnv);
     expect(env).toContain("HOME=/home/shipit");
     expect(env).toContain("AGENT_HOME=/home/shipit");
-    expect(env).toContain("PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers");
+    // docs/335: the session's own writable store, not the image's read-only one.
+    expect(env).toContain("PLAYWRIGHT_BROWSERS_PATH=/session-state/playwright-browsers");
   });
 
   it("docs/213: sets ANDROID_SDK_ROOT, ANDROID_HOME, and JAVA_HOME for the baked Android toolchain", () => {

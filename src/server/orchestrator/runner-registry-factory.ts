@@ -501,7 +501,7 @@ export function createRunnerRegistry(
             ...(intent !== undefined ? { intent } : {}),
           });
         },
-        shouldCompactBeforeTurn: async (runner, agentId, sessionId, sessionDir, intent, unattended) => {
+        shouldCompactBeforeTurn: async (runner, agentId, sessionId, sessionDir, intent) => {
           if (!credentialStore) return false;
           const prStatusPoller = getPrStatusPoller?.();
           return await shouldCompactBeforeTurn({
@@ -528,7 +528,6 @@ export function createRunnerRegistry(
             sessionId,
             sessionDir,
             ...(intent !== undefined ? { intent } : {}),
-            ...(unattended ? { unattended } : {}),
           });
         },
         consumePendingAgentNotice: (sessionId) => sessionManager.consumePendingAgentNotice(sessionId),

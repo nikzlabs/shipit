@@ -1,0 +1,1 @@
+ShipIt did not compact your context, as you asked with `shipit compact`: it is {{TOKENS}} tokens, and ShipIt compacts only a context of {{MINIMUM}} tokens or more. Your context is as it was. A smaller context is compacted only when the user sends `/compact`.

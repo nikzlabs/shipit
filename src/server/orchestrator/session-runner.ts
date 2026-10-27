@@ -221,9 +221,9 @@ export interface AgentDispatchOptions {
    */
   bestEffortSteer?: boolean;
   /**
-   * docs/295-compact-context-on-merge req 15 — ShipIt started this turn by itself, so the
-   * composer's tick boxes were in front of nobody. `automatic` cannot say it: a wake that
-   * is not automatic exists (docs/328's turn for a message the user sent).
+   * ShipIt started this turn by itself; the docs/235 one-shot turn note reads it. `automatic`
+   * cannot say it: a wake that is not automatic exists (docs/328's turn for a message the user
+   * sent).
    */
   unattended?: boolean;
   /**
@@ -525,7 +525,6 @@ export interface SystemTurnDeps {
     sessionId: string,
     sessionDir: string,
     intent?: boolean,
-    unattended?: boolean,
   ) => Promise<boolean>;
   consumePendingAgentNotice?: (sessionId: string) => string | undefined;
   /** Restore a consumed notice if setup fails before the agent receives it. */

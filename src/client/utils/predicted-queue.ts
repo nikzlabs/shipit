@@ -3,8 +3,9 @@
  * about to compact ahead of, from the instant the user presses send.
  *
  * Why it exists. A message sent on a merged session with "Compact the context"
- * ticked does not start a turn: the server compacts first and the message waits
- * in the queue (docs/295). But the server only knows that after a git read and
+ * ticked, and a context of 200K tokens or more, does not start a turn: the server
+ * compacts first and the message waits in the queue (docs/295). But the server
+ * only knows that after a git read and
  * a PR re-verification, so the composer used to render an ordinary bubble and
  * the bubble then collapsed into the queue strip a fraction of a second later.
  * The bubble was never true — it was the UI guessing "no compaction" by

@@ -18,6 +18,9 @@ issue: planning#63
 > action. Axis 3 (the CLI contract test) and Axis 1/D (the channel split)
 > remain. See `checklist.md` for the live status, including the
 > `--ignore-scripts` finding about `claude-code`'s required postinstall.
+> The same manifest also pins `playwright-stable`, an npm alias of the newest
+> stable `playwright-core`, for the browser builds a project's own Playwright
+> uses — see `docs/335-project-playwright-browsers`.
 
 # Agent CLI version strategy
 

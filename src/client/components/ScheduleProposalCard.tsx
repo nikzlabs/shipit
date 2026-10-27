@@ -178,7 +178,7 @@ export function ScheduleProposalCard({ card, onDecide, browserTimeZone, now }: S
                   ? "None while paused"
                   : runs === null
                     ? "Cannot be worked out"
-                    : runs.join(" · ")}
+                    : runs.join(" · ") || "None"}
               </dd>
             </dl>
             {card.prompt?.before !== undefined && <PromptText label="Prompt before" text={card.prompt.before} struck />}

@@ -49,7 +49,8 @@ describe("the built-in browser on the GPU", () => {
   const stubDir = mkdtempSync(path.join(os.tmpdir(), "playwright-mcp-stub-"));
   writeFileSync(
     path.join(stubDir, "playwright-mcp"),
-    '#!/bin/sh\necho "driver=$GALLIUM_DRIVER"\necho "tunables=$GLIBC_TUNABLES"\nfor arg in "$@"; do echo "arg=$arg"; done\n',
+    '#!/bin/sh\necho "driver=$GALLIUM_DRIVER"\necho "tunables=$GLIBC_TUNABLES"\necho "browsers=$PLAYWRIGHT_BROWSERS_PATH"\n'
+      + 'for arg in "$@"; do echo "arg=$arg"; done\n',
   );
   chmodSync(path.join(stubDir, "playwright-mcp"), 0o755);
   afterAll(() => {
@@ -57,14 +58,19 @@ describe("the built-in browser on the GPU", () => {
   });
 
   /** What the server binary receives when a CLI starts it from these args. */
-  function serverStart(gpu: boolean): { driver: string; tunables: string; args: string[] } {
+  function serverStart(
+    gpu: boolean,
+    env: NodeJS.ProcessEnv = {},
+  ): { driver: string; tunables: string; browsers: string; args: string[] } {
     const out = execFileSync(PLAYWRIGHT_MCP_COMMAND, [...playwrightMcpArgs(gpu)], {
-      env: { PATH: `${stubDir}:${process.env.PATH ?? ""}` },
+      env: { ...env, PATH: `${stubDir}:${process.env.PATH ?? ""}` },
       encoding: "utf8",
     }).trim().split("\n");
+    const value = (key: string): string => out.find((line) => line.startsWith(`${key}=`))?.slice(key.length + 1) ?? "";
     return {
-      driver: out.find((line) => line.startsWith("driver="))?.slice("driver=".length) ?? "",
-      tunables: out.find((line) => line.startsWith("tunables="))?.slice("tunables=".length) ?? "",
+      driver: value("driver"),
+      tunables: value("tunables"),
+      browsers: value("browsers"),
       args: out.filter((line) => line.startsWith("arg=")).map((line) => line.slice("arg=".length)),
     };
   }
@@ -114,14 +120,22 @@ describe("the built-in browser on the GPU", () => {
 
   it("leaves the command of a session without the GPU as it was (req 10)", () => {
     expect(playwrightMcpArgs(false)[1]).toBe(
-      "mkdir -p /tmp/.playwright-mcp && cd /tmp/.playwright-mcp && exec playwright-mcp --isolated "
-        + "--browser chromium --headless --no-sandbox --output-dir /tmp/.playwright-mcp",
+      "mkdir -p /tmp/.playwright-mcp && cd /tmp/.playwright-mcp && export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers "
+        + "&& exec playwright-mcp --isolated --browser chromium --headless --no-sandbox --output-dir /tmp/.playwright-mcp",
     );
     expect(serverStart(false)).toEqual({
       driver: "",
       tunables: "",
+      browsers: "/opt/playwright-browsers",
       args: ["--isolated", "--browser", "chromium", "--headless", "--no-sandbox", "--output-dir", PLAYWRIGHT_OUTPUT_DIR],
     });
+  });
+
+  it("keeps the server on the image's browser store when the session points Playwright elsewhere (docs/335)", () => {
+    for (const gpu of [false, true]) {
+      expect(serverStart(gpu, { PLAYWRIGHT_BROWSERS_PATH: "/session-state/playwright-browsers" }).browsers)
+        .toBe("/opt/playwright-browsers");
+    }
   });
 
   it("starts the server with Mesa pinned to Direct3D and a config file of browser flags", () => {

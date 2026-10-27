@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { GLIBC_TUNABLES_ENV, GPU_GRAPHICS_GLIBC_TUNABLES } from "../../shared/gpu-graphics-env.js";
+import { BAKED_PLAYWRIGHT_BROWSERS_DIR } from "../../shared/playwright-browsers.js";
 
 // Auto-named screenshots land here and return image blocks; explicit filenames
 // return links and resolve relative to the MCP client's workspace, not this directory.
@@ -32,14 +33,15 @@ export function builtInBrowserUsesGpu(
 // Chromium supports Linux ARM64. cd preserves compatibility with older MCP builds.
 export function playwrightMcpArgs(gpu: boolean): readonly string[] {
   const server = `${PLAYWRIGHT_MCP_BIN} --isolated --browser chromium --headless --no-sandbox --output-dir ${PLAYWRIGHT_OUTPUT_DIR}`;
+  // The image's own store, never the session's writable one, which a project's
+  // `playwright install` or `uninstall` changes (docs/335-project-playwright-browsers).
+  // Exported here, not inherited: Codex gives an MCP server only the variables its config names.
+  const env = [`PLAYWRIGHT_BROWSERS_PATH=${BAKED_PLAYWRIGHT_BROWSERS_DIR}`];
   // Pinned to Direct3D, a GPU fault ends in Chromium's own software renderer, as with no GPU.
   // Not pinned, Mesa draws on the CPU and gives a third kind of picture.
-  // The tunable is exported here like the pin: Codex gives an MCP server only the variables its config names.
-  const tunables = `${GLIBC_TUNABLES_ENV}=${shellQuote(GPU_GRAPHICS_GLIBC_TUNABLES)}`;
-  const start = gpu
-    ? `export GALLIUM_DRIVER=d3d12 ${tunables} && exec ${server} --config ${shellQuote(GPU_CONFIG_PATH)}`
-    : `exec ${server}`;
-  return ["-c", `mkdir -p ${PLAYWRIGHT_OUTPUT_DIR} && cd ${PLAYWRIGHT_OUTPUT_DIR} && ${start}`];
+  if (gpu) env.push("GALLIUM_DRIVER=d3d12", `${GLIBC_TUNABLES_ENV}=${shellQuote(GPU_GRAPHICS_GLIBC_TUNABLES)}`);
+  const start = gpu ? `exec ${server} --config ${shellQuote(GPU_CONFIG_PATH)}` : `exec ${server}`;
+  return ["-c", `mkdir -p ${PLAYWRIGHT_OUTPUT_DIR} && cd ${PLAYWRIGHT_OUTPUT_DIR} && export ${env.join(" ")} && ${start}`];
 }
 
 export const PLAYWRIGHT_MCP_ARGS: readonly string[] = playwrightMcpArgs(builtInBrowserUsesGpu(process.env));

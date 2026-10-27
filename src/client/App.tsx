@@ -11,7 +11,7 @@ import {
 } from "react";
 /* eslint-enable no-restricted-imports */
 import { Dialog, DialogContent } from "./components/ui/dialog.js";
-import { mobileChatInFront } from "./components/ContentPanels.js";
+import { homeScreenShown, mobileChatInFront } from "./components/ContentPanels.js";
 import { TooltipProvider } from "./components/ui/tooltip.js";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useSessionWebSocket } from "./hooks/useSessionWebSocket.js";
@@ -1239,9 +1239,12 @@ export default function App() {
   );
   const detectedPorts = effectivePreviewStatus?.detectedPorts ?? [];
   const showNewSessionView = isNewSessionRoute && !urlSessionId;
-  const showHomeScreen =
-    !showNewSessionView &&
-    (!sessionId || (showTemplates && messages.length === 0 && !isLoading));
+  const showHomeScreen = homeScreenShown({
+    showNewSessionView,
+    urlSessionId,
+    sessionId,
+    templatesForEmptySession: showTemplates && messages.length === 0 && !isLoading,
+  });
   const isHomeRoute = !urlSessionId && !isNewSessionRoute;
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {

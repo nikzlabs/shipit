@@ -18,6 +18,7 @@ import { newOverlayClaimToken, releaseOverlayBaseClaims } from "./overlay-base-c
 import { isRecentlyUsedRepo } from "./warm-recency.js";
 import type { DockerMemoryStats } from "../shared/types.js";
 import type { ServiceManager } from "./service-manager.js";
+import type { CreateSessionDir } from "./session-dir-factory.js";
 
 export interface WarmPoolDeps {
   repoStore: RepoStore;
@@ -28,7 +29,7 @@ export interface WarmPoolDeps {
   credentialsDir: string;
   getBareCacheDir: (repoUrl: string) => string;
   getDepCacheDir: (repoUrl: string) => string;
-  createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
+  createSessionDir: CreateSessionDir;
   sseBroadcast: (event: string, data: unknown) => void;
   oomBreaker?: SessionOomCircuitBreaker;
   getMemoryStats?: () => DockerMemoryStats | null;
@@ -242,10 +243,9 @@ export function createWarmPool(
         if (!cacheExists) return;
 
         const branchPrefix = generateBranchPrefix();
-        const created = await createSessionDir("Warm session");
+        const created = await createSessionDir("Warm session", { warm: true });
         const { appSessionId, sessionDir, workspaceDir } = created;
 
-        sessionManager.setWarm(appSessionId, true);
         sessionManager.setRemoteUrl(appSessionId, repoUrl);
 
         const cacheGit = createRepoGit(cacheDir);
