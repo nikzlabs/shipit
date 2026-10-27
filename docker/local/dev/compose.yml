@@ -27,6 +27,10 @@ services:
       - PORT=3001
       - CLIENT_DEV_PORT=3000
       - VITE_API_HOST=localhost:3001
+      # Vite runs in this container and proxies /api and /ws to the orchestrator over
+      # loopback, so trust the orchestrator's own loopback here (planning#668). Only the
+      # single-container dev stack needs this; prod serves the client statically.
+      - SHIPIT_TRUST_OWN_LOOPBACK=1
       - USE_CONTAINERS=true
       - SHIPIT_SESSION_WORKER_UID=1000
       - AGENT_HOME=/home/shipit
