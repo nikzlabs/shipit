@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, within } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
 import { PreviewToolbar } from "./PreviewToolbar.js";
 
 // could never perform.
@@ -37,6 +37,8 @@ const baseProps = {
   activeSlotUrl: "http://a--5173.localhost/requirements",
   previewPath: "/requirements?focus=7",
   previewFullUrl: "http://a--5173.localhost/requirements?focus=7",
+  maximized: false,
+  onToggleMaximized: vi.fn(),
 };
 
 function toolbar(container: HTMLElement): HTMLElement {
@@ -150,5 +152,20 @@ describe("PreviewToolbar collapse wiring", () => {
     const region = address!.closest("button")!.parentElement!;
     expect(region.className).toContain("min-w-7");
     expect(within(region).getByRole("button")).toHaveAccessibleName(/Copy preview URL/);
+  });
+});
+
+describe("PreviewToolbar maximize button", () => {
+  it("toggles through the callback", () => {
+    const onToggleMaximized = vi.fn();
+    render(<PreviewToolbar {...baseProps} onToggleMaximized={onToggleMaximized} />);
+    fireEvent.click(screen.getByRole("button", { name: "Maximize preview" }));
+    expect(onToggleMaximized).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers restore while maximized", () => {
+    render(<PreviewToolbar {...baseProps} maximized />);
+    expect(screen.getByRole("button", { name: "Restore preview" })).toHaveAttribute("title", "Restore preview (Esc)");
+    expect(screen.queryByRole("button", { name: "Maximize preview" })).not.toBeInTheDocument();
   });
 });
