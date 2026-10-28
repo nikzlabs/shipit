@@ -370,7 +370,8 @@ what an install has to satisfy is in [plugin-authoring.md](plugin-authoring.md)
 A plugin can ship skills. ShipIt copies each imported plugin's skills into
 this session's skill directories, so you discover them exactly like the
 project's own — namespaced `plugins--<alias>--<skill>` so two plugins can ship
-a skill with the same name.
+a skill with the same name. It copies them again whenever the session's
+container starts, so a container restart is enough to bring them back.
 
 They reach **you**, not the user: they are left out of the composer's
 autocomplete, because a plugin's instructions are something the plugin brought
