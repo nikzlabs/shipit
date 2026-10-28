@@ -10,7 +10,12 @@ import {
 import { credentialFailurePolicyForRoute, quotaRefusalCanFailOver } from "./credential-failure-policy.js";
 import type { CredentialFailurePolicy } from "./credential-failure-policy.js";
 import { ProviderRouteUnavailableError } from "./provider-route-preflight.js";
-import { buildAccountFailoverNote, FAILED_SUB_AGENTS_NOTICE } from "./account-failover-note.js";
+import {
+  buildAccountFailoverNote,
+  buildParkedFailoverNotice,
+  FAILED_SUB_AGENTS_NOTICE,
+  withAccountFailoverNote,
+} from "./account-failover-note.js";
 
 export interface RefusedAttempt {
   routeId: string;
@@ -95,8 +100,10 @@ export interface TurnInput {
    * that failed. Absent on a prompt composed without a block, which stays without one.
    */
   statusContext?: InsertedStatusContext;
-  /** planning#712 — what a retry on another account puts before the prompt it sends again. */
-  accountFailoverNote?: string;
+  /** planning#712 — a retry on another account: its prompt carries a note naming these tasks. */
+  accountFailover?: { stoppedTasks: readonly string[] };
+  /** docs/297 — the prompt is a goal command the CLI reads only as the whole message. */
+  verbatimCommand?: boolean;
   userText: string;
   agentInterface?: AgentInterfaceProvenance;
   messageOrigin?: SessionMessageOrigin;
@@ -225,13 +232,15 @@ export async function executeAgentTurn(
   // Per ATTEMPT, not per turn: this function is re-entered by every retry with the prompt
   // the first attempt was given, and the card has moved since (docs/303 req 35). Read
   // before the closures below capture it, so the echo check compares what was submitted.
-  // The failover note goes in front after the swap, whose offset is into `input.prompt`.
-  const prompt = (input.accountFailoverNote ? `${input.accountFailoverNote}\n\n` : "")
-    + refreshStatusContextInPrompt(
-      input.prompt,
-      input.statusContext,
-      readStatusContext(deps, sessionId),
-    );
+  const refreshedPrompt = refreshStatusContextInPrompt(
+    input.prompt,
+    input.statusContext,
+    readStatusContext(deps, sessionId),
+  );
+  // Added after the swap, whose offset is into `input.prompt`.
+  const prompt = input.accountFailover
+    ? withAccountFailoverNote(refreshedPrompt, buildAccountFailoverNote(input.accountFailover.stoppedTasks))
+    : refreshedPrompt;
   // The prompt as spawned: a fork's replay leads its first one (docs/007 req 8).
   let submittedPrompt = prompt;
   // docs/333-idle-compaction piece 4 — a silent compaction is maintenance: it does not move the
@@ -784,6 +793,15 @@ export async function executeAgentTurn(
       servingCliStartedTurn(),
     );
 
+  // planning#712 — where no replayed prompt can carry the failover note, the next turn does.
+  const parkFailoverNotice = (notice: string): void => {
+    try {
+      deps.listenerDeps.sessionManager.appendPendingAgentNotice(sessionId, notice);
+    } catch (err) {
+      console.error(`[turn] parking the account failover notice for ${sessionId} failed:`, err);
+    }
+  };
+
   const retryOnNextAccount = async (
     entry: RefusedAttempt,
     consumeRecoveryBudget = false,
@@ -793,9 +811,15 @@ export async function executeAgentTurn(
       + "retrying on the next eligible credential",
     );
     // planning#712 — before the kill, and before the retry's turn start clears the list.
-    const stoppedTasks = useStreaming
+    const stoppedNow = useStreaming
       ? (runner?.backgroundTaskDescriptions ?? [])
       : [...trackedJobs.values()];
+    // A note this CLI never echoed may be missing from the conversation the next one resumes.
+    const carried = promptEchoed ? [] : (input.accountFailover?.stoppedTasks ?? []);
+    const stoppedTasks = [...new Set([...carried, ...stoppedNow])];
+    // The harness reads a compaction or a verbatim command only as the whole prompt.
+    const promptIsCommand = input.compact === true || input.verbatimCommand === true;
+    if (promptIsCommand) parkFailoverNotice(buildParkedFailoverNotice(stoppedTasks));
     // Stop the old process before reprovisioning its credential subtree.
     try {
       agent.kill();
@@ -810,8 +834,7 @@ export async function executeAgentTurn(
     }
     await executeAgentTurn(runner, deps, freshAgent, {
       ...input,
-      // A compaction's prompt is the harness command, which takes no prefix.
-      ...(input.compact ? {} : { accountFailoverNote: buildAccountFailoverNote(stoppedTasks) }),
+      ...(promptIsCommand ? {} : { accountFailover: { stoppedTasks } }),
       attemptLedger: [...(input.attemptLedger ?? []), entry],
       ...(consumeRecoveryBudget ? { recoveryRetryUsed: true } : {}),
       reuseExistingAgent: false,
@@ -864,12 +887,8 @@ export async function executeAgentTurn(
       deps.listenerDeps.markSessionAccountExhausted?.(sessionId, opts.benchUntil, routeId);
     }
     const label = routeId ? (deps.routeLabel?.(routeId) ?? routeId) : "This account";
-    // planning#712 — no replayed prompt carries the note here, so the next turn does.
-    try {
-      deps.listenerDeps.sessionManager.appendPendingAgentNotice(sessionId, FAILED_SUB_AGENTS_NOTICE);
-    } catch (err) {
-      console.error(`[turn] parking the failed-sub-agents note for ${sessionId} failed:`, err);
-    }
+    // The stand-down kills no process, so no background task stopped.
+    parkFailoverNotice(FAILED_SUB_AGENTS_NOTICE);
     // The turn's prompt cannot be replayed, but ShipIt can start a turn of its own, so ask
     // the router before deciding what to tell the user (docs/306-quota-continuation, superseding docs/140).
     continuationPending = deps.recordStandDown?.({

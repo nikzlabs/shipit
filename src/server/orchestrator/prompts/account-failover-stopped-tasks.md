@@ -1,4 +1,4 @@
-These background tasks were still running, and they stopped with the old agent process:
+These background tasks were still running when ShipIt stopped the agent process on that account, and they stopped with it:
 
 {{TASKS}}
 

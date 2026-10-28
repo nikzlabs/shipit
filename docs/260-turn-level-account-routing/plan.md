@@ -228,7 +228,12 @@ The req-14 one-hop retry in `turn-executor.ts` (`retryOnNextAccount`,
    today. The replayed prompt gets a ShipIt note in front (`account-failover-note.ts`,
    planning#712): a sub-agent that ran on the refused account returned an error, not a
    result, and the background tasks the kill ended are named. The task list is read
-   before the kill, because the retry's turn start clears it (planning#710).
+   before the kill, because the retry's turn start clears it (planning#710). Until an
+   attempt's CLI echoes its prompt back, the next note names that note's tasks too:
+   the conversation the next attempt resumes may not hold it. After a
+   slash command the note goes behind it; a compaction or a verbatim `/goal`, which
+   the harness reads only as the whole prompt, is sent unchanged and the note is
+   parked for the next turn.
 3. Stop on success, or when no candidate remains. The loop keeps a per-turn
    **attempt ledger** — route id, account label, the provider's original
    refusal message, and the parsed reset time for every attempt, preserved

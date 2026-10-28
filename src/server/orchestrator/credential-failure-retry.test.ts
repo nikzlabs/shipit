@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { SessionRunner } from "./session-runner.js";
 import type { SystemTurnDeps } from "./session-runner.js";
 import { executeAgentTurn } from "./turn-executor.js";
+import { buildParkedFailoverNotice } from "./account-failover-note.js";
 import type { AgentId, SessionInfo } from "../shared/types.js";
 
 interface FakeAgent extends EventEmitter {
@@ -84,6 +85,7 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
           touchUnlessResolved: vi.fn(),
           setMuted: vi.fn(),
           list: vi.fn().mockReturnValue([]),
+          appendPendingAgentNotice: vi.fn(),
         } as never,
         chatHistoryManager: {
           replaceInProgress: vi.fn(),
@@ -243,6 +245,38 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
     await waitFor(() => runner.isStreamingActive, "retry streaming");
 
     expect(runner.backgroundWorkDescriptions).toEqual([]);
+    runner.dispose({ force: true });
+  });
+
+  // planning#712 — the CLI reads everything after `/goal ` as the objective (docs/297).
+  it("sends a verbatim command again unchanged, and parks the failover note for the next turn", async () => {
+    const session = { billingMode: "sub", providerRouteBillingMode: "sub", serviceId: "anthropic" };
+    const { agents, deps, runner } = harness(session as Partial<SessionInfo>);
+    deps.buildRunParams = vi.fn(async (_sessionId: string, _agentId: AgentId, prompt: string) => ({ prompt, cwd: repoDir }));
+    const first = makeFakeAgent();
+
+    await executeAgentTurn(runner, deps, first as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "/goal ship the release",
+      verbatimCommand: true,
+      userText: "/goal ship the release",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext: async () => {},
+      emit: () => {},
+      useStreaming: true,
+    });
+    first.emit("event", { type: "agent_background_tasks", tasks: [{ id: "t1", description: "sleep 600" }] });
+    first.emit("event", { type: "agent_result", status: "error", error: EXHAUSTED });
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "retry started");
+
+    expect((agents[0]!.run.mock.calls[0]?.[0] as { prompt: string }).prompt).toBe("/goal ship the release");
+    expect(deps.listenerDeps.sessionManager.appendPendingAgentNotice)
+      .toHaveBeenCalledWith("s1", buildParkedFailoverNotice(["sleep 600"]));
     runner.dispose({ force: true });
   });
 

@@ -830,6 +830,7 @@ async function composeAndRunAgentTurn(
       userText,
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
       ...(opts.compact ? { compact: true } : {}),
+      ...(ridesTurnAsCommand ? { verbatimCommand: true } : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       ...(harnessCommand ? { harnessCommand: true } : {}),
       emitUserEcho: userEcho !== undefined,
