@@ -22,7 +22,7 @@ The requirements are for any user who adds hosts to their ShipIt. One example, a
 
 6. The user works from one UI.
 
-7. All hosts can be in one tailnet.
+7. All hosts are in one private network, such as a tailnet. This version adds no authentication between hosts.
 
 8. A secondary host is not always on. A session that is created for a host that is not available is created on the main host.
 
@@ -40,10 +40,18 @@ The requirements are for any user who adds hosts to their ShipIt. One example, a
 
 15. Priority 2 (good to have, not important): server updates are done in one place.
 
+16. When no host is named for a child session, a placement strategy chooses its host. ShipIt can have more than one strategy.
+
+17. The first version has a strategy under which every session that does not need a GPU runs on the main host.
+
+## Later versions
+
+- More placement strategies (req 16), for example: a child runs on its parent's host; a child runs on the main host.
+- Authentication between hosts, so that hosts do not have to share one private network (req 7).
+
 ## Open questions
 
-- A child session for which no host is named — by the parent agent's flag or by a role: does it run on its parent's host, or on the main host? Options: (a) on its parent's host, as a child already gets the role and model that its parent runs on; (b) on the main host, as a session that the user starts does (req 4). Recommendation: (a).
-- Requirement 7 comes from one user's setup. May the design require all hosts to be in one private network, such as a tailnet? Options: (a) yes: every host must be in one private network (a tailnet, another VPN or a LAN), and ShipIt documents Tailscale as one way to get it; (b) no: a host can also connect over the public internet, and ShipIt adds encryption and authentication to the connection between hosts. Recommendation: (a) for the first version, because (b) adds a new internet-facing connection to secure.
+- How does ShipIt know that a session needs a GPU (req 17)? Options: (a) a session needs a GPU only when it names a host that has one, or uses a role that names such a host (req 10); the strategy then sends every other child to the main host; (b) a session can also say "needs a GPU" without naming a host — on the new-session screen, with a flag, or in a role — and the strategy chooses a GPU host that is on. Recommendation: (a) for the first version, because it adds no new choice; (b) helps when there are several GPU hosts and can be a later strategy.
 
 ## Resolved questions
 
@@ -63,3 +71,5 @@ The requirements are for any user who adds hosts to their ShipIt. One example, a
 - 2026-10-28 — Is Docker inside sessions refused or allowed on secondary hosts? Nik: it is a setting for each host. He does not allow root on his workstation, but it is OK on other servers he may connect in the future (req 14).
 - 2026-10-28 — Review of this document: can only sessions on the main host start child sessions on a secondary host? Nik: "Ideally sessions anywhere could start sessions anywhere else." Req 2 now covers every host. This opened the question about a child's default host.
 - 2026-10-28 — Review of this document: are the requirements for Nik's use case only? Nik: "This is my use-case but we need to target a broader audience." Req 3, 4 and 14 no longer name his setup. His use case is now an example in the introduction. This opened the question about req 7.
+- 2026-10-28 — Where does a child session run when no host is named for it: on its parent's host, or on the main host? Nik: "I guess we can have some strategies later on. For my use-case all non-GPU sessions should be on the main host, this needs to work as a strategy. Your options a and b could also be strategies." Req 16 and 17 added; the two options are listed under Later versions. This opened the question about how ShipIt knows that a session needs a GPU.
+- 2026-10-28 — May the design require all hosts to be in one private network, such as a tailnet? Nik: "yes, let's not solve auth yet". Req 7 changed; authentication between hosts is listed under Later versions.
