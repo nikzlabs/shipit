@@ -298,10 +298,10 @@ export async function registerProposeRepoSessionRoutes(
             title: card.title,
             detached: true,
             repoUrlOverride: readyUrl,
-            // The card showed the user this prompt; a role inherited from THIS
-            // session would append its standing instructions to it and start the
-            // target on work the user never saw (e.g. a reviewer told not to edit).
-            target: { kind: "inherit", overrides: {}, noRole: true },
+            // The target inherits this session's role, and its first message stays
+            // the prompt the card showed: the role's brief rides the first turn.
+            target: { kind: "inherit", overrides: {} },
+            verbatimPrompt: true,
             // Before the prompt is sent: from here on, a start that never reports back
             // has left a session, and only this record lets the next click find it.
             onChildClaimed: (childId) => {

@@ -45,6 +45,8 @@ What the feature must do, in the user's terms. Design lives in
 12. When the target repository is not trusted, the card says so before the user
     acts, and the user trusts the repository from the card. The user does not
     open the other repository to trust it.
+13. When the proposing session runs a role, the started session runs the same
+    role.
 
 ## Open questions
 
@@ -75,3 +77,8 @@ None.
   repository, trust it, and come back." The user answered: "Follow-ups: fix
   both now." That is req 12. The user was not asked how many clicks the
   consent is; `plan.md` gives the reason for one button.
+- 2026-10-28 — The first design started the target with no role. The user
+  reported that as a bug: "the role doesn't see to propagate when starting a
+  session via the suggestion card from a different repo." That is req 13. The
+  user was not asked where the role's standing instructions go; `plan.md` gives
+  the reason they stay out of the first message.

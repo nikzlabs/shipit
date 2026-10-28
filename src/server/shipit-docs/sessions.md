@@ -52,7 +52,9 @@ Six things to know:
   docs and issues rather than pasting their contents.
 - **The started session is independent.** It is not a child: you cannot
   `message`, `wait` on, or be woken by it. Everything it needs goes in the
-  prompt.
+  prompt. It does start on what you run on — your harness, model and level, and
+  your role if you run one. The role's standing instructions reach that agent
+  with its first turn, so do not repeat them in the prompt.
 - **It is non-blocking.** Post the card and end your turn; do not repeat the
   proposal in prose.
 - **You are told what the user did — don't ask.** The user can start the card
