@@ -46,7 +46,8 @@ What the feature must do, in the user's terms. Design lives in
     acts, and the user trusts the repository from the card. The user does not
     open the other repository to trust it.
 13. When the proposing session runs a role, the started session runs the same
-    role.
+    role. When that role no longer exists at the click, the session starts with
+    no role.
 
 ## Open questions
 
@@ -82,3 +83,8 @@ None.
   session via the suggestion card from a different repo." That is req 13. The
   user was not asked where the role's standing instructions go; `plan.md` gives
   the reason they stay out of the first message.
+- 2026-10-28 — *What if the proposing session's role was deleted before the
+  click?* Offered: start with no role (as every inheriting spawn does), refuse
+  the start, or show the role on the card first. The reviewer preferred a
+  refusal, because a deleted "review only" role then lets the target edit. The
+  user chose to start with no role (req 13, second sentence).

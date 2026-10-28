@@ -87,6 +87,12 @@ which req 5 asks for. Two reasons keep the brief out of the message: the user
 reads that message on the card before the click, and `unfinishedStart` (below)
 recognises the started session by finding the card's prompt there verbatim.
 
+A role that no longer exists at the click is dropped, as for every inheriting
+spawn (`inheritedRole` in `child-sessions.ts`), and the target starts with no
+role (req 13). A refusal was rejected by the user: the proposing session cannot
+choose another role after its first turn, so the card could start again only
+after the user recreated the role or moved a model control.
+
 The first design passed `noRole: true` and started the target with no role, so
 that a brief the user never saw on the card could not reach it. The user reported
 that as a bug; the role is the user's own choice for the proposing session.

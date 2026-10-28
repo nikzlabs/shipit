@@ -66,5 +66,5 @@
 - [x] `sessions.md` and the chat wiki say the target starts on the proposing session's role
 - [x] lint:dev + typecheck clean
 - [x] Independent review against req 13, two passes (applied: the start route drops a
-      `target` that was the default; open with the user: a role deleted before the click
-      gives a start with no role)
+      `target` that was the default; a role deleted before the click gives a start with
+      no role, which the user chose over a refusal)
