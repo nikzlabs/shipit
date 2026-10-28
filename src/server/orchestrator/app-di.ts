@@ -417,10 +417,11 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
 // Load adapters lazily: the production orchestrator image omits session/.
 async function buildLocalAgentFactory(): Promise<LocalAgentFactory> {
-  const [{ ClaudeAdapter }, { CodexAdapter }, { OpencodeAdapter }, { GrokAdapter }, { AntigravityAdapter }] = await Promise.all([
+  const [{ ClaudeAdapter }, { CodexAdapter }, { OpencodeAdapter }, { Opencode2Adapter }, { GrokAdapter }, { AntigravityAdapter }] = await Promise.all([
     import("../session/agents/claude/adapter.js"),
     import("../session/agents/codex/adapter.js"),
     import("../session/agents/opencode/adapter.js"),
+    import("../session/agents/opencode2/adapter.js"),
     import("../session/agents/grok/adapter.js"),
     import("../session/agents/antigravity/adapter.js"),
   ]);
@@ -433,6 +434,8 @@ async function buildLocalAgentFactory(): Promise<LocalAgentFactory> {
         return new CodexAdapter(undefined, opts);
       case "opencode":
         return new OpencodeAdapter(opts);
+      case "opencode2":
+        return new Opencode2Adapter(opts);
       case "grok":
         return new GrokAdapter(opts);
       case "antigravity":

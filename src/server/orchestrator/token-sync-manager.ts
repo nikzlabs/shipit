@@ -348,6 +348,8 @@ export const SUBTREE_STATE_SUBPATHS: Readonly<Record<string, readonly string[]>>
   ".grok": GROK_SESSION_STATE_SUBPATHS,
   ".gemini": ANTIGRAVITY_SESSION_STATE_SUBPATHS,
   ".local/share/opencode": ["shipit-data", "opencode.db", "opencode.db-wal", "opencode.db-shm", "storage", "snapshot"],
+  // The ChatGPT projection in shipit-account is disposable and never merged.
+  ".local/share/opencode2": ["shipit-data", "shipit-state", "shipit-config"],
 };
 
 const CREDENTIALS_MOUNT_PREFIX = "/credentials/";

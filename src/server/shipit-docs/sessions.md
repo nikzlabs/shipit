@@ -674,7 +674,7 @@ compacting would genuinely help, propose it with
   that turn. Only the user's `/compact` compacts a smaller context.
 - **`INSTRUCTIONS`** (optional, quote them as one argument) say what the
   compaction must keep: decisions, the user's standing instructions, the plan
-  for what comes next. Claude and Grok honour them; Codex and OpenCode compact
+  for what comes next. Claude and Grok honour them; Codex and both OpenCode harnesses compact
   on their own terms. After a compaction, on **every** harness, your next turn
   starts with the instructions handed back to you word for word, so what they
   name survives either way.

@@ -79,7 +79,7 @@ export function toolsOffRefusal(agentId: AgentId): string | undefined {
 }
 
 /**
- * Empty for OpenCode, which is configured through its config file instead.
+ * Empty for both OpenCode harnesses, which are configured through their config file instead.
  * Throws for a harness `toolsOffRefusal` names: an argument list cannot express
  * a refusal, and a caller reaching for args must fail loudly rather than spawn.
  */
@@ -89,6 +89,7 @@ export function toolsOffArgs(agentId: AgentId): readonly string[] {
     case "codex": return CODEX_TOOLS_OFF_ARGS;
     case "grok": return GROK_TOOLS_OFF_ARGS;
     case "opencode": return [];
+    case "opencode2": return [];
     case "antigravity": throw new Error(ANTIGRAVITY_TOOLS_OFF_REFUSAL);
   }
 }

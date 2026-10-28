@@ -1,4 +1,5 @@
-import { ensureManagedOpenCodeData } from "../shared/opencode-account.js";
+import { ensureOpenCodeAccountHome } from "../shared/opencode-account.js";
+import { isOpenCodeHarness } from "../shared/opencode-harness.js";
 import { perSessionCredentialsDir } from "./session-credentials-scaffold.js";
 import { revokeOpenCodeAccount } from "./openai-account-delivery.js";
 import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
@@ -347,14 +348,14 @@ export async function prepareSessionAgentEnvironment(
     : undefined;
 
   // Refresh the source account before creating its cross-harness projection.
-  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-  if (isTurn && agentId === "opencode") {
-    if (isLocalRuntime()) ensureManagedOpenCodeData(perSessionCredentialsDir(deps.credentialsDir, sessionId), agentHome());
+  // OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  if (isTurn && isOpenCodeHarness(agentId)) {
+    if (isLocalRuntime()) ensureOpenCodeAccountHome(perSessionCredentialsDir(deps.credentialsDir, sessionId), agentId, agentHome());
     if (selectedRoute?.kind === "account") {
       if (deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", selectedRoute.id)) throw new Error("ChatGPT account renewal failed. Reconnect the OpenAI account.");
       ensureSessionAccountCredentials(deps.credentialsDir, sessionId, agentId, selectedRoute.id);
     } else {
-      revokeOpenCodeAccount(perSessionCredentialsDir(deps.credentialsDir, sessionId));
+      revokeOpenCodeAccount(perSessionCredentialsDir(deps.credentialsDir, sessionId), undefined, agentId);
     }
   }
 
@@ -430,8 +431,8 @@ export async function prepareSessionAgentEnvironment(
   }
 
   // Local fallback HOME is shared; other sessions may have changed its links.
-  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-  if (isLocalRuntime() && isTurn && agentId !== "opencode") {
+  // OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  if (isLocalRuntime() && isTurn && !isOpenCodeHarness(agentId)) {
     const accountId = selectedRoute?.kind === "account" ? selectedRoute.id : undefined;
     try {
       const outcomes = selectedRoute?.kind === "reserved"

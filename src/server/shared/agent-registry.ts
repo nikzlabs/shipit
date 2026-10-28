@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
 import { EventEmitter } from "node:events";
 import type { AgentId, AgentCapabilities } from "./types/agent-types.js";
@@ -12,11 +14,11 @@ import {
   loginIntegrationForService,
   type ConfiguredCredential,
 } from "./catalogue/index.js";
-import { readInstalledHarnesses } from "./installed-harnesses.js";
+import { isHarnessInstalled, readInstalledHarnesses } from "./installed-harnesses.js";
 
 const execFileAsync = promisify(execFile);
 
-export { ANTIGRAVITY_TOOL_NAMES, CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, GROK_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "./agent-tool-names.js";
+export { ANTIGRAVITY_TOOL_NAMES, CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, GROK_TOOL_NAMES, OPENCODE_TOOL_NAMES, OPENCODE2_TOOL_NAMES } from "./agent-tool-names.js";
 
 export interface EligibleModel {
   serviceId: string;
@@ -65,10 +67,30 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
 
 export const KNOWN_AGENT_IDS: AgentId[] = AGENT_DEFS.map((d) => d.id);
 
-export function agentIdForModel(model: string | undefined): AgentId | undefined {
+export function agentIdForModel(
+  model: string | undefined,
+  declared: AgentId[] | null = readInstalledHarnesses(),
+): AgentId | undefined {
   if (!model) return undefined;
-  const owner = AGENT_DEFS.find((def) => def.capabilities.models.includes(model));
-  return owner?.id;
+  const owners = AGENT_DEFS.filter((def) => def.capabilities.models.includes(model));
+  // Installed first: list order alone would name an opt-in harness this install lacks.
+  // Without an install report, the binary on PATH is the only evidence.
+  const installed = (def: (typeof AGENT_DEFS)[number]): boolean =>
+    declared === null ? binaryOnPath(def.binary) : isHarnessInstalled(def.id, declared);
+  return (owners.find(installed) ?? owners[0])?.id;
+}
+
+function binaryOnPath(binary: string): boolean {
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!dir) continue;
+    try {
+      fs.accessSync(path.join(dir, binary), fs.constants.X_OK);
+      return true;
+    } catch {
+      // Not in this directory.
+    }
+  }
+  return false;
 }
 
 export function getAgentCapabilities(id: AgentId): AgentCapabilities | undefined {

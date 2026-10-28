@@ -61,7 +61,11 @@ describe("Integration: Agent registry — list_agents", () => {
     expect(res.statusCode).toBe(200);
     const data = res.json();
 
-    expect(data.agents).toHaveLength(5);
+    expect(data.agents).toHaveLength(6);
+    // docs/269: OpenCode 2 is listed beside OpenCode 1, ahead of it.
+    const ids = data.agents.map((a: any) => a.id);
+    expect(ids.indexOf("opencode2")).toBeGreaterThanOrEqual(0);
+    expect(ids.indexOf("opencode2")).toBeLessThan(ids.indexOf("opencode"));
 
     const claude = data.agents.find((a: any) => a.id === "claude");
     expect(claude.installed).toBe(true);

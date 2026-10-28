@@ -1,4 +1,5 @@
 import type { AgentId, ServiceRouting, SessionInfo } from "../shared/types.js";
+import { isOpenCodeHarness } from "../shared/opencode-harness.js";
 import { selectionOf } from "./turn-attribution.js";
 import type {
   AccountSelection,
@@ -289,7 +290,7 @@ export function serviceRoutingForSelection(
 ): ServiceRouting | undefined {
   if (!selection) return undefined;
   if (route?.kind === "account") {
-    if (harnessId === "opencode" && selection.serviceId === "openai" && selection.billingMode === "sub") {
+    if (isOpenCodeHarness(harnessId) && selection.serviceId === "openai" && selection.billingMode === "sub") {
       const model = getModel(selection);
       const mode = getMode(selection.serviceId, selection.billingMode);
       const style = model && resolveStyle(harnessId, model, "account");

@@ -96,6 +96,71 @@ describe("generateSessionName", () => {
     } finally { fs.rmSync(source, { recursive: true, force: true }); }
   });
 
+  it("names on OpenCode 2's ChatGPT route by importing an access-only credential first", async () => {
+    const fs = await import("node:fs"); const os = await import("node:os"); const path = await import("node:path");
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), "oc2-naming-source-"));
+    fs.mkdirSync(path.join(source, ".codex"));
+    const access_token = `e30.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": { chatgpt_account_id: "external-a" } })).toString("base64url")}.test`;
+    fs.writeFileSync(path.join(source, ".codex/auth.json"), JSON.stringify({ tokens: { access_token, refresh_token: "source-refresh-only" } }));
+    const calls: { file: string; args: string[]; env: Record<string, string> }[] = [];
+    // The host's own install report need not name opencode2.
+    vi.stubEnv("SHIPIT_AGENTS_INSTALL_REPORT", path.join(source, "no-report.json"));
+    vi.doMock("node:child_process", () => ({
+      execFile: (file: string, args: string[], opts: { env: Record<string, string> }, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+        calls.push({ file, args, env: opts.env });
+        if (args[1] === "import") expect(fs.readFileSync(args[2], "utf8")).not.toContain("source-refresh-only");
+        const out = args[0] === "run" ? JSON.stringify({ type: "text", part: { type: "text", text: '{"slug":"v2-test","title":"V2 Test"}' } }) : "ok";
+        setImmediate(() => cb(null, out, ""));
+        return { on: () => {}, stdin: { end: () => {} } };
+      },
+    }));
+    try {
+      const mod = await import("./session-namer.js");
+      const result = await mod.generateSessionName("test", { harnessId: "opencode2", model: "gpt-6-luna", credentialRoot: source, serviceRouting: { serviceId: "openai", serviceName: "OpenAI", billingMode: "sub", style: "openai-responses", baseUrl: "https://api.openai.com/v1", credentialTarget: { kind: "openai-chatgpt", accountId: "account-a" } } });
+      expect(result.name).toEqual({ slug: "v2-test", title: "V2 Test" });
+      expect(calls.map((c) => [c.file, ...c.args.slice(0, 2)])).toEqual([
+        ["opencode2", "auth", "import"],
+        ["opencode2", "auth", "switch"],
+        ["opencode2", "run", "--standalone"],
+      ]);
+      expect(calls[2].args).toContain("openai/gpt-6-luna");
+      const root = path.dirname(calls[2].env.XDG_DATA_HOME);
+      expect(calls.every((c) => c.env.XDG_DATA_HOME.startsWith(root) && c.env.OPENCODE_CONFIG_DIR.startsWith(root))).toBe(true);
+      expect(fs.existsSync(root)).toBe(false);
+      expect(fs.existsSync(path.join(source, ".local/share/opencode"))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(source, { recursive: true, force: true });
+    }
+  });
+
+  it("never relays an OpenCode 2 auth command's output, which can echo the token", async () => {
+    const fs = await import("node:fs"); const os = await import("node:os"); const path = await import("node:path");
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), "oc2-naming-quiet-"));
+    fs.mkdirSync(path.join(source, ".codex"));
+    const access_token = `e30.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": { chatgpt_account_id: "external-a" } })).toString("base64url")}.test`;
+    fs.writeFileSync(path.join(source, ".codex/auth.json"), JSON.stringify({ tokens: { access_token } }));
+    vi.stubEnv("SHIPIT_AGENTS_INSTALL_REPORT", path.join(source, "no-report.json"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.doMock("node:child_process", () => ({
+      execFile: (_file: string, _args: string[], _opts: unknown, cb: (err: (Error & { code?: number }) | null, stdout: string, stderr: string) => void) => {
+        setImmediate(() => cb(Object.assign(new Error(`Command failed\n${access_token}`), { code: 1 }), "", `bad credential ${access_token}`));
+        return { on: () => {}, stdin: { end: () => {} } };
+      },
+    }));
+    try {
+      const mod = await import("./session-namer.js");
+      const result = await mod.generateSessionName("test", { harnessId: "opencode2", model: "gpt-6-luna", credentialRoot: source, serviceRouting: { serviceId: "openai", serviceName: "OpenAI", billingMode: "sub", style: "openai-responses", baseUrl: "https://api.openai.com/v1", credentialTarget: { kind: "openai-chatgpt", accountId: "account-a" } } });
+      expect(result.name).toBeNull();
+      expect(JSON.stringify(result)).not.toContain(access_token);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(access_token);
+    } finally {
+      warn.mockRestore();
+      vi.unstubAllEnvs();
+      fs.rmSync(source, { recursive: true, force: true });
+    }
+  });
+
   it("runs the CLI with HOME at the account credential root when given one", async () => {
     let seenEnv: Record<string, string> = {};
     vi.doMock("node:child_process", () => ({

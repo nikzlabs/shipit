@@ -10,7 +10,8 @@ ShipIt surfaces two kinds of skill directories under the workspace:
   resolvable as `$<name>` in chat.
 - `<workspace>/.opencode/skills/<name>/SKILL.md` — OpenCode agent skills,
   `/`-invoked like Claude's. OpenCode also natively reads `.claude/skills/`,
-  so on an OpenCode session both directories' skills are disclosed.
+  so on an OpenCode session both directories' skills are disclosed. OpenCode 2
+  reads the same directories, plus `.agents/skills/`.
 - `<workspace>/.grok/skills/<name>/SKILL.md` — Grok Build agent skills,
   `/`-invoked like Claude's. Grok also natively reads `.claude/skills/`
   (verified, docs/274), so on a Grok session both directories' skills are

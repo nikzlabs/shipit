@@ -27,6 +27,7 @@ import { ClaudeProcess } from "./agents/claude/process.js";
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
 import { CodexAdapter } from "./agents/codex/adapter.js";
 import { OpencodeAdapter } from "./agents/opencode/adapter.js";
+import { Opencode2Adapter } from "./agents/opencode2/adapter.js";
 import { GrokAdapter } from "./agents/grok/adapter.js";
 import { AntigravityAdapter } from "./agents/antigravity/adapter.js";
 import { registerAgentOpsRoutes } from "./agent-ops-routes.js";
@@ -623,12 +624,15 @@ export const createWorkerAgent: WorkerAgentFactory = (agentId: AgentId) =>
       agentId === "opencode"
       ? new OpencodeAdapter()
       : // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 11: same construction switch
-        agentId === "grok"
-        ? new GrokAdapter()
+        agentId === "opencode2"
+        ? new Opencode2Adapter()
         : // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 11: same construction switch
-          agentId === "antigravity"
-          ? new AntigravityAdapter()
-          : new ClaudeAdapter(new ClaudeProcess());
+          agentId === "grok"
+          ? new GrokAdapter()
+          : // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 11: same construction switch
+            agentId === "antigravity"
+            ? new AntigravityAdapter()
+            : new ClaudeAdapter(new ClaudeProcess());
 
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   const workspaceDir = process.env.WORKSPACE_DIR || CONTAINER_WORKSPACE_DIR;

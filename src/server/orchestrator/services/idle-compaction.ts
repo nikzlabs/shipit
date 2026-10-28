@@ -52,6 +52,7 @@ const HARNESS_CACHE: Readonly<Record<AgentId, HarnessCacheFacts>> = {
   // 99.1% of the previous input from the cache in a new process. It sends Anthropic
   // `cacheControl: {type: "ephemeral"}` with no ttl.
   opencode: { anthropicDefaultMinutes: 5 },
+  opencode2: { excluded: "OpenCode 2's cache across processes is not probed" },
   // req 15 — no probe has shown a new Grok process reading the previous one's cache.
   grok: { excluded: "Grok's cache across processes is not probed (req 15)" },
   antigravity: {},

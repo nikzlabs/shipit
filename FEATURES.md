@@ -50,7 +50,7 @@ start at the [README](README.md).
 
 ## Choose your agent
 
-- **Five agent harnesses** — Claude Code, Codex, OpenCode, Grok Build, and Antigravity all run as
+- **Six agent harnesses** — Claude Code, Codex, OpenCode, OpenCode 2, Grok Build, and Antigravity all run as
   first-class backends: the same transcript, tool rendering, skills, sub-agent view, reviews, and
   compaction whichever one is driving, with each harness's own capabilities — permission modes,
   image input, mid-turn steering — declared per harness rather than assumed

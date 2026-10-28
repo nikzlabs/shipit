@@ -30,6 +30,7 @@ export const REVIEWER_DEFAULT_EFFORT: Record<AgentId, string | null> = {
   claude: "high",
   codex: "high",
   opencode: "high",
+  opencode2: "high",
   grok: "high",
   antigravity: "high",
 };

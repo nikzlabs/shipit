@@ -55,3 +55,39 @@ describe("OpenAI subscription models on the OpenCode harness", () => {
     expect(missing.map((m) => m.id)).toEqual([]);
   });
 });
+
+/**
+ * OpenCode 2's own filter, transcribed from `packages/core/src/plugin/provider/openai.ts`
+ * at tag v2.1.1 (the pinned `@opencode/cli`): `codexAllowed`, `codexDisallowed` and the
+ * `gpt-<major>.<minor>` rule. Re-transcribe on every `@opencode/cli` bump.
+ */
+const V2_ALLOW = new Set(["gpt-5.5", "gpt-5.3-codex-spark"]);
+const V2_DENY = new Set(["gpt-5.5-pro", "gpt-5.6"]);
+
+function openCode2AcceptsSubscriptionModel(id: string): boolean {
+  if (V2_ALLOW.has(id)) return true;
+  if (V2_DENY.has(id)) return false;
+  const m = /^gpt-(\d+)(?:\.(\d+))?/.exec(id);
+  if (!m) return false;
+  const major = Number(m[1]);
+  const minor = Number(m[2] ?? 0);
+  return major > 5 || (major === 5 && minor > 4);
+}
+
+describe("OpenAI subscription models on the OpenCode 2 harness (docs/269 req 4)", () => {
+  it("carries the ChatGPT login", () => {
+    expect(openAiSubMode?.credentials.some((c) => c.carriers?.includes("opencode2"))).toBe(true);
+  });
+
+  it("offers exactly the models OpenCode 2's own filter accepts", () => {
+    const disagreements = (openAiSubMode?.models ?? [])
+      .map((model) => ({
+        id: model.id,
+        offered: resolveStyle("opencode2", model, "account") !== undefined,
+        accepted: openCode2AcceptsSubscriptionModel(model.id),
+      }))
+      .filter((r) => r.offered !== r.accepted);
+    expect(disagreements).toEqual([]);
+  });
+});
+

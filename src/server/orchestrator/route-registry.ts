@@ -517,7 +517,7 @@ export async function registerRoutes(
             })
           : undefined;
         const modelOwner = model && !roleDecidesHarness && !honouredAgent
-          ? agentRegistry.list().find((a) => a.capabilities.models.includes(model))
+          ? agentRegistry.list().find((a) => a.installed && a.capabilities.models.includes(model))
           : undefined;
         if (honouredAgent) {
           perConnectionAgentId = honouredAgent;

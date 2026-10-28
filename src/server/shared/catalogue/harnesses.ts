@@ -6,6 +6,7 @@ import {
   CODEX_TOOL_NAMES,
   GROK_TOOL_NAMES,
   OPENCODE_TOOL_NAMES,
+  OPENCODE2_TOOL_NAMES,
 } from "../agent-tool-names.js";
 import type { HarnessDef } from "./types.js";
 
@@ -103,6 +104,56 @@ export const HARNESSES = [
       supportsGoals: true,
       skillsDirName: ".codex",
       skillInvocationPrefix: "$",
+    },
+  },
+  // Before `opencode`: list order is the tie-break for a model both offer (docs/269 req 5).
+  {
+    id: "opencode2",
+    name: "OpenCode 2",
+    // `@opencode/cli` also installs an `opencode` bin; the installer points that name at v1.
+    binary: "opencode2",
+    nativeService: "opencode",
+    styles: ["openai-chat-completions", "anthropic-messages", "openai-responses"],
+    spawn: {
+      credential: {
+        string: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY", styles: ["openai-chat-completions", "anthropic-messages", "openai-responses"] },
+        account: { kind: "scoped-home", styles: ["openai-responses"] },
+      },
+      // shipit/<modelId>#<variant>; ChatGPT accounts use openai/<modelId>#<variant>.
+      model: { kind: "flag", flag: "--model" },
+      endpoint: { kind: "config-file", path: "opencode.json", pointer: "/provider/shipit/options/baseURL" },
+    },
+    capabilities: {
+      supportsResume: true,
+      // probed on 2.1.1 — a PNG read by `read` reached a mock provider as image content.
+      supportsImages: true,
+      supportsSystemPrompt: true,
+      supportsPermissionModes: false,
+      supportedPermissionModes: [],
+      toolNames: [...OPENCODE2_TOOL_NAMES],
+      reasoning: {
+        label: "Reasoning variant",
+        options: [
+          { value: "none", label: "None" },
+          { value: "minimal", label: "Minimal" },
+          { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+          { value: "high", label: "High" },
+          { value: "xhigh", label: "Extra high" },
+          { value: "max", label: "Max" },
+        ],
+      },
+      // structural on 2.1.1 — `shell` takes a `timeout` (0 disables) and `subagent` starts a
+      // fresh context; the depth-0 review probe needs a live model (docs/269 checklist).
+      supportsReview: true,
+      // not-wired — the per-turn server takes steering prompts; planning#707.
+      supportsSteering: false,
+      // structural — the server lives for one turn.
+      startsOwnTurns: false,
+      // probed on 2.1.1 — POST /api/session/{id}/compact on the turn's server.
+      supportsCompaction: true,
+      skillsDirName: ".opencode",
+      skillInvocationPrefix: "/",
     },
   },
   {

@@ -2,13 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
-  ensureManagedOpenCodeData,
+  ensureOpenCodeAccountHome,
   openCodeAccessToken,
+  openCodeAccountHome,
   writeOpenCodeAccount,
   removeOpenCodeAccount,
-  managedOpenCodeDataHome,
   OPENCODE_ACCOUNT_MARKER,
 } from "../shared/opencode-account.js";
+import type { OpenCodeHarnessId } from "../shared/opencode-harness.js";
 
 const MARKER = OPENCODE_ACCOUNT_MARKER;
 interface Binding {
@@ -58,13 +59,14 @@ export function provisionOpenCodeAccount(
   home: string,
   accountId: string,
   xdgHome?: string,
+  harness: OpenCodeHarnessId = "opencode",
 ): string {
   const token = openCodeAccessToken(
     JSON.parse(
       fs.readFileSync(path.join(sourceRoot, ".codex", "auth.json"), "utf8"),
     ),
   );
-  const dataHome = xdgHome ?? ensureManagedOpenCodeData(home);
+  const dataHome = xdgHome ?? ensureOpenCodeAccountHome(home, harness);
   fs.mkdirSync(dataHome, { recursive: true });
   const binding: Binding = {
     id: randomUUID(),
@@ -133,7 +135,16 @@ export function restoreOpenCodeAccount(
   home: string,
   sourceForAccount: (accountId: string) => string,
 ): void {
-  const dataHome = managedOpenCodeDataHome(home);
+  restoreOpenCodeAccountFor(home, sourceForAccount, "opencode");
+  restoreOpenCodeAccountFor(home, sourceForAccount, "opencode2");
+}
+
+function restoreOpenCodeAccountFor(
+  home: string,
+  sourceForAccount: (accountId: string) => string,
+  harness: OpenCodeHarnessId,
+): void {
+  const dataHome = openCodeAccountHome(home, harness);
   let binding: Binding;
   try {
     binding = JSON.parse(
@@ -147,7 +158,7 @@ export function restoreOpenCodeAccount(
     typeof binding.accountId !== "string" ||
     !/^[a-zA-Z0-9_-]+$/.test(binding.accountId)
   ) {
-    revokeOpenCodeAccount(home);
+    revokeOpenCodeAccount(home, undefined, harness);
     return;
   }
   const sourceRoot = sourceForAccount(binding.accountId);
@@ -155,13 +166,13 @@ export function restoreOpenCodeAccount(
     watchBinding(sourceRoot, binding);
     updateBinding(sourceRoot, binding);
   } catch {
-    revokeOpenCodeAccount(home);
+    revokeOpenCodeAccount(home, undefined, harness);
   }
 }
 
 /** Invalidate provenance first so a delayed source event cannot restore auth. */
-export function revokeOpenCodeAccount(home: string, xdgHome?: string): void {
-  const dataHome = xdgHome ?? managedOpenCodeDataHome(home);
+export function revokeOpenCodeAccount(home: string, xdgHome?: string, harness: OpenCodeHarnessId = "opencode"): void {
+  const dataHome = xdgHome ?? openCodeAccountHome(home, harness);
   fs.rmSync(path.join(dataHome, MARKER), { force: true });
   removeOpenCodeAccount(dataHome);
   for (const [root, source] of sources) {

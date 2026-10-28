@@ -37,7 +37,8 @@ export function resolveAuthedSelection(
   if (!firstAuthed || firstAuthed.id === activeAgentId) return null;
 
   const savedModelOwner = savedModelId
-    ? agents.find((a) => a.models.includes(savedModelId))
+    ? agents.find((a) => a.installed && a.hasRunnableModels && a.models.includes(savedModelId))
+      ?? agents.find((a) => a.models.includes(savedModelId))
     : undefined;
   const savedModelAuthed =
     !!savedModelOwner && savedModelOwner.installed && savedModelOwner.hasRunnableModels;

@@ -67,7 +67,7 @@ the machine changes.
 
 | Variable | Installer | Answers |
 |---|---|---|
-| `SHIPIT_HARNESSES` | both | which agent CLIs to install (`claude`, `codex`, `opencode`, `grok`, `antigravity`) |
+| `SHIPIT_HARNESSES` | both | which agent CLIs to install (`claude`, `codex`, `opencode`, `opencode2`, `grok`, `antigravity`) |
 | `SHIPIT_EGRESS` | both | `on` or `off` — the containment question, asked only on a host that cannot contain the agent network |
 | `SHIPIT_ACCESS` | VPS | `cloudflare`, `tailscale`, both, or `none` |
 | `SHIPIT_CF_DOMAIN` | VPS | the domain Cloudflare publishes ShipIt at |
