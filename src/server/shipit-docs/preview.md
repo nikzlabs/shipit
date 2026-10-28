@@ -300,6 +300,8 @@ verify your work:
   explicit filename is resolved against `/workspace`, so `shot.png` becomes
   `/workspace/shot.png` and gets auto-committed. A bare `/tmp/foo.png` is
   rejected with "File access denied" — it is outside both allowed roots.
+  A WebGL page drawn in software can take several seconds to capture, about
+  seven frames; the browser waits up to 20 s, the limit for every action.
 
 Use browser tools proactively after UI changes to catch issues early.
 
