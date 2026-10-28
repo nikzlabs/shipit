@@ -41,9 +41,10 @@ marker file each carries (`.shipit-installed.json`, `.shipit-plugin-skill.json`)
 
 ## Write Claude skills at `.agents/skills/`
 
-The Claude CLI asks the user to approve every write or delete on a path with a
+The Claude CLI asks the user to approve a write or a delete on a path with a
 `.claude` segment, also when that path is a symlink to a folder outside
-`.claude`, and no setting removes the request (`/shipit-docs/environment.md`,
+`.claude` (measured for Write, Edit, `mkdir`, `ln -s` and `rm -rf`). The allow
+rules that were tried do not remove the request (`/shipit-docs/environment.md`,
 "Writes that wait for the user's approval"). With no user at the screen, the
 call waits 30 minutes and then does not run.
 

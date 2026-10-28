@@ -432,19 +432,21 @@ Claude Code 2.1.300, ShipIt's flags and the repository's
 | Call | Request | With an allow rule for the path |
 |---|---|---|
 | Write `.claude/skills/x/SKILL.md` | yes | yes (`Edit(//<repo>/.claude/**)`, `Edit(.claude/**)`, `Edit(/.claude/**)`) |
-| Write `.agents/skills/x/SKILL.md`, with `.claude/skills` → `../.agents/skills` | no | — |
-| Bash `mkdir -p .claude && ln -s ../.agents/skills .claude/skills` | yes | — |
+| Edit `.claude/skills/x/SKILL.md`; Write `.claude/skills/x/SKILL.md` through `.claude/skills` → `../.agents/skills` | yes | — |
+| Write, Edit, Bash `rm -rf` of `.agents/skills/x`, with `.claude/skills` → `../.agents/skills` | no | — |
+| Bash `mkdir -p .claude && ln -s ../.agents/skills .claude/skills`; `mv .claude/skills .agents/skills` | yes | — |
 | Bash `rm -rf` of `.claude/skills/x`, or of a `.claude` folder in `/tmp` | yes | — |
 | Bash `rm -rf <dir>/.git` | yes | yes (`Bash(rm -rf:*)`, `Edit(//<dir>/**)`) |
 | Bash `rm -f .gitconfig`, `rm -f ~/.gitconfig`, `rm -f /tmp/…/.gitconfig`, `echo x >> .bashrc` | yes | yes (`Edit(.gitconfig)`, `Edit(**/.gitconfig)`) |
 | Bash `rm -rf` of an ordinary folder in `/tmp`, `/persist` or the working folder; also depth 1, two paths, a glob, a variable, `cd … &&`, `..`, `rm -r`, `--permission-mode auto` | no | — |
-| Bash `git config --global …`, also after `cd`, with `HOME` changed, with `GIT_CONFIG_GLOBAL` unset, and in auto mode; `git config --file ~/.gitconfig …` | no | — |
+| Bash `git config --global …`, also after `cd`, with `HOME` changed, with `GIT_CONFIG_GLOBAL` unset, and in auto mode; `git config --file ~/.gitconfig …`, `git config --file /tmp/…`, `git -C <dir> config …` | no | — |
 | Bash `git rm -r --cached .claude/skills/x` | no | — |
 | Bash `cat ~/.gitconfig` | no | — |
 
 So the CLI asks for a write or a delete whose target it can read when the target
-has a `.claude` or `.git` segment or is a file it treats as sensitive, and no
-allow rule removes the request. Two causes that planning#711 inferred did not
+has a `.claude` segment, is a `.git` folder (measured with `rm -rf` only) or is a
+file it treats as sensitive, and no allow rule that was tried removes the
+request. Two causes that planning#711 inferred did not
 reproduce: `git config --global` and `git rm --cached .claude/…` do not ask, and
 an ordinary `rm -rf` does not ask. The recorded cases most likely named a `.git`
 or `.claude` path or a sensitive file; the transcripts are not in this

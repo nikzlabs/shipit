@@ -353,7 +353,7 @@ export interface AgentPermissionResolvedEvent {
   requestId: string;
   behavior: "allow" | "deny";
   remembered?: boolean;
-  /** The agent stopped waiting before anyone answered: the CLI's idle timeout, or Codex withdrew it. */
+  /** The agent stopped waiting before anyone answered: the gated call got its result, or Codex withdrew it. */
   callEnded?: { summary: string };
 }
 

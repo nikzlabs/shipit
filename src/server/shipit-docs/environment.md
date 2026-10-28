@@ -221,13 +221,13 @@ For the Claude agent (measured with Claude Code 2.1.293 and 2.1.300):
 | Through a **symlink in `/workspace` that points into `/persist`** | No |
 | `rm -rf` of an ordinary folder in `/workspace`, `/tmp` or `/persist`, also with a glob, a variable or `cd`; and `git config --global` | No |
 | Through a symlink in `/workspace` that points to **another place outside `/workspace`** (measured with `/tmp`), by Write, Edit, or a shell command whose target the CLI can read (`>`, `cp`, `mv`, `mkdir`, `touch`, `tee`, `sed -i`) | **Yes** |
-| A path with a **`.claude` segment**, in any folder, by Write, Edit, or a shell command whose target the CLI can read (`mkdir`, `ln -s`, `rm -rf`) — for example `.claude/skills/<name>/SKILL.md` | **Yes** |
+| A path with a **`.claude` segment** — for example `.claude/skills/<name>/SKILL.md`, also through a `.claude/skills` symlink, or a `.claude` folder in `/tmp` — by Write, Edit, `mkdir`, `ln -s` or `rm -rf` | **Yes** |
 | `rm -rf <dir>/.git` | **Yes** |
 | A file the CLI treats as sensitive, for example `.env`, `.npmrc`, `.gitconfig` or `.bashrc`, also when a shell command writes or deletes it (`rm -f ~/.gitconfig`, `echo … >> .bashrc`) | **Yes** |
 
 So a scratch directory that you move to `/persist` and link back into the workspace stays writable through the link. For any other place outside the workspace, use the real path, not a symlink in the workspace.
 
-ShipIt's settings cannot remove the requests for `.claude`, `.git` and sensitive-file paths: the CLI asks even when an allow rule names the path (measured for `.claude/`, `.git` and `.gitconfig`). So use a form that does not ask:
+For the `.claude`, `.git` and `.gitconfig` requests, an allow rule that names the path did not remove the request in any case that was measured, so do not expect a setting to remove them. Use a form that does not ask:
 
 - **Skills:** keep a Claude skill's files in `.agents/skills/<name>/`, with `.claude/skills` a symlink to `../.agents/skills`, and edit them at the `.agents/skills/` path. A write through `.claude/skills/` asks, and so does making that symlink, one time (see `/shipit-docs/skills.md`).
 - **Git config:** for a scratch repository, use `git -C <dir> config …` or `git config --file <path> …`. `git config --global` changes this session's own git config (`$GIT_CONFIG_GLOBAL`). Do not write or delete a `.gitconfig` file by its path.
