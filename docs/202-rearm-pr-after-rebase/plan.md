@@ -539,11 +539,31 @@ _None — see "Re-armed card presentation"._
   check: an **open** PR still wins (push + return), a **closed/merged** PR blocks
   only when the branch hasn't progressed; when it HAS progressed, `agentCreatePr`
   force-pushes (`--force-with-lease`, the old remote branch may survive diverged)
-  and opens a NEW PR targeting the prior PR's base. Because the same condition
-  gates both, opening the new PR and the post-turn `detectAndReArmMergedSession`
-  fire together: the new open PR is then picked up by the resumed poller and
-  overwrites the merged card. Coverage in `agent-driven-pr.test.ts`
-  ("creates a NEW PR when the prior PR merged but the branch progressed").
+  and opens a NEW PR targeting the prior PR's base. Coverage in
+  `agent-driven-pr.test.ts` ("creates a NEW PR when the prior PR merged but the
+  branch progressed").
+
+- **The PR-create route re-arms itself (bug fix, 2026-10-28).** The bullet above
+  used to say the new PR and the post-turn `detectAndReArmMergedSession` "fire
+  together". They do not: the route's `forceRefreshSession` puts the new OPEN PR
+  in the poller snapshot, and `priorMergedPr` refuses an open snapshot (commit
+  `2e0a89d86`), so the turn-end re-arm never ran and `mergedAt` stayed set. Each
+  later auto-push was refused by `evaluateMergedBranchPush`, and its notice named
+  the open PR as merged. An agent that ran `gh pr merge` and then `gh pr create`
+  in one turn always hit this. Now `agentCreatePr` returns the merged PR it
+  replaced (`supersededMergedPr`), and the route calls
+  `reArmForPrOpenedPastMerge` (`services/pr-rearm.ts`) before it records the new
+  PR's provenance (`clearMerged` clears `pr_number`). That call does the same
+  `clearMerged` + `reArm(supersededNumber)` as the turn-end path. The
+  merged-push guard's notice now names a PR number only from a `merged`
+  snapshot. The guard still refuses the push when the snapshot is open: a poll
+  that was already running can write a stale open snapshot of the PR that just
+  merged, and a push then would recreate its deleted branch. A session that was
+  already stuck gets out through `gh pr create`, which pushes to its open PR.
+  When that PR merges, the poller promotes the merge, and the next turn re-arms
+  with it as the prior PR. Coverage: `agent-driven-pr.test.ts` ("a PR opened
+  mid-turn past the session's merged PR un-merges the session…"),
+  `pr-rearm.test.ts`, `merged-push-guard.test.ts`.
 
 - **Force-push lease must be computed fresh, not bare (bug fix).** The re-arm
   force push above used a bare `--force-with-lease`, which leases against the
