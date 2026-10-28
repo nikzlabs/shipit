@@ -530,12 +530,17 @@ describe("autoResetMergedBranchOnContinue", () => {
       expect(out.agentPrefix).not.toContain("if the user wants the branch moved, use");
     });
 
-    it("keeps reset-to-base as the remedy for a clause it can clear", async () => {
-      const git = makeGit({ isClean: vi.fn().mockResolvedValue(false) });
-      const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
-      expect(out.skip?.clause).toBe("dirty-tree");
+    // These clauses are reported before the commits are checked, so the branch can still carry unshipped work.
+    it.each([
+      ["dirty-tree", { createGitManager: () => makeGit({ isClean: vi.fn().mockResolvedValue(false) }) }, undefined],
+      ["setting-off", { getAutoResetMergedBranch: () => false }, undefined],
+      ["opted-out", {}, false],
+    ] as const)("on %s, offers reset-to-base and says how unshipped commits ship", async (clause, over, intent) => {
+      const out = await autoResetMergedBranchOnContinue(makeDeps(over), "s1", "/ws", intent);
+      expect(out.skip?.clause).toBe(clause);
       expect(out.agentPrefix).toContain("if the user wants the branch moved, use `shipit branch reset-to-base`");
-      expect(out.agentPrefix).not.toContain("git merge");
+      expect(out.agentPrefix).toContain("It refuses a branch that carries commits that never shipped");
+      expect(out.agentPrefix).toContain("git fetch origin && git merge origin/main");
     });
 
     it.each([

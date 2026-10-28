@@ -81,6 +81,8 @@ export function formatMergedPushAgentNotice(block: MergedPushBlock, commitHash: 
   const commit = commitHash ? ` (${commitHash.slice(0, 7)})` : "";
   const branch = block.branch ? ` \`${block.branch}\`` : "";
   const base = block.baseBranch ?? "<base>";
+  // The notice is parked, and a rewind before the next turn can remove the commit it names.
+  const removed = commitHash ? commitHash.slice(0, 7) : "these commits";
   return (
     `[System] ShipIt did NOT push this branch's latest commit${commit}. This session's pull `
     + `request${pr} was already merged${into}, so the branch${branch} has no open pull request, and `
@@ -90,6 +92,7 @@ export function formatMergedPushAgentNotice(block: MergedPushBlock, commitHash: 
     + `branch and open a new pull request: \`git fetch origin && git merge origin/${base}\`, then `
     + `\`gh pr create\`. Do not rebase, \`git reset --hard\` or \`git push --force\`. `
     + `\`shipit branch reset-to-base\` refuses this branch because it carries unshipped commits; `
-    + `discarding them with its \`--force\` is the user's decision, not yours.`
+    + `discarding them with its \`--force\` is the user's decision, not yours. If a rewind has `
+    + `removed ${removed} from the branch since, this notice no longer applies.`
   );
 }

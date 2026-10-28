@@ -156,6 +156,14 @@ describe("formatMergedPushAgentNotice", () => {
     expect(notice).toContain("the user's decision");
   });
 
+  // Parked until the next turn, so a rewind in between can remove the commit it names.
+  it("says it no longer applies once a rewind removed the commit", async () => {
+    const block = (await evaluateMergedBranchPush(makeSession(), () => makePrStatus(), makeGit()))!;
+    expect(formatMergedPushAgentNotice(block, NEW_HEAD))
+      .toContain("If a rewind has removed 0d9a31d from the branch since, this notice no longer applies.");
+    expect(formatMergedPushAgentNotice(block, null)).toContain("If a rewind has removed these commits");
+  });
+
   it("degrades gracefully when the PR pointers are unknown", () => {
     const notice = formatMergedPushAgentNotice({}, null);
     expect(notice).toContain("git merge origin/<base>");

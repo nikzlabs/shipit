@@ -677,10 +677,12 @@ the second time they had reported "changes are missing from the merged PR".
   refused but no notice is written. The refusal also parks an agent copy
   (`formatMergedPushAgentNotice`, via `appendPendingAgentNotice`) for the next
   turn's prompt: the transcript notice reaches only the user, so the agent went
-  on reporting the refused commit as shipped. For the `head-moved` clause the
-  pre-turn skip prefix gives the same route (merge the base, then `gh pr
-  create`), because `shipit branch reset-to-base` refuses that clause and its
-  `--force` would discard the unshipped commits.
+  on reporting the refused commit as shipped. It says it no longer applies if
+  a rewind removed the commit before the next turn. The pre-turn skip prefix
+  gives the same route (merge the base, then `gh pr create`): as the only
+  remedy for `head-moved`, and next to `reset-to-base` for every other clause,
+  since those are reported before the commits are checked. `shipit branch
+  reset-to-base` refuses unshipped commits, and its `--force` would discard them.
 
 **Phase 5 (planning#333) — programmatic messages continue on the fresh base too, and
 the card is unconditional.** The Agent Interface SDK (docs/242) turns a click
