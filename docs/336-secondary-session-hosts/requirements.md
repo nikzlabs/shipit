@@ -38,7 +38,7 @@ Requirements of other features that hold for every session hold for sessions on 
 
 13. The main server cannot get root access to a secondary host. The one exception is Docker access that the user allows on that host (req 14).
 
-14. Docker access for sessions is a setting for each host. An example is the Docker socket that a repository's Compose services get with `compose.docker-socket`; a session with that access controls its host. The user can allow it on some hosts and refuse it on others.
+14. Docker access for sessions is a setting for each host. It covers the filtered Docker that `compose.docker-socket` gives a session's agent, and the raw Docker socket that Compose services also get with the repository setting `project.allowDockerSocket`; a service with the raw socket controls its host. The user can allow it on some hosts and refuse it on others.
 
 15. Priority 2 (good to have, not important): server updates are done in one place. ShipIt's own code on a secondary host is updated on that host, because an update from the main server could give the main server root access there (req 13).
 
@@ -65,6 +65,8 @@ Requirements of other features that hold for every session hold for sessions on 
 - A `--host` flag on `shipit session create` that names a host, so that a child can also reach a secondary host that has no GPU (req 2).
 
 ## Open questions
+
+- Where is the Docker-access setting of a secondary host kept (req 14)? Req 5 keeps settings in one place, but req 13 says that the main server cannot get root access to a secondary host, except through Docker access that the user allows on that host. If the main server keeps the setting, a main server that someone broke into can turn it on and so get root access. Options: (a) on the secondary host, in the host agent's config file; ShipIt's settings only show it; (b) in ShipIt's settings with the other settings; then req 13 holds only while the main server is safe. Recommendation: (a), because req 13 is about the case where the main server is not safe.
 
 ## Resolved questions
 
