@@ -1034,11 +1034,11 @@ describe("shipit session message", () => {
     expect(out.stderr).toContain("child session id is required");
   });
 
-  it("requires -m/--message", async () => {
+  it("requires -m/--message or --body-file", async () => {
     const { run } = makeRunner();
     const out = await run(["session", "message", "ses_a"]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("--message is required");
+    expect(out.stderr).toContain("-m/--message (or --body-file -) is required");
   });
 
   it("rejects an oversized message client-side", async () => {
@@ -1046,6 +1046,35 @@ describe("shipit session message", () => {
     const out = await run(["session", "message", "ses_a", "-m", "x".repeat(50_001)]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("exceeds 50,000");
+  });
+
+  it("reads the message from --body-file without shell-interpreting backticks", async () => {
+    const file = await promptFile("Rename `getUser` and keep $(literal) intact.\n");
+    const { run } = makeRunner();
+    const out = await run(["session", "message", "ses_a", "--body-file", file], {
+      "POST /agent-ops/session/message/ses_a": { status: 200, body: { queuePosition: 0, enqueued: false } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toEqual({ text: "Rename `getUser` and keep $(literal) intact.\n" });
+  });
+
+  it("rejects an empty or oversized --body-file before calling the broker", async () => {
+    const { run } = makeRunner();
+    const empty = await run(["session", "message", "ses_a", "-F", await promptFile("\n")]);
+    expect(empty.exitCode).not.toBe(0);
+    expect(empty.stderr).toContain("is required");
+
+    const big = await run(["session", "message", "ses_a", "-F", await promptFile("x".repeat(50_001))]);
+    expect(big.exitCode).not.toBe(0);
+    expect(big.stderr).toContain("exceeds 50,000");
+    expect([...empty.calls, ...big.calls]).toHaveLength(0);
+  });
+
+  it("names the unreadable --body-file", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "message", "ses_a", "--body-file", "/no/such/message.txt"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("could not read body file /no/such/message.txt");
   });
 
   it.each([

@@ -52,7 +52,7 @@ function resolveTarget(
       code: 400,
       error:
         `${title} is a session you spawned, so you can already reach it directly: `
-        + `run \`shipit session message ${targetSessionId} -m "…"\`. `
+        + `run \`shipit session message ${targetSessionId} --body-file -\`. `
         + "A proposal card is for a session you cannot address.",
     };
   }
