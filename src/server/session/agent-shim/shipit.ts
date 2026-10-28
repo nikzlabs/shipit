@@ -97,7 +97,7 @@ Supported subcommands:
                           the child's work is not the role's work.
   shipit session list    [--turn ID] [--json]
   shipit session view    <id> [--json]
-  shipit session message <id> -m "TEXT" [--json]
+  shipit session message <id> -m "TEXT" | --body-file FILE|- [--json]
   shipit session wait    <id...> [--timeout SECONDS] [--any|--all] [--json]
   shipit session notify-on-merge <id> [--json]
   shipit session notify-on-merge --self [--json]

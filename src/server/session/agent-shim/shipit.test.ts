@@ -1,7 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { runShim, parseFlags, type ShimIO } from "./shipit.js";
 import {
   UNTRUSTED_OPEN_MARKER,
@@ -1034,11 +1035,11 @@ describe("shipit session message", () => {
     expect(out.stderr).toContain("child session id is required");
   });
 
-  it("requires -m/--message", async () => {
+  it("requires -m/--message or --body-file", async () => {
     const { run } = makeRunner();
     const out = await run(["session", "message", "ses_a"]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("--message is required");
+    expect(out.stderr).toContain("-m/--message (or --body-file -) is required");
   });
 
   it("rejects an oversized message client-side", async () => {
@@ -1046,6 +1047,73 @@ describe("shipit session message", () => {
     const out = await run(["session", "message", "ses_a", "-m", "x".repeat(50_001)]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("exceeds 50,000");
+  });
+
+  it("reads the message from --body-file without shell-interpreting backticks", async () => {
+    const file = await promptFile("Rename `getUser` and keep $(literal) intact.\n");
+    const { run } = makeRunner();
+    const out = await run(["session", "message", "ses_a", "--body-file", file], {
+      "POST /agent-ops/session/message/ses_a": { status: 200, body: { queuePosition: 0, enqueued: false } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toEqual({ text: "Rename `getUser` and keep $(literal) intact.\n" });
+  });
+
+  it("rejects an empty or oversized --body-file before calling the broker", async () => {
+    const { run } = makeRunner();
+    const empty = await run(["session", "message", "ses_a", "-F", await promptFile("\n")]);
+    expect(empty.exitCode).not.toBe(0);
+    expect(empty.stderr).toMatch(/the message in .*prompt\.txt is empty/);
+
+    const big = await run(["session", "message", "ses_a", "-F", await promptFile("x".repeat(50_001))]);
+    expect(big.exitCode).not.toBe(0);
+    expect(big.stderr).toContain("exceeds 50,000");
+    expect([...empty.calls, ...big.calls]).toHaveLength(0);
+  });
+
+  it("names the unreadable --body-file", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "message", "ses_a", "--body-file", "/no/such/message.txt"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("could not read body file /no/such/message.txt");
+  });
+
+  describe("--body-file -", () => {
+    function useStdin(opts: { tty?: boolean } = {}): PassThrough {
+      const stdin = new PassThrough();
+      if (opts.tty) Object.assign(stdin, { isTTY: true });
+      vi.spyOn(process, "stdin", "get").mockReturnValue(stdin as unknown as typeof process.stdin);
+      return stdin;
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("reads the message from piped stdin", async () => {
+      useStdin().end("From a heredoc with `backticks` and $(literal).\n");
+      const { run } = makeRunner();
+      const out = await run(["session", "message", "ses_a", "--body-file", "-"], {
+        "POST /agent-ops/session/message/ses_a": { status: 200, body: { queuePosition: 0, enqueued: false } },
+      });
+      expect(out.exitCode).toBe(0);
+      expect(out.calls[0].body).toEqual({ text: "From a heredoc with `backticks` and $(literal).\n" });
+    });
+
+    it("refuses a terminal on stdin, and an empty stdin, before calling the broker", async () => {
+      useStdin({ tty: true });
+      const { run } = makeRunner();
+      const tty = await run(["session", "message", "ses_a", "--body-file", "-"]);
+      expect(tty.exitCode).not.toBe(0);
+      expect(tty.stderr).toContain("no body on stdin");
+
+      vi.restoreAllMocks();
+      useStdin().end("\n");
+      const empty = await run(["session", "message", "ses_a", "-F", "-"]);
+      expect(empty.exitCode).not.toBe(0);
+      expect(empty.stderr).toContain("the message in stdin is empty");
+      expect([...tty.calls, ...empty.calls]).toHaveLength(0);
+    });
   });
 
   it.each([

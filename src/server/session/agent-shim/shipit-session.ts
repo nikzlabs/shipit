@@ -609,6 +609,7 @@ export async function handleSessionMessage(args: string[], deps: RunDeps): Promi
     values: {
       "-m": "text", "--message": "text",
       "-p": "text", "--prompt": "text",
+      "-F": "textFile", "--body-file": "textFile",
     },
     booleans: { "--json": "json" },
   });
@@ -619,12 +620,19 @@ export async function handleSessionMessage(args: string[], deps: RunDeps): Promi
   if (!id) {
     fail(deps.io, "shipit session message: child session id is required.");
   }
-  const text = parsed.values.text;
-  if (!text) {
-    fail(deps.io, "shipit session message: -m/--message is required (the prompt text to send).");
+  const text = parsed.values.textFile
+    ? await readBodyFromFileOrStdin(parsed.values.textFile, deps.io, "shipit session message")
+    : parsed.values.text;
+  if (!text?.trim()) {
+    fail(
+      deps.io,
+      parsed.values.textFile
+        ? `shipit session message: the message in ${parsed.values.textFile === "-" ? "stdin" : parsed.values.textFile} is empty.`
+        : "shipit session message: -m/--message (or --body-file -) is required (the prompt text to send).",
+    );
   }
   if (text.length > 50_000) {
-    fail(deps.io, "shipit session message: --message exceeds 50,000 characters.");
+    fail(deps.io, "shipit session message: the message exceeds 50,000 characters.");
   }
 
   const res = await deps.call(
