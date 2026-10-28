@@ -626,7 +626,9 @@ export async function handleSessionMessage(args: string[], deps: RunDeps): Promi
   if (!text?.trim()) {
     fail(
       deps.io,
-      "shipit session message: -m/--message (or --body-file -) is required (the prompt text to send).",
+      parsed.values.textFile
+        ? `shipit session message: the message in ${parsed.values.textFile === "-" ? "stdin" : parsed.values.textFile} is empty.`
+        : "shipit session message: -m/--message (or --body-file -) is required (the prompt text to send).",
     );
   }
   if (text.length > 50_000) {
