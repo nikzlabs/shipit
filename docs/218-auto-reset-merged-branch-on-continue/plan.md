@@ -674,7 +674,13 @@ the second time they had reported "changes are missing from the merged PR".
   legitimate pre-PR push. HEAD *equal* to `mergedHeadSha` is checked first,
   because a commit is its own ancestor: an agent that opens and merges its own
   PR in one turn ends there with nothing unshipped, so the push is still
-  refused but no notice is written.
+  refused but no notice is written. The refusal also parks an agent copy
+  (`formatMergedPushAgentNotice`, via `appendPendingAgentNotice`) for the next
+  turn's prompt: the transcript notice reaches only the user, so the agent went
+  on reporting the refused commit as shipped. For the `head-moved` clause the
+  pre-turn skip prefix gives the same route (merge the base, then `gh pr
+  create`), because `shipit branch reset-to-base` refuses that clause and its
+  `--force` would discard the unshipped commits.
 
 **Phase 5 (planning#333) — programmatic messages continue on the fresh base too, and
 the card is unconditional.** The Agent Interface SDK (docs/242) turns a click

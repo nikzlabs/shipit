@@ -544,13 +544,20 @@ function buildSkipAgentPrefix(skip: ResetSkip, prNumber?: number, base?: string)
       + `\`shipit branch reset-to-base\`.`
     );
   }
+  // reset-to-base refuses this clause, and its --force would discard the unshipped commits.
+  const remedy = skip.clause === "head-moved"
+    ? `To ship those commits, merge the base into the branch (\`git fetch origin && git merge `
+      + `origin/${base ?? "<base>"}\`) and open a new pull request with \`gh pr create\`. Do not rebase, and do not `
+      + `run a manual \`git reset --hard\` or \`git push --force\`; \`shipit branch reset-to-base\` `
+      + `refuses this branch, and discarding its commits with \`--force\` is the user's decision.`
+    : `Do not run a manual \`git reset --hard\` or \`git push --force\`; if the user wants the `
+      + `branch moved, use \`shipit branch reset-to-base\`.`;
   return (
     `[System] This session's pull request${pr} was already merged${into}, and the branch was `
     + `NOT reset to ${target}: ${skip.detail}. The branch still contains the merged commits, `
     + `is behind the base, and has no open pull request — anything you commit here will not be `
     + `auto-pushed and belongs to no pull request. Tell the user this before doing work that `
-    + `assumes a fresh base. Do not run a manual \`git reset --hard\` or \`git push --force\`; `
-    + `if the user wants the branch moved, use \`shipit branch reset-to-base\`.`
+    + `assumes a fresh base. ${remedy}`
   );
 }
 

@@ -520,6 +520,24 @@ describe("autoResetMergedBranchOnContinue", () => {
       expect(out.agentPrefix).toContain("no open pull request");
     });
 
+    // reset-to-base refuses head-moved, and its --force would discard the unshipped commits.
+    it("sends the agent to merge the base, not to reset-to-base, when the branch has unshipped commits", async () => {
+      const git = makeGit({ getHeadHash: vi.fn().mockResolvedValue("deadbeef000000000000000000000000000beef1") });
+      const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+      expect(out.skip?.clause).toBe("head-moved");
+      expect(out.agentPrefix).toContain("git fetch origin && git merge origin/main");
+      expect(out.agentPrefix).toContain("gh pr create");
+      expect(out.agentPrefix).not.toContain("if the user wants the branch moved, use");
+    });
+
+    it("keeps reset-to-base as the remedy for a clause it can clear", async () => {
+      const git = makeGit({ isClean: vi.fn().mockResolvedValue(false) });
+      const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+      expect(out.skip?.clause).toBe("dirty-tree");
+      expect(out.agentPrefix).toContain("if the user wants the branch moved, use `shipit branch reset-to-base`");
+      expect(out.agentPrefix).not.toContain("git merge");
+    });
+
     it.each([
       [
         "no-merged-head-sha",
