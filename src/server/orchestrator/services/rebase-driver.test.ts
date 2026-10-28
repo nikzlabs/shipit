@@ -3502,6 +3502,31 @@ describe("rebase-driver: the flow releases its own hold, not one that changed ha
     expect(runner.postTurnWorkInFlight).toBe(false);
   });
 
+  it("reports a cleanup failure after a completed rebase as one, not as a sync that changed nothing", async () => {
+    const { git, runner, deps } = setupDivergedSession();
+    const history: { role: string; text: string }[] = [];
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+    vi.mocked(handWorkspaceBackToWorker).mockImplementationOnce(() => { throw new Error("chown failed"); });
+    const syncDeps = { ...deps, chatHistoryManager: makeStubHistory(history), recordSyncCard: true };
+
+    let err: unknown = null;
+    try {
+      await runFlow(syncDeps, "main");
+    } catch (e) {
+      err = e;
+    }
+    await reportSyncFailure({ runner, chatHistoryManager: syncDeps.chatHistoryManager, git, sessionId: "s1", baseBranch: "main", err });
+
+    expect(fs.existsSync(path.join(runner.sessionDir, "main-only.txt"))).toBe(true);
+    expect(history.filter((m) => m.text.startsWith("Sync with")).map((m) => m.text)).toEqual([
+      "Sync with `main` rebased this branch onto `main` and force-pushed it, but a later step failed: handing "
+      + "the workspace files back to the session (chown failed). The rebase is done and was not undone.",
+    ]);
+    // The banner would otherwise read "Rebase failed".
+    expect(messages.filter((m) => m.type === "rebase_aborted")).toEqual([{ type: "rebase_aborted", sessionId: "s1" }]);
+  });
+
   it("leaves a hold taken over mid-flow alone, and drains nothing under it", async () => {
     const { git, runner, deps } = setupDivergedSession();
 

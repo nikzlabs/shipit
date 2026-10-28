@@ -27,7 +27,9 @@ import {
   syncFailureAlreadyExplained,
   repoDefaultBranch,
   ServiceError,
+  buildPostRebaseFailureNotice,
   buildSyncFailureNotice,
+  postRebaseFailureOf,
   rebaseLeftoverText,
   summarizeGitError,
 } from "./services/index.js";
@@ -156,6 +158,7 @@ export async function reportSyncFailure(deps: {
   err: unknown;
 }): Promise<void> {
   const message = getErrorMessage(deps.err);
+  const postRebase = postRebaseFailureOf(deps.err);
   // The abort after a failed rebase swallows its own failure, so check what it left.
   const rebaseInProgress = await deps.git.rebaseInProgressState().catch(() => null);
   // The banner drops its Abort button on this event, so it has to carry the recovery itself.
@@ -164,7 +167,8 @@ export async function reportSyncFailure(deps: {
   deps.runner.emitMessage({
     type: "rebase_aborted",
     sessionId: deps.sessionId,
-    reason: leftover ? `${summary} ${leftover}` : summary,
+    // The banner would title it "Rebase failed"; after a rebase that completed, only the notice speaks.
+    ...(postRebase ? {} : { reason: leftover ? `${summary} ${leftover}` : summary }),
   });
   // Persist failures not already recorded by the driver; WS events do not survive reload.
   if (syncFailureAlreadyExplained(deps.err)) return;
@@ -173,7 +177,9 @@ export async function reportSyncFailure(deps: {
       (msg) => deps.runner.emitMessage(msg),
       deps.chatHistoryManager,
       deps.sessionId,
-      buildSyncFailureNotice(deps.baseBranch, message, rebaseInProgress, indexLockStateOf(deps.err)),
+      postRebase
+        ? buildPostRebaseFailureNotice(deps.baseBranch, postRebase, message)
+        : buildSyncFailureNotice(deps.baseBranch, message, rebaseInProgress, indexLockStateOf(deps.err)),
       "warn",
     );
   } catch (noticeErr) {

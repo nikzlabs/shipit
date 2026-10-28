@@ -390,6 +390,37 @@ export function syncFailureAlreadyExplained(err: unknown): boolean {
   );
 }
 
+/** A step that failed after the rebase had already rewritten the branch. */
+export interface PostRebaseFailure {
+  step: string;
+  forcePushed: boolean;
+}
+
+const POST_REBASE_FAILURE = Symbol("shipit.postRebaseFailure");
+
+function markPostRebaseFailure<T>(err: T, failure: PostRebaseFailure): T {
+  if (err !== null && typeof err === "object") {
+    Object.defineProperty(err, POST_REBASE_FAILURE, { value: failure, enumerable: false, configurable: true });
+  }
+  return err;
+}
+
+export function postRebaseFailureOf(err: unknown): PostRebaseFailure | null {
+  if (err === null || typeof err !== "object") return null;
+  return ((err as Record<symbol, unknown>)[POST_REBASE_FAILURE] as PostRebaseFailure | undefined) ?? null;
+}
+
+export function buildPostRebaseFailureNotice(
+  baseBranch: string,
+  failure: PostRebaseFailure,
+  errorMessage: string,
+): string {
+  const pushed = failure.forcePushed ? " and force-pushed it" : "";
+  const summary = summarizeGitError(errorMessage).replace(/[.:]$/, "");
+  return `Sync with \`${baseBranch}\` rebased this branch onto \`${baseBranch}\`${pushed}, but a later step `
+    + `failed: ${failure.step} (${summary}). The rebase is done and was not undone.`;
+}
+
 function unreadableReason(detail: string): string {
   return (
     `git cannot read \`${detail}\` in this workspace, so a rebase would rewrite the `
@@ -472,6 +503,8 @@ export async function runRebaseFlow(
   const hold = new RebaseRunnerHold(runner);
   let published = false;
   let pushProhibited = false;
+  // From here a failure must not be reported as a sync that left the branch unchanged.
+  let rebaseConcluded = false;
   let savedCommit: string | null = null;
   // Our sweep removes them where git 2.39 refuses; newer git deletes ignored files itself.
   let pluginSkillsBefore: string[] = [];
@@ -532,6 +565,7 @@ export async function runRebaseFlow(
     });
 
     if (result.status === "clean") {
+      rebaseConcluded = true;
       // Nothing refreshed the lease since the flow started; fetch and rebase alone can
       // outrun POST_TURN_HOLD_MAX_MS on a large repo.
       hold.take();
@@ -619,6 +653,7 @@ export async function runRebaseFlow(
       }
     }
 
+    rebaseConcluded = true;
     hold.take();
     reevaluateSessionAfterRewrite(runner);
     const resolvedPushOutcome = await tryForcePush(deps, baseBranch);
@@ -652,7 +687,12 @@ export async function runRebaseFlow(
         }
         : {}),
     };
+  } catch (err) {
+    throw rebaseConcluded
+      ? markPostRebaseFailure(err, { step: "finishing the sync after the rebase", forcePushed: published })
+      : err;
   } finally {
+    let cleanupStep = "cleaning up after the rebase";
     // Released last, so a throw in this teardown cannot strand the lease. Re-taken
     // first: restoreLfsForSync's own begin/end would otherwise zero an expired depth
     // and then drop it, leaving the handback and the queue drain uncovered.
@@ -688,13 +728,18 @@ export async function runRebaseFlow(
           }
         }
       }
+      cleanupStep = "handing the workspace files back to the session";
       handWorkspaceBackToWorker(runner.sessionDir);
+      cleanupStep = "cleaning up after the rebase";
       // After the handback, since the worker may write into a root the rebase created; before
       // the queue drains, since a turn started now would spawn without the skills.
       if (pluginSkillCopiesGone(pluginSkillsBefore)) {
         hold.take();
         await restorePluginSkills(runner);
       }
+    } catch (err) {
+      // eslint-disable-next-line no-unsafe-finally -- the cleanup's own error, which left this `finally` before; only annotated
+      throw rebaseConcluded ? markPostRebaseFailure(err, { step: cleanupStep, forcePushed: published }) : err;
     } finally {
       try {
         // In a `finally` of its own, so a throw in the cleanup above cannot leave the session
