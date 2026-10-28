@@ -841,7 +841,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _lastTurnErrored = false;
   private _guardedUnavailable = false;
   readonly awaitingPermissionIds = new Set<string>();
-  private _backgroundTasks = new BackgroundTaskTracker();
+  private _backgroundTasks = new BackgroundTaskTracker(() => this.clearBackgroundTasks());
   private _isStreamingActive = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _appliedSpawnIdentity: string | undefined = undefined;
@@ -938,7 +938,11 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this.announceBackgroundWork();
   }
   clearBackgroundTasks(): void {
-    this._backgroundTasks.clear();
+    // The SSE announcement updates the sidebar only; the open chat's row needs this message.
+    if (this._backgroundTasks.clear()) {
+      const descriptions = this.backgroundWorkDescriptions;
+      this.emitMessage({ type: "background_tasks", sessionId: this.sessionId, count: descriptions.length, descriptions });
+    }
     this.announceBackgroundWork();
   }
   private announceBackgroundWork(): void {
