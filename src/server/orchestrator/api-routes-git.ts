@@ -32,6 +32,7 @@ import {
   summarizeGitError,
 } from "./services/index.js";
 import { deliverRebaseFollowup } from "./services/rebase-followup.js";
+import { indexLockStateOf } from "./services/stale-index-lock.js";
 import { detectAndReArmResetSession } from "./services/pr-rearm.js";
 import {
   buildManualResetAgentNotice,
@@ -172,7 +173,7 @@ export async function reportSyncFailure(deps: {
       (msg) => deps.runner.emitMessage(msg),
       deps.chatHistoryManager,
       deps.sessionId,
-      buildSyncFailureNotice(deps.baseBranch, message, rebaseInProgress),
+      buildSyncFailureNotice(deps.baseBranch, message, rebaseInProgress, indexLockStateOf(deps.err)),
       "warn",
     );
   } catch (noticeErr) {

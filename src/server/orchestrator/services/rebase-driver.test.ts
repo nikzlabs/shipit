@@ -22,6 +22,12 @@ import {
   syncFailureAlreadyExplained,
 } from "./rebase-driver.js";
 import { PLUGIN_SKILL_RESTORE_WAIT_MS } from "./plugin-skill-clearing.js";
+import {
+  indexLockStateOf,
+  isStaleIndexLockKept,
+  retryRemovingStaleIndexLock,
+  STALE_INDEX_LOCK_MS,
+} from "./stale-index-lock.js";
 import { armFollowupNote, followupWindowOpen } from "./rebase-followup.js";
 import { withWorkspaceLock } from "./marketplace.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
@@ -3652,6 +3658,169 @@ describe("rebase-driver: buildSyncFailureNotice", () => {
       + "delete the untracked files still inside. They are usually ignored files, which `git status` does not "
       + "show. Your branch was not changed by ShipIt. To sync, move or delete those files, then sync again.",
     );
+  });
+});
+
+describe("rebase-driver: a .git/index.lock left by a git process that died (planning#714)", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-index-lock-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeIndexLock(workDir: string, ageMs: number): string {
+    const lock = path.join(workDir, ".git", "index.lock");
+    fs.writeFileSync(lock, "");
+    const at = new Date(Date.now() - ageMs);
+    fs.utimesSync(lock, at, at);
+    return lock;
+  }
+
+  function flowDeps(git: GitManager, runner: SessionRunner, githubAuthenticated = false) {
+    return {
+      git,
+      githubAuthManager: makeStubAuth(githubAuthenticated),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    };
+  }
+
+  it("a manual sync removes a lock older than the threshold, logs it, and rebases on the retry", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const lock = writeIndexLock(workDir, STALE_INDEX_LOCK_MS + 60_000);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const rebase = vi.spyOn(git, "rebase");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await runFlow({ ...flowDeps(git, runner), recordSyncCard: true }, "main");
+
+    expect(result.status).toBe("rebased");
+    // Real git refused the first rebase on the lock; the helper did not skip it.
+    expect(rebase).toHaveBeenCalledTimes(2);
+    expect(fs.existsSync(lock)).toBe(false);
+    expect(fs.existsSync(path.join(workDir, "main-only.txt"))).toBe(true);
+    expect(warn.mock.calls.map(([line]) => String(line))).toContainEqual(
+      expect.stringMatching(/^\[rebase\] removed a stale \.git\/index\.lock \(11 minutes old\)/),
+    );
+  });
+
+  it("a younger lock is kept, and the sync notice names it and its age", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const lock = writeIndexLock(workDir, 3 * 60_000 + 5_000);
+    const headBefore = execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim();
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const rebase = vi.spyOn(git, "rebase");
+
+    let err: unknown = null;
+    try {
+      await runFlow({ ...flowDeps(git, runner), recordSyncCard: true }, "main");
+    } catch (e) {
+      err = e;
+    }
+
+    expect(err).toBeInstanceOf(Error);
+    expect(rebase).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(lock)).toBe(true);
+    expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim()).toBe(headBefore);
+    expect(buildSyncFailureNotice("main", (err as Error).message, false, indexLockStateOf(err))).toBe(
+      "Sync with `main` failed: another git process holds this workspace's index lock, `.git/index.lock` "
+      + "(3 minutes old). Your branch was not changed by ShipIt. ShipIt removes the lock itself only once it "
+      + "is 10 minutes old, in case a git command is still running: wait for that command to finish, then sync "
+      + "again. If no git command is running in this workspace, delete that file, then sync again.",
+    );
+  });
+
+  it("never removes a lock while a turn runs, however old it is", async () => {
+    const workDir = path.join(tmpDir, "repo");
+    fs.mkdirSync(path.join(workDir, ".git"), { recursive: true });
+    const lock = writeIndexLock(workDir, 60 * 60_000);
+    const step = vi.fn(() => Promise.reject(new Error(
+      `fatal: Unable to create '${lock}': File exists.\n\nAnother git process seems to be running in this repository.\n`,
+    )));
+
+    let err: unknown = null;
+    try {
+      await retryRemovingStaleIndexLock(workDir, () => true, step);
+    } catch (e) {
+      err = e;
+    }
+
+    expect(step).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(lock)).toBe(true);
+    expect(indexLockStateOf(err)?.ageMs).toBeGreaterThanOrEqual(60 * 60_000);
+  });
+
+  it("retries the git step only once, even when a stale lock is back after the retry", async () => {
+    const workDir = path.join(tmpDir, "repo");
+    fs.mkdirSync(path.join(workDir, ".git"), { recursive: true });
+    const step = vi.fn(() => {
+      const lock = writeIndexLock(workDir, STALE_INDEX_LOCK_MS + 60_000);
+      return Promise.reject(new Error(`fatal: Unable to create '${lock}': File exists.\n`));
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    let err: unknown = null;
+    try {
+      await retryRemovingStaleIndexLock(workDir, () => false, step);
+    } catch (e) {
+      err = e;
+    }
+
+    expect(step).toHaveBeenCalledTimes(2);
+    expect(isStaleIndexLockKept(err)).toBe(true);
+  });
+
+  it("the automatic path counts a stale lock it could not remove as an error, and a young lock as a free deferral", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const lock = writeIndexLock(workDir, STALE_INDEX_LOCK_MS + 60_000);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const deps = flowDeps(git, runner, true);
+    wireSystemTurnDeps(deps);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const realUnlink = fs.unlinkSync.bind(fs);
+    vi.spyOn(fs, "unlinkSync").mockImplementation((target) => {
+      if (String(target) === lock) throw new Error("EACCES: permission denied, unlink");
+      realUnlink(target);
+    });
+
+    const stale = await runAutoResolveAttempt(deps, "main");
+
+    // A free deferral would retry this every minute for ever.
+    expect(stale).toMatchObject({
+      outcome: "error",
+      didWork: true,
+      lastError: expect.stringContaining(".git/index.lock': File exists.") as unknown,
+    });
+    expect(fs.existsSync(lock)).toBe(true);
+
+    writeIndexLock(workDir, 60_000);
+    const young = await runAutoResolveAttempt(deps, "main");
+
+    expect(young).toMatchObject({ outcome: "deferred", didWork: false });
+    expect(fs.existsSync(lock)).toBe(true);
   });
 });
 

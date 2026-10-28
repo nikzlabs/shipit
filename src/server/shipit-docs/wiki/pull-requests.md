@@ -62,7 +62,7 @@ known here. And a **⋮** menu:
 | **Auto-merge** switch | Only when the pull request is *not* open — while it is open the switch is on the card itself. Before one exists it arms in advance, and ShipIt applies it the moment the pull request opens |
 | **Auto-fix CI** switch | Only when the workspace auto-fix setting is on. Off here pauses auto-fixing for this session alone. A fix turn that is still waiting to start is removed; one already running finishes |
 | **Compact after merge** switch | When *"Start from the latest base after a merge"* is on and the session's harness can compact. The same choice as the composer's **Compact the context** box, kept for this session: off here, no turn of this session compacts after a merge |
-| **Sync with `<base>`** | Whenever the session has a remote. Rebases onto the base; on a session whose pull request already merged it resets the branch to the base instead |
+| **Sync with `<base>`** | Whenever the session has a remote. Rebases onto the base; on a session whose pull request already merged it resets the branch to the base instead. When no turn runs, a `.git/index.lock` older than ten minutes is removed as stale and the rebase runs once more |
 | **Copy branch name** | Whenever the branch is known |
 | **Close pull request** | Only while the pull request is open. Two clicks — the second confirms |
 

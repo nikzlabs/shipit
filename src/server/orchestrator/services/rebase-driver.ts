@@ -30,6 +30,14 @@ import {
   restorePluginSkills,
   retryClearingPluginSkills,
 } from "./plugin-skill-clearing.js";
+import {
+  formatLockAge,
+  isIndexLockRefusal,
+  isStaleIndexLockKept,
+  retryRemovingStaleIndexLock,
+  STALE_INDEX_LOCK_MS,
+  type IndexLockState,
+} from "./stale-index-lock.js";
 import { withWorkspaceLock } from "./marketplace.js";
 import { getErrorMessage } from "../validation.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
@@ -224,8 +232,10 @@ export function buildSyncFailureNotice(
   baseBranch: string,
   errorMessage: string,
   rebaseInProgress: boolean | null,
+  indexLock: IndexLockState | null = null,
 ): string {
   const leftover = rebaseLeftoverText(rebaseInProgress);
+  if (isIndexLockRefusal(errorMessage)) return indexLockNotice(baseBranch, indexLock, leftover);
   const paths = untrackedOverwritePaths(errorMessage);
   if (paths && paths.length > 0) {
     return `Sync with \`${baseBranch}\` failed: a commit being replayed adds files at paths where this `
@@ -245,6 +255,25 @@ export function buildSyncFailureNotice(
   const summary = summarizeGitError(errorMessage).replace(/[.:]$/, "");
   const state = leftover ?? "Your branch was not changed by ShipIt; check the workspace state and try again.";
   return `Sync with \`${baseBranch}\` failed: ${summary}. ${state}`;
+}
+
+function indexLockNotice(baseBranch: string, lock: IndexLockState | null, leftover: string | null): string {
+  const unchanged = leftover ?? "Your branch was not changed by ShipIt.";
+  if (lock?.ageMs === null) {
+    return `Sync with \`${baseBranch}\` failed: another git process held this workspace's index lock, `
+      + `\`.git/index.lock\`, which was gone when ShipIt looked again. ${unchanged} Sync again.`;
+  }
+  const ageMs = lock?.ageMs ?? null;
+  const age = ageMs === null ? "" : ` (${formatLockAge(ageMs)} old)`;
+  const intro = `Sync with \`${baseBranch}\` failed: another git process holds this workspace's index lock, `
+    + `\`.git/index.lock\`${age}. ${unchanged}`;
+  const deleteIt = "If no git command is running in this workspace, delete that file, then sync again.";
+  if (lock?.removeError) return `${intro} ShipIt could not remove the stale lock (${lock.removeError}). ${deleteIt}`;
+  if (ageMs !== null && ageMs < STALE_INDEX_LOCK_MS) {
+    return `${intro} ShipIt removes the lock itself only once it is ${formatLockAge(STALE_INDEX_LOCK_MS)} old, `
+      + `in case a git command is still running: wait for that command to finish, then sync again. ${deleteIt}`;
+  }
+  return `${intro} ${deleteIt}`;
 }
 
 // The container's file watcher may miss a rewrite from the orchestrator.
@@ -500,7 +529,11 @@ export async function runRebaseFlow(
       }
       worktreeRewritten = true;
       pluginSkillsBefore = presentPluginSkillCopies(runner.sessionDir);
-      return retryClearingPluginSkills(git, runner.sessionDir, () => git.rebase(baseRef));
+      return retryRemovingStaleIndexLock(
+        runner.sessionDir,
+        () => runner.running,
+        () => retryClearingPluginSkills(git, runner.sessionDir, () => git.rebase(baseRef)),
+      );
     });
 
     if (result.status === "clean") {
@@ -1108,7 +1141,7 @@ export async function runAutoResolveAttempt(
       if (!didSpawn) {
         const lastError = autoResolveFailureText(runner, "rebase flow", err);
         // A free deferral of a refusal git repeats every time retries forever, and silently.
-        return isUntrackedFilesRefusal(getErrorMessage(err))
+        return isUntrackedFilesRefusal(getErrorMessage(err)) || isStaleIndexLockKept(err)
           ? { outcome: "error", lastError, didWork: true }
           : { outcome: "deferred", lastError, didWork: false };
       }
