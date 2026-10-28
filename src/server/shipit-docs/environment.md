@@ -66,7 +66,7 @@ What this means in practice:
 | `/workspace` | Project root. This is the git repo. Your working directory. |
 | `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts and checkout reclaim, but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). It is kept while the session is in use. After the session is archived or finished, ShipIt deletes it when a retention period ends — see [What survives what](#what-survives-what). A Compose service can mount it too: the `persist` volume in [compose.md](compose.md). |
 | `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. It has the same retention period as `/persist`. |
-| `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode`, `~/.local/share/opencode2` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Write-protected (see below). |
+| `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode`, `~/.local/share/opencode2` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Claude's credential and settings files here are write-protected (see below). |
 | `/dep-cache` | Shared download cache across sessions for the same repo: yarn's cache and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). Also the place for a lock between those sessions — see [A lock shared by the repo's sessions](#a-lock-shared-by-the-repos-sessions). |
 | `/workspace/.pnpm-store` | **This session's own pnpm store.** Not shared with any other session — see [The pnpm store is yours alone](#the-pnpm-store-is-yours-alone). |
 | `/session-state/npm-cache` | **`npm_config_cache` points here** — your session's own npm cache. Private to this session. |
@@ -197,12 +197,14 @@ the container, so a stopped session never leaves a stale lock behind.
 
 ### Write-protected paths
 
-The Claude agent runs under an explicit permission policy (`/etc/shipit/managed-settings.json`). Editing under `/workspace` and elsewhere is unrestricted, but the file-edit tools (Edit/Write/MultiEdit/NotebookEdit) are **denied** on a few infrastructure paths:
+The Claude agent runs under an explicit permission policy (`/etc/shipit/managed-settings.json`). Editing is otherwise unrestricted, but the file-edit tools (Edit/Write/NotebookEdit) are **denied** on a few infrastructure paths:
 
 - `/etc/shipit/**` — ShipIt's managed settings and hooks (the agent must not rewrite its own permission policy).
-- The OAuth / CLI-config credential files: `~/.claude/.credentials.json`, `~/.claude/auth.json`, `~/.claude.json`, `~/.claude/settings*.json` (and the same files under `/credentials/.claude`, which `~/.claude` symlinks to).
+- The OAuth / CLI-config credential files: `~/.claude/.credentials.json`, `~/.claude/credentials.json`, `~/.claude/auth.json`, `~/.claude/settings*.json`, `~/.claude.json` — and the same files under `/credentials/`, which `~/.claude` and `~/.claude.json` link to.
 
-These are infrastructure, not your project — you should never need to write to them. An attempt is refused with a permission error rather than silently succeeding.
+These are infrastructure, not your project — you should never need to write to them. An attempt is refused with a permission error rather than silently succeeding. A shell command whose target the CLI can read, such as `echo … > ~/.claude/auth.json`, is refused too.
+
+These rules guard against an accidental write. They are not a wall: a shell command whose target the CLI cannot read, such as `sh -c '…'`, is not refused.
 
 Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restricted — the deny list targets the specific credential files, not the whole `~/.claude` tree, precisely so memory updates keep working. Confidentiality of the credentials (reads, exfil) is handled at the network/credential layer, not by these file-edit rules.
 

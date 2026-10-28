@@ -238,10 +238,10 @@ export class AgentController {
       return { cancelled: true };
     });
 
-    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; serviceRouting?: ServiceRouting; homeDir?: string; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number; toolsOff?: boolean; credentialSecret?: string; modelList?: unknown } }>(
+    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; serviceRouting?: ServiceRouting; homeDir?: string; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number; toolsOff?: boolean; sandbox?: boolean; credentialSecret?: string; modelList?: unknown } }>(
       "/agent/spawn",
       async (request, reply) => {
-        const { agentId, prompt, spawnId, depth, model, serviceRouting, homeDir, reasoningEffort, timeoutMs, maxOutputChars, toolsOff, credentialSecret } = request.body ?? {};
+        const { agentId, prompt, spawnId, depth, model, serviceRouting, homeDir, reasoningEffort, timeoutMs, maxOutputChars, toolsOff, sandbox, credentialSecret } = request.body ?? {};
         if (!agentId || typeof prompt !== "string" || !spawnId) {
           console.warn("[sub-agent] worker rejected spawn: agentId, prompt, and spawnId are required");
           return reply.code(400).send({ error: "agentId, prompt, and spawnId are required" });
@@ -274,6 +274,7 @@ export class AgentController {
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(maxOutputChars !== undefined ? { maxOutputChars } : {}),
           ...(toolsOff !== undefined ? { toolsOff } : {}),
+          ...(sandbox === true ? { sandbox: true } : {}),
         };
         const handle = runAgentToCompletion(agent, runOpts, Date.now());
         this.spawnedAgents.set(spawnId, handle);

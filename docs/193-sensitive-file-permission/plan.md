@@ -284,10 +284,16 @@ is relative to the working directory.
 
 ### `/persist` agrees with the gate (req 1)
 
-`docker/agent-hooks/managed-settings.json` allows `Edit`, `Write` and
-`NotebookEdit` on `//persist/**`, the real path. With these three rules no call
-in the table asks for a `/persist` target, and a symlink to `/tmp` still asks, so
-the rules open `/persist` and nothing else. ShipIt recommends `/persist` for
+`docker/agent-hooks/managed-settings.json` allows `Edit(//persist/**)`, the real
+path. Only `Edit(path)` rules are path-matched, and that one rule covers Write and
+NotebookEdit as well (docs/097-explicit-session-agent-permissions, "How the CLI
+reads a path rule"). With it no call in the table asks for a `/persist` target,
+and a symlink to another outside place still asks, so the rule opens `/persist`
+and nothing else. Measured again with Claude Code 2.1.300 on 2026-10-28, with
+the ignored `Write(//persist/**)` and `NotebookEdit(//persist/**)` rules removed:
+Write, Edit and a shell write through a symlink into `/persist`, NotebookEdit by
+the real path and through the symlink, and Glob outside the working directory
+all ran with no request; a symlink to `/var/tmp` still asked. ShipIt recommends `/persist` for
 scratch work, and a link from the workspace to it is the natural way to keep a
 path stable, so the write is allowed and is not documented as one that asks.
 
@@ -475,7 +481,7 @@ mid-turn card in that position reproduced it, not just this one.
 **Worker / agent-agnostic core**
 - `src/server/session/permission-broker.ts` — the broker. `openRequest()`/`poll()` (long poll + `toolUseId` idempotency), `request()` (Codex direct-await, withdrawn by its `signal`), `resolve()`, and the abandoned-request deny: `endToolUse()`/`clearPending()`. Also `SubagentCallTracker`, which says whose call a `toolUseId` is.
 - `src/server/session/agent-controller.ts` — `wireAgentEvents` ends the request for every `tool_result` id, and clears pending requests when the agent exits. `/agent/status` reports the broker's `unansweredIds` as `pendingPermissionIds`. It feeds `SubagentCallTracker`, and `subagentCaller()` answers the permission endpoint.
-- `docker/agent-hooks/managed-settings.json` — the Claude CLI's permission rules, with the `//persist/**` allow rules.
+- `docker/agent-hooks/managed-settings.json` — the Claude CLI's permission rules, with the `Edit(//persist/**)` allow rule.
 - `src/server/session/mcp-permission-bridge.ts` — Claude's `--permission-prompt-tool`. `createPermissionBridgeServer()` factory; open + bounded `/await` poll loop with retry/backoff (Thread B).
 - `src/server/session/session-worker.ts` — broker construction, `/agent-ops/permission/request` (now non-blocking) + `/agent-ops/permission/await` (Thread B) + `/agent/permission/resolve`, `permissionBridgePaths`, Codex requester injection, reject-all on teardown.
 - `src/server/session/agents/claude/{adapter,process}.ts` — register `shipit-permission`; pass `--permission-prompt-tool`.
@@ -538,4 +544,4 @@ mid-turn card in that position reproduced it, not just this one.
 - `permission-broker.test.ts` — `describePermissionDetails` (raw command whole, JSON fallback, `PERMISSION_DETAILS_CHARS` bound) and the broadcast carrying `details` alongside the clipped `summary`.
 - `permission-broker.test.ts` — `SubagentCallTracker` (main, foreground, background, a closed call, `whenOpened`), and the request event carrying `subagent`. `agent-controller.test.ts` — the same three callers from the event order the Claude CLI emits, a request that arrives before its stream event, and a replaced process's late events. `session-worker.test.ts` (integration) — the endpoint marks a background subagent's request, also one that arrives before its stream event, and leaves the main agent's unmarked.
 - `permission-wait-notice.test.ts` — the line goes into the running turn after the delay and one time; it lists every request that waits; an answered request is not told; a later request gets a line of its own; no turn is started for an idle session and the next turn gets the line; a turn that cannot take a steer gets nothing queued; a dispatch that throws is tried again; the turn's permission mode stays. `agent-listeners.test.ts` — only a `background` request arms the line, and an answer ends it.
-- `managed-settings.test.ts` — the three `//persist/**` allow rules. The test reads the file; what the CLI does with the rules is the measurement above, which no test repeats.
+- `managed-settings.test.ts` — the `Edit(//persist/**)` allow rule, and no allow rule the CLI ignores. The test reads the file; what the CLI does with the rules is the measurement above, which no test repeats.

@@ -7,7 +7,7 @@ import {
   prepareSessionAgentEnvironment,
   PUSH_AGENT_SECRETS_TIMEOUT_MS,
 } from "./session-agent-env.js";
-import type { AgentId } from "../shared/types.js";
+import type { AgentId, AgentRunParams } from "../shared/types.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 import { TURN_COMPLETED, type TurnOutcome } from "./turn-settlement.js";
 import { noteTurnReady } from "./turn-stop-request.js";
@@ -53,6 +53,33 @@ describe("SessionRunner", () => {
 
     expect(res.status).toBe("error");
     expect(res.error).toMatch(/credential/);
+    runner.dispose({ force: true });
+  });
+
+  it("runs a local sub-agent under the managed settings, with a sandbox parent's flag", async () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    let seen: AgentRunParams | undefined;
+    const agent = Object.assign(new EventEmitter(), {
+      run: (params: AgentRunParams) => { seen = params; agent.emit("auth_required"); },
+      kill: vi.fn(),
+    });
+    runner.setSystemTurnDeps({ agentFactory: () => agent } as never);
+
+    await runner.spawnSubAgent({
+      agentId: "claude" as AgentId,
+      prompt: "review",
+      spawnId: "sp-2",
+      depth: 0,
+      model: "claude-opus-5",
+      sandbox: true,
+    });
+
+    expect(seen?.settingsPath).toBe("/etc/shipit/managed-settings.json");
+    expect(seen?.sandbox).toBe(true);
     runner.dispose({ force: true });
   });
 

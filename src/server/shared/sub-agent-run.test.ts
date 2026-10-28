@@ -563,4 +563,17 @@ describe("buildSubAgentRunParams", () => {
     const without = buildSubAgentRunParams({ prompt: "p", cwd: "/workspace", model: "m" });
     expect("homeDir" in without).toBe(false);
   });
+
+  it("passes the managed settings, so a Claude spawn gets the deny list and the branch-block hook", async () => {
+    const { buildSubAgentRunParams } = await import("./sub-agent-run.js");
+    const params = buildSubAgentRunParams({ prompt: "p", cwd: "/workspace", model: "m", toolsOff: true });
+    expect(params.settingsPath).toBe("/etc/shipit/managed-settings.json");
+    expect(params.autoCreatePr).toBeUndefined();
+    expect("sandbox" in params).toBe(false);
+  });
+
+  it("carries a sandbox parent's flag, which exempts the spawn from the branch-block hook", async () => {
+    const { buildSubAgentRunParams } = await import("./sub-agent-run.js");
+    expect(buildSubAgentRunParams({ prompt: "p", cwd: "/workspace", model: "m", sandbox: true }).sandbox).toBe(true);
+  });
 });

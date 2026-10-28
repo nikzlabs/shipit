@@ -22,15 +22,43 @@ A `permissions` block was added to that file:
   `--allowedTools` (union), so this is documentation-as-code: a future restrictive
   CLI default can't silently revoke editing.
 - **`deny`** is the load-bearing part. Deny overrides allow, so even with
-  `Write(**)`/`Edit(**)` allowed, the file-edit tools (Edit/Write/MultiEdit) are
+  `Edit(**)` allowed, the file-edit tools (Edit/Write/NotebookEdit) are
   refused on:
   - `/etc/shipit/**` — the agent's own settings + hooks (it must not rewrite its
     own permission policy; no memory lives here, so a tree-wide deny is safe).
   - The OAuth / CLI-config credential **files** specifically:
     `~/.claude/.credentials.json`, `~/.claude/credentials.json`,
-    `~/.claude/auth.json`, `~/.claude/settings.json`,
-    `~/.claude/settings.local.json`, `~/.claude.json` — listed under both the
-    `/root/.claude/...` and `/credentials/.claude/...` spellings.
+    `~/.claude/auth.json`, `~/.claude/settings*.json`, `~/.claude.json` — listed
+    under both the `~/...` and `//credentials/...` spellings.
+
+**How the CLI reads a path rule** (measured with Claude Code 2.1.300, 2026-10-28).
+Until then every deny rule was dead, and the credential files had only the CLI's
+own "sensitive file" approval card, which the user can accept:
+
+- Only `Edit(path)` rules are path-matched, and they cover Edit, Write and
+  NotebookEdit. A `Write(path)` or `NotebookEdit(path)` rule matches nothing and
+  logs `is not matched by file permission checks`.
+- `//x` is the absolute path `/x`, and `~/x` is under the CLI's `HOME`. A single
+  leading `/` is relative to the settings file's directory, so `Edit(/etc/shipit/**)`
+  in `/etc/shipit/managed-settings.json` named `/etc/shipit/etc/shipit/**`.
+- The match follows symlinks both ways: a rule on `/credentials/.claude/X` also
+  refuses `/home/shipit/.claude/X`, and the reverse. Both spellings are listed anyway,
+  so the policy does not depend on that.
+- `~` is the right form for the home because the home is not fixed:
+  `/home/shipit` in the session worker, `/workspace/.inner-shipit/agent-home`
+  in the dogfood `dev` service (`docker-compose.yml`), and
+  `/credentials/sub-agent-homes/<spawnId>` for a `shipit agent run` Claude
+  sub-agent. A sub-agent gets this same file: `buildSubAgentRunParams`
+  (`src/server/shared/sub-agent-run.ts`) passes `CLAUDE_MANAGED_SETTINGS_PATH`
+  since 2026-10-28; before that no spawn had the deny list or the branch-block hook.
+- The deny is applied before the sensitive-file approval, so a matching write is
+  refused, not offered to the user. It also refuses a shell command whose target
+  the CLI can read (`echo probe > ~/.claude/auth.json`, by the `~` and the
+  `/home/shipit` spelling); a command it cannot read (`sh -c '…'`) is not refused.
+
+The rules guard against the agent's accidental write to its own settings and
+credentials. They do not stop a hostile agent, which can write through a shell
+command the CLI cannot read.
 
 **Why files, not trees — the memory carve-out (planning#38 follow-up).** The first
 cut denied the whole `/root/.claude/**` and `/credentials/**` trees, mirroring
@@ -46,20 +74,24 @@ behavior. The design doc's `/root/.claude/**` line predates the memory feature;
 `/etc/shipit/**` was added because that's where *our* active policy actually
 lives. Broad confidentiality of `/credentials` (reads/exfil, and the rest of the
 mount) is owned by the `docs/172-agent-containment` egress + credential-isolation
-work, not these file-edit rules — `Read` isn't denied here and `Bash` bypasses
-tool-path rules entirely.
+work, not these file-edit rules — `Read` isn't denied here, and `Bash` is checked
+only where the CLI can read a command's write target.
 
 **Scope boundary:** these rules govern the file-edit tools, not arbitrary `Bash`
-(`cat`/`rm` of those paths is unaffected). Full containment — egress control and
+(a read such as `cat`, and a write the CLI cannot read such as `sh -c '…'`, are
+unaffected). Full containment — egress control and
 credential isolation so an extracted secret can't leave or be `cat`'d out — is the
 broader `docs/172-agent-containment` epic; this issue is the explicit-policy slice.
 
 **Tested by** `src/server/session/agent-shim/managed-settings.test.ts` (loads the
-real baked file, asserts the allow/deny rules and deny-overrides-allow). The real
+real baked file, asserts the allow/deny rules and that no allow rule names a denied path). The real
 CLI's enforcement isn't exercisable in the integration harness (it uses a
-`FakeClaudeProcess`), so this file-contract test is the regression guard that
-catches the policy silently disappearing — the mitigation the doc's "schema drift"
-risk calls for.
+`FakeClaudeProcess`), so this file-contract test guards the policy file: it
+catches the policy silently disappearing or drifting from the doc. Its matcher models the measured rule semantics above, and it
+checks the deny list against the paths that `shipit-docs/environment.md` lists,
+so the policy and the agent-facing doc cannot drift apart. It cannot see a change
+in how a new CLI reads the rules: that needs the measurement repeated against the
+real CLI, which no test does today.
 
 ## Summary
 
@@ -169,7 +201,7 @@ No data migration. No client changes. The only runtime effect is some operations
 
 ## Risks
 
-- **Schema drift.** The Claude CLI's settings.json schema may change between versions. Today we follow the documented `permissions.allow` / `permissions.deny` shape. If the schema changes, our explicit settings file becomes wrong and falls back to default behavior. Mitigation: add a smoke test that asserts a denied operation actually fails — if the test starts passing the deny rule (a wrong file silently ignored), CI catches it.
+- **Schema drift.** The Claude CLI's settings.json schema may change between versions. Today we follow the documented `permissions.allow` / `permissions.deny` shape. If the schema changes, our explicit settings file becomes wrong and falls back to default behavior. Mitigation: add a smoke test that asserts a denied operation actually fails — if the test starts passing the deny rule (a wrong file silently ignored), CI catches it. *Not built:* the shipped test reads the file only, which is how every deny rule stayed dead until 2026-10-28 (see "How the CLI reads a path rule").
 - **Over-broad deny.** A too-aggressive deny rule breaks legitimate operations users expect. Start with the minimal deny list above and only tighten after measurement.
 - **Per-session override demand.** Users might want "strict mode" sessions. Out of scope here — but the design (Option A baked-in default + Option B host-mounted override) leaves room.
 
@@ -187,7 +219,7 @@ No data migration. No client changes. The only runtime effect is some operations
 | `docker/Dockerfile.session-worker.{prod,dev}` | Already `COPY` the file into `/etc/shipit/managed-settings.json` — no change needed |
 | `src/server/orchestrator/agents/claude/run-params-prep.ts` | Sets `settingsPath: /etc/shipit/managed-settings.json` — already wired |
 | `src/server/session/agents/claude/process.ts` | Passes `--settings <settingsPath>` to the CLI — already wired |
-| `src/server/session/agent-shim/managed-settings.test.ts` (new) | File-contract test: asserts the allow/deny policy and deny-overrides-allow |
+| `src/server/session/agent-shim/managed-settings.test.ts` (new) | File-contract test: asserts the allow/deny policy and that no allow rule names a denied path |
 | `src/server/shipit-docs/environment.md` | Documents the write-protected paths for the agent |
 
 ## Relationship to other features
