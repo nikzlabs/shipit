@@ -50,10 +50,9 @@ The requirements are for any user who adds hosts to their ShipIt. One example, a
 
 - More placement strategies (req 16), for example: a child runs on its parent's host; a child runs on the main host.
 - Authentication between hosts, so that hosts do not have to share one private network (req 7).
+- A `--host` flag on `shipit session create` that names a host.
 
 ## Open questions
-
-- Does `shipit session create` also get a `--host` flag that names a host? Options: (a) no, not in the first version: an agent asks for what it needs (req 18), the strategy chooses the host, and a role can still name a host (req 10), so a session can reach any host (req 2); (b) yes: an agent can name any host directly. Recommendation: (a), because host names are the user's own setup, and an agent that writes them into its commands breaks when a host is renamed or removed. A request for what the session needs keeps working on any install.
 
 ## Resolved questions
 
@@ -76,3 +75,4 @@ The requirements are for any user who adds hosts to their ShipIt. One example, a
 - 2026-10-28 — Where does a child session run when no host is named for it: on its parent's host, or on the main host? Nik: "I guess we can have some strategies later on. For my use-case all non-GPU sessions should be on the main host, this needs to work as a strategy. Your options a and b could also be strategies." Req 16 and 17 added; the two options are listed under Later versions. This opened the question about how ShipIt knows that a session needs a GPU.
 - 2026-10-28 — May the design require all hosts to be in one private network, such as a tailnet? Nik: "yes, let's not solve auth yet". Req 7 changed; authentication between hosts is listed under Later versions.
 - 2026-10-28 — How does ShipIt know that a session needs a GPU? Nik: "If I explictly pick a host in the UI, or if a parent specifies the `--request_gpu` flag or similar on the CLI. We could also add "--host" to the CLI, not sure if it is a good idea though." Req 10 and 17 changed, and req 18 added. The agent's flag on `shipit session create` now requests a GPU instead of naming a host; this replaces that part of the earlier answer on req 10. This opened the question about `--host`.
+- 2026-10-28 — Does `shipit session create` also get a `--host` flag that names a host? Nik: "let's not add it for now. But the UI should allow this for manual start". No flag in this version; it is listed under Later versions. Req 10 already lets the user choose the host on the new-session screen.
