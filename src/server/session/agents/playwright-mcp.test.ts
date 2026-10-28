@@ -121,13 +121,17 @@ describe("the built-in browser on the GPU", () => {
   it("leaves the command of a session without the GPU as it was (req 10)", () => {
     expect(playwrightMcpArgs(false)[1]).toBe(
       "mkdir -p /tmp/.playwright-mcp && cd /tmp/.playwright-mcp && export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers "
-        + "&& exec playwright-mcp --isolated --browser chromium --headless --no-sandbox --output-dir /tmp/.playwright-mcp",
+        + "&& exec playwright-mcp --isolated --browser chromium --headless --no-sandbox --output-dir /tmp/.playwright-mcp "
+        + "--timeout-action 20000",
     );
     expect(serverStart(false)).toEqual({
       driver: "",
       tunables: "",
       browsers: "/opt/playwright-browsers",
-      args: ["--isolated", "--browser", "chromium", "--headless", "--no-sandbox", "--output-dir", PLAYWRIGHT_OUTPUT_DIR],
+      args: [
+        "--isolated", "--browser", "chromium", "--headless", "--no-sandbox", "--output-dir", PLAYWRIGHT_OUTPUT_DIR,
+        "--timeout-action", "20000",
+      ],
     });
   });
 
