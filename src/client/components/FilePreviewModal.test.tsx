@@ -197,6 +197,23 @@ describe("FilePreviewModal", () => {
       );
     });
 
+    it("keeps the leading slash of a /persist file, encoded", () => {
+      useSessionStore.getState().setSessionId("session-1");
+      render(
+        <FilePreviewModal
+          filePath="/persist/my notes.md"
+          content="# Notes"
+          fileType="markdown"
+          fileOnDisk
+          onClose={() => {}}
+        />
+      );
+      expect(screen.getByLabelText("Download /persist/my notes.md")).toHaveAttribute(
+        "href",
+        "/api/sessions/session-1/files/download/%2Fpersist/my%20notes.md",
+      );
+    });
+
     it("omits the control for an in-memory preview with no file behind it", () => {
       useSessionStore.getState().setSessionId("session-1");
       render(

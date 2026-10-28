@@ -171,6 +171,33 @@ describe("attachment resolution refuses what cannot be read", () => {
     expect(ok.files[0]?.content).toBe("via a link");
   });
 
+  it("reads a /persist attachment from the scratch dir beside the workspace", async () => {
+    fs.mkdirSync(path.join(root, "scratch", "notes"), { recursive: true });
+    fs.writeFileSync(path.join(root, "scratch", "notes", "plan.md"), "# Plan");
+
+    const ok = await resolveFileAttachments([{ path: "/persist/notes/plan.md" }], dir);
+    expect(ok).toEqual({ files: [{ path: "/persist/notes/plan.md", content: "# Plan" }], error: null });
+
+    expect((await resolveFileAttachments([{ path: "/persist/gone.md" }], dir)).error)
+      .toBe("File not found: /persist/gone.md");
+    expect((await resolveFileAttachments([{ path: "/persist/../workspace/x" }], dir)).error)
+      .toBe("Invalid file path: /persist/../workspace/x");
+  });
+
+  it("refuses an attachment whose symlink leads outside the workspace or /persist", async () => {
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "secret.txt"), "do not show");
+    fs.mkdirSync(path.join(root, "scratch"));
+    fs.symlinkSync(path.join(outside, "secret.txt"), path.join(dir, "leak.txt"));
+    fs.symlinkSync(outside, path.join(root, "scratch", "out"));
+
+    expect((await resolveFileAttachments([{ path: "leak.txt" }], dir)).error)
+      .toBe("Invalid file path: leak.txt");
+    expect((await resolveFileAttachments([{ path: "/persist/out/secret.txt" }], dir)).error)
+      .toBe("Invalid file path: /persist/out/secret.txt");
+  });
+
   it("refuses a directory, and still reads an ordinary file", async () => {
     fs.mkdirSync(path.join(dir, "src"));
     fs.writeFileSync(path.join(dir, "hello.ts"), "const x = 42;");

@@ -78,7 +78,8 @@ of the **Files** tab, where the user can delete one they no longer want.
 
 **Workspace file references — `@`.** A pointer at a file in the session's own
 checkout, picked from the `@` menu (next section), added from the **Files** tab
-with "Add to chat", or dragged out of the file tree onto the composer. Each one
+with "Add to chat", or dragged out of the file tree onto the composer. A file
+under `/persist` in the Files tab is added the same two ways. Each one
 shows as a chip. ShipIt reads the file and inlines its contents, marked as
 untrusted content — **at the moment the message runs**, not the moment it was
 typed, so a message that sat in the queue carries the file as it is when its

@@ -1,10 +1,10 @@
 import path from "node:path";
-import fs from "node:fs/promises";
-import { constants } from "node:fs";
 import type { ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../shared/types.js";
 import { wrapUntrustedContent } from "../shared/untrusted-input.js";
 import { getModel, getService, visionSupportFor } from "../shared/catalogue/index.js";
 import type { ModelSelection } from "../shared/catalogue/index.js";
+import { openWithinRoot, resolvePersistPath } from "./session-file-open.js";
+import { ServiceError } from "./services/types.js";
 
 export { getErrorMessage } from "../shared/utils.js";
 
@@ -91,17 +91,18 @@ export function formatFileContext(files: FileAttachment[]): string {
  * Checking the path and then reading it would resolve the path twice, leaving a
  * window for the thing at that path to become a FIFO in between. So: open once
  * with `O_NONBLOCK` — which returns a handle for a FIFO instead of waiting for a
- * writer — judge THAT handle, and read through it. A symlink to a regular file
- * still reads, which is what these callers have always done.
+ * writer — judge THAT handle, and read through it. A symlink still reads when
+ * the file it reaches is inside `root`.
  */
 async function readRegularFile(
-  p: string,
-): Promise<{ content: Buffer } | { refusal: "missing" | "not-regular" }> {
+  root: string,
+  relPath: string,
+): Promise<{ content: Buffer } | { refusal: "missing" | "not-regular" | "outside" }> {
   let handle;
   try {
-    handle = await fs.open(p, constants.O_RDONLY | constants.O_NONBLOCK);
-  } catch {
-    return { refusal: "missing" };
+    handle = await openWithinRoot(root, relPath);
+  } catch (err) {
+    return { refusal: err instanceof ServiceError ? "outside" : "missing" };
   }
   try {
     if (!(await handle.stat()).isFile()) return { refusal: "not-regular" };
@@ -136,13 +137,15 @@ export async function resolveFileAttachments(
       return { files: [], error: "File path is required" };
     }
 
-    const resolved = path.resolve(sessionDir, filePath);
-    if (!resolved.startsWith(`${sessionDir  }/`) && resolved !== sessionDir) {
+    let persist;
+    try {
+      persist = resolvePersistPath(sessionDir, filePath);
+    } catch {
       return { files: [], error: `Invalid file path: ${filePath}` };
     }
-
-    const read = await readRegularFile(resolved);
+    const read = await readRegularFile(persist?.dir ?? sessionDir, persist?.relPath ?? filePath);
     if ("refusal" in read) {
+      if (read.refusal === "outside") return { files: [], error: `Invalid file path: ${filePath}` };
       return read.refusal === "not-regular"
         ? { files: [], error: `Not a readable file: ${filePath}` }
         : { files: [], error: `File not found: ${filePath}` };
@@ -234,17 +237,19 @@ export async function resolveUploadRefs(
     const imageMime = IMAGE_EXT_TO_MIME[ext];
 
     // The binary branch never opens the upload, so it is the one that does not read.
-    const uploadRefusal = (refusal: "missing" | "not-regular") =>
+    const uploadRefusal = (refusal: "missing" | "not-regular" | "outside") =>
       ({
         files: [], images: [], imageHostPaths: [],
         error: refusal === "not-regular"
           ? `Upload is not a readable file: ${ref.path}`
-          : `Upload not found: ${ref.path}`,
+          : refusal === "outside"
+            ? `Invalid upload path: ${ref.path}`
+            : `Upload not found: ${ref.path}`,
       });
 
     if (imageMime) {
       // Preserve the upload path so history recognizes it as already sent.
-      const read = await readRegularFile(hostPath);
+      const read = await readRegularFile(uploadsDir, filename);
       if ("refusal" in read) return uploadRefusal(read.refusal);
       imageResult.push({
         data: read.content.toString("base64"),
@@ -259,7 +264,7 @@ export async function resolveUploadRefs(
         content: `[Binary file uploaded at ${ref.path} — use Bash tool to read/process this file inside the container]`,
       });
     } else {
-      const read = await readRegularFile(hostPath);
+      const read = await readRegularFile(uploadsDir, filename);
       if ("refusal" in read) return uploadRefusal(read.refusal);
       const content = read.content.toString("utf-8");
       if (Buffer.byteLength(content, "utf-8") > MAX_FILE_SIZE_BYTES) {

@@ -12,6 +12,7 @@ import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
 import {
   CONTAINER_WORKSPACE_DIR,
+  CONTAINER_PERSIST_DIR,
   CONTAINER_SESSION_STATE_DIR,
   DEP_CACHE_CONTAINER_PATH,
 } from "../shared/fs-constants.js";
@@ -61,6 +62,8 @@ export interface SessionWorkerDeps {
   port?: number;
   host?: string;
   workspaceDir?: string;
+  /** Watched beside the workspace when set; only a container has its own /persist. */
+  persistDir?: string;
   stateDir?: string;
   createFileWatcher?: () => FileWatcher;
   createTerminal?: () => TerminalProcess;
@@ -146,6 +149,7 @@ export class SessionWorker extends EventEmitter {
     this.fileWatcherController = new FileWatcherController({
       createFileWatcher: deps.createFileWatcher ?? (() => new FileWatcher()),
       workspaceDir: this.workspaceDir,
+      persistDir: deps.persistDir,
       broadcast,
     });
     this.installController = new InstallController({
@@ -650,6 +654,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
     agentFactory: createWorkerAgent,
     port: Number(process.env.WORKER_PORT) || 9100,
     workspaceDir,
+    persistDir: CONTAINER_PERSIST_DIR,
     workerToken,
   });
 

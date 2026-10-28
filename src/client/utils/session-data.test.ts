@@ -936,9 +936,13 @@ describe("loadSessionHistory — the file tree is session-scoped", () => {
     useSessionStore.getState().setSessionId("A");
     const loadA = loadSessionHistory("A");
     await vi.waitFor(() => expect(treeResolvers.A).toBeDefined());
-    treeResolvers.A(ok({ tree: [{ name: "a.txt", path: "a.txt", type: "file" }] }));
+    treeResolvers.A(ok({
+      tree: [{ name: "a.txt", path: "a.txt", type: "file" }],
+      persist: [{ name: "p.md", path: "/persist/p.md", type: "file" }],
+    }));
     await loadA;
     expect(useFileStore.getState().tree.map((n) => n.name)).toEqual(["a.txt"]);
+    expect(useFileStore.getState().persistTree.map((n) => n.path)).toEqual(["/persist/p.md"]);
   });
 
   it("does not lose the transcript when the tree request fails", async () => {

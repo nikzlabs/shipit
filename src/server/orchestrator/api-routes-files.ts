@@ -1,17 +1,17 @@
-import fs from "node:fs/promises";
 import { etagFor, matchesIfNoneMatch } from "./http-etag.js";
 import path from "node:path";
 import { knownAgentId } from "../shared/catalogue/index.js";
-import { createReadStream } from "node:fs";
 import type { FastifyInstance } from "fastify";
+import { readFileWithinRoot, resolvePersistPath } from "./session-file-open.js";
 import type { ApiDeps } from "./api-routes.js";
 import type { UploadedFile } from "../shared/types.js";
 import { resolveSessionDir } from "./api-routes.js";
 
 import {
   getFileTree,
+  getPersistTree,
   getFileContent,
-  getRawFilePath,
+  openFileForDownload,
   writeFileContent,
   listDocs,
   getSessionChangedPaths,
@@ -93,7 +93,8 @@ export async function registerFileRoutes(
   app.get<{ Params: { id: string } }>("/api/sessions/:id/files", async (request, reply) => {
     const dir = resolveSessionDir(sessionManager, request.params.id, reply);
     if (!dir) return;
-    const body = JSON.stringify({ tree: await getFileTree(dir) });
+    const [tree, persist] = await Promise.all([getFileTree(dir), getPersistTree(dir)]);
+    const body = JSON.stringify({ tree, persist });
     const etag = etagFor(body);
     if (matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
       reply.code(304).send();
@@ -114,16 +115,12 @@ export async function registerFileRoutes(
         return;
       }
       try {
-        const resolveDir = filePath.startsWith("uploads/")
-          ? path.dirname(dir)
-          : dir;
+        const persist = resolvePersistPath(dir, filePath);
+        const upload = filePath.startsWith("uploads/");
+        const resolveDir = persist?.dir ?? (upload ? path.join(path.dirname(dir), "uploads") : dir);
+        const relPath = persist?.relPath ?? (upload ? filePath.slice("uploads/".length) : filePath);
 
         if (request.query.raw === "true") {
-          const safePath = path.resolve(resolveDir, filePath);
-          if (!safePath.startsWith(`${resolveDir}/`)) {
-            reply.code(400).send({ error: "Invalid path" });
-            return;
-          }
           const ext = path.extname(filePath).slice(1).toLowerCase();
           const mimeMap: Record<string, string> = {
             png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
@@ -134,12 +131,12 @@ export async function registerFileRoutes(
             reply.code(400).send({ error: "Raw mode only supports images" });
             return;
           }
-          const data = await fs.readFile(safePath);
+          const data = await readFileWithinRoot(resolveDir, relPath);
           reply.type(mime).send(data);
           return;
         }
 
-        const result = await getFileContent(resolveDir, filePath);
+        const result = await getFileContent(resolveDir, relPath);
         const response: Record<string, unknown> = {
           path: filePath,
           content: result.content,
@@ -148,7 +145,7 @@ export async function registerFileRoutes(
           isImage: result.isImage,
         };
         if (request.query.tree === "true") {
-          response.tree = await getFileTree(dir);
+          [response.tree, response.persist] = await Promise.all([getFileTree(dir), getPersistTree(dir)]);
         }
         return response;
       } catch (err) {
@@ -207,9 +204,9 @@ export async function registerFileRoutes(
         return;
       }
       try {
-        const { safePath, filename } = getRawFilePath(dir, filePath);
+        const persist = resolvePersistPath(dir, filePath);
+        const { stream, filename } = await openFileForDownload(persist?.dir ?? dir, persist?.relPath ?? filePath);
         reply.header("Content-Disposition", `attachment; filename="${filename}"`);
-        const stream = createReadStream(safePath);
         return await reply.send(stream);
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -286,7 +283,8 @@ export async function registerFileRoutes(
         return;
       }
       try {
-        const content = await getDocContent(dir, docPath);
+        const persist = resolvePersistPath(dir, docPath);
+        const content = await getDocContent(persist?.dir ?? dir, persist?.relPath ?? docPath);
         return { path: docPath, content };
       } catch (err) {
         if (err instanceof ServiceError) {

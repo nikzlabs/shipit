@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { FolderIcon, FolderOpenIcon, FileIcon, CaretRightIcon, PlusIcon, FolderSimpleIcon, ArrowClockwiseIcon, UploadSimpleIcon, DownloadSimpleIcon, TrashIcon, PencilSimpleIcon } from "@phosphor-icons/react";
+import { FolderIcon, FolderOpenIcon, FileIcon, CaretRightIcon, PlusIcon, FolderSimpleIcon, ArrowClockwiseIcon, UploadSimpleIcon, DownloadSimpleIcon, TrashIcon, PencilSimpleIcon, HardDrivesIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import type { FileTreeNode } from "../../server/shared/types.js";
@@ -10,6 +10,8 @@ export type { FileTreeNode };
 
 export interface FileTreeProps {
   tree: FileTreeNode[];
+  /** Not editable here: saving targets the workspace. */
+  persistTree?: FileTreeNode[];
   onRefresh: () => void;
   onFileClick?: (filePath: string) => void;
   selectedFile?: string | null;
@@ -147,8 +149,8 @@ function TreeNode({
   );
 }
 
-export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToChat, onDownload, onEdit, uploads, onDeleteUpload }: FileTreeProps) {
-  if (tree.length === 0) {
+export function FileTree({ tree, persistTree, onRefresh, onFileClick, selectedFile, onAddToChat, onDownload, onEdit, uploads, onDeleteUpload }: FileTreeProps) {
+  if (tree.length === 0 && !persistTree?.length) {
     return (
       <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
         <div className="text-center space-y-2">
@@ -189,6 +191,19 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
         {tree.map((node) => (
           <TreeNode key={node.path} node={node} depth={0} onFileClick={onFileClick} selectedFile={selectedFile} onAddToChat={onAddToChat} onDownload={onDownload} onEdit={onEdit} />
         ))}
+
+        {persistTree && persistTree.length > 0 && (
+          <div className="mt-2 border-t border-(--color-border-secondary) pt-1">
+            <div className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-(--color-text-secondary)">
+              <HardDrivesIcon size={ICON_SIZE.SM} className="shrink-0" />
+              <span>/persist</span>
+              <span className="font-normal text-(--color-text-tertiary)">· not in git</span>
+            </div>
+            {persistTree.map((node) => (
+              <TreeNode key={node.path} node={node} depth={0} onFileClick={onFileClick} selectedFile={selectedFile} onAddToChat={onAddToChat} onDownload={onDownload} />
+            ))}
+          </div>
+        )}
 
         {uploads && uploads.length > 0 && (
           <div className="mt-2 border-t border-(--color-border-secondary) pt-1">

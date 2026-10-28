@@ -1,3 +1,5 @@
+import { isPersistPath } from "./session-file-path.js";
+
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 const MARKDOWN_EXTENSIONS = new Set(["md", "mdx"]);
 
@@ -11,7 +13,7 @@ export function detectFilePreviewType(filePath: string): FilePreviewType {
 }
 
 export function isEditableFilePath(filePath: string): boolean {
-  if (filePath.startsWith("/uploads/") || filePath.startsWith("uploads/")) return false;
+  if (filePath.startsWith("/uploads/") || filePath.startsWith("uploads/") || isPersistPath(filePath)) return false;
   const type = detectFilePreviewType(filePath);
   return type === "code" || type === "markdown";
 }
