@@ -8,9 +8,14 @@ description: What the approval gate must do for a write outside the workspace an
 
 This feature is older than the requirements rule, so it has no record of the
 requirements behind its first design; [plan.md](plan.md) describes that design.
-The requirements below come from the incident of 2026-10-12. Their source is the
+Requirements 1 to 5 come from the incident of 2026-10-12. Their source is the
 incident packet that an Ops session wrote on 2026-10-13 after the user asked it
 to debug that incident. The words are the Ops session's, not the user's.
+
+Requirements 6 and 7 come from finding I2 of the owner's defect triage of
+2026-10-28 (planning#711). Requirement 6 is the owner's request in that finding.
+Requirement 7 is the finding's proposed change 3, which the triage scheduled.
+The words are the finding's.
 
 1. A location that ShipIt recommends to the agent for its files agrees with the
    approval gate. For `/persist`, one of these is true: the agent's file tools
@@ -28,6 +33,12 @@ to debug that incident. The words are the Ops session's, not the user's.
    timeout, on a card that a background subagent raised while no user is
    connected. The packet asks to consider this bound and allows a proposal in
    place of an implementation.
+6. When a call starts to wait for the user's approval, ShipIt alerts the user by
+   the path that a question and a plan use: the voice note, and the voice
+   webhook that can reach the user's phone.
+7. When a call that waits for the user's approval ends before anyone answers
+   it, the agent learns in its next turn that nobody answered and that the call
+   did not run.
 
 ## Open questions
 

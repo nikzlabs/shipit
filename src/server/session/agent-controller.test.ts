@@ -900,7 +900,12 @@ describe("AgentController — a permission request the agent stopped waiting for
       content: [{ type: "tool_result", tool_use_id: "toolu_1", is_error: true, content: "sent no response or progress for 1800s; aborting." }],
     });
 
-    expect(denials()).toEqual([{ type: "agent_permission_resolved", requestId, behavior: "deny" }]);
+    expect(denials()).toEqual([{
+      type: "agent_permission_resolved",
+      requestId,
+      behavior: "deny",
+      callEnded: { summary: expect.stringContaining("curl x") },
+    }]);
     expect(denials().some((e) => e.requestId === otherId)).toBe(false);
   });
 

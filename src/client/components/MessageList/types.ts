@@ -234,7 +234,7 @@ export interface ChatMessage {
   voiceNote?: {
     id: string;
     headline: string;
-    kind: "authored" | "ask" | "plan";
+    kind: "authored" | "ask" | "plan" | "permission";
     createdAt: string;
   };
 

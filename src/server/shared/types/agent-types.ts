@@ -353,6 +353,8 @@ export interface AgentPermissionResolvedEvent {
   requestId: string;
   behavior: "allow" | "deny";
   remembered?: boolean;
+  /** The agent stopped waiting before anyone answered: the CLI's idle timeout, or Codex withdrew it. */
+  callEnded?: { summary: string };
 }
 
 export interface PermissionDecision {

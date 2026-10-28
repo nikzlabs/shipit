@@ -12,6 +12,8 @@ import { routeVoiceNote } from "../voice/voice-note-router.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentCapabilities, AgentEvent, AgentMcpWriteContext, AgentMcpWriteResult, AgentProcess } from "../../shared/types.js";
+import type { AgentPermissionResolvedEvent } from "../../shared/types/agent-types.js";
+import { beginTurnSetup, noteUserStop } from "../turn-stop-request.js";
 
 const capabilities: AgentCapabilities = {
   supportsResume: true,
@@ -2130,6 +2132,88 @@ describe("wireAgentListeners — permission cards no agent can answer (docs/193)
 
     expect(denied().map((m) => m.requestId)).toEqual(["perm_1"]);
     expect(attention().at(-1)).toEqual({ sessionId: "session-perm", awaitingPermission: false });
+    runner.dispose({ force: true });
+  });
+});
+
+describe("wireAgentListeners — an approval request that nobody answers (docs/193-sensitive-file-permission req 6, req 7)", () => {
+  function wireForApproval() {
+    const agent = new FakeAgent("claude");
+    const runner = new SessionRunner({ sessionId: "session-ask", sessionDir: "/tmp/session-ask", defaultAgentId: "claude" });
+    runner.setAgent(agent as unknown as AgentProcess);
+    const d = deps();
+    Object.assign(d.chatHistoryManager, { updatePermissionCard: vi.fn(), hasInProgress: () => false });
+    const appendPendingAgentNotice = vi.fn();
+    Object.assign(d.sessionManager, { appendPendingAgentNotice });
+    const deliverVoiceNote = vi.fn();
+    wireAgentListeners(agent as unknown as AgentProcess, runner, { ...d, deliverVoiceNote }, {
+      capturedSessionId: "session-ask",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+    const request = (requestId: string, toolName: string) =>
+      agent.emit("event", { type: "agent_permission_request", requestId, toolName, summary: `${toolName}: x` } satisfies AgentEvent);
+    const resolve = (requestId: string, extra: Partial<AgentPermissionResolvedEvent> = {}) =>
+      agent.emit("event", { type: "agent_permission_resolved", requestId, behavior: "deny", ...extra } satisfies AgentEvent);
+    return { runner, request, resolve, deliverVoiceNote, appendPendingAgentNotice };
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("sends a permission voice note when the session starts to wait, and none for a card that joins the wait", () => {
+    const { runner, request, resolve, deliverVoiceNote } = wireForApproval();
+
+    request("perm_1", "Bash");
+    request("perm_2", "Write");
+
+    expect(deliverVoiceNote).toHaveBeenCalledTimes(1);
+    const [payload, , source] = deliverVoiceNote.mock.calls[0]!;
+    expect(source).toBe("permission");
+    expect((payload as { summary: string }).summary).toContain("run a command");
+
+    resolve("perm_1");
+    resolve("perm_2");
+    request("perm_3", "Write");
+
+    expect(deliverVoiceNote).toHaveBeenCalledTimes(2);
+    expect((deliverVoiceNote.mock.calls[1]![0] as { summary: string }).summary).toContain("change a file");
+    runner.dispose({ force: true });
+  });
+
+  it("tells the next turn that nobody answered when the call ended first", () => {
+    const { runner, request, resolve, appendPendingAgentNotice } = wireForApproval();
+    request("perm_1", "Write");
+
+    resolve("perm_1", { callEnded: { summary: "Write: .claude/skills/x/SKILL.md" } });
+
+    expect(appendPendingAgentNotice).toHaveBeenCalledTimes(1);
+    const [sessionId, notice] = appendPendingAgentNotice.mock.calls[0]!;
+    expect(sessionId).toBe("session-ask");
+    expect(notice).toContain("`Write: .claude/skills/x/SKILL.md`");
+    expect(notice).toContain("nobody answered");
+    runner.dispose({ force: true });
+  });
+
+  it("sends no notice for a deny that did not come from an ended call", () => {
+    const { runner, request, resolve, appendPendingAgentNotice } = wireForApproval();
+    request("perm_1", "Write");
+
+    resolve("perm_1");
+
+    expect(appendPendingAgentNotice).not.toHaveBeenCalled();
+    runner.dispose({ force: true });
+  });
+
+  it("sends no notice when the user's Stop ended the call", () => {
+    const { runner, request, resolve, appendPendingAgentNotice } = wireForApproval();
+    runner.running = true;
+    beginTurnSetup(runner);
+    noteUserStop(runner);
+    request("perm_1", "Write");
+
+    resolve("perm_1", { callEnded: { summary: "Write: .claude/x" } });
+
+    expect(appendPendingAgentNotice).not.toHaveBeenCalled();
     runner.dispose({ force: true });
   });
 });

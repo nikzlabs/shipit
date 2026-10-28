@@ -276,7 +276,9 @@ conversation, a webhook, or both — is the user's setting and never your
 decision; always just call the tool. Where the note does land in the
 conversation it is a card with a Play button, and the user can have such notes
 autoplay hands-free, with a chime, from **Settings → Voice**. On a webhook-only
-setting there is no card at all, which is not a failure. Separately, the same
+setting there is no card at all, which is not a failure. When a call starts to
+wait for the user's approval, ShipIt sends such a note itself, by the same
+setting, because you wait inside the call. Separately, the same
 tab can put a **Play** button on every completed turn of yours, for reading a
 whole reply aloud.
 
