@@ -34,14 +34,44 @@ function parseRule(rule: string): { tool: string; pattern: string } | null {
   return { tool: m[1], pattern: m[2] };
 }
 
-// Approximate CLI path rules; this checks policy intent, not CLI enforcement.
-function isDenied(deny: string[], tool: string, filePath: string): boolean {
+const INSTALLED_DIR = "/etc/shipit";
+const AGENT_CWD = "/workspace";
+// The session worker's home, and the dogfood `dev` service's (docker-compose.yml).
+const AGENT_HOMES = ["/home/shipit", "/workspace/.inner-shipit/agent-home"];
+
+// The CLI's rule semantics, measured with Claude Code 2.1.300 (docs/097-explicit-session-agent-permissions).
+// Symlink resolution is not modelled, so every spelling must match on its own.
+function resolveRulePath(pattern: string, home: string): string {
+  if (pattern.startsWith("//")) return pattern.slice(1);
+  if (pattern.startsWith("~/")) return path.posix.join(home, pattern.slice(2));
+  if (pattern.startsWith("/")) return path.posix.join(INSTALLED_DIR, pattern);
+  return path.posix.join(AGENT_CWD, pattern);
+}
+
+// Only Edit(path) rules are path-matched, and they cover every file-edit tool.
+function isDenied(deny: string[], filePath: string, home: string): boolean {
   return deny.some((rule) => {
     const parsed = parseRule(rule);
-    if (!parsed) return false;
-    if (parsed.tool !== tool) return false;
-    return parsed.pattern === filePath || minimatch(filePath, parsed.pattern, { dot: true });
+    if (parsed?.tool !== "Edit") return false;
+    return minimatch(filePath, resolveRulePath(parsed.pattern, home), { dot: true });
   });
+}
+
+function docProtectedPaths(): string[] {
+  const doc = readFileSync(path.resolve(__dirname, "..", "..", "shipit-docs", "environment.md"), "utf8");
+  const section = /^### Write-protected paths\n([\s\S]*?)\n### /m.exec(doc)?.[1] ?? "";
+  return section
+    .split("\n")
+    .filter((line) => line.startsWith("- "))
+    .flatMap((line) => {
+      // A bullet lists its paths before the first " — "; the rest explains them.
+      const [list, rest = ""] = line.split(" — ");
+      const paths = [...list.matchAll(/`([^`]+)`/g)].map((m) => m[1]).filter((p) => /^[~/]/.test(p));
+      const twins = rest.includes("the same files under `/credentials/`")
+        ? paths.filter((p) => p.startsWith("~/")).map((p) => p.replace(/^~\//, "/credentials/"))
+        : [];
+      return [...paths, ...twins];
+    });
 }
 
 describe("managed-settings.json", () => {
@@ -75,54 +105,71 @@ describe("managed-settings.json", () => {
     }
   });
 
-  const MUTATION_TOOLS = ["Edit", "Write"];
+  // A Write(path) or NotebookEdit(path) rule matches nothing, and a single leading slash
+  // names a path under /etc/shipit; both left the whole deny list dead until 2026-10-28.
+  it("writes every deny rule as Edit(//absolute) or Edit(~/home)", () => {
+    const deny = loadSettings().permissions?.deny ?? [];
+    for (const rule of deny) {
+      const parsed = parseRule(rule);
+      expect(parsed?.tool, rule).toBe("Edit");
+      expect(parsed?.pattern, rule).toMatch(/^(\/\/|~\/)/);
+    }
+  });
 
-  describe("denies writes to the agent's own settings + hooks", () => {
-    for (const tool of [...MUTATION_TOOLS, "NotebookEdit"]) {
-      it(`denies ${tool} under /etc/shipit`, () => {
+  it("denies writes to the agent's own settings + hooks under /etc/shipit", () => {
+    const deny = loadSettings().permissions?.deny ?? [];
+    expect(isDenied(deny, "/etc/shipit/managed-settings.json", "/home/shipit")).toBe(true);
+    expect(isDenied(deny, "/etc/shipit/agent-hooks/block-branch-ops.mjs", "/home/shipit")).toBe(true);
+  });
+
+  describe("denies writes to the OAuth / CLI-config credential files", () => {
+    const CLAUDE_DIR_FILES = [
+      ".credentials.json",
+      "credentials.json",
+      "auth.json",
+      "settings.json",
+      "settings.local.json",
+      "settings.team.json",
+    ];
+    for (const home of AGENT_HOMES) {
+      it(`denies them in the home ${home} and under /credentials`, () => {
         const deny = loadSettings().permissions?.deny ?? [];
-        expect(isDenied(deny, tool, "/etc/shipit/managed-settings.json")).toBe(true);
-        expect(isDenied(deny, tool, "/etc/shipit/agent-hooks/block-branch-ops.mjs")).toBe(true);
+        for (const file of CLAUDE_DIR_FILES) {
+          expect(isDenied(deny, `${home}/.claude/${file}`, home), `${home}/.claude/${file}`).toBe(true);
+          expect(isDenied(deny, `/credentials/.claude/${file}`, home), `/credentials/.claude/${file}`).toBe(true);
+        }
+        expect(isDenied(deny, `${home}/.claude.json`, home)).toBe(true);
+        expect(isDenied(deny, "/credentials/.claude.json", home)).toBe(true);
       });
     }
   });
 
-  describe("denies writes to the OAuth / CLI-config credential files", () => {
-    const CREDENTIAL_FILES = [
-      "/root/.claude/.credentials.json",
-      "/root/.claude/credentials.json",
-      "/root/.claude/auth.json",
-      "/root/.claude.json",
-      "/credentials/.claude/.credentials.json",
-      "/credentials/.claude.json",
-    ];
-    for (const file of CREDENTIAL_FILES) {
-      for (const tool of MUTATION_TOOLS) {
-        it(`denies ${tool}(${file})`, () => {
-          const deny = loadSettings().permissions?.deny ?? [];
-          expect(isDenied(deny, tool, file)).toBe(true);
-        });
-      }
-    }
-  });
-
   describe("does NOT block the agent's own memory updates (planning#38 follow-up)", () => {
-    const MEMORY_PATHS = [
-      "/root/.claude/projects/-workspace/memory/MEMORY.md",
-      "/root/.claude/projects/-workspace/memory/some-fact.md",
-      "/credentials/.claude/projects/-workspace/memory/MEMORY.md",
-    ];
-    for (const file of MEMORY_PATHS) {
-      for (const tool of MUTATION_TOOLS) {
-        it(`allows ${tool}(${file})`, () => {
-          const deny = loadSettings().permissions?.deny ?? [];
-          expect(isDenied(deny, tool, file)).toBe(false);
-        });
-      }
+    for (const home of AGENT_HOMES) {
+      it(`allows memory writes in the home ${home} and under /credentials`, () => {
+        const deny = loadSettings().permissions?.deny ?? [];
+        for (const file of [
+          `${home}/.claude/projects/-workspace/memory/MEMORY.md`,
+          `${home}/.claude/projects/-workspace/memory/some-fact.md`,
+          "/credentials/.claude/projects/-workspace/memory/MEMORY.md",
+        ]) {
+          expect(isDenied(deny, file, home), file).toBe(false);
+        }
+      });
     }
   });
 
-  it("deny overrides allow — no allow rule re-opens a denied credential file", () => {
+  it("denies exactly the paths that shipit-docs/environment.md lists", () => {
+    const documented = docProtectedPaths();
+    expect(documented).toContain("/etc/shipit/**");
+    const denied = (loadSettings().permissions?.deny ?? []).map((rule) => {
+      const pattern = parseRule(rule)?.pattern ?? rule;
+      return pattern.startsWith("//") ? pattern.slice(1) : pattern;
+    });
+    expect([...denied].sort()).toEqual([...documented].sort());
+  });
+
+  it("names no credential file or /etc/shipit path in an allow rule", () => {
     const { permissions } = loadSettings();
     const allow = permissions?.allow ?? [];
     for (const rule of allow) {
