@@ -300,7 +300,6 @@ export async function registerProposeRepoSessionRoutes(
             repoUrlOverride: readyUrl,
             // The target inherits this session's role, and its first message stays
             // the prompt the card showed: the role's brief rides the first turn.
-            target: { kind: "inherit", overrides: {} },
             verbatimPrompt: true,
             // Before the prompt is sent: from here on, a start that never reports back
             // has left a session, and only this record lets the next click find it.
