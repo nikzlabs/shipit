@@ -28,7 +28,7 @@ The requirements are for any user who adds hosts to their ShipIt. One example, a
 
 9. A session never moves between hosts.
 
-10. The user chooses the host on the new-session screen. An agent chooses it with a flag on `shipit session create`. A role can name the host.
+10. The user chooses the host on the new-session screen. A role can name the host.
 
 11. A message for a session whose host is off is refused.
 
@@ -42,7 +42,9 @@ The requirements are for any user who adds hosts to their ShipIt. One example, a
 
 16. When no host is named for a child session, a placement strategy chooses its host. ShipIt can have more than one strategy.
 
-17. The first version has a strategy under which every session that does not need a GPU runs on the main host.
+17. The first version has a strategy under which a session that requests a GPU runs on a host that has one, and every other session runs on the main host.
+
+18. A parent agent requests a GPU for a child session with a flag on `shipit session create`, such as `--request-gpu`.
 
 ## Later versions
 
@@ -51,7 +53,7 @@ The requirements are for any user who adds hosts to their ShipIt. One example, a
 
 ## Open questions
 
-- How does ShipIt know that a session needs a GPU (req 17)? Options: (a) a session needs a GPU only when it names a host that has one, or uses a role that names such a host (req 10); the strategy then sends every other child to the main host; (b) a session can also say "needs a GPU" without naming a host — on the new-session screen, with a flag, or in a role — and the strategy chooses a GPU host that is on. Recommendation: (a) for the first version, because it adds no new choice; (b) helps when there are several GPU hosts and can be a later strategy.
+- Does `shipit session create` also get a `--host` flag that names a host? Options: (a) no, not in the first version: an agent asks for what it needs (req 18), the strategy chooses the host, and a role can still name a host (req 10), so a session can reach any host (req 2); (b) yes: an agent can name any host directly. Recommendation: (a), because host names are the user's own setup, and an agent that writes them into its commands breaks when a host is renamed or removed. A request for what the session needs keeps working on any install.
 
 ## Resolved questions
 
@@ -73,3 +75,4 @@ The requirements are for any user who adds hosts to their ShipIt. One example, a
 - 2026-10-28 — Review of this document: are the requirements for Nik's use case only? Nik: "This is my use-case but we need to target a broader audience." Req 3, 4 and 14 no longer name his setup. His use case is now an example in the introduction. This opened the question about req 7.
 - 2026-10-28 — Where does a child session run when no host is named for it: on its parent's host, or on the main host? Nik: "I guess we can have some strategies later on. For my use-case all non-GPU sessions should be on the main host, this needs to work as a strategy. Your options a and b could also be strategies." Req 16 and 17 added; the two options are listed under Later versions. This opened the question about how ShipIt knows that a session needs a GPU.
 - 2026-10-28 — May the design require all hosts to be in one private network, such as a tailnet? Nik: "yes, let's not solve auth yet". Req 7 changed; authentication between hosts is listed under Later versions.
+- 2026-10-28 — How does ShipIt know that a session needs a GPU? Nik: "If I explictly pick a host in the UI, or if a parent specifies the `--request_gpu` flag or similar on the CLI. We could also add "--host" to the CLI, not sure if it is a good idea though." Req 10 and 17 changed, and req 18 added. The agent's flag on `shipit session create` now requests a GPU instead of naming a host; this replaces that part of the earlier answer on req 10. This opened the question about `--host`.
