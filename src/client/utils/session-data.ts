@@ -216,7 +216,12 @@ interface HistoryCacheEntry {
 }
 
 const historyCache = new Map<string, HistoryCacheEntry>();
-const treeCache = new Map<string, { etag: string; data: FileTreeNode[] }>();
+interface FileTreeListing {
+  tree: FileTreeNode[];
+  persist: FileTreeNode[];
+}
+
+const treeCache = new Map<string, { etag: string; data: FileTreeListing }>();
 
 function remember<T, E extends { etag: string; data: T }>(cache: Map<string, E>, key: string, etag: string, data: T): E {
   cache.delete(key);
@@ -248,7 +253,7 @@ export function __resetHistoryCache(): void {
   treeCache.clear();
 }
 
-async function fetchFileTree(sessionId: string, signal: AbortSignal): Promise<FileTreeNode[] | null> {
+async function fetchFileTree(sessionId: string, signal: AbortSignal): Promise<FileTreeListing | null> {
   const cached = treeCache.get(sessionId);
   const res = await fetch(`/api/sessions/${sessionId}/files`, {
     signal,
@@ -260,10 +265,11 @@ async function fetchFileTree(sessionId: string, signal: AbortSignal): Promise<Fi
     return cached.data;
   }
   if (!res.ok) return null;
-  const { tree } = await res.json() as { tree: FileTreeNode[] };
+  const { tree, persist } = await res.json() as { tree: FileTreeNode[]; persist?: FileTreeNode[] };
+  const listing = { tree, persist: persist ?? [] };
   const etag = res.headers?.get("etag");
-  if (etag) remember(treeCache, sessionId, etag, tree);
-  return tree;
+  if (etag) remember(treeCache, sessionId, etag, listing);
+  return listing;
 }
 
 /**
@@ -513,8 +519,8 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   );
 
   // for a session the user has already left cannot overwrite the current one.
-  const tree = await treePromise;
-  if (tree && isStillActiveSession()) useFileStore.getState().setTree(tree);
+  const listing = await treePromise;
+  if (listing && isStillActiveSession()) useFileStore.getState().setTree(listing.tree, listing.persist);
 
   try {
     const previewRes = await fetch(`/api/sessions/${sessionId}/preview-status`);

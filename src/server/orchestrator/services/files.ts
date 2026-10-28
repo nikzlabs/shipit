@@ -6,9 +6,43 @@ import type { DocEntry } from "../../shared/types.js";
 import { ServiceError } from "./types.js";
 import type { UploadedFile } from "../../shared/types.js";
 import { chownToSessionWorker } from "../session-worker-uid.js";
+import { sessionScratchDirForWorkspace } from "../session-state-dir.js";
+import { CONTAINER_PERSIST_DIR } from "../../shared/fs-constants.js";
 
 export async function getFileTree(dir: string) {
   return scanFileTree(dir);
+}
+
+const PERSIST_PATH_PREFIX = `${CONTAINER_PERSIST_DIR}/`;
+
+/** The session's /persist tree, with absolute paths (`/persist/notes.md`). */
+export async function getPersistTree(workspaceDir: string) {
+  let scratchDir: string;
+  try {
+    scratchDir = sessionScratchDirForWorkspace(workspaceDir);
+  } catch {
+    return [];
+  }
+  return scanFileTree(scratchDir, CONTAINER_PERSIST_DIR);
+}
+
+/**
+ * Maps a `/persist/…` path to the session's scratch dir, or returns null for
+ * any other path. Workspace paths never start with "/", so the two cannot collide.
+ */
+export async function resolvePersistPath(
+  workspaceDir: string,
+  filePath: string,
+): Promise<{ dir: string; relPath: string } | null> {
+  if (!filePath.startsWith(PERSIST_PATH_PREFIX)) return null;
+  const scratchDir = sessionScratchDirForWorkspace(workspaceDir);
+  const dir = await fs.realpath(scratchDir);
+  // The agent writes /persist, so a symlink there must not lead the orchestrator outside it.
+  const real = await fs.realpath(path.resolve(scratchDir, filePath.slice(PERSIST_PATH_PREFIX.length)));
+  if (!real.startsWith(`${dir}/`)) {
+    throw new ServiceError(400, "Invalid path");
+  }
+  return { dir, relPath: path.relative(dir, real) };
 }
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);

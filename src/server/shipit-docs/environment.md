@@ -38,7 +38,8 @@ What this means in practice:
 - **Persistent scratch:** `/persist` is a writable, non-git directory that
   **survives container restarts** (like `/workspace`, but never committed). Put
   files here that should outlive the container without entering the repo — see
-  the filesystem layout below.
+  the filesystem layout below. The user sees its contents in the **Files** tab,
+  under a `/persist` heading below the workspace tree.
 - **Read-only data:** `/uploads` is mounted **read-only** (docs/172 Gap 6) —
   you can read the user's attached files but not modify or delete them. If you
   need to transform an upload, copy it into `/workspace` or `/persist` first.

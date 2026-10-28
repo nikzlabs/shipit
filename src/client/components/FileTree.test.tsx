@@ -190,6 +190,55 @@ describe("FileTree", () => {
     expect(onAddToChat).toHaveBeenCalledWith("/uploads/data.csv");
   });
 
+  describe("/persist section", () => {
+    const persistTree: FileTreeNode[] = [
+      {
+        name: "notes",
+        path: "/persist/notes",
+        type: "directory",
+        children: [{ name: "plan.md", path: "/persist/notes/plan.md", type: "file" }],
+      },
+      { name: "chart.html", path: "/persist/chart.html", type: "file" },
+    ];
+
+    it("is absent when /persist is empty", () => {
+      render(<FileTree tree={sampleTree} persistTree={[]} onRefresh={() => {}} />);
+      expect(screen.queryByText("/persist")).not.toBeInTheDocument();
+    });
+
+    it("opens and downloads /persist files by their absolute path", () => {
+      const onFileClick = vi.fn();
+      const onDownload = vi.fn();
+      render(
+        <FileTree tree={sampleTree} persistTree={persistTree} onRefresh={() => {}} onFileClick={onFileClick} onDownload={onDownload} />,
+      );
+      expect(screen.getByText("/persist")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText("notes"));
+      fireEvent.click(screen.getByText("plan.md"));
+      expect(onFileClick).toHaveBeenCalledWith("/persist/notes/plan.md");
+
+      fireEvent.click(screen.getByLabelText("Download chart.html"));
+      expect(onDownload).toHaveBeenCalledWith("/persist/chart.html");
+    });
+
+    it("offers no edit, add-to-chat or drag for /persist files", () => {
+      render(
+        <FileTree tree={sampleTree} persistTree={persistTree} onRefresh={() => {}} onEdit={() => {}} onAddToChat={() => {}} />,
+      );
+      expect(screen.queryByLabelText("Edit chart.html")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Add chart.html to chat")).not.toBeInTheDocument();
+      expect(screen.getByText("chart.html").closest("[draggable]")?.getAttribute("draggable")).toBe("false");
+      expect(screen.getByText("package.json").closest("[draggable]")?.getAttribute("draggable")).toBe("true");
+    });
+
+    it("shows /persist when the workspace is still empty", () => {
+      render(<FileTree tree={[]} persistTree={persistTree} onRefresh={() => {}} />);
+      expect(screen.queryByText("No files in /workspace yet.")).not.toBeInTheDocument();
+      expect(screen.getByText("chart.html")).toBeInTheDocument();
+    });
+  });
+
   it("keeps rows compact and lets hover action buttons overflow (-my-1) instead of growing the row", () => {
     const uploads = [
       { id: "1", name: "data.csv", status: "ready" as const, path: "/uploads/data.csv", size: 100, progress: 100 },

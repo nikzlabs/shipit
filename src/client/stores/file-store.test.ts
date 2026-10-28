@@ -318,3 +318,57 @@ describe("hydrateUploads — an out-of-date listing is never applied", () => {
     expect(calls).toBe(4);
   });
 });
+
+describe("file-store /persist files", () => {
+  const realFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    useFileStore.getState().reset();
+    useSessionStore.setState({ sessionId: SESSION_ID });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("drops a tree listing for a session the user has left", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      useSessionStore.setState({ sessionId: "session-2" });
+      return new Response(JSON.stringify({
+        tree: [{ name: "a.ts", path: "a.ts", type: "file" }],
+        persist: [{ name: "a.md", path: "/persist/a.md", type: "file" }],
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await useFileStore.getState().fetchTree(SESSION_ID);
+
+    expect(useFileStore.getState().tree).toEqual([]);
+    expect(useFileStore.getState().persistTree).toEqual([]);
+  });
+
+  it("keeps the /persist tree that the tree listing returns", async () => {
+    const persist = [{ name: "a.md", path: "/persist/a.md", type: "file" as const }];
+    globalThis.fetch = vi.fn(
+      async () => new Response(JSON.stringify({ tree: [], persist }), { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    await useFileStore.getState().fetchTree(SESSION_ID);
+
+    expect(useFileStore.getState().persistTree).toEqual(persist);
+  });
+
+  it("opens a /persist file through its encoded absolute path", async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ content: "x", size: 1 }), { status: 200 }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await useFileStore.getState().openPreview(SESSION_ID, "/persist/my notes/a.md");
+    await useFileStore.getState().openPreview(SESSION_ID, "/persist/chart.html");
+
+    expect(fetchMock.mock.calls.map((c) => (c as unknown[])[0])).toEqual([
+      `/api/sessions/${SESSION_ID}/docs/%2Fpersist/my%20notes/a.md`,
+      `/api/sessions/${SESSION_ID}/files/%2Fpersist/chart.html`,
+    ]);
+  });
+});

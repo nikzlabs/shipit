@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { FileTreeNode } from "../components/FileTree.js";
 import type { DocEntry, SkillInfo, UploadedFile, UploadItem } from "../../server/shared/types.js";
 import { detectFilePreviewType, type FilePreviewType } from "../utils/file-preview-type.js";
+import { sessionFileUrlPath } from "../utils/session-file-path.js";
 import type { FilePreviewAction } from "../components/FilePreviewModal.js";
 import { getLocalStorageObject, getSavedDraftUploads, saveDraftUploads } from "../utils/local-storage.js";
 import { useSessionStore } from "./session-store.js";
@@ -30,6 +31,8 @@ function clearDeletedUploads() {
 
 interface FileState {
   tree: FileTreeNode[];
+  /** The session's /persist files; node paths are absolute (`/persist/notes.md`). */
+  persistTree: FileTreeNode[];
   viewingFile: string | null;
   viewingFileContent: string | null;
   viewingFileBinary: boolean;
@@ -60,7 +63,7 @@ interface FileState {
   editSaving: boolean;
   editError: string | null;
 
-  setTree: (tree: FileTreeNode[]) => void;
+  setTree: (tree: FileTreeNode[], persistTree?: FileTreeNode[]) => void;
   setViewingFile: (path: string | null) => void;
   closeViewer: () => void;
   setDocFiles: (files: DocEntry[]) => void;
@@ -99,6 +102,7 @@ let uploadIdCounter = 0;
 
 const initialState = {
   tree: [] as FileTreeNode[],
+  persistTree: [] as FileTreeNode[],
   viewingFile: null as string | null,
   viewingFileContent: null as string | null,
   viewingFileBinary: false,
@@ -250,7 +254,7 @@ function errorMessageFromResponse(status: number, fallback: string, body: unknow
 export const useFileStore = create<FileState>((set, get) => ({
   ...initialState,
 
-  setTree: (tree) => set({ tree }),
+  setTree: (tree, persistTree) => set(persistTree ? { tree, persistTree } : { tree }),
 
   setViewingFile: (path) => set({ viewingFile: path }),
 
@@ -416,7 +420,7 @@ export const useFileStore = create<FileState>((set, get) => ({
       previewOnDisk: true,
     });
 
-    const urlPath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
+    const urlPath = sessionFileUrlPath(filePath);
 
     if (detectedType === "markdown") {
 
@@ -572,8 +576,9 @@ export const useFileStore = create<FileState>((set, get) => ({
     if (!res.ok) {
       throw new Error(`Failed to fetch file tree: ${res.status}`);
     }
-    const { tree } = await res.json() as { tree: FileTreeNode[] };
-    set({ tree });
+    const { tree, persist } = await res.json() as { tree: FileTreeNode[]; persist?: FileTreeNode[] };
+    if (useSessionStore.getState().sessionId !== sessionId) return;
+    set({ tree, persistTree: persist ?? [] });
   },
 
   fetchFile: async (sessionId, filePath) => {
@@ -591,8 +596,8 @@ export const useFileStore = create<FileState>((set, get) => ({
     if (!res.ok) {
       throw new Error(`Failed to fetch file with tree: ${res.status}`);
     }
-    const data = await res.json() as { tree: FileTreeNode[]; content: string | null; isBinary?: boolean };
-    set({ tree: data.tree, viewingFileContent: data.content, viewingFileBinary: data.isBinary ?? false });
+    const data = await res.json() as { tree: FileTreeNode[]; persist?: FileTreeNode[]; content: string | null; isBinary?: boolean };
+    set({ tree: data.tree, persistTree: data.persist ?? [], viewingFileContent: data.content, viewingFileBinary: data.isBinary ?? false });
   },
 
   refreshFileContent: async (sessionId, filePath) => {

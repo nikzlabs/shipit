@@ -10,6 +10,8 @@ import { resolveSessionDir } from "./api-routes.js";
 
 import {
   getFileTree,
+  getPersistTree,
+  resolvePersistPath,
   getFileContent,
   getRawFilePath,
   writeFileContent,
@@ -93,7 +95,8 @@ export async function registerFileRoutes(
   app.get<{ Params: { id: string } }>("/api/sessions/:id/files", async (request, reply) => {
     const dir = resolveSessionDir(sessionManager, request.params.id, reply);
     if (!dir) return;
-    const body = JSON.stringify({ tree: await getFileTree(dir) });
+    const [tree, persist] = await Promise.all([getFileTree(dir), getPersistTree(dir)]);
+    const body = JSON.stringify({ tree, persist });
     const etag = etagFor(body);
     if (matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
       reply.code(304).send();
@@ -114,12 +117,14 @@ export async function registerFileRoutes(
         return;
       }
       try {
-        const resolveDir = filePath.startsWith("uploads/")
+        const persist = await resolvePersistPath(dir, filePath);
+        const resolveDir = persist?.dir ?? (filePath.startsWith("uploads/")
           ? path.dirname(dir)
-          : dir;
+          : dir);
+        const relPath = persist?.relPath ?? filePath;
 
         if (request.query.raw === "true") {
-          const safePath = path.resolve(resolveDir, filePath);
+          const safePath = path.resolve(resolveDir, relPath);
           if (!safePath.startsWith(`${resolveDir}/`)) {
             reply.code(400).send({ error: "Invalid path" });
             return;
@@ -139,7 +144,7 @@ export async function registerFileRoutes(
           return;
         }
 
-        const result = await getFileContent(resolveDir, filePath);
+        const result = await getFileContent(resolveDir, relPath);
         const response: Record<string, unknown> = {
           path: filePath,
           content: result.content,
@@ -148,7 +153,7 @@ export async function registerFileRoutes(
           isImage: result.isImage,
         };
         if (request.query.tree === "true") {
-          response.tree = await getFileTree(dir);
+          [response.tree, response.persist] = await Promise.all([getFileTree(dir), getPersistTree(dir)]);
         }
         return response;
       } catch (err) {
@@ -207,7 +212,8 @@ export async function registerFileRoutes(
         return;
       }
       try {
-        const { safePath, filename } = getRawFilePath(dir, filePath);
+        const persist = await resolvePersistPath(dir, filePath);
+        const { safePath, filename } = getRawFilePath(persist?.dir ?? dir, persist?.relPath ?? filePath);
         reply.header("Content-Disposition", `attachment; filename="${filename}"`);
         const stream = createReadStream(safePath);
         return await reply.send(stream);
@@ -286,7 +292,8 @@ export async function registerFileRoutes(
         return;
       }
       try {
-        const content = await getDocContent(dir, docPath);
+        const persist = await resolvePersistPath(dir, docPath);
+        const content = await getDocContent(persist?.dir ?? dir, persist?.relPath ?? docPath);
         return { path: docPath, content };
       } catch (err) {
         if (err instanceof ServiceError) {
