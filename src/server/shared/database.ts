@@ -1235,6 +1235,10 @@ const MIGRATIONS: Migration[] = [
       if (!columns.some((c) => c.name === column)) db.exec(`ALTER TABLE usage_turns ADD COLUMN ${column} ${type}`);
     }
   },
+  // planning#222 — why the last turn ended with no reply and no tool call.
+  (db) => {
+    addSessionColumnIfMissing(db, "last_turn_empty_reason");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

@@ -157,6 +157,48 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
     expect(calls[0]?.text).not.toContain("OOMKilled");
   });
 
+  it("says that a clean exit 0 came from outside ShipIt, in the log, the transcript and the status (planning#222)", () => {
+    const { runner, emitted } = makeFakeRunner("sess-1");
+    const registry = makeFakeRegistry(new Map([["sess-1", runner]]));
+    const calls: { sid: string; source: LogSource; text: string }[] = [];
+    const history = makeFakeChatHistoryManager();
+
+    handleContainerExited(
+      "sess-1", 0, undefined, registry, (sid, source, text) => calls.push({ sid, source, text }), history.manager,
+    );
+
+    const outside = "(exit 0): it was stopped from outside ShipIt, for example by a host or Docker restart";
+    expect(calls[0]?.text).toContain(outside);
+    expect(history.calls.append.find((c) => c.message.notice)?.message.text).toContain(outside);
+    expect(emitted.find((m) => m.type === "session_status")).toMatchObject({
+      error: expect.stringContaining(outside) as string,
+    });
+  });
+
+  it("keeps the exit code beside the out-of-memory reason", () => {
+    const registry = makeFakeRegistry(new Map());
+    const calls: { sid: string; source: LogSource; text: string }[] = [];
+
+    handleContainerExited("sess-1", 137, "Out of memory", registry, (sid, source, text) => calls.push({ sid, source, text }));
+
+    expect(calls[0]?.text).toBe("Session container exited unexpectedly: Out of memory (exit 137).");
+  });
+
+  it("writes the exit code to the orchestrator's own log", () => {
+    const registry = makeFakeRegistry(new Map());
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      handleContainerExited("sess-1", 0, undefined, registry);
+      handleContainerExited("sess-2", 143, undefined, registry);
+      expect(logged.mock.calls.map((c) => String(c[0]))).toEqual([
+        expect.stringContaining("Session sess-1 container exited (exit 0): it was stopped from outside ShipIt"),
+        "[container] Session sess-2 container exited (exit 143)",
+      ]);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
   it("emits session_status to the runner and force-disposes", () => {
     const { runner, emitted, disposeCalls } = makeFakeRunner("sess-2");
     const registry = makeFakeRegistry(new Map([["sess-2", runner]]));

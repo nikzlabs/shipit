@@ -182,6 +182,26 @@ describe("ClaudeAdapter", () => {
     expect((events[0] as any).permissionDenials).toBeUndefined();
   });
 
+  it("carries the turn's model calls and what the CLI answered onto agent_result (planning#222)", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: any[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "sess-count",
+      num_turns: 0,
+      origin: { kind: "task-notification" },
+    } satisfies ClaudeEvent);
+    inner.emit("event", { type: "result", subtype: "success", session_id: "sess-plain" } satisfies ClaudeEvent);
+
+    expect(events[0]).toMatchObject({ type: "agent_result", numTurns: 0, origin: "task-notification" });
+    expect(events[1]).not.toHaveProperty("numTurns");
+    expect(events[1]).not.toHaveProperty("origin");
+  });
+
   describe("background tasks / self-wake (docs/235)", () => {
     function harness() {
       const inner = new FakeInnerProcess();

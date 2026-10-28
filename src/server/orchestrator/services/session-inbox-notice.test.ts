@@ -34,21 +34,29 @@ describe("the inbox notice (docs/328-session-message-inbox)", () => {
     expect(INBOX_TURN_TEXT.length).toBeGreaterThan(0);
   });
 
-  it("is owed for an unread message, and not after its receipt", () => {
+  it("is owed for an unread message until the agent reads it, also after its turn's receipt (planning#222)", () => {
     expect(prepareInboxNotice(store, "parent")).toBeNull();
 
     store.add("parent", { origin: CHILD, body: "a report" });
     const notice = prepareInboxNotice(store, "parent");
     expect(notice?.notice).toBe(buildInboxNotice(1));
 
-    // Prepared and not acknowledged: the turn never reached the agent, so it is still owed.
-    expect(prepareInboxNotice(store, "parent")).not.toBeNull();
-
+    // The agent produced a result for the prompt and did not run the read command.
     notice!.delivered();
+    expect(prepareInboxNotice(store, "parent")?.notice).toBe(buildInboxNotice(1));
+
+    store.takeUnread("parent");
     expect(prepareInboxNotice(store, "parent")).toBeNull();
   });
 
-  it("acknowledges what it covered, so a message that arrives during the turn is told by the next", () => {
+  it("counts a message that an older ShipIt marked as told and the agent never read (planning#222)", () => {
+    const told = store.add("parent", { origin: CHILD, body: "told before the fix" });
+    store.markNotified("parent", told.id);
+
+    expect(prepareInboxNotice(store, "parent")?.notice).toBe(buildInboxNotice(1));
+  });
+
+  it("counts a message that arrives during the turn in the next notice", () => {
     store.add("parent", { origin: CHILD, body: "before the turn" });
     const notice = prepareInboxNotice(store, "parent")!;
 
@@ -99,9 +107,7 @@ describe("the inbox notice (docs/328-session-message-inbox)", () => {
 
   it("lets a turn start when the store cannot be read", () => {
     const broken = {
-      owed: () => { throw new Error("database is closed"); },
-      unread: () => [],
-      markNotified: () => {},
+      unread: () => { throw new Error("database is closed"); },
       markRead: () => {},
     };
     const logged: unknown[] = [];
