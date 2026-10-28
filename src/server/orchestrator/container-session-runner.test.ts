@@ -746,7 +746,7 @@ describe("ContainerSessionRunner — background-work marker", () => {
     runner.isStreamingActive = true;
     runner.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
     const seen = recordTaskMessages(runner);
-    // Every kill site drops the streaming flag first, which already announced over SSE.
+    // The kill sites that clear drop the streaming flag first, which already announced over SSE.
     runner.isStreamingActive = false;
     runner.clearBackgroundTasks();
     expect(seen).toEqual([drained]);
@@ -754,7 +754,7 @@ describe("ContainerSessionRunner — background-work marker", () => {
     expect(seen).toHaveLength(1);
   });
 
-  it("leaves the row while a consult still runs", () => {
+  it("names the consult that still runs instead of the cleared task", () => {
     const runner = makeRunner();
     runner.isStreamingActive = true;
     runner.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
@@ -762,8 +762,7 @@ describe("ContainerSessionRunner — background-work marker", () => {
       .set("spawn-1", { controller: new AbortController(), agentId: "codex" });
     const seen = recordTaskMessages(runner);
     runner.clearBackgroundTasks();
-    expect(seen).toEqual([]);
-    expect(runner.backgroundWorkDescriptions).toEqual(["Codex consult"]);
+    expect(seen).toEqual([{ type: "background_tasks", sessionId: "s1", count: 1, descriptions: ["Codex consult"] }]);
   });
 
   it("announces the list the one-hour expiry drops, to the chat and the sidebar", () => {

@@ -568,6 +568,9 @@ export async function executeAgentTurn(
   if (runner) {
     runner.running = true;
     runner.activeDeliveryId = input.deliveryId;
+    // A new process holds none of the tasks an earlier, killed one reported; the
+    // streaming flag below would show them again (planning#710).
+    if (useStreaming && input.reuseExistingAgent !== true && input.adopt !== true) runner.clearBackgroundTasks();
     runner.isStreamingActive = useStreaming;
     resetRunnerTurnState(runner);
     noteCompactionTurn(runner, input.compact === true);
@@ -777,8 +780,6 @@ export async function executeAgentTurn(
     if (runner) {
       runner.setAgent(freshAgent);
       runner.isStreamingActive = false;
-      // The killed process reaps its tasks; the retry's streaming flag would revive the list.
-      runner.clearBackgroundTasks();
       runner.residentRoute = undefined;
     }
     await executeAgentTurn(runner, deps, freshAgent, {

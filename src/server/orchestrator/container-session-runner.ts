@@ -327,14 +327,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this.announceBackgroundWork();
   }
   clearBackgroundTasks(): void {
-    if (this._backgroundTasks.clear()) this.emitBackgroundTasksDrained();
+    if (this._backgroundTasks.clear()) this.emitBackgroundWorkToChat();
     this.announceBackgroundWork();
   }
-  // The SSE announcement updates the sidebar only; this clears the open chat's row.
-  // Independent consults may still be running, and then the row stays.
-  private emitBackgroundTasksDrained(): void {
-    if (this.backgroundWorkDescriptions.length > 0) return;
-    this.emitMessage({ type: "background_tasks", sessionId: this.sessionId, count: 0, descriptions: [] });
+  // The SSE announcement updates the sidebar only; the open chat's row needs this message.
+  // It names the consults that still run, as the history load does.
+  private emitBackgroundWorkToChat(): void {
+    const descriptions = this.backgroundWorkDescriptions;
+    this.emitMessage({ type: "background_tasks", sessionId: this.sessionId, count: descriptions.length, descriptions });
   }
   private announceBackgroundWork(): void {
     const next = JSON.stringify(this.backgroundWorkDescriptions);
@@ -2228,7 +2228,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._appliedSpawnIdentity = undefined;
     this._residentRoute = undefined;
     this._agent = null;
-    this.emitBackgroundTasksDrained();
+    this.emitBackgroundWorkToChat();
     // Announce last: listeners can synchronously start a new turn and install its agent.
     this.announceBackgroundWork();
   }

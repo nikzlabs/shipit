@@ -938,9 +938,10 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this.announceBackgroundWork();
   }
   clearBackgroundTasks(): void {
-    // The SSE announcement updates the sidebar only; this clears the open chat's row.
-    if (this._backgroundTasks.clear() && this.backgroundWorkDescriptions.length === 0) {
-      this.emitMessage({ type: "background_tasks", sessionId: this.sessionId, count: 0, descriptions: [] });
+    // The SSE announcement updates the sidebar only; the open chat's row needs this message.
+    if (this._backgroundTasks.clear()) {
+      const descriptions = this.backgroundWorkDescriptions;
+      this.emitMessage({ type: "background_tasks", sessionId: this.sessionId, count: descriptions.length, descriptions });
     }
     this.announceBackgroundWork();
   }

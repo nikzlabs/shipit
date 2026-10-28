@@ -246,6 +246,40 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
     runner.dispose({ force: true });
   });
 
+  // The clear at turn start is for a new process only: these still run the tasks they reported.
+  for (const [label, extra] of [
+    ["a turn that reuses the resident", { reuseExistingAgent: true }],
+    ["an adopted turn", { adopt: true }],
+  ] as const) {
+    it(`keeps the task list of the process ${label} runs on`, async () => {
+      const session = { billingMode: "sub", providerRouteBillingMode: "sub", serviceId: "anthropic" };
+      const { deps, runner } = harness(session as Partial<SessionInfo>);
+      const resident = Object.assign(makeFakeAgent(), { sendUserMessage: vi.fn() });
+      runner.setAgent(resident as never);
+      runner.isStreamingActive = true;
+      runner.setBackgroundTasks([{ id: "t1", description: "sleep 600" }]);
+
+      await executeAgentTurn(runner, deps, resident as never, {
+        agentId: "claude" as AgentId,
+        sessionId: "s1",
+        prompt: "p",
+        userText: "do work",
+        emitUserEcho: false,
+        persistUserMessage: vi.fn(),
+        isNewSession: false,
+        fallbackTitle: "t",
+        turnStartHeadHash: null,
+        drainNext: async () => {},
+        emit: () => {},
+        useStreaming: true,
+        ...extra,
+      });
+
+      expect(runner.backgroundWorkDescriptions).toEqual(["sleep 600"]);
+      runner.dispose({ force: true });
+    });
+  }
+
   it("leaves an ordinary process error alone", async () => {
     const session = { billingMode: "sub", providerRouteBillingMode: "sub", serviceId: "anthropic" };
     const { agents, deps, runner } = harness(session as Partial<SessionInfo>);
