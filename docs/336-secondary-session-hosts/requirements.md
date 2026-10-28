@@ -67,6 +67,7 @@ Requirements of other features that hold for every session hold for sessions on 
 ## Open questions
 
 - Where is the Docker-access setting of a secondary host kept (req 14)? Req 5 keeps settings in one place, but req 13 says that the main server cannot get root access to a secondary host, except through Docker access that the user allows on that host. If the main server keeps the setting, a main server that someone broke into can turn it on and so get root access. Options: (a) on the secondary host, in the host agent's config file; ShipIt's settings only show it; (b) in ShipIt's settings with the other settings; then req 13 holds only while the main server is safe. Recommendation: (a), because req 13 is about the case where the main server is not safe.
+- Must the private network of req 7 encrypt its traffic? A tailnet does; a plain LAN does not. The traffic between hosts carries session credentials, and ShipIt has no built-in user authentication (`SECURITY-MODEL.md`, "Network exposure and access control"). Options: (a) yes: hosts must be in a private network that encrypts, such as a tailnet or another WireGuard network; a plain LAN is not supported in this version; (b) no: ShipIt encrypts the connection between hosts itself, so a plain LAN also works. Recommendation: (a) for this version, because it adds nothing to build and fits "no authentication between hosts yet"; (b) can come later with authentication.
 
 ## Resolved questions
 
