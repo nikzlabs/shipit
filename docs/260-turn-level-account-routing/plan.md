@@ -225,7 +225,10 @@ The req-14 one-hop retry in `turn-executor.ts` (`retryOnNextAccount`,
    account (attribution unchanged from the failover-attribution fix), emit a
    persisted in-turn notice (req 10), add the account to the turn's exclusion
    set, re-select, respawn. Partial output is finalized before the retry, as
-   today.
+   today. The replayed prompt gets a ShipIt note in front (`account-failover-note.ts`,
+   planning#712): a sub-agent that ran on the refused account returned an error, not a
+   result, and the background tasks the kill ended are named. The task list is read
+   before the kill, because the retry's turn start clears it (planning#710).
 3. Stop on success, or when no candidate remains. The loop keeps a per-turn
    **attempt ledger** — route id, account label, the provider's original
    refusal message, and the parsed reset time for every attempt, preserved

@@ -6,6 +6,7 @@ import type { AgentId } from "../../shared/types.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
 import { allRefusedMessage } from "../turn-executor.js";
+import { buildAccountFailoverNote } from "../account-failover-note.js";
 import type { TurnOutcome } from "../turn-settlement.js";
 
 interface FakeAgent extends EventEmitter {
@@ -413,6 +414,106 @@ describe("same-turn quota failover (docs/150-multiple-provider-subscriptions req
 
     expect(agents).toHaveLength(1);
 
+    runner.dispose({ force: true });
+  });
+
+  // planning#712 — the retry's own turn start clears the task list (planning#710), so the note
+  // must have read it before.
+  for (const streaming of [true, false]) {
+    it(`names the refused process's background tasks in a note before the replayed prompt (${streaming ? "streaming" : "one-shot"})`, async () => {
+      const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+      const agents: FakeAgent[] = [];
+      const { deps } = makeDeps(agents);
+      if (streaming) deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
+      runner.setSystemTurnDeps(deps);
+
+      runner.dispatch(testDispatch({ text: "do work" }));
+      await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+      agents[0]!.emit("event", { type: "agent_background_tasks", tasks: [{ id: "t1", description: "npm run e2e" }] });
+      agents[0]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
+      await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "retry agent run");
+
+      const prompts = vi.mocked(deps.buildRunParams).mock.calls.map((call) => call[2]);
+      expect(prompts[0]).not.toContain(buildAccountFailoverNote([]));
+      expect(prompts[1]).toBe(`${buildAccountFailoverNote(["npm run e2e"])}\n\n${prompts[0]}`);
+      expect(runner.backgroundWorkDescriptions).toEqual([]);
+
+      agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+      agents[1]!.emit("done", 0);
+      await waitFor(() => !runner.running, "turn finished");
+      runner.dispose({ force: true });
+    });
+  }
+
+  it("gives each failover its own note rather than stacking them", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDeps(agents);
+    deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+    agents[0]!.emit("event", { type: "agent_background_tasks", tasks: [{ id: "t1", description: "first job" }] });
+    agents[0]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "second attempt");
+    agents[1]!.emit("event", { type: "agent_background_tasks", tasks: [{ id: "t2", description: "second job" }] });
+    agents[1]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
+    await waitFor(() => agents.length === 3 && agents[2]!.run.mock.calls.length === 1, "third attempt");
+
+    const prompts = vi.mocked(deps.buildRunParams).mock.calls.map((call) => call[2]);
+    expect(prompts[2]).toBe(`${buildAccountFailoverNote(["second job"])}\n\n${prompts[0]}`);
+
+    agents[2]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[2]!.emit("done", 0);
+    await waitFor(() => !runner.running, "turn finished");
+    runner.dispose({ force: true });
+  });
+
+  it("swaps the current status card into the replayed prompt behind the note (docs/303 req 35)", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDeps(agents);
+    let card = "<session_status_card>before</session_status_card>";
+    deps.sessionStatusContext = () => card;
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+    card = "<session_status_card>after</session_status_card>";
+    agents[0]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "retry agent run");
+
+    const prompts = vi.mocked(deps.buildRunParams).mock.calls.map((call) => call[2]);
+    expect(prompts[0]).toContain("before");
+    expect(prompts[1]).toBe(
+      `${buildAccountFailoverNote([])}\n\n${prompts[0]!.replace("before", "after")}`,
+    );
+
+    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitFor(() => !runner.running, "turn finished");
+    runner.dispose({ force: true });
+  });
+
+  it("puts no note before a compaction, whose prompt is the harness command", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDeps(agents);
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "/compact" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+    agents[0]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "retry agent run");
+
+    const prompts = vi.mocked(deps.buildRunParams).mock.calls.map((call) => call[2]);
+    expect(prompts[0]).toBe("/compact");
+    expect(prompts[1]).toBe(prompts[0]);
+
+    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitFor(() => !runner.running, "turn finished");
     runner.dispose({ force: true });
   });
 

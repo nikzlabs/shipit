@@ -13,6 +13,7 @@ import { interruptAgentTurn } from "./services/agent-interrupt.js";
 import type { AgentId } from "../shared/types.js";
 import { GitManager } from "../shared/git.js";
 import { noteUserStop } from "./turn-stop-request.js";
+import { FAILED_SUB_AGENTS_NOTICE } from "./account-failover-note.js";
 
 // Allow three sequential waits to fail with their diagnostic labels before Vitest times out.
 vi.setConfig({ testTimeout: 90_000 });
@@ -86,6 +87,7 @@ function makeListenerDeps(sseBroadcast = vi.fn()): SystemTurnDeps["listenerDeps"
       touchUnlessResolved: vi.fn(),
       setMuted: vi.fn(),
       list: vi.fn().mockReturnValue([]),
+      appendPendingAgentNotice: vi.fn(),
     } as never,
     chatHistoryManager: {
       replaceInProgress: vi.fn(),
@@ -751,12 +753,13 @@ describe("post-turn flow for a self-woken turn", () => {
     const filePath = path.join(repoDir, "file.txt");
     const recordStandDown = vi.fn(() => ({ continues: true }));
     // The continuation is a new turn: this one must be committed and settled before it starts.
-    const stateAtContinuation: { porcelain: string; prFlows: number; running: boolean }[] = [];
+    const stateAtContinuation: { porcelain: string; prFlows: number; running: boolean; parked: unknown[][] }[] = [];
     const continueAfterStandDown = vi.fn(async () => {
       stateAtContinuation.push({
         porcelain: gitOut("status", "--porcelain"),
         prFlows: h.postTurnPrFlow.mock.calls.length,
         running: h.runner.running,
+        parked: [...vi.mocked(h.listenerDeps.sessionManager.appendPendingAgentNotice).mock.calls],
       });
     });
 
@@ -793,7 +796,10 @@ describe("post-turn flow for a self-woken turn", () => {
       benchedRouteId: "acct-a",
     });
     expect(continueAfterStandDown).toHaveBeenCalledWith("s1");
-    expect(stateAtContinuation).toEqual([{ porcelain: "", prFlows: 2, running: false }]);
+    // planning#712 — parked before the continuation, so its prompt carries the note.
+    expect(stateAtContinuation).toEqual([{
+      porcelain: "", prFlows: 2, running: false, parked: [["s1", FAILED_SUB_AGENTS_NOTICE]],
+    }]);
 
     const notice = h.messages.find((m) => m.type === "system_notice");
     expect(notice?.message).toContain("Work account is out of quota");
@@ -881,6 +887,7 @@ describe("post-turn flow for a self-woken turn", () => {
     await waitFor(() => h.postTurnPrFlow.mock.calls.length === 2, "adopted turn post-turn flow ran");
 
     expect(h.messages.filter((m) => m.type === "system_notice")).toEqual([]);
+    expect(h.listenerDeps.sessionManager.appendPendingAgentNotice).not.toHaveBeenCalled();
     expect(h.agent.run).toHaveBeenCalledTimes(1);
     expect(commitSubjects()[0]).toBe("Agent turn");
     expect(gitOut("show", "HEAD:file.txt")).toBe("adopted work\n");
