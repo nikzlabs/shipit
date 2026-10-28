@@ -1,4 +1,4 @@
-import { ArrowClockwiseIcon, ArrowLeftIcon, ArrowSquareOutIcon, CaretDownIcon, CheckIcon, HouseIcon } from "@phosphor-icons/react";
+import { ArrowClockwiseIcon, ArrowLeftIcon, ArrowSquareOutIcon, CaretDownIcon, CheckIcon, CornersInIcon, CornersOutIcon, HouseIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import {
   DropdownMenu,
@@ -70,6 +70,10 @@ interface PreviewToolbarProps {
   previewPath: string | null;
 
   previewFullUrl: string | null;
+
+  maximized: boolean;
+
+  onToggleMaximized: () => void;
 }
 
 export function PreviewToolbar({
@@ -99,6 +103,8 @@ export function PreviewToolbar({
   activeSlotUrl,
   previewPath,
   previewFullUrl,
+  maximized,
+  onToggleMaximized,
 }: PreviewToolbarProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const autoFixRetries = usePreviewStore((s) => s.autoFixRetries);
@@ -322,6 +328,16 @@ export function PreviewToolbar({
             <ArrowSquareOutIcon size={ICON_SIZE.SM} />
           </Button>
         )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onToggleMaximized}
+          title={maximized ? "Restore preview (Esc)" : "Maximize preview"}
+          aria-label={maximized ? "Restore preview" : "Maximize preview"}
+          className="h-7 w-7 p-0"
+        >
+          {maximized ? <CornersInIcon size={ICON_SIZE.SM} /> : <CornersOutIcon size={ICON_SIZE.SM} />}
+        </Button>
       </div>
     </div>
   );
