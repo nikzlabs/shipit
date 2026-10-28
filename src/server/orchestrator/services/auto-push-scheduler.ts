@@ -8,6 +8,7 @@ import { pushToOrigin, isGitAuthError } from "../git-utils.js";
 import { classifyPushFailure, isNonFastForwardError, isRewriteWindowPushFailure } from "./git.js";
 import {
   baseRebaseIsSafe,
+  DIVERGED_PUSH_AGENT_NOTICE,
   formatDivergedPushNotice,
   measurePushDivergence,
   type PushDivergence,
@@ -28,6 +29,8 @@ export interface AutoPushDeps {
   getRunner: (sessionId: string) => SessionRunnerInterface | null | undefined;
   broadcastLog: (sessionId: string, source: LogSource, text: string) => void;
   chatHistory: { append(sessionId: string, message: PersistedMessage): unknown };
+  /** The transcript notice reaches only the user; the agent reads its copy at the head of the next turn. */
+  sessionManager: { appendPendingAgentNotice(sessionId: string, notice: string): void };
   notifyAutoPush?: ((sessionId: string) => void) | undefined;
   destructiveGitGuarded?: ((sessionId: string) => boolean) | undefined;
 }
@@ -56,6 +59,18 @@ export function formatLfsUploadNotice(err: unknown): string {
     + "first, so once the LFS server accepts the upload, the next push lands everything.";
   return `${why}\n\n${next}\n\n${said}`;
 }
+
+// Fixed text: git-lfs output and ref names are not ShipIt's, and this heads the prompt as a command source.
+export const LFS_UPLOAD_AGENT_NOTICE =
+  "[System] ShipIt did NOT push this branch: uploading its Git LFS objects failed, so its commits "
+  + "are only in this session's local history. ShipIt does not push commits without their LFS "
+  + "objects, because every other checkout would then get pointer files instead of the content. "
+  + "Every later push uploads the objects first, so the next push lands everything once the LFS "
+  + "server accepts the upload. The user has a notice with the error in the transcript. To see the "
+  + "error yourself, run `git lfs push origin \"$(git branch --show-current)\"`. Do not bypass the "
+  + "upload (for example with `git push --no-verify` or `lfs.allowincompletepush`), and do not tell "
+  + "the user these commits are pushed. If a rewind has removed these commits since, this notice no "
+  + "longer applies.";
 
 export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
   interface ArmedPush {
@@ -125,6 +140,15 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
     } catch (err) {
       console.warn(`[auto-push] ${sessionId}: could not read the destructive-git guard state:`, err);
       return false;
+    }
+  };
+
+  // Separate from the transcript write: a failure in one must not cost the other audience its copy.
+  const tellAgent = (sessionId: string, notice: string): void => {
+    try {
+      deps.sessionManager.appendPendingAgentNotice(sessionId, notice);
+    } catch (err) {
+      console.error(`[auto-push] ${sessionId}: could not park the agent notice:`, err);
     }
   };
 
@@ -337,6 +361,7 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
             notifiedDiverged.delete(sessionId);
             console.error(`[auto-push] ${sessionId}: diverged-push notice failed:`, noticeErr);
           }
+          tellAgent(sessionId, DIVERGED_PUSH_AGENT_NOTICE);
         }
         return;
       }
@@ -371,6 +396,7 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
             notifiedLfsUpload.delete(sessionId);
             console.error(`[auto-push] ${sessionId}: LFS upload notice failed:`, noticeErr);
           }
+          tellAgent(sessionId, LFS_UPLOAD_AGENT_NOTICE);
         }
         return;
       }

@@ -253,6 +253,7 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
     const scheduleAutoPush = vi.fn();
     const append = vi.fn();
     const emit = vi.fn();
+    const appendPendingAgentNotice = vi.fn();
     const ctx = {
       createGitManager: vi.fn(() => ({
         autoCommit,
@@ -271,10 +272,11 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
         setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),
+        appendPendingAgentNotice,
       },
       scheduleAutoPush,
     } as unknown as Parameters<typeof postTurnCommit>[0];
-    return { ctx, scheduleAutoPush, append, emit };
+    return { ctx, scheduleAutoPush, append, emit, appendPendingAgentNotice };
   }
 
   it("commits but refuses the push, and persists a notice naming the merged PR", async () => {
@@ -291,19 +293,36 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
     );
   });
 
+  // The transcript notice reaches only the user; without this the agent reports the work as shipped.
+  it("parks an agent notice for the next turn naming the refused commit", async () => {
+    const { ctx, appendPendingAgentNotice } = makeMergedCtx({});
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "Added, in both places",
+    });
+    expect(appendPendingAgentNotice).toHaveBeenCalledOnce();
+    const [sessionId, notice] = appendPendingAgentNotice.mock.calls[0] as [string, string];
+    expect(sessionId).toBe("s1");
+    expect(notice).toContain("NOT push");
+    expect(notice).toContain("0d9a31d");
+    expect(notice).toContain("#1963");
+    expect(notice).toContain("git merge origin/main");
+  });
+
   it("still refuses the push when the agent moved HEAD itself (no auto-commit)", async () => {
-    const { ctx, scheduleAutoPush, append } = makeMergedCtx({ commitHash: null });
+    const { ctx, scheduleAutoPush, append, appendPendingAgentNotice } = makeMergedCtx({ commitHash: null });
     await postTurnCommit(ctx, {
       sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "x", turnStartHeadHash: "oldhead",
     });
     expect(scheduleAutoPush).not.toHaveBeenCalled();
     expect(append).toHaveBeenCalled();
+    expect(appendPendingAgentNotice).toHaveBeenCalledOnce();
   });
 
   // `gh pr create` flushed this turn's edits as the PR head, then `gh pr merge`
   // merged exactly that commit: HEAD moved during the turn, and it IS the merged head.
   it("says nothing and pushes nothing when the turn opened and merged its own PR", async () => {
-    const { ctx, scheduleAutoPush, append, emit } = makeMergedCtx({ commitHash: null, head: MERGED_SHA });
+    const { ctx, scheduleAutoPush, append, emit, appendPendingAgentNotice } =
+      makeMergedCtx({ commitHash: null, head: MERGED_SHA });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const hash = await postTurnCommit(ctx, {
       sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "x", turnStartHeadHash: "eeddce9",
@@ -311,18 +330,20 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
     expect(hash).toBeNull();
     expect(scheduleAutoPush).not.toHaveBeenCalled();
     expect(append).not.toHaveBeenCalled();
+    expect(appendPendingAgentNotice).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "system_notice" }));
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("[merged-push-guard]"));
     warn.mockRestore();
   });
 
   it("pushes normally once the branch has been rebased off the merged tip", async () => {
-    const { ctx, scheduleAutoPush, append } = makeMergedCtx({ stackedOnMergedTip: false });
+    const { ctx, scheduleAutoPush, append, appendPendingAgentNotice } = makeMergedCtx({ stackedOnMergedTip: false });
     await postTurnCommit(ctx, {
       sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "next slice",
     });
     expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
     expect(append).not.toHaveBeenCalled();
+    expect(appendPendingAgentNotice).not.toHaveBeenCalled();
   });
 
   it("pushes normally for a session that is not merged", async () => {
@@ -335,7 +356,7 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
   });
 
   it("does not let a failing notice write take the turn down", async () => {
-    const { ctx, scheduleAutoPush } = makeMergedCtx({});
+    const { ctx, scheduleAutoPush, appendPendingAgentNotice } = makeMergedCtx({});
     (ctx.chatHistoryManager as unknown as { append: () => void }).append = () => {
       throw new Error("database is locked");
     };
@@ -346,6 +367,24 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
     expect(hash).toBe("0d9a31d1");
     expect(scheduleAutoPush).not.toHaveBeenCalled();
     expect(err).toHaveBeenCalled();
+    // A failed transcript write must not also cost the agent its copy.
+    expect(appendPendingAgentNotice).toHaveBeenCalledOnce();
+    err.mockRestore();
+  });
+
+  it("does not let a failing agent-notice write take the turn down", async () => {
+    const { ctx, scheduleAutoPush, append, appendPendingAgentNotice } = makeMergedCtx({});
+    appendPendingAgentNotice.mockImplementation(() => {
+      throw new Error("database is locked");
+    });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const hash = await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "x",
+    });
+    expect(hash).toBe("0d9a31d1");
+    expect(scheduleAutoPush).not.toHaveBeenCalled();
+    expect(append).toHaveBeenCalled();
+    expect(err).toHaveBeenCalledWith(expect.stringContaining("agent notice failed"), expect.any(Error));
     err.mockRestore();
   });
 });

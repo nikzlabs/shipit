@@ -154,6 +154,25 @@ export function baseRebaseIsSafe(d: PushDivergence): boolean {
   return d.ahead > 0;
 }
 
+// Fixed text: commit subjects, git errors and branch names are not ShipIt's, and this heads the
+// prompt as a command source. The remote can move before the next turn, so the agent measures itself.
+const CURRENT = `"$(git branch --show-current)"`;
+const REMOTE_COPY = `"origin/$(git branch --show-current)"`;
+export const DIVERGED_PUSH_AGENT_NOTICE =
+  "[System] ShipIt's auto-push of this branch to origin was rejected as non-fast-forward: the branch "
+  + "and its copy on origin have diverged. Origin does not get this session's new commits, and every "
+  + "later auto-push is rejected the same way until this is resolved. The user has a notice about it "
+  + "in the transcript. Measure it before you change either history, in this order. "
+  + `1. Run \`git fetch origin ${CURRENT}\`. `
+  + `2. If \`git merge-base HEAD ${REMOTE_COPY}\` finds no common commit, move neither history and `
+  + "ask the user. "
+  + `3. \`git rev-list --left-right --count HEAD...${REMOTE_COPY}\` counts the commits only here `
+  + "(left) and only on origin (right). If the right number is above zero, "
+  + `\`git pull --rebase origin ${CURRENT}\` replays this session's commits on top of origin's and `
+  + "keeps both. If it is zero, the counts do not explain the rejection: run `git push origin HEAD` "
+  + "(not a force-push) to read origin's reason. "
+  + "Do not force-push: it discards origin's commits, and that decision is the user's, not yours.";
+
 export function formatDivergedPushNotice(
   d: PushDivergence,
   ctx: DivergedNoticeContext = {},

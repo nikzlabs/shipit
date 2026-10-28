@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { evaluateMergedBranchPush, formatMergedPushNotice } from "./merged-push-guard.js";
+import {
+  evaluateMergedBranchPush,
+  formatMergedPushAgentNotice,
+  formatMergedPushNotice,
+} from "./merged-push-guard.js";
 import type { SessionInfo } from "../../shared/types.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
 
@@ -142,5 +146,42 @@ describe("formatMergedPushNotice", () => {
     const notice = formatMergedPushNotice({}, null);
     expect(notice).toContain("for this session");
     expect(notice).not.toContain("undefined");
+  });
+});
+
+describe("formatMergedPushAgentNotice", () => {
+  it("tells the agent the commit is unpushed and gives the route that ships it", async () => {
+    const block = (await evaluateMergedBranchPush(makeSession(), () => makePrStatus(), makeGit()))!;
+    const notice = formatMergedPushAgentNotice(block, NEW_HEAD);
+    expect(notice).toMatch(/^\[System\] /);
+    expect(notice).toContain("NOT push");
+    expect(notice).toContain("0d9a31d");
+    expect(notice).toContain("#1963");
+    expect(notice).toContain("shipit/codex-poll");
+    expect(notice).toContain("git fetch origin && git merge origin/main");
+    expect(notice).toContain("gh pr create");
+  });
+
+  // reset-to-base refuses a branch with unshipped commits, and its --force discards them.
+  it("does not send the agent to reset-to-base as the way to ship", async () => {
+    const block = (await evaluateMergedBranchPush(makeSession(), () => makePrStatus(), makeGit()))!;
+    const notice = formatMergedPushAgentNotice(block, NEW_HEAD);
+    expect(notice).toContain("`shipit branch reset-to-base` refuses this branch");
+    expect(notice).toContain("the user's decision");
+  });
+
+  // Parked until the next turn, so a rewind in between can remove the commit it names.
+  it("says it no longer applies once a rewind removed the commit", async () => {
+    const block = (await evaluateMergedBranchPush(makeSession(), () => makePrStatus(), makeGit()))!;
+    expect(formatMergedPushAgentNotice(block, NEW_HEAD))
+      .toContain("If a rewind has removed 0d9a31d from the branch since, this notice no longer applies.");
+    expect(formatMergedPushAgentNotice(block, null)).toContain("If a rewind has removed these commits");
+  });
+
+  it("degrades gracefully when the PR pointers are unknown", () => {
+    const notice = formatMergedPushAgentNotice({}, null);
+    expect(notice).toContain("git merge origin/<base>");
+    expect(notice).not.toContain("undefined");
+    expect(notice).not.toContain("()");
   });
 });

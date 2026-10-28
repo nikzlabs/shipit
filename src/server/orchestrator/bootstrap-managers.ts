@@ -365,6 +365,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     getRunner: (sessionId) => registryHolder.ref?.get(sessionId) ?? null,
     broadcastLog,
     chatHistory: chatHistoryManager,
+    sessionManager,
     notifyAutoPush: (sessionId) => prStatusPollerRef.ref?.notifyAutoPush(sessionId),
     destructiveGitGuarded: (sessionId) => Boolean(sessionManager.get(sessionId)?.mergedHeadSha),
   });

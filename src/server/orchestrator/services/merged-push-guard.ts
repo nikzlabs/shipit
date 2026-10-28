@@ -76,3 +76,26 @@ export function formatMergedPushNotice(block: MergedPushBlock, commitHash: strin
     + `when the branch carries commits of its own.`
   );
 }
+
+// The transcript notice never reaches the agent, which then reports the work as shipped.
+export function formatMergedPushAgentNotice(block: MergedPushBlock, commitHash: string | null): string {
+  const pr = block.prNumber ? ` (#${block.prNumber})` : "";
+  const into = block.baseBranch ? ` into ${block.baseBranch}` : "";
+  const commit = commitHash ? ` (${commitHash.slice(0, 7)})` : "";
+  const branch = block.branch ? ` \`${block.branch}\`` : "";
+  const base = block.baseBranch ?? "<base>";
+  // The notice is parked, and a rewind before the next turn can remove the commit it names.
+  const removed = commitHash ? commitHash.slice(0, 7) : "these commits";
+  return (
+    `[System] ShipIt did NOT push this branch's latest commit${commit}. This session's pull `
+    + `request${pr} was already merged${into}, so the branch${branch} has no open pull request, and `
+    + `ShipIt refuses to auto-push a commit stacked on a merged branch. The commit is only in this `
+    + `session's local history; the user has a notice about it in the transcript. Do not tell the `
+    + `user that this work is shipped or in a pull request. To ship it, merge the base into the `
+    + `branch and open a new pull request: \`git fetch origin && git merge origin/${base}\`, then `
+    + `\`gh pr create\`. Do not rebase, \`git reset --hard\` or \`git push --force\`. `
+    + `\`shipit branch reset-to-base\` refuses this branch because it carries unshipped commits; `
+    + `discarding them with its \`--force\` is the user's decision, not yours. If a rewind has `
+    + `removed ${removed} from the branch since, this notice no longer applies.`
+  );
+}
