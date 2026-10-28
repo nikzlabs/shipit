@@ -240,6 +240,27 @@ Both return immediately (exit 0, "armed"). See [sessions.md](sessions.md) for
 what the wake-turn and the notice carry, and how to chain several PRs from one
 session.
 
+### How ShipIt syncs a branch
+
+ShipIt's Sync and its automatic updates never merge the base into a session
+branch. The PR menu's **Sync** item
+rebases an open PR's branch onto the base and force-pushes it; on a merged PR
+the same item resets the branch to the base. ShipIt also moves the branch on its
+own (read the current value with `shipit settings get <key>`):
+
+- **After a merge**, at the next turn, it resets the branch to the fresh base
+  and force-pushes (`advanced.autoResetMergedBranch`, on by default).
+- **On a conflict** with the base, it rebases the branch and gives you a turn
+  for the conflicts (`advanced.autoResolveConflicts`, off by default).
+
+Any such rewrite reconciles the Compose services and, when dependencies
+changed, re-runs `agent.install`, which stops and restarts the services that
+wait for it. An install whose inputs ShipIt cannot tell (a script or codegen
+step with no declared `install-inputs`) is not re-run; ShipIt posts a notice
+instead ([preview.md](preview.md) → Mid-session re-install). Sync is disabled while a turn runs or a
+rebase is in progress. A container restart copies the plugin skills into the
+session again ([plugins.md](plugins.md)).
+
 ### Work to do after a rebase concludes
 
 When ShipIt rebases your branch onto the base — you clicked Sync, or the idle
