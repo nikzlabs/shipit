@@ -10,6 +10,8 @@ There is no design yet. The investigation of 2026-10-28 and its proposed shape a
 
 The requirements are for any user who adds hosts to their ShipIt. One example, and the first use: a user makes 3D models, with rendering in Blender and in a web game. Sessions that need a GPU run on a workstation, and the other sessions run on a remote main host.
 
+Requirements of other features that hold for every session hold for sessions on a secondary host too. For example, docs/319-api-reach-through-host req 1: a request from a session's container gets no more access than that session's containers have today, whatever path it takes.
+
 1. One ShipIt has one main host and can have several secondary hosts.
 
 2. A session on any host can start child sessions on any host: the main host or a secondary host.
@@ -34,11 +36,11 @@ The requirements are for any user who adds hosts to their ShipIt. One example, a
 
 12. GPU access is a setting for each host. This replaces the single switch for the whole install in docs/325-session-gpu-access req 5.
 
-13. The main server cannot get root access to a secondary host.
+13. The main server cannot get root access to a secondary host. The one exception is Docker access that the user allows on that host (req 14).
 
-14. Docker inside sessions (a session that runs Docker itself) is a setting for each host. The user can allow it on some hosts and refuse it on others.
+14. Docker access for sessions is a setting for each host. An example is the Docker socket that a repository's Compose services get with `compose.docker-socket`; a session with that access controls its host. The user can allow it on some hosts and refuse it on others.
 
-15. Priority 2 (good to have, not important): server updates are done in one place.
+15. Priority 2 (good to have, not important): server updates are done in one place. ShipIt's own code on a secondary host is updated on that host, because an update from the main server could give the main server root access there (req 13).
 
 16. When no host is named for a child session, a placement strategy chooses its host. ShipIt can have more than one strategy.
 
@@ -53,6 +55,11 @@ The requirements are for any user who adds hosts to their ShipIt. One example, a
 - A `--host` flag on `shipit session create` that names a host.
 
 ## Open questions
+
+- When no host with a GPU is on, what happens to a session that requests a GPU (req 17, 18)? And when ShipIt creates a session on the main host because its host is off (req 8), does it say so? Options: (a) the session is created on the main host without a GPU, and ShipIt tells the user and the agent why, as docs/325-session-gpu-access req 6 does when Docker cannot give a GPU; (b) a GPU request is refused when no GPU host is on, and a session for a chosen host that is off goes to the main host with that notice. Recommendation: (a), because it follows req 8 and docs/325 req 6.
+- A role can name a host (req 10). Does that host also apply when the role is not chosen on the spot: when the new-session screen remembers the last role (docs/272-user-selectable-roles req 12), or when a child inherits its parent's role (`src/server/shipit-docs/sessions.md`, "Name no role and YOU are the base")? Options: (a) yes, a role's host always applies, and the new-session screen shows the host before the session starts; a parent that wants the strategy instead passes `--no-role`; (b) only a role chosen on the spot places the session; a remembered or inherited role leaves the host to req 4 or to the strategy. Recommendation: (a), because a child that inherits a role also inherits its brief, so it does the role's work.
+- May an ops session run on a secondary host? An ops session has read-only Docker and read-only host logs (`src/server/shipit-docs/ops-session.md`). Options: (a) no, ops sessions run only on the main host in this version; (b) yes, an ops session can inspect the host chosen for it, with the same read-only limits. Recommendation: (a) for this version; (b) can come later, to debug a secondary host.
+- docs/284-idle-preview-survives-agent-stop req 3 and 4 give ShipIt one memory budget that covers everything it runs. With secondary hosts, is that one budget for each host, or one budget for the whole install? Options: (a) one budget for each host; (b) one budget for the whole install. Recommendation: (a), because each machine has its own memory. The dependency cache is already per host (the answer on req 9).
 
 ## Resolved questions
 
@@ -76,3 +83,4 @@ The requirements are for any user who adds hosts to their ShipIt. One example, a
 - 2026-10-28 — May the design require all hosts to be in one private network, such as a tailnet? Nik: "yes, let's not solve auth yet". Req 7 changed; authentication between hosts is listed under Later versions.
 - 2026-10-28 — How does ShipIt know that a session needs a GPU? Nik: "If I explictly pick a host in the UI, or if a parent specifies the `--request_gpu` flag or similar on the CLI. We could also add "--host" to the CLI, not sure if it is a good idea though." Req 10 and 17 changed, and req 18 added. The agent's flag on `shipit session create` now requests a GPU instead of naming a host; this replaces that part of the earlier answer on req 10. This opened the question about `--host`.
 - 2026-10-28 — Does `shipit session create` also get a `--host` flag that names a host? Nik: "let's not add it for now. But the UI should allow this for manual start". No flag in this version; it is listed under Later versions. Req 10 already lets the user choose the host on the new-session screen.
+- 2026-10-28 — Consistency review of this document against ShipIt, by an independent reviewer. Changes, each from an earlier answer of Nik's: (1) Req 13 and 14: a Compose service with the Docker socket controls its host (`src/server/shipit-docs/compose.md`, "What not to do"). So req 13 now names the exception that Nik gave: "I wouldn't allow root on my workstation, but it is ok on other servers I may connect in the future." (2) Req 15: when Nik confirmed req 13, he accepted the condition that ShipIt's code on a secondary host is updated on that host. (3) Req 2: in this version, a session reaches a named host through a role (req 10). That was the option of the `--host` question that Nik chose. (4) The introduction now says that other features' requirements for every session hold on secondary hosts too. The review also opened four questions. One of them corrects the agent: it had offered "no ops session on a secondary" as a condition of req 13, on the wrong claim that an ops session has root on its host. An ops session has read-only Docker (`src/server/shipit-docs/ops-session.md`).
