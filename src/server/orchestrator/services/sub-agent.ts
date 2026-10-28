@@ -439,6 +439,7 @@ async function runSubAgentInSlot(
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
         model: spawnModel,
         ...(subServiceRouting !== undefined ? { serviceRouting: subServiceRouting } : {}),
+        ...(session.kind === "sandbox" ? { sandbox: true } : {}),
       });
     };
     let result = await spawn();

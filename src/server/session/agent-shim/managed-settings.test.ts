@@ -36,8 +36,8 @@ function parseRule(rule: string): { tool: string; pattern: string } | null {
 
 const INSTALLED_DIR = "/etc/shipit";
 const AGENT_CWD = "/workspace";
-// The session worker's home, and the dogfood `dev` service's (docker-compose.yml).
-const AGENT_HOMES = ["/home/shipit", "/workspace/.inner-shipit/agent-home"];
+// The session worker's home, the dogfood `dev` service's (docker-compose.yml), and a sub-agent spawn's.
+const AGENT_HOMES = ["/home/shipit", "/workspace/.inner-shipit/agent-home", "/credentials/sub-agent-homes/spawn-1"];
 
 // The CLI's rule semantics, measured with Claude Code 2.1.300 (docs/097-explicit-session-agent-permissions).
 // Symlink resolution is not modelled, so every spelling must match on its own.
@@ -92,16 +92,20 @@ describe("managed-settings.json", () => {
     const allow = loadSettings().permissions?.allow ?? [];
     expect(allow).toContain("Read(**)");
     expect(allow).toContain("Edit(**)");
-    expect(allow).toContain("Write(**)");
     expect(allow).toContain("Bash");
   });
 
   // A write through a workspace symlink needs a path rule for its target; `Edit(**)` covers the
-  // working directory only (measured with Claude Code 2.1.293, docs/193-sensitive-file-permission).
+  // working directory only, and one Edit rule covers Write and NotebookEdit too (measured with
+  // Claude Code 2.1.300, docs/193-sensitive-file-permission).
   it("allows the write tools on the persist directory by its real path", () => {
+    expect(loadSettings().permissions?.allow).toContain("Edit(//persist/**)");
+  });
+
+  it("holds no allow rule that the CLI ignores", () => {
     const allow = loadSettings().permissions?.allow ?? [];
-    for (const tool of ["Edit", "Write", "NotebookEdit"]) {
-      expect(allow).toContain(`${tool}(//persist/**)`);
+    for (const rule of allow) {
+      expect(["Write", "NotebookEdit", "Glob"], rule).not.toContain(parseRule(rule)?.tool);
     }
   });
 

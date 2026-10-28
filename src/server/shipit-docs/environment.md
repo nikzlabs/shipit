@@ -200,7 +200,7 @@ The Claude agent runs under an explicit permission policy (`/etc/shipit/managed-
 
 These are infrastructure, not your project — you should never need to write to them. An attempt is refused with a permission error rather than silently succeeding. A shell command whose target the CLI can read, such as `echo … > ~/.claude/auth.json`, is refused too.
 
-These rules guard against an accidental write. They are not a wall: a shell command whose target the CLI cannot read, such as `sh -c '…'`, is not refused. A Claude run that you start with `shipit agent run` does not get this policy.
+These rules guard against an accidental write. They are not a wall: a shell command whose target the CLI cannot read, such as `sh -c '…'`, is not refused.
 
 Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restricted — the deny list targets the specific credential files, not the whole `~/.claude` tree, precisely so memory updates keep working. Confidentiality of the credentials (reads, exfil) is handled at the network/credential layer, not by these file-edit rules.
 

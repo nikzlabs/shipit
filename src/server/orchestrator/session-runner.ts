@@ -989,6 +989,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
       ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
       ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
+      ...(req.sandbox ? { sandbox: true } : {}),
     };
     const handle = runAgentToCompletion(agent, runOpts, Date.now());
     this._subAgentHandles.set(handle, req.agentId);

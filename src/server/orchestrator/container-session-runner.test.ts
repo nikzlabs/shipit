@@ -697,9 +697,11 @@ describe("ContainerSessionRunner — sub-agent spawn cancellation (planning#280)
       depth: 0,
       model: "claude-opus-5",
       homeDir: "/credentials/sub-agent-homes/spawn-2",
+      sandbox: true,
     });
     expect(result.status).toBe("success");
     expect(seen.body?.homeDir).toBe("/credentials/sub-agent-homes/spawn-2");
+    expect(seen.body?.sandbox).toBe(true);
     for (const s of sockets) s.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });

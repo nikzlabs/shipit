@@ -45,11 +45,12 @@ own "sensitive file" approval card, which the user can accept:
   refuses `/home/shipit/.claude/X`, and the reverse. Both spellings are listed anyway,
   so the policy does not depend on that.
 - `~` is the right form for the home because the home is not fixed:
-  `/home/shipit` in the session worker, and `/workspace/.inner-shipit/agent-home`
-  in the dogfood `dev` service (`docker-compose.yml`).
-  A `shipit agent run` sub-agent is spawned without `--settings`
-  (`buildSubAgentRunParams` in `src/server/shared/sub-agent-run.ts`), so this
-  policy does not reach it.
+  `/home/shipit` in the session worker, `/workspace/.inner-shipit/agent-home`
+  in the dogfood `dev` service (`docker-compose.yml`), and
+  `/credentials/sub-agent-homes/<spawnId>` for a `shipit agent run` Claude
+  sub-agent. A sub-agent gets this same file: `buildSubAgentRunParams`
+  (`src/server/shared/sub-agent-run.ts`) passes `CLAUDE_MANAGED_SETTINGS_PATH`
+  since 2026-10-28; before that no spawn had the deny list or the branch-block hook.
 - The deny is applied before the sensitive-file approval, so a matching write is
   refused, not offered to the user. It also refuses a shell command whose target
   the CLI can read (`echo probe > ~/.claude/auth.json`, by the `~` and the

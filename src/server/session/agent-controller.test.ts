@@ -330,6 +330,18 @@ describe("AgentController — /agent/spawn requires a model (docs/261)", () => {
     expect(res.statusCode).toBe(200);
     expect(spawned).toHaveLength(1);
     expect(spawned[0].lastParams?.homeDir).toBe("/credentials/sub-agent-homes/s-3");
+    expect(spawned[0].lastParams?.settingsPath).toBe("/etc/shipit/managed-settings.json");
+    expect(spawned[0].lastParams?.sandbox).toBeUndefined();
+  });
+
+  it("hands a sandbox spawn's flag through to agent.run", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/spawn",
+      payload: { agentId: "claude", prompt: "review", spawnId: "s-4", model: "claude-opus-5", sandbox: true, timeoutMs: 50 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(spawned[0].lastParams?.sandbox).toBe(true);
   });
 });
 
