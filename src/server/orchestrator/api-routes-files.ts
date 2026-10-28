@@ -1,9 +1,8 @@
-import fs from "node:fs/promises";
 import { etagFor, matchesIfNoneMatch } from "./http-etag.js";
 import path from "node:path";
 import { knownAgentId } from "../shared/catalogue/index.js";
-import { createReadStream } from "node:fs";
 import type { FastifyInstance } from "fastify";
+import { readFileWithinRoot, resolvePersistPath } from "./session-file-open.js";
 import type { ApiDeps } from "./api-routes.js";
 import type { UploadedFile } from "../shared/types.js";
 import { resolveSessionDir } from "./api-routes.js";
@@ -11,9 +10,8 @@ import { resolveSessionDir } from "./api-routes.js";
 import {
   getFileTree,
   getPersistTree,
-  resolvePersistPath,
   getFileContent,
-  getRawFilePath,
+  openFileForDownload,
   writeFileContent,
   listDocs,
   getSessionChangedPaths,
@@ -117,18 +115,12 @@ export async function registerFileRoutes(
         return;
       }
       try {
-        const persist = await resolvePersistPath(dir, filePath);
-        const resolveDir = persist?.dir ?? (filePath.startsWith("uploads/")
-          ? path.dirname(dir)
-          : dir);
-        const relPath = persist?.relPath ?? filePath;
+        const persist = resolvePersistPath(dir, filePath);
+        const upload = filePath.startsWith("uploads/");
+        const resolveDir = persist?.dir ?? (upload ? path.join(path.dirname(dir), "uploads") : dir);
+        const relPath = persist?.relPath ?? (upload ? filePath.slice("uploads/".length) : filePath);
 
         if (request.query.raw === "true") {
-          const safePath = path.resolve(resolveDir, relPath);
-          if (!safePath.startsWith(`${resolveDir}/`)) {
-            reply.code(400).send({ error: "Invalid path" });
-            return;
-          }
           const ext = path.extname(filePath).slice(1).toLowerCase();
           const mimeMap: Record<string, string> = {
             png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
@@ -139,7 +131,7 @@ export async function registerFileRoutes(
             reply.code(400).send({ error: "Raw mode only supports images" });
             return;
           }
-          const data = await fs.readFile(safePath);
+          const data = await readFileWithinRoot(resolveDir, relPath);
           reply.type(mime).send(data);
           return;
         }
@@ -212,10 +204,9 @@ export async function registerFileRoutes(
         return;
       }
       try {
-        const persist = await resolvePersistPath(dir, filePath);
-        const { safePath, filename } = getRawFilePath(persist?.dir ?? dir, persist?.relPath ?? filePath);
+        const persist = resolvePersistPath(dir, filePath);
+        const { stream, filename } = await openFileForDownload(persist?.dir ?? dir, persist?.relPath ?? filePath);
         reply.header("Content-Disposition", `attachment; filename="${filename}"`);
-        const stream = createReadStream(safePath);
         return await reply.send(stream);
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -292,7 +283,7 @@ export async function registerFileRoutes(
         return;
       }
       try {
-        const persist = await resolvePersistPath(dir, docPath);
+        const persist = resolvePersistPath(dir, docPath);
         const content = await getDocContent(persist?.dir ?? dir, persist?.relPath ?? docPath);
         return { path: docPath, content };
       } catch (err) {

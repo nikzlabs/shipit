@@ -359,9 +359,9 @@ If it holds something they must not lose, say so before they archive.
 
 The user can look for themselves: the **Files** tab lists `/persist` under its
 own heading, below the workspace tree, and only when it holds something. A file
-there opens and downloads like a workspace file, but has no Edit or "Add to
-chat" button and cannot be dragged onto the composer — to change one or put it
-in a message, the user asks you.
+there opens, downloads and goes into a message ("Add to chat", or a drag onto
+the composer) like a workspace file, but has no Edit button — to change one,
+the user asks you.
 
 **"If I archive this, do I lose my work?"** is the question users actually ask,
 and the answer is no, for a reason worth giving them: before ShipIt reclaims a

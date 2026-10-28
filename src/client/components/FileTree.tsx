@@ -10,7 +10,7 @@ export type { FileTreeNode };
 
 export interface FileTreeProps {
   tree: FileTreeNode[];
-  /** Read-only here: the chat refuses an absolute path as file context, and saving targets the workspace. */
+  /** Not editable here: saving targets the workspace. */
   persistTree?: FileTreeNode[];
   onRefresh: () => void;
   onFileClick?: (filePath: string) => void;
@@ -30,7 +30,6 @@ function TreeNode({
   onAddToChat,
   onDownload,
   onEdit,
-  draggable = true,
 }: {
   node: FileTreeNode;
   depth: number;
@@ -39,7 +38,6 @@ function TreeNode({
   onAddToChat?: (filePath: string) => void;
   onDownload?: (filePath: string) => void;
   onEdit?: (filePath: string) => void;
-  draggable?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -68,7 +66,7 @@ function TreeNode({
         {expanded && node.children && (
           <div>
             {node.children.map((child) => (
-              <TreeNode key={child.path} node={child} depth={depth + 1} onFileClick={onFileClick} selectedFile={selectedFile} onAddToChat={onAddToChat} onDownload={onDownload} onEdit={onEdit} draggable={draggable} />
+              <TreeNode key={child.path} node={child} depth={depth + 1} onFileClick={onFileClick} selectedFile={selectedFile} onAddToChat={onAddToChat} onDownload={onDownload} onEdit={onEdit} />
             ))}
           </div>
         )}
@@ -86,13 +84,13 @@ function TreeNode({
           : "text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
       }`}
       style={{ paddingLeft: paddingLeft + 16 }}
-      draggable={draggable}
-      onDragStart={draggable ? (e) => {
+      draggable
+      onDragStart={(e) => {
         e.dataTransfer.setData("application/x-shipit-file", JSON.stringify({
           path: node.path,
         }));
         e.dataTransfer.effectAllowed = "copy";
-      } : undefined}
+      }}
     >
       <button
         onClick={() => onFileClick?.(node.path)}
@@ -202,7 +200,7 @@ export function FileTree({ tree, persistTree, onRefresh, onFileClick, selectedFi
               <span className="font-normal text-(--color-text-tertiary)">· not in git</span>
             </div>
             {persistTree.map((node) => (
-              <TreeNode key={node.path} node={node} depth={0} onFileClick={onFileClick} selectedFile={selectedFile} onDownload={onDownload} draggable={false} />
+              <TreeNode key={node.path} node={node} depth={0} onFileClick={onFileClick} selectedFile={selectedFile} onAddToChat={onAddToChat} onDownload={onDownload} />
             ))}
           </div>
         )}

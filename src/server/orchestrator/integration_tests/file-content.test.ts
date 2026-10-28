@@ -94,6 +94,77 @@ describe("Integration: File content viewer", () => {
     expect(res.statusCode).toBeGreaterThanOrEqual(400);
   });
 
+  describe("symlinks the agent left in the workspace", () => {
+    let outsideDir: string;
+
+    beforeEach(() => {
+      outsideDir = path.join(tmpDir, "outside");
+      fs.mkdirSync(outsideDir);
+      fs.writeFileSync(path.join(outsideDir, "secret.txt"), "do not show");
+      fs.writeFileSync(path.join(outsideDir, "secret.png"), "do not show");
+      fs.writeFileSync(path.join(outsideDir, "secret.md"), "do not show");
+      fs.symlinkSync(path.join(outsideDir, "secret.txt"), path.join(sessionDir, "leak.txt"));
+      fs.symlinkSync(path.join(outsideDir, "secret.png"), path.join(sessionDir, "leak.png"));
+      fs.symlinkSync(path.join(outsideDir, "secret.md"), path.join(sessionDir, "leak.md"));
+      fs.symlinkSync(outsideDir, path.join(sessionDir, "out"));
+    });
+
+    it("refuses to read a file outside the workspace through any read route", async () => {
+      for (const url of [
+        `/api/sessions/${sessionId}/files/leak.txt`,
+        `/api/sessions/${sessionId}/files/out/secret.txt`,
+        `/api/sessions/${sessionId}/files/leak.png?raw=true`,
+        `/api/sessions/${sessionId}/files/download/leak.txt`,
+        `/api/sessions/${sessionId}/files/download/out/secret.txt`,
+        `/api/sessions/${sessionId}/docs/leak.md`,
+      ]) {
+        const res = await app.inject({ method: "GET", url });
+        expect(res.statusCode, url).toBe(400);
+        expect(res.body, url).not.toContain("do not show");
+      }
+    });
+
+    it("refuses to write a file outside the workspace", async () => {
+      for (const target of ["leak.txt", "out/secret.txt"]) {
+        const res = await app.inject({
+          method: "PUT",
+          url: `/api/sessions/${sessionId}/files/${target}`,
+          payload: { content: "overwritten" },
+        });
+        expect(res.statusCode, target).toBe(400);
+      }
+      expect(fs.readFileSync(path.join(outsideDir, "secret.txt"), "utf8")).toBe("do not show");
+    });
+
+    it("still reads and writes through a symlink that stays inside the workspace", async () => {
+      fs.writeFileSync(path.join(sessionDir, "real.ts"), "old");
+      fs.symlinkSync(path.join(sessionDir, "real.ts"), path.join(sessionDir, "alias.ts"));
+
+      const read = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/files/alias.ts` });
+      expect(read.json()).toMatchObject({ content: "old" });
+
+      const write = await app.inject({
+        method: "PUT",
+        url: `/api/sessions/${sessionId}/files/alias.ts`,
+        payload: { content: "new" },
+      });
+      expect(write.statusCode).toBe(200);
+      expect(fs.readFileSync(path.join(sessionDir, "real.ts"), "utf8")).toBe("new");
+    });
+  });
+
+  it("refuses an uploads path that climbs into the rest of the session directory", async () => {
+    fs.mkdirSync(path.join(tmpDir, "sessions", "uploads"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "sessions", "not-an-upload.txt"), "do not show");
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/files/uploads/..%2Fnot-an-upload.txt`,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body).not.toContain("do not show");
+  });
+
   it("returns error for non-existent file", async () => {
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/files/no-such-file.ts` });
     expect(res.statusCode).toBe(404);

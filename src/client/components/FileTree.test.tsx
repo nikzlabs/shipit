@@ -222,14 +222,19 @@ describe("FileTree", () => {
       expect(onDownload).toHaveBeenCalledWith("/persist/chart.html");
     });
 
-    it("offers no edit, add-to-chat or drag for /persist files", () => {
+    it("adds /persist files to chat by their absolute path, and offers no edit", () => {
+      const onAddToChat = vi.fn();
       render(
-        <FileTree tree={sampleTree} persistTree={persistTree} onRefresh={() => {}} onEdit={() => {}} onAddToChat={() => {}} />,
+        <FileTree tree={sampleTree} persistTree={persistTree} onRefresh={() => {}} onEdit={() => {}} onAddToChat={onAddToChat} />,
       );
       expect(screen.queryByLabelText("Edit chart.html")).not.toBeInTheDocument();
-      expect(screen.queryByLabelText("Add chart.html to chat")).not.toBeInTheDocument();
-      expect(screen.getByText("chart.html").closest("[draggable]")?.getAttribute("draggable")).toBe("false");
-      expect(screen.getByText("package.json").closest("[draggable]")?.getAttribute("draggable")).toBe("true");
+
+      fireEvent.click(screen.getByLabelText("Add chart.html to chat"));
+      expect(onAddToChat).toHaveBeenCalledWith("/persist/chart.html");
+
+      const setData = vi.fn();
+      fireEvent.dragStart(screen.getByText("chart.html").closest("[draggable]")!, { dataTransfer: { setData } });
+      expect(setData).toHaveBeenCalledWith("application/x-shipit-file", JSON.stringify({ path: "/persist/chart.html" }));
     });
 
     it("shows /persist when the workspace is still empty", () => {

@@ -128,6 +128,31 @@ describe("Integration: /persist in the Files panel", () => {
     }
   });
 
+  it("refuses a file reached through a /persist directory symlink that points outside", async () => {
+    const outside = path.join(tmpDir, "outside");
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "secret.txt"), "do not show");
+    fs.symlinkSync(outside, path.join(scratchDir, "out"));
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/files/%2Fpersist/out/secret.txt`,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body).not.toContain("do not show");
+  });
+
+  it("still reads through a symlink that stays inside /persist", async () => {
+    fs.symlinkSync(path.join(scratchDir, "chart.html"), path.join(scratchDir, "alias.html"));
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${sessionId}/files/%2Fpersist/alias.html`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ content: "<h1>chart</h1>" });
+  });
+
   it("refuses a /persist path that climbs out of /persist", async () => {
     fs.writeFileSync(path.join(workspaceDir, "inside.txt"), "workspace file");
 

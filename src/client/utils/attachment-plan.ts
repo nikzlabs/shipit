@@ -41,8 +41,8 @@ export function buildAttachmentPlan(input: {
   }
 
   // A pending file under /uploads/ is an existing upload re-attached as a file
-  // reference ("Add to chat", `@`). `files` is resolved against the workspace,
-  // which refuses an absolute path, so it travels as an upload instead.
+  // reference ("Add to chat", `@`). `files` is resolved against the workspace
+  // and /persist only, so it travels as an upload instead.
   const contextFiles = input.pendingFiles.filter((f) => !isUploadPath(f.path));
   const reattachedUploads: UploadRef[] = input.pendingFiles
     .filter((f) => isUploadPath(f.path) && !input.uploadRefs.some((u) => u.path === f.path))
