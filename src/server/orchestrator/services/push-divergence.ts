@@ -154,6 +154,31 @@ export function baseRebaseIsSafe(d: PushDivergence): boolean {
   return d.ahead > 0;
 }
 
+// Only counts and refs: commit subjects and git errors are not ShipIt's text, and this heads the prompt.
+// The remote can move before the next turn, so the agent measures again instead of trusting these counts.
+export function formatDivergedPushAgentNotice(d: PushDivergence): string {
+  const branch = d.branch ?? "<branch>";
+  const remoteRef = `${d.remote}/${branch}`;
+  const measured = d.measured
+    ? ` When the push was rejected${d.refreshed ? "" : " (against a remote view ShipIt could not refresh)"}, `
+      + `${plural(d.ahead, "commit")} ${d.ahead === 1 ? "was" : "were"} only in this session and `
+      + `${plural(d.behind, "commit")} only on ${remoteRef}.`
+    : "";
+  return (
+    `[System] ShipIt's auto-push of this branch was rejected as non-fast-forward: the branch and `
+    + `${remoteRef} have diverged. The remote does not get this session's new commits, and every `
+    + `later auto-push is rejected the same way until this is resolved. The user has a notice about `
+    + `it in the transcript.${measured} Measure it again before you change either history: `
+    + `\`git fetch ${d.remote} ${branch} && git rev-list --left-right --count HEAD...${remoteRef}\` `
+    + `(left: only here; right: only on the remote). If the right number is above zero, `
+    + `\`git pull --rebase ${d.remote} ${branch}\` replays this session's commits on top of the `
+    + `remote's and keeps both. If it is zero, the counts do not explain the rejection: run a plain `
+    + `\`git push\` to read the remote's reason. If \`git merge-base HEAD ${remoteRef}\` finds no `
+    + `common commit, move neither history and ask the user. Do not force-push: it discards the `
+    + `remote's commits, and that decision is the user's, not yours.`
+  );
+}
+
 export function formatDivergedPushNotice(
   d: PushDivergence,
   ctx: DivergedNoticeContext = {},
