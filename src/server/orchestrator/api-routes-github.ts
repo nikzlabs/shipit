@@ -51,6 +51,7 @@ import { parseGitHubRemote, repoId } from "./git-utils.js";
 import { mergeMethodFor } from "./agent-merge-claims.js";
 import { resolvePrTarget, gitCredentialAllowed, mergeDisposition, agentMergeOwnership } from "./pr-target.js";
 import { recordWitnessedPrCreate } from "./services/pr-provenance.js";
+import { reArmForPrOpenedPastMerge } from "./services/pr-rearm.js";
 import type { FastifyReply } from "fastify";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
@@ -269,6 +270,16 @@ export async function registerGitHubRoutes(
           runnerRegistry: deps.runnerRegistry,
           ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
           chatHistory: deps.chatHistoryManager,
+        });
+        // Before the provenance write: clearMerged also clears the recorded PR number.
+        reArmForPrOpenedPastMerge({
+          deps: {
+            sessionManager,
+            sseBroadcast: deps.sseBroadcast,
+            ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
+          },
+          sessionId: request.params.id,
+          created: result,
         });
         recordWitnessedPrCreate(sessionManager, request.params.id, result);
         if (deps.prStatusPoller && session.remoteUrl) {

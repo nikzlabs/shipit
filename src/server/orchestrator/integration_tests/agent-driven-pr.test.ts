@@ -35,11 +35,13 @@ let repoStore: RepoStore;
 let latestClaude: FakeClaudeProcess | null = null;
 let dbManager: DatabaseManager;
 let port: number;
+let pushCalls: string[];
 
 beforeEach(async () => {
   dbManager = createTestDatabaseManager();
   tmpDir = fs.mkdtempSync("/tmp/shipit-agent-driven-pr-");
   latestClaude = null;
+  pushCalls = [];
 
   githubAuth = new StubGitHubAuthManager();
   githubAuth.setPrData(null);
@@ -61,7 +63,7 @@ beforeEach(async () => {
       const real = new GitManager(dir);
       return new Proxy(real, {
         get(target, prop) {
-          if (prop === "push") return async () => {};
+          if (prop === "push") return async (...args: string[]) => { pushCalls.push(args.join(" ")); };
           if (prop === "forcePush") return async () => {};
           if (prop === "listRemoteBranches") return async () => ["main"];
           // Tests set origin/main directly; fetching would fail before the progress gate.
@@ -439,6 +441,59 @@ describe("agent-driven PR creation (Phase 2)", () => {
       expect(call.title).toBe("Follow-up slice");
       expect(call.base).toBe("main");
       expect(call.head).toBe("shipit/test-feature");
+    },
+  );
+
+  // 2026-10-28 incident: `gh pr merge` then `gh pr create` in one turn left mergedAt
+  // set, and every later auto-push was refused as "already merged".
+  it(
+    "a PR opened mid-turn past the session's merged PR un-merges the session, so the turn's push lands",
+    { timeout: 20_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      const gitEnv = { ...process.env, HOME: tmpDir };
+      const mergedHead = execSync("git rev-parse HEAD", { cwd: sessionDir, env: gitEnv })
+        .toString().trim();
+      execSync(`git update-ref refs/remotes/origin/main ${mergedHead}`, { cwd: sessionDir, env: gitEnv });
+
+      githubAuth.setPrData(null);
+      githubAuth.setFindPrAnyStateResult({
+        url: "https://github.com/test-user/test-repo/pull/9",
+        number: 9,
+        base: "main",
+        title: "Merged earlier this turn",
+        body: "",
+        state: "closed",
+        merged_at: "2026-10-28T10:36:17Z",
+        head_sha: mergedHead,
+        additions: 0,
+        deletions: 0,
+      });
+      sessionManager.markMerged(sessionId);
+      sessionManager.setMergedHeadSha(sessionId, mergedHead);
+
+      await withLiveTurn(sessionId, async () => {
+        fs.writeFileSync(path.join(sessionDir, "followup.ts"), "export const y = 2;\n");
+        const res = await app.inject({
+          method: "POST",
+          url: `/api/sessions/${sessionId}/pr/agent-create`,
+          payload: { title: "Follow-up slice", body: "## Summary\nWork after the merge." },
+        });
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toMatchObject({ alreadyExisted: false, number: 1 });
+        // Work after `gh pr create` in the same turn: only the post-turn push carries it.
+        fs.writeFileSync(path.join(sessionDir, "more.ts"), "export const z = 3;\n");
+      });
+
+      const session = sessionManager.get(sessionId)!;
+      expect(session.mergedAt).toBeUndefined();
+      expect(session.previousMergedPr).toMatchObject({ number: 9, baseBranch: "main", mergedHeadSha: mergedHead });
+      expect(session.prNumber).toBe(1);
+
+      await vi.waitFor(() => expect(pushCalls).toContain("origin shipit/test-feature"), { timeout: 5_000 });
+      const notices = chatHistoryManager.load(sessionId).map((m) => m.text).join("\n");
+      expect(notices).not.toContain("already merged");
     },
   );
 

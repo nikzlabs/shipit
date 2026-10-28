@@ -92,6 +92,20 @@ describe("evaluateMergedBranchPush", () => {
     expect(block).toEqual({ prNumber: 1963, baseBranch: "main", branch: "shipit/codex-poll" });
   });
 
+  // The 2026-10-28 notice named the session's new OPEN PR as "already merged". The push
+  // stays refused: an open snapshot can be a stale read of the PR that just merged.
+  it("never names an open or closed PR as the merged one", async () => {
+    const session = makeSession({
+      previousMergedPr: { number: 1900, url: "https://github.com/o/r/pull/1900", title: "T", baseBranch: "main" },
+    });
+    for (const prState of ["open", "closed"] as const) {
+      const other = makePrStatus({ prNumber: 2001, prState });
+      const block = (await evaluateMergedBranchPush(session, () => other, makeGit()))!;
+      expect(block).toEqual({ baseBranch: "main", branch: "shipit/codex-poll" });
+      expect(formatMergedPushNotice(block, NEW_HEAD)).not.toMatch(/#\d/);
+    }
+  });
+
   it("blocks with what it knows when neither the snapshot nor a breadcrumb exists", async () => {
     const block = await evaluateMergedBranchPush(makeSession(), () => null, makeGit());
     expect(block).toEqual({ branch: "shipit/codex-poll" });

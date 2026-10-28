@@ -600,7 +600,7 @@ export class StubGitHubAuthManager extends EventEmitter {
 
   private _findPrAnyStateResult: {
     url: string; number: number; base: string; title: string; body: string;
-    state: "open" | "closed"; merged_at: string | null;
+    state: "open" | "closed"; merged_at: string | null; head_sha?: string | null;
     additions: number; deletions: number;
   } | null = null;
   async findPullRequestAnyState(_owner: string, _repo: string, _head: string) {

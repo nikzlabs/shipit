@@ -267,7 +267,7 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
           mergedAt: "2026-08-04 16:33:40", mergedHeadSha: MERGED_SHA,
           ...opts.session,
         } as SessionInfo)),
-        getPrStatus: vi.fn(() => opts.prStatus ?? { prNumber: 1963, baseBranch: "main" }),
+        getPrStatus: vi.fn(() => opts.prStatus ?? { prNumber: 1963, baseBranch: "main", prState: "merged" }),
         setWorkspaceBlock: vi.fn(() => false),
         getSecretBlock: vi.fn(() => undefined),
         setSecretBlock: vi.fn(),

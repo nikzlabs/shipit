@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { detectAndReArmMergedSession, detectAndReArmResetSession } from "./pr-rearm.js";
+import { detectAndReArmMergedSession, detectAndReArmResetSession, reArmForPrOpenedPastMerge } from "./pr-rearm.js";
 import type { SessionManager } from "../sessions.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { GitManager } from "../../shared/git.js";
@@ -435,5 +435,72 @@ describe("detectAndReArmResetSession (docs/216)", () => {
       expect(h.fetch).not.toHaveBeenCalled();
       expect(h.headIsAtBase).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("reArmForPrOpenedPastMerge", () => {
+  const superseded = {
+    number: 42,
+    url: "https://github.com/o/r/pull/42",
+    title: "Old PR",
+    baseBranch: "main",
+    headSha: "pr-head",
+  };
+  const created = {
+    alreadyExisted: false,
+    headBranch: "shipit/x",
+    owner: "o",
+    repo: "r",
+    supersededMergedPr: superseded,
+  };
+
+  function run(session: SessionInfo | undefined, over: Partial<typeof created> = {}) {
+    const clearMerged = vi.fn();
+    const reArm = vi.fn();
+    const sseBroadcast = vi.fn();
+    const sessionManager = {
+      get: vi.fn(() => session),
+      clearMerged,
+      list: vi.fn(() => []),
+    } as unknown as SessionManager;
+    const prStatusPoller = { reArm } as unknown as PrStatusPoller;
+    const result = reArmForPrOpenedPastMerge({
+      deps: { sessionManager, prStatusPoller, sseBroadcast },
+      sessionId: "s1",
+      created: { ...created, ...over },
+    });
+    return { result, clearMerged, reArm, sseBroadcast };
+  }
+
+  it("ends the merge with the superseded PR as the prior and keeps the merge anchor", () => {
+    const h = run(makeSession({ mergedAt: "2026-10-28T10:36:17Z", mergedHeadSha: "anchor" }));
+    expect(h.result).toBe(true);
+    expect(h.clearMerged).toHaveBeenCalledWith("s1", {
+      number: 42,
+      url: "https://github.com/o/r/pull/42",
+      title: "Old PR",
+      baseBranch: "main",
+      mergedHeadSha: "anchor",
+    });
+    expect(h.reArm).toHaveBeenCalledWith("s1", 42);
+    expect(h.sseBroadcast).toHaveBeenCalledWith("session_list", expect.anything());
+  });
+
+  it("takes the anchor from GitHub's head when the session recorded none", () => {
+    const h = run(makeSession({ mergedAt: "2026-10-28T10:36:17Z" }));
+    expect(h.clearMerged).toHaveBeenCalledWith("s1", expect.objectContaining({ mergedHeadSha: "pr-head" }));
+  });
+
+  it.each([
+    ["the session is not merged", makeSession(), {}],
+    ["the PR already existed", makeSession({ mergedAt: "t" }), { alreadyExisted: true }],
+    ["no merged PR was superseded", makeSession({ mergedAt: "t" }), { supersededMergedPr: undefined }],
+    ["the PR is on another branch", makeSession({ mergedAt: "t" }), { headBranch: "release/1.0.0" }],
+    ["the PR is in another repository", makeSession({ mergedAt: "t" }), { owner: "fork" }],
+  ])("does nothing when %s", (_label, session, over) => {
+    const h = run(session, over);
+    expect(h.result).toBe(false);
+    expect(h.clearMerged).not.toHaveBeenCalled();
+    expect(h.reArm).not.toHaveBeenCalled();
   });
 });

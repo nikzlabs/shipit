@@ -2,6 +2,7 @@ import type { PrStatusSummary, SessionInfo, WsServerMessage } from "../../shared
 import type { GitManager } from "../../shared/git.js";
 import type { SessionManager } from "../sessions.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
+import { repoId, repoIdFromOwnerRepo } from "../git-utils.js";
 import { freshenBaseRef } from "./freshen-base-ref.js";
 
 export interface ReArmDeps {
@@ -9,6 +10,53 @@ export interface ReArmDeps {
   prStatusPoller: PrStatusPoller;
   createGitManager: (dir: string) => GitManager;
   sseBroadcast: (event: string, data: unknown) => void;
+}
+
+export interface SupersededMergedPr {
+  number: number;
+  url: string;
+  title: string;
+  baseBranch: string;
+  headSha?: string;
+}
+
+/**
+ * A PR opened past the branch's merged PR ends that merge now. The turn-end
+ * re-arm cannot do it: by then the poller holds the new open PR, which
+ * `priorMergedPr` refuses to record as the prior one.
+ */
+export function reArmForPrOpenedPastMerge(args: {
+  deps: Pick<ReArmDeps, "sessionManager" | "sseBroadcast"> & { prStatusPoller?: PrStatusPoller };
+  sessionId: string;
+  created: {
+    alreadyExisted: boolean;
+    headBranch: string;
+    owner: string;
+    repo: string;
+    supersededMergedPr?: SupersededMergedPr;
+  };
+}): boolean {
+  const { deps, sessionId, created } = args;
+  const prior = created.supersededMergedPr;
+  if (created.alreadyExisted || !prior) return false;
+  const session = deps.sessionManager.get(sessionId);
+  if (!session?.mergedAt || session.branch !== created.headBranch) return false;
+  // --repo / --cwd can open the PR somewhere other than the session's own branch.
+  const target = repoIdFromOwnerRepo(created.owner, created.repo);
+  if (!target || repoId(session.remoteUrl ?? "") !== target) return false;
+
+  const mergedHeadSha = session.mergedHeadSha ?? prior.headSha;
+  deps.sessionManager.clearMerged(sessionId, {
+    number: prior.number,
+    url: prior.url,
+    title: prior.title,
+    baseBranch: prior.baseBranch,
+    ...(mergedHeadSha ? { mergedHeadSha } : {}),
+  });
+  // Without the superseded number the poller would promote the old merge again.
+  deps.prStatusPoller?.reArm(sessionId, prior.number);
+  deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
+  return true;
 }
 
 // An unchanged merged tip needs no fetch; old sessions without an anchor use base comparison.

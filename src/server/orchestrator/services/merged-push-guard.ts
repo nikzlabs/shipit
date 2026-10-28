@@ -36,8 +36,11 @@ export async function evaluateMergedBranchPush(
     }
 
     // Re-arming clears the live snapshot; retain the previous PR for the notice.
+    // A snapshot that is not merged belongs to another PR and must not be named as merged.
     const prStatus = getPrStatus();
-    const prNumber = prStatus?.prNumber ?? session.previousMergedPr?.number;
+    const prNumber = prStatus
+      ? (prStatus.prState === "merged" ? prStatus.prNumber : undefined)
+      : session.previousMergedPr?.number;
     const baseBranch = prStatus?.baseBranch ?? session.previousMergedPr?.baseBranch;
     return {
       ...(prNumber !== undefined ? { prNumber } : {}),
