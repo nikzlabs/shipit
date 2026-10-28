@@ -179,6 +179,11 @@ export interface AgentCapabilities {
   supportsSteering: boolean;
   /** Resolve through the registry, not proxy defaults. Absent is false; late output alone is not a new turn. */
   startsOwnTurns?: boolean;
+  /**
+   * The CLI echoes every prompt back when it reads it (`agent_user_replay`). Resolve through
+   * the registry; no adapter declares it. Absent is false.
+   */
+  echoesPrompt?: boolean;
   supportsCompaction: boolean;
   /**
    * docs/007 — the CLI can start a conversation from a message of a stored one (`resumeAt`).
@@ -287,6 +292,10 @@ export interface AgentResultEvent {
   error?: string;
   /** Classifier denials only, not model self-refusals. */
   permissionDenials?: { toolName: string; toolUseId?: string; toolInput?: unknown }[];
+  /** Model calls the turn made: 0 when the CLI answered by itself. Absent where the harness does not say. */
+  numTurns?: number;
+  /** What the CLI answered when it was not a prompt, such as "task-notification". */
+  origin?: string;
 }
 
 /** One model call's tokens, disjoint like `AgentResultEvent.tokens`. */

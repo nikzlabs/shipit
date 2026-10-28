@@ -162,10 +162,14 @@ describe("Integration: session message inbox", () => {
     expect(agent.lastPrompt.endsWith("Use SQLite.")).toBe(true);
 
     await finish(agent);
+    // The agent did not read in the user's turn, so ShipIt tells it again (planning#222).
+    const inboxTurn = await agentRun(1);
     client.close();
-    // The agent was told in the user's turn, so ShipIt starts no turn for the same message.
-    expect(agents.filter((a) => a.runCalled)).toHaveLength(1);
+    expect(inboxTurn.lastPrompt).toContain(buildInboxNotice(1));
+    expect(inboxTurn.lastPrompt.endsWith(INBOX_TURN_TEXT)).toBe(true);
     expect(await readInbox(parentId)).toHaveLength(1);
+    await finish(inboxTurn);
+    expect(agents.filter((a) => a.runCalled)).toHaveLength(2);
   });
 
   it("404s a read for a session that does not exist", async () => {

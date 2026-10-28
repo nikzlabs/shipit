@@ -48,6 +48,8 @@ export const HARNESSES = [
       supportsReview: true,
       supportsSteering: true,
       startsOwnTurns: true,
+      // `--replay-user-messages`, on every spawn (`claude/process.ts`).
+      echoesPrompt: true,
       supportsCompaction: true,
       forksAtMessage: true,
       // docs/297 — the CLI's own `/goal`: no pause, no resume, and a set that

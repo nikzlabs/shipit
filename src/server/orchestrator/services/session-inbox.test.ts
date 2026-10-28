@@ -124,6 +124,7 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     // The message text is not in the turn: the agent reads the inbox for it (req 1).
     expect(prompt).not.toContain("the regen command is broken");
 
+    inbox.read("parent");
     await endTurn();
     expect(store.owed("parent")).toBeUndefined();
     expect(ran()).toHaveLength(1);
@@ -173,9 +174,24 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     expect(prompt).toContain(buildInboxNotice(1));
     expect(prompt.endsWith("the user's next message")).toBe(true);
 
+    inbox.read("parent");
     await endTurn();
     expect(store.owed("parent")).toBeUndefined();
     expect(ran()).toHaveLength(2);
+  });
+
+  it("starts a turn of its own after a turn whose agent did not read the notice (planning#222)", async () => {
+    const runner = registry.getOrCreate("parent", "/tmp/parent", "claude");
+    store.add("parent", { origin: CHILD, body: "a report" });
+    runner.dispatch(testDispatch({ text: "the user's message" }));
+    expect(await nextRun(1)).toContain(buildInboxNotice(1));
+
+    // The agent produced its result and did not run the read command.
+    await endTurn();
+
+    const prompt = await nextRun(2);
+    expect(prompt).toContain(buildInboxNotice(1));
+    expect(prompt.endsWith(INBOX_TURN_TEXT)).toBe(true);
   });
 
   it("steers the notice into a streaming turn, one time until the agent reads (req 7)", async () => {
@@ -220,7 +236,7 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     expect(await nextRun(1)).toContain(buildInboxNotice(1));
   });
 
-  it("gives the session one turn when the agent did not act on a steered notice, and then stops", async () => {
+  it("tells an agent that does not read again, after a wait that grows, until it reads (planning#222)", async () => {
     const { runner, sent } = inStreamingTurn();
     await inbox.post(parent(), { origin: CHILD, body: "a report" });
     expect(sent).toHaveLength(1);
@@ -228,13 +244,23 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     endStreamingTurn(runner);
     expect(await nextRun(1)).toContain(buildInboxNotice(1));
 
-    // The agent ends this turn too without a read. It was told; the message stays unread.
+    // The agent ends this turn too without a read: the message is still owed, after a wait.
     await endTurn();
-    expect(store.owed("parent")).toBeUndefined();
+    expect(store.owed("parent")).toMatchObject({ unread: 1 });
     expect(await inbox.tell("parent")).toBe("later");
     await inbox.sweep();
     expect(ran()).toHaveLength(1);
+
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + 61_000);
+    await inbox.sweep();
+    expect(await nextRun(2)).toContain(buildInboxNotice(1));
+
     expect(inbox.read("parent")).toHaveLength(1);
+    await endTurn();
+    expect(store.owed("parent")).toBeUndefined();
+    await inbox.sweep();
+    expect(ran()).toHaveLength(2);
   });
 
   it("starts nothing when the steered notice was read before the turn ended", async () => {
@@ -280,7 +306,7 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     // The session's turn runs and cannot take a steer, so this one waits for the turn to end.
     expect((await inbox.post(parent(), { origin: CHILD, body: "second" })).told).toBe("later");
 
-    // The turn ends with its receipt for "first". "second" is a new notice, not a retry.
+    // The turn ends without a read. "second" is newer than that turn told of, so it does not wait.
     await endTurn();
 
     expect(await nextRun(2)).toContain(buildInboxNotice(2));

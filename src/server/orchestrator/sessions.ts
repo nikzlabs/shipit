@@ -14,7 +14,7 @@ import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import { allHarnesses, resolveModelSelection, sameCredentialOwner } from "../shared/catalogue/index.js";
 import { repoId, stripRemoteUrlCredentials } from "./git-utils.js";
 import type { QueuedMessage } from "./session-runner.js";
-import type { TurnOutcome } from "./turn-settlement.js";
+import type { EmptyTurnReason, TurnOutcome } from "./turn-settlement.js";
 
 // Bill by the actual route, which can differ from the session's requested mode.
 export function billingModeForRoute(
@@ -1210,8 +1210,11 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET run_stopped_at = ? WHERE id = ?").run(at, id);
   }
 
-  setLastTurnOutcome(id: string, outcome: LastTurnOutcome | null): void {
-    this.db.prepare("UPDATE sessions SET last_turn_outcome = ? WHERE id = ?").run(outcome, id);
+  /** `emptyReason` is null for a turn that replied, used a tool, or failed (planning#222). */
+  setLastTurnOutcome(id: string, outcome: LastTurnOutcome | null, emptyReason: EmptyTurnReason | null = null): void {
+    this.db
+      .prepare("UPDATE sessions SET last_turn_outcome = ?, last_turn_empty_reason = ? WHERE id = ?")
+      .run(outcome, emptyReason, id);
   }
 
   /** Req 30 — one approval covers one schedule, so a grant is per schedule id. */

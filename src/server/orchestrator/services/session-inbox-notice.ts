@@ -54,24 +54,25 @@ export interface InboxNotice extends NoticeDelivery {
 
 /**
  * docs/328-session-message-inbox — the notice that rides the next turn's prompt, or `null`
- * when nothing is owed. `delivered()` records the messages the notice COVERED, so one that
- * arrives during the turn is told by the next. With `inline`, the notice is the messages
- * themselves, and its receipt marks them read.
+ * when no message is unread. A notice that names the read command has no receipt: an agent can
+ * end its turn without the read, so only the read clears it (planning#222). It also counts a
+ * message that an older ShipIt marked as told and the agent never read. With `inline`, the
+ * notice is the messages themselves, and its receipt marks read what it COVERED, so one that
+ * arrives during the turn is told by the next.
  */
 export function prepareInboxNotice(
-  store: Pick<SessionInboxStore, "owed" | "unread" | "markNotified" | "markRead">,
+  store: Pick<SessionInboxStore, "unread" | "markRead">,
   sessionId: string,
   opts: { inline?: boolean } = {},
 ): InboxNotice | null {
   let notice: string;
   let through: number;
   try {
-    const owed = store.owed(sessionId);
-    if (!owed) return null;
-    // The receipt of an inline notice marks what the notice showed, and no more.
-    const shown = opts.inline ? store.unread(sessionId) : [];
-    through = shown.at(-1)?.id ?? owed.through;
-    notice = opts.inline ? buildInlineInboxNotice(shown) : buildInboxNotice(owed.unread);
+    const unread = store.unread(sessionId);
+    const last = unread.at(-1);
+    if (!last) return null;
+    through = last.id;
+    notice = opts.inline ? buildInlineInboxNotice(unread) : buildInboxNotice(unread.length);
   } catch (err) {
     // A turn must never fail to start over a notice; the next turn tries again.
     console.error(`[session-inbox] reading the inbox of ${sessionId} failed:`, err);
@@ -80,11 +81,11 @@ export function prepareInboxNotice(
   return {
     notice,
     delivered() {
+      if (!opts.inline) return;
       try {
-        if (opts.inline) store.markRead(sessionId, through);
-        else store.markNotified(sessionId, through);
+        store.markRead(sessionId, through);
       } catch (err) {
-        console.error(`[session-inbox] marking ${sessionId}'s inbox as told failed:`, err);
+        console.error(`[session-inbox] marking ${sessionId}'s inbox as read failed:`, err);
       }
     },
   };

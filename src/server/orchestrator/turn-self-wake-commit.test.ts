@@ -459,7 +459,7 @@ describe("post-turn flow for a self-woken turn", () => {
       expect(notice).toMatchObject({ level: "warn" });
       expect(notice?.message).toContain("as soon as one of your credentials is free");
       expect(notice?.message).not.toMatch(/send a message/i);
-      expect(outcomes).toHaveBeenCalledWith("s1", "errored");
+      expect(outcomes).toHaveBeenCalledWith("s1", "errored", null);
       expect(continueAfterStandDown).not.toHaveBeenCalled();
       expect(h.agent.run).toHaveBeenCalledTimes(1);
 
@@ -488,7 +488,7 @@ describe("post-turn flow for a self-woken turn", () => {
       expect(recordStandDown).not.toHaveBeenCalled();
       expect(continueAfterStandDown).not.toHaveBeenCalled();
       expect(notices(h)).toEqual([]);
-      expect(outcomes).toHaveBeenCalledWith("s1", "ok");
+      expect(outcomes).toHaveBeenCalledWith("s1", "ok", null);
 
       h.runner.dispose({ force: true });
     });
