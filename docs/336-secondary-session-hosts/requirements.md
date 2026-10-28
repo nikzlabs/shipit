@@ -14,7 +14,7 @@ Requirements of other features that hold for every session hold for sessions on 
 
 1. One ShipIt has one main host and can have several secondary hosts.
 
-2. A session on any host can start child sessions on any host: the main host or a secondary host.
+2. A session on any host can start child sessions on any host: the main host or a secondary host. In this version, a child reaches the main host, or a host that has a GPU through a GPU request (req 16 to 18).
 
 3. Sessions on a secondary host are regular ShipIt sessions.
 
@@ -26,11 +26,11 @@ Requirements of other features that hold for every session hold for sessions on 
 
 7. All hosts are in one private network, such as a tailnet. This version adds no authentication between hosts.
 
-8. A secondary host is not always on. A session that is created for a host that is not available is created on the main host, and ShipIt tells the user and the agent why.
+8. A secondary host is not always on. On the new-session screen, a host that is off is grayed out, and the user cannot choose it.
 
 9. A session never moves between hosts.
 
-10. The user chooses the host on the new-session screen. A role can name the host.
+10. The user chooses the host on the new-session screen. A role does not name a host: a role defines how the agent behaves, and the host is not part of that.
 
 11. A message for a session whose host is off is refused.
 
@@ -54,17 +54,17 @@ Requirements of other features that hold for every session hold for sessions on 
 
 21. Every host has its own memory budget (docs/284-idle-preview-survives-agent-stop req 3 and 4).
 
+22. A session that requested a GPU (req 18) is refused when it goes to a host where Docker cannot give the GPU. For such a session this replaces docs/325-session-gpu-access req 6, which starts a session without the GPU. Req 6 still holds for the other sessions on that host.
+
+23. After ShipIt refuses a GPU request (req 19, 22), the agent can request the session again without a GPU, if the user insists.
+
 ## Later versions
 
 - More placement strategies (req 16), for example: a child runs on its parent's host; a child runs on the main host.
 - Authentication between hosts, so that hosts do not have to share one private network (req 7).
-- A `--host` flag on `shipit session create` that names a host.
+- A `--host` flag on `shipit session create` that names a host, so that a child can also reach a secondary host that has no GPU (req 2).
 
 ## Open questions
-
-- The user chooses a host that has a GPU on the new-session screen (req 10), and that host is off. Req 8 then creates the session on the main host, and a session that renders 3D models without a GPU uses many CPU cores — Nik's reason for req 19. Options: (a) keep req 8 as it is: the session starts on the main host, with the notice; (b) refuse every session whose chosen host is off; the user chooses again; (c) refuse only when the chosen host has a GPU and the main host has none; otherwise req 8 applies. Recommendation: (c), because it keeps req 8 where a fallback costs nothing and refuses where it would load the CPU.
-- A session that requested a GPU (req 18) goes to a GPU host, but Docker on that host cannot give it the GPU. docs/325-session-gpu-access req 6 then starts the session without a GPU, with a notice; on 2026-10-08 Nik chose that and rejected a refusal. Does the reason for req 19 change this for a session that requested a GPU? Options: (a) no, docs/325 req 6 holds for every session; (b) a session that requested a GPU is refused in this case too, and docs/325 req 6 still holds for other sessions on that host. Recommendation: (b), because the request says that the session's work needs the GPU.
-- Should a role be able to name a host (req 10)? Today a role is a saved set of choices: the harness, the model, the reasoning level, and a description with standing instructions (docs/272-user-selectable-roles). It has no host. Req 10 lets a role also name a host, so that choosing the role also places the session — for example a role for 3D work that names the GPU workstation. Options: (a) keep it: a role can name a host, and that host applies also when the new-session screen remembers the last role (docs/272 req 12) and when a child inherits its parent's role (`src/server/shipit-docs/sessions.md`); the screen shows the host before the session starts; (b) drop it: a role names no host, and a session gets its host only on the new-session screen (req 10) or through a GPU request and the strategy (req 16 to 18). With (b), a child reaches the main host or a GPU host, but not a secondary host without a GPU, until a later version adds a way (req 2). Recommendation: (b) for this version: it adds no new field to roles, and the GPU request already covers the GPU case.
 
 ## Resolved questions
 
@@ -92,3 +92,6 @@ Requirements of other features that hold for every session hold for sessions on 
 - 2026-10-28 — When no host with a GPU is on, is a GPU request started on the main host without a GPU, or refused? And does ShipIt say why when it creates a session on the main host because its host is off? Nik chose to refuse the GPU request: "If a session that needs 3d modelling starts without a gpu, software rendering easily eats 10 CPU cores." The option he chose also kept the fallback of req 8, with a notice. Req 19 added and req 8 changed. This opened the question about a chosen GPU host that is off.
 - 2026-10-28 — May an ops session run on a secondary host? Nik: "well yes, do you think issues don't happen on secondaries? :) If anything, I expect more issues". Req 20 added.
 - 2026-10-28 — Is the memory budget of docs/284-idle-preview-survives-agent-stop one budget for each host, or one for the whole install? Nik: "Every host has its own budget". Req 21 added.
+- 2026-10-28 — Should a role be able to name a host (req 10)? Nik: "I misunderstood it, I thought you meant a CLI flag. Roles define the agent behavior. Host is not related to agent behavior." and "no". Req 10 changed: a role names no host. This replaces the role part of the earlier answer on req 10, and point (3) of the consistency-review record. Req 2 now says how a child reaches a host in this version; the `--host` item under Later versions says what it would add.
+- 2026-10-28 — The user chooses a host with a GPU on the new-session screen, and that host is off: start the session on the main host (req 8), or refuse? Nik: "this option should be grayed out in the UI". Req 8 changed: a host that is off cannot be chosen. The fallback to the main host had no case left — a GPU request with no GPU host on is refused (req 19), and every other session runs on the main host anyway (req 4, 17) — so it was removed, with its notice. A session whose host goes off after the session is created stays on that host (req 9), and its messages are refused (req 11).
+- 2026-10-28 — A session that requested a GPU goes to a host where Docker cannot give the GPU: start it without the GPU (docs/325-session-gpu-access req 6), or refuse it? Nik: "yes let's try B. The agent may re-issue the session request withou the GPU flag, if the user insists." Req 22 and 23 added. Req 23 also covers the refusal of req 19, because it is the same refusal of a GPU request.
