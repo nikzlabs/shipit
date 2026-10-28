@@ -73,7 +73,7 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
   },
   {
     producer: "startup-tasks: container exited",
-    pattern: /^Session container exited unexpectedly(?: \(exit -?\d+\))?\.$/,
+    pattern: /^Session container exited unexpectedly(?: \(exit -?\d+\)| \(exit 0\): it was stopped from outside ShipIt, for example by a host or Docker restart or a manual `docker stop`)?\.$/,
   },
   {
     producer: "turn-executor: agent exit code",

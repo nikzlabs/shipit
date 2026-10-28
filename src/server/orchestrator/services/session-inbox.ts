@@ -57,7 +57,7 @@ function isArchived(session: SessionInfo): boolean {
   return session.archived === true || session.userArchived === true;
 }
 
-/** A turn that this started for the messages up to `through`, with no receipt yet. */
+/** A turn that this started for the messages up to `through`, which are not read yet. */
 interface StartedTurn {
   through: number;
   /** The earliest time for the next start. */
@@ -158,11 +158,11 @@ export class SessionInbox {
       return LATER;
     }
     const earlier = this.started.get(sessionId);
-    if (earlier && owed.since >= earlier.through) {
-      // That turn got its receipt, or its messages were read: what is owed now is new.
+    if (earlier && owed.through > earlier.through) {
+      // A message newer than that turn told of: it does not wait for that turn's delay.
       this.started.delete(sessionId);
     } else if (earlier?.unobserved && opts.turnEnded) {
-      // That turn has ended and its notice has no receipt: it did not reach the agent.
+      // That turn has ended and its messages are unread: it did not get the agent to read them.
       this.noteFailedStart(sessionId, owed.through);
     }
     const session = sessionManager.get(sessionId);

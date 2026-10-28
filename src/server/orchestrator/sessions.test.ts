@@ -1853,6 +1853,20 @@ describe("docs/324-scheduled-sessions — a run's session fields", () => {
     for (const field of fields) expect(mgr.get("plain")).not.toHaveProperty(field);
   });
 
+  it("keep why the last turn ended empty, and clear it with the next outcome (planning#222)", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    expect(mgr.lastTurnEmptyReason("s1")).toBeUndefined();
+
+    mgr.setLastTurnOutcome("s1", "ok", "prompt-not-echoed");
+    expect(mgr.lastTurnEmptyReason("s1")).toBe("prompt-not-echoed");
+    expect(mgr.get("s1")!.lastTurnOutcome).toBe("ok");
+
+    mgr.setLastTurnOutcome("s1", "ok");
+    expect(mgr.lastTurnEmptyReason("s1")).toBeUndefined();
+    expect(mgr.lastTurnEmptyReason("missing")).toBeUndefined();
+  });
+
   it("keep one notes grant per schedule (req 30)", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("s1");

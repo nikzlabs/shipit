@@ -572,6 +572,23 @@ describe("template patterns vs the strings their producers actually build", () =
       why: "the no-detail form",
     },
     {
+      text: "Session container exited unexpectedly (exit 0): it was stopped from outside ShipIt, "
+        + "for example by a host or Docker restart or a manual `docker stop`.",
+      allowed: true,
+      why: "startup-tasks.ts clean-exit form — the explanation is a constant",
+    },
+    {
+      text: "Session container exited unexpectedly (exit 1): it was stopped from outside ShipIt, "
+        + "for example by a host or Docker restart or a manual `docker stop`.",
+      allowed: false,
+      why: "the producer explains only exit 0",
+    },
+    {
+      text: "Session container exited unexpectedly: Out of memory (exit 137).",
+      allowed: false,
+      why: "the `: <error>` form stays withheld, whatever its error",
+    },
+    {
       text: "Live steer rejected by claude (turn not steerable) — re-queued for the next turn.",
       allowed: true,
       why: "the interpolated value is an AgentId from the registry",

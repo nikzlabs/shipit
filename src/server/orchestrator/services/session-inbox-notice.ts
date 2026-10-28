@@ -54,12 +54,13 @@ export interface InboxNotice extends NoticeDelivery {
 
 /**
  * docs/328-session-message-inbox — the notice that rides the next turn's prompt, or `null`
- * when nothing is owed. `delivered()` records the messages the notice COVERED, so one that
- * arrives during the turn is told by the next. With `inline`, the notice is the messages
- * themselves, and its receipt marks them read.
+ * when nothing is owed. A notice that names the read command has no receipt: an agent can
+ * end its turn without the read, so only the read clears what is owed (planning#222). With
+ * `inline`, the notice is the messages themselves, and its receipt marks read what it COVERED,
+ * so one that arrives during the turn is told by the next.
  */
 export function prepareInboxNotice(
-  store: Pick<SessionInboxStore, "owed" | "unread" | "markNotified" | "markRead">,
+  store: Pick<SessionInboxStore, "owed" | "unread" | "markRead">,
   sessionId: string,
   opts: { inline?: boolean } = {},
 ): InboxNotice | null {
@@ -80,11 +81,11 @@ export function prepareInboxNotice(
   return {
     notice,
     delivered() {
+      if (!opts.inline) return;
       try {
-        if (opts.inline) store.markRead(sessionId, through);
-        else store.markNotified(sessionId, through);
+        store.markRead(sessionId, through);
       } catch (err) {
-        console.error(`[session-inbox] marking ${sessionId}'s inbox as told failed:`, err);
+        console.error(`[session-inbox] marking ${sessionId}'s inbox as read failed:`, err);
       }
     },
   };

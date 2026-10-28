@@ -163,6 +163,24 @@ what it fell back to (for instance, the session kept its placeholder title). It
 is not an alert and nothing is broken; dismissing it collapses it to one muted
 line rather than deleting it, so a repeating failure stays visible.
 
+## "It didn't answer" / "the turn ended with nothing"
+
+A turn that ends without an error, a reply or a tool call gets a **notice** in
+the transcript that says why. A turn the user stopped, and a compaction, end
+empty on purpose and get none.
+
+| The notice says | What it is | What happens next |
+|---|---|---|
+| *ShipIt is sending the message again, to a new agent process* | The agent CLI ended the turn before it read the message | ShipIt sends the message one more time on a new process, by itself. It does not do this while the process runs background work, because a new process would stop that work |
+| *…ended this turn before it read the message, so there is no reply* | The same, a second time, or when ShipIt could not send it again | The user sends the message again |
+| *…ended this turn without a call to the model* | The agent CLI answered by itself and never asked the model | The user sends the message again |
+| *The model ended this turn with no reply and no tool call* | The model was asked and returned nothing | The user sends the message again, or says it in different words |
+
+ShipIt can say why only when the harness reports how many model calls the turn
+made. Today that is Claude Code, so an empty turn on another harness gets no
+notice. A message the user typed as a slash command (`/…`) gets no notice
+either: the CLI answers it by itself.
+
 ## "It stopped committing my work"
 
 **Commits are blocked — a likely secret in your changes.** A credential-shaped
@@ -292,6 +310,17 @@ A container that has simply *stopped* is not automatically one of these. It may
 be idle reclaim, which is normal and explained in [sessions.md](sessions.md), or
 it may have exited on its own. The health strip's **Diagnostics** carries the
 exit code; read it before calling it either.
+
+A container that exits while ShipIt still uses it leaves a **notice** in the
+transcript, *Session container exited unexpectedly*, followed by the cause and
+the exit code. The work up to that point is kept; the next message starts a new
+container.
+
+| The notice ends with | What it means |
+|---|---|
+| *: Out of memory (exit 137)* | The kernel killed the container for memory. Repeated, it trips the breaker above |
+| *(exit 0): it was stopped from outside ShipIt…* | A clean stop that ShipIt did not ask for: a host reboot, a Docker restart, or a manual `docker stop`. ShipIt's own stops — idle reclaim, a restart, archiving — never show this notice. Many sessions with it at the same time point at the host; the operator can check its boot and Docker logs for that time |
+| *(exit N)* for any other N | The container's main process ended with that code. Read the session's server log before the next restart |
 
 ## "Everything's getting slow" / "my sessions keep stopping"
 

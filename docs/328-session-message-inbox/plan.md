@@ -58,9 +58,11 @@ from the user's. A notice about a pull request is ShipIt's own text and has no f
 
 **The notice rides the prompt of the session's next turn.** ShipIt already tells an
 agent what became of a card in this way (`session-message-outcome-notice.ts`): a
-`[ShipIt]` line in front of the prompt, with a receipt that is recorded only when the
-agent has produced a result for that prompt. The inbox notice is one more line of
-that kind, in both places that compose a prompt. Its receipt moves the told number.
+`[ShipIt]` line in front of the prompt. The inbox notice is one more line of that
+kind, in both places that compose a prompt. Unlike a card's outcome, it has no
+receipt of its own: an agent can produce its result and end its turn without the
+read, so only `shipit session inbox` clears what is owed (planning#222). The told
+number is no longer moved; a value an older ShipIt wrote is still respected.
 
 So the notice needs no turn of its own when a turn is coming, whatever started that
 turn: a message the user typed, a queued message, an automatic turn. It needs no
@@ -87,13 +89,12 @@ minute over the sessions that are owed a notice. The sweep is the one recovery p
 it covers a session that could not be started, a refused turn with no idle event
 after it, and a restart.
 
-**Bounds.** A message is told when the notice that covers it gets its receipt, and a
-told message causes no further notice. A turn that ShipIt started and that did not
-reach the agent is tried again after a delay that starts at one minute and doubles
-with each failure, up to one hour; a session that could not be started is tried again
-in the same way. A message that arrives after a notice got its receipt is new, and
-does not wait for that delay. A steered notice has no receipt: when the agent does
-not read, the idle trigger gives the session its turn, one time.
+**Bounds.** A message is owed until the agent reads it. A turn that ShipIt started
+and that ended without the read is tried again after a delay that starts at one
+minute and doubles with each such turn, up to one hour; a session that could not be
+started is tried again in the same way. A message newer than the last started turn
+told of does not wait for that delay. When a turn that carried the notice, or a
+steered notice, ends without the read, the idle trigger gives the session its turn.
 
 **Guards on the started turn.** It does not start while the session's resident
 process has background work, because a new ordinary turn can replace that process
@@ -169,9 +170,9 @@ receipt.
 
 ## Verified dependencies
 
-- A notice in front of the prompt gets its receipt only when the agent produced its
-  own result for that prompt: `notePromptDelivered`, `turn-executor.ts`. Both
-  composition sites pass `noticeDeliveries`: `dispatched-turn.ts` and
+- The inline notice of an older container gets its receipt only when the agent
+  produced its own result for that prompt: `notePromptDelivered`, `turn-executor.ts`.
+  Both composition sites pass `noticeDeliveries`: `dispatched-turn.ts` and
   `ws-handlers/agent-execution.ts`.
 - A resident streaming turn does not settle its dispatch, so a turn's settlement is
   not evidence that a notice arrived: the note on `NoticeDelivery`,
