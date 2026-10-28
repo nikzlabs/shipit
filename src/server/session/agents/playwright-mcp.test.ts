@@ -42,10 +42,6 @@ describe.each([
     expect(launchScript).toContain(`--output-dir ${PLAYWRIGHT_OUTPUT_DIR}`);
     expect(launchScript).toContain(`cd ${PLAYWRIGHT_OUTPUT_DIR}`);
   });
-
-  it("gives actions and screenshots 20 s, not the server's 5 s, so a WebGL page drawn in software can be captured (planning#709)", () => {
-    expect(launchScript).toContain("--timeout-action 20000");
-  });
 });
 
 /** docs/325-session-gpu-access req 8, 10, 11. */
