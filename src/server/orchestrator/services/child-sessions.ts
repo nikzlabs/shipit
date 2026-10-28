@@ -153,6 +153,11 @@ export interface SpawnChildSessionOptions {
   /** No parent/root linkage; the originating turn still counts toward the spawn cap. */
   detached?: boolean;
   /**
+   * Send the prompt unchanged: the role's standing instructions reach the agent with the
+   * first turn, outside the transcript, as for a session the user starts on a role.
+   */
+  verbatimPrompt?: boolean;
+  /**
    * Called once the child exists and before anything is sent to it, so a caller can record
    * the id durably. A throw fails the spawn and the child is removed.
    */
@@ -274,7 +279,7 @@ async function claimAndStartChild(
   if (!task) {
     throw new ServiceError(400, "prompt is required");
   }
-  const trimmedPrompt = roleForChild
+  const trimmedPrompt = roleForChild && !opts.verbatimPrompt
     ? joinRolePrompt(task, roleForChild, ROLE_PROMPT_LIMITS.child)
     : task;
   if (trimmedPrompt.length > ROLE_PROMPT_LIMITS.child) {
@@ -494,6 +499,9 @@ async function claimAndStartChild(
     const options = getAgentCapabilities(childAgentId)?.reasoning?.options;
     return options?.some((o) => o.value === level) ? level : undefined;
   })();
+  // Before graduation, whose session-list broadcast is what the child's composer reads.
+  // The live role can later clear; originRoleName remains the creation record.
+  if (roleForChild?.roleName) sessionManager.setRoleName(newSessionId, roleForChild.roleName);
   graduateSession(graduationDeps, {
     sessionId: newSessionId,
     userText: trimmedPrompt,
@@ -504,13 +512,11 @@ async function claimAndStartChild(
     ...(selection.serviceId ? { serviceId: selection.serviceId } : {}),
     ...(selection.billingMode ? { billingMode: selection.billingMode } : {}),
     ...(inheritedReasoning ? { reasoning: inheritedReasoning } : {}),
-    ...(roleForChild?.roleName ? { originRoleName: roleForChild.roleName } : {}),
+    // Left unset for a verbatim prompt: the first turn sets it when it delivers the brief.
+    ...(roleForChild?.roleName && !opts.verbatimPrompt ? { originRoleName: roleForChild.roleName } : {}),
     ...(opts.detached ? {} : { parentSessionId, rootSessionId }),
     ...(opts.spawnedByTurn ? { spawnedByTurn: opts.spawnedByTurn } : {}),
   });
-
-  // The live role can later clear; originRoleName remains the creation record.
-  if (roleForChild?.roleName) sessionManager.setRoleName(newSessionId, roleForChild.roleName);
 
   const child = sessionManager.get(newSessionId);
   if (!child) throw new ServiceError(500, "Failed to read back spawned child session");

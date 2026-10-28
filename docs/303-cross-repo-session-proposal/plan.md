@@ -30,7 +30,7 @@ agent, this one performs a session creation the user would otherwise do by hand.
 
 ### Why the new session is independent
 
-`spawnChildSession(..., { detached: true, repoUrlOverride, noRole })` — a detached spawn
+`spawnChildSession(..., { detached: true, repoUrlOverride, verbatimPrompt })` — a detached spawn
 writes no `parentSessionId` / `rootSessionId`, so the new session does not nest
 in the sidebar (req 6). That is deliberate and user-stated: a nested session
 renders inside its parent's repo group, so a nested cross-repo session would be
@@ -72,12 +72,30 @@ anchored parser and also folds https/ssh/case together, so the own-repository
 guard cannot be stepped around by respelling the remote. Display, authorization,
 registration and cloning all use the one identity.
 
-**The target starts with no role.** A spawn inherits the proposing session's role
-by default, and `spawnChildSession` joins that role's standing instructions onto
-the prompt — so a session running a reviewer role would start the target as a
-reviewer told not to edit, on text the user never saw on the card. The spawn
-passes `noRole: true`, keeping the harness/model inheritance and dropping the
-brief.
+**The target starts on the proposing session's role (req 13), and its first
+message is still the card's prompt.** The spawn inherits, as any spawn does: the
+harness, model and level, and the role name, so the target's composer names the
+role. `spawnChildSession` writes the name before graduation, because
+graduation's session-list broadcast is the row the composer reads; written after
+it, the role was missing from the composer until the first turn ended. What it
+does not do is what an ordinary spawn does with the role's standing
+instructions — join them onto the prompt. `verbatimPrompt` sends the prompt
+unchanged and leaves `originRoleName` unset, so the target's first turn delivers
+the brief through `takeRoleStandingInstructions`, outside the transcript. That is
+how a session the user starts on a role gets it (docs/272-user-selectable-roles),
+which req 5 asks for. Two reasons keep the brief out of the message: the user
+reads that message on the card before the click, and `unfinishedStart` (below)
+recognises the started session by finding the card's prompt there verbatim.
+
+A role that no longer exists at the click is dropped, as for every inheriting
+spawn (`inheritedRole` in `child-sessions.ts`), and the target starts with no
+role (req 13). A refusal was rejected by the user: the proposing session cannot
+choose another role after its first turn, so the card could start again only
+after the user recreated the role or moved a model control.
+
+The first design passed `noRole: true` and started the target with no role, so
+that a brief the user never saw on the card could not reach it. The user reported
+that as a bug; the role is the user's own choice for the proposing session.
 
 ### Registering an unseen repository happens on the click
 
@@ -107,7 +125,7 @@ user clicks "Start in owner/repo", or "Trust and start in owner/repo" (req 12)
   → handler patch state=starting  (emit + persist)
             ensureRepoReady(repoUrl)
             grantRepoTrust(repoUrl)   only with { trust: true }, and only if not trusted yet
-            spawnChildSession(thisSession, { detached: true, noRole, repoUrlOverride, prompt, title })
+            spawnChildSession(thisSession, { detached: true, verbatimPrompt, repoUrlOverride, prompt, title })
               └ on the claim: persist pendingSessionId on the card, before the prompt is sent
             patch state=started + startedSessionId   (emit + persist)
             …or state=failed + errorMessage, and the card offers a retry
