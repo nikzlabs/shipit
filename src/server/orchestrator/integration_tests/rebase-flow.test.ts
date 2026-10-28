@@ -19,6 +19,7 @@ import { UsageManager } from "../usage.js";
 import type { WsServerMessage } from "../../shared/types.js";
 import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
+import { buildAccountFailoverNote } from "../account-failover-note.js";
 
 let tmpDir: string;
 let app: Awaited<ReturnType<typeof buildApp>>;
@@ -451,7 +452,8 @@ describe("rebase flow: API + WS events", () => {
     const quotaError = "You've hit Claude's 5h usage limit. It resets at 2099-01-01T00:00:00.000Z.";
     attempt1.emit("event", { type: "agent_result", error: quotaError, sessionId: "test-session-1" });
     const attempt2 = await waitForClaude(() => latestClaude, attempt1);
-    expect(attempt2.lastPrompt).toBe(attempt1.lastPrompt);
+    // The same script, behind the failover note (planning#712).
+    expect(attempt2.lastPrompt).toBe(`${buildAccountFailoverNote([])}\n\n${attempt1.lastPrompt}`);
 
     attempt2.emit("event", { type: "agent_result", error: quotaError, sessionId: "test-session-1" });
     const err = await waitForMessage("error", 8_000) as unknown as { message: string };

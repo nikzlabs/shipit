@@ -22,6 +22,7 @@ import {
 import { DatabaseManager } from "../../shared/database.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
 import type { CredentialStore } from "../credential-store.js";
+import { buildAccountFailoverNote } from "../account-failover-note.js";
 
 // The turn asks, so the answer that follows is the answer to it. Its process outlives the
 // interrupt, which is the case the handler's cleanup is for.
@@ -664,7 +665,8 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     const quotaError = "You've hit Claude's 5h usage limit. It resets at 2099-01-01T00:00:00.000Z.";
     attempt1.emit("event", { type: "agent_result", error: quotaError, sessionId: "quota-sess" });
     const attempt2 = await waitForClaude(() => lastClaude, attempt1);
-    expect(attempt2.lastPrompt).toBe("Redis");
+    // The answer is an ordinary message, so the failover note goes in front (planning#712).
+    expect(attempt2.lastPrompt).toBe(`${buildAccountFailoverNote([])}\n\nRedis`);
 
     attempt2.emit("event", { type: "agent_result", error: quotaError, sessionId: "quota-sess" });
 
