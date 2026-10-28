@@ -7,14 +7,11 @@ import { getErrorMessage } from "../validation.js";
 /** No real git step holds the index this long; a younger lock may still belong to a live command. */
 export const STALE_INDEX_LOCK_MS = 10 * 60 * 1000;
 
-const INDEX_LOCK_REFUSAL = /Unable to create '[^']*index\.lock': File exists/;
-
-export function isIndexLockRefusal(message: string): boolean {
-  return INDEX_LOCK_REFUSAL.test(message);
-}
+// Git's lockfile message, which ref locks share; the path tells the index lock apart.
+const LOCK_REFUSAL = /Unable to create '([^']+)': File exists/;
 
 export interface IndexLockState {
-  /** null when ShipIt found no lock after git's refusal. */
+  /** null when the lock was gone by the time ShipIt looked. */
   ageMs: number | null;
   /** Why a lock old enough to remove is still there. */
   removeError?: string;
@@ -30,6 +27,7 @@ function withIndexLockState<T>(err: T, state: IndexLockState): T {
   return err;
 }
 
+/** Set only when git refused on this workspace's own index lock. */
 export function indexLockStateOf(err: unknown): IndexLockState | null {
   if (err === null || typeof err !== "object") return null;
   return ((err as Record<symbol, unknown>)[INDEX_LOCK_STATE] as IndexLockState | undefined) ?? null;
@@ -48,12 +46,21 @@ export function formatLockAge(ageMs: number): string {
   return `${Math.floor(minutes / 60)} hours`;
 }
 
-function lockAgeMs(lock: string): number | null {
+// undefined when ShipIt cannot tell; the caller then lets git's error go up as it is.
+function lockState(lock: string): IndexLockState | undefined {
   try {
     const stat = fs.lstatSync(lock, { throwIfNoEntry: false });
-    return stat ? Math.max(0, Date.now() - stat.mtimeMs) : null;
+    return { ageMs: stat ? Math.max(0, Date.now() - stat.mtimeMs) : null };
   } catch {
-    return null;
+    return undefined;
+  }
+}
+
+function realOrSelf(dir: string): string {
+  try {
+    return fs.realpathSync(dir);
+  } catch {
+    return dir;
   }
 }
 
@@ -67,24 +74,31 @@ export async function retryRemovingStaleIndexLock<T>(
   gitStep: () => Promise<T>,
 ): Promise<T> {
   const lock = path.join(workspaceDir, ".git", "index.lock");
+  // Git names the lock by the real path of the directory it ran in.
+  const names = new Set([lock, path.join(realOrSelf(workspaceDir), ".git", "index.lock")]);
+  const refusedOnLock = (err: unknown): boolean => {
+    const refused = LOCK_REFUSAL.exec(getErrorMessage(err))?.[1];
+    return refused !== undefined && names.has(path.resolve(refused));
+  };
   try {
     return await gitStep();
   } catch (err) {
-    if (!isIndexLockRefusal(getErrorMessage(err))) throw err;
-    const ageMs = lockAgeMs(lock);
-    if (ageMs === null || ageMs < STALE_INDEX_LOCK_MS || turnRunning()) {
-      throw withIndexLockState(err, { ageMs });
+    const state = refusedOnLock(err) ? lockState(lock) : undefined;
+    if (!state) throw err;
+    if (state.ageMs === null || state.ageMs < STALE_INDEX_LOCK_MS || turnRunning()) {
+      throw withIndexLockState(err, state);
     }
     try {
       fs.unlinkSync(lock);
     } catch (rmErr) {
-      throw withIndexLockState(err, { ageMs, removeError: getErrorMessage(rmErr) });
+      throw withIndexLockState(err, { ...state, removeError: getErrorMessage(rmErr) });
     }
-    console.warn(`[rebase] removed a stale .git/index.lock (${formatLockAge(ageMs)} old) in ${workspaceDir}`);
+    console.warn(`[rebase] removed a stale .git/index.lock (${formatLockAge(state.ageMs)} old) in ${workspaceDir}`);
   }
   try {
     return await gitStep();
   } catch (err) {
-    throw isIndexLockRefusal(getErrorMessage(err)) ? withIndexLockState(err, { ageMs: lockAgeMs(lock) }) : err;
+    const state = refusedOnLock(err) ? lockState(lock) : undefined;
+    throw state ? withIndexLockState(err, state) : err;
   }
 }

@@ -32,7 +32,6 @@ import {
 } from "./plugin-skill-clearing.js";
 import {
   formatLockAge,
-  isIndexLockRefusal,
   isStaleIndexLockKept,
   retryRemovingStaleIndexLock,
   STALE_INDEX_LOCK_MS,
@@ -235,13 +234,13 @@ export function buildSyncFailureNotice(
   indexLock: IndexLockState | null = null,
 ): string {
   const leftover = rebaseLeftoverText(rebaseInProgress);
-  if (isIndexLockRefusal(errorMessage)) return indexLockNotice(baseBranch, indexLock, leftover);
+  if (indexLock) return indexLockNotice(baseBranch, indexLock, leftover);
   const paths = untrackedOverwritePaths(errorMessage);
   if (paths && paths.length > 0) {
     return `Sync with \`${baseBranch}\` failed: a commit being replayed adds files at paths where this `
       + "workspace already has untracked files, and git will not overwrite them. These are usually files "
       + `this branch ignores but \`${baseBranch}\` does not, such as build caches: ${formatPathList(paths)}. `
-      + `${leftover ?? "Your branch was not changed by ShipIt."} To sync, delete those `
+      + `${leftover ?? "The rebase did not change your branch."} To sync, delete those `
       + "files if they can be regenerated, squash this branch so the commit that adds them and the later one "
       + `that stops tracking them cancel out, or add the ignore rule to \`${baseBranch}\` first.`;
   }
@@ -249,29 +248,25 @@ export function buildSyncFailureNotice(
   if (dirs && dirs.length > 0) {
     return `Sync with \`${baseBranch}\` failed: the rebase replaces ${formatPathList(dirs)} with a file or symlink, `
       + "and git will not delete the untracked files still inside. They are usually ignored files, which "
-      + `\`git status\` does not show. ${leftover ?? "Your branch was not changed by ShipIt."} To sync, move or `
+      + `\`git status\` does not show. ${leftover ?? "The rebase did not change your branch."} To sync, move or `
       + "delete those files, then sync again.";
   }
   const summary = summarizeGitError(errorMessage).replace(/[.:]$/, "");
-  const state = leftover ?? "Your branch was not changed by ShipIt; check the workspace state and try again.";
+  const state = leftover ?? "The rebase did not change your branch; check the workspace state and try again.";
   return `Sync with \`${baseBranch}\` failed: ${summary}. ${state}`;
 }
 
-function indexLockNotice(baseBranch: string, lock: IndexLockState | null, leftover: string | null): string {
-  const unchanged = leftover ?? "Your branch was not changed by ShipIt.";
-  if (lock?.ageMs === null) {
-    return `Sync with \`${baseBranch}\` failed: another git process held this workspace's index lock, `
-      + `\`.git/index.lock\`, which was gone when ShipIt looked again. ${unchanged} Sync again.`;
-  }
-  const ageMs = lock?.ageMs ?? null;
-  const age = ageMs === null ? "" : ` (${formatLockAge(ageMs)} old)`;
-  const intro = `Sync with \`${baseBranch}\` failed: another git process holds this workspace's index lock, `
-    + `\`.git/index.lock\`${age}. ${unchanged}`;
+function indexLockNotice(baseBranch: string, lock: IndexLockState, leftover: string | null): string {
+  const unchanged = leftover ?? "The rebase did not change your branch.";
+  const found = `Sync with \`${baseBranch}\` failed: git found this workspace's index lock, \`.git/index.lock\``;
+  if (lock.ageMs === null) return `${found}, and it was gone when ShipIt looked again. ${unchanged} Sync again.`;
+  const intro = `${found} (${formatLockAge(lock.ageMs)} old). A git command is still running, or one stopped `
+    + `without removing the lock. ${unchanged}`;
   const deleteIt = "If no git command is running in this workspace, delete that file, then sync again.";
-  if (lock?.removeError) return `${intro} ShipIt could not remove the stale lock (${lock.removeError}). ${deleteIt}`;
-  if (ageMs !== null && ageMs < STALE_INDEX_LOCK_MS) {
-    return `${intro} ShipIt removes the lock itself only once it is ${formatLockAge(STALE_INDEX_LOCK_MS)} old, `
-      + `in case a git command is still running: wait for that command to finish, then sync again. ${deleteIt}`;
+  if (lock.removeError) return `${intro} ShipIt could not remove this stale lock (${lock.removeError}). ${deleteIt}`;
+  if (lock.ageMs < STALE_INDEX_LOCK_MS) {
+    return `${intro} ShipIt removes the lock only once it is ${formatLockAge(STALE_INDEX_LOCK_MS)} old, so that `
+      + `it does not stop a running command. Wait for the command to finish, then sync again. ${deleteIt}`;
   }
   return `${intro} ${deleteIt}`;
 }

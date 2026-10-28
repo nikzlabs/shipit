@@ -30,6 +30,7 @@ import {
 } from "./stale-index-lock.js";
 import { armFollowupNote, followupWindowOpen } from "./rebase-followup.js";
 import { withWorkspaceLock } from "./marketplace.js";
+import { reportSyncFailure } from "../api-routes-git.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { testDispatch } from "../integration_tests/dispatch-test-helpers.js";
@@ -3573,7 +3574,7 @@ describe("rebase-driver: a sync blocked by untracked files at paths a replayed c
     const notice = buildSyncFailureNotice("main", (err as Error).message, false);
     expect(notice).toMatch(/^Sync with `main` failed: a commit being replayed adds files/);
     expect(notice).toContain("`cache/a.js`, `cache/b.js`, `cache/c.js` and 2 more");
-    expect(notice).toContain("Your branch was not changed by ShipIt.");
+    expect(notice).toContain("The rebase did not change your branch.");
     expect(notice).toContain("squash this branch");
     expect(notice).not.toMatch(/warning:|hint:|Rebasing \(/);
   });
@@ -3622,7 +3623,7 @@ describe("rebase-driver: buildSyncFailureNotice", () => {
       const notice = buildSyncFailureNotice("main", message, true);
       expect(notice).toContain("still mid-rebase");
       expect(notice).toContain("git rebase --abort");
-      expect(notice).not.toContain("was not changed");
+      expect(notice).not.toContain("did not change your branch");
     }
   });
 
@@ -3630,14 +3631,14 @@ describe("rebase-driver: buildSyncFailureNotice", () => {
     for (const message of [untracked, "fatal: could not read HEAD\n"]) {
       const notice = buildSyncFailureNotice("main", message, null);
       expect(notice).toContain("could not check whether the rebase was aborted");
-      expect(notice).not.toContain("was not changed");
+      expect(notice).not.toContain("did not change your branch");
       expect(notice).not.toContain("FAILED");
     }
   });
 
   it("leads an unclassified failure with git's error line, without doubling its full stop", () => {
     expect(buildSyncFailureNotice("main", "warning: noise\nfatal: invalid upstream 'origin/main'.\n", false)).toBe(
-      "Sync with `main` failed: fatal: invalid upstream 'origin/main'. Your branch was not changed by ShipIt; "
+      "Sync with `main` failed: fatal: invalid upstream 'origin/main'. The rebase did not change your branch; "
       + "check the workspace state and try again.",
     );
   });
@@ -3656,7 +3657,7 @@ describe("rebase-driver: buildSyncFailureNotice", () => {
     expect(notice).toBe(
       "Sync with `main` failed: the rebase replaces `.claude/skills` with a file or symlink, and git will not "
       + "delete the untracked files still inside. They are usually ignored files, which `git status` does not "
-      + "show. Your branch was not changed by ShipIt. To sync, move or delete those files, then sync again.",
+      + "show. The rebase did not change your branch. To sync, move or delete those files, then sync again.",
     );
   });
 });
@@ -3725,51 +3726,65 @@ describe("rebase-driver: a .git/index.lock left by a git process that died (plan
     );
   });
 
-  it("a younger lock is kept, and the sync notice names it and its age", async () => {
+  it("a younger lock is kept, and the reported sync notice names it and its age", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
     const lock = writeIndexLock(workDir, 3 * 60_000 + 5_000);
     const headBefore = execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim();
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
     const rebase = vi.spyOn(git, "rebase");
+    const history: { role: string; text: string }[] = [];
+    const deps = { ...flowDeps(git, runner), chatHistoryManager: makeStubHistory(history), recordSyncCard: true };
 
     let err: unknown = null;
     try {
-      await runFlow({ ...flowDeps(git, runner), recordSyncCard: true }, "main");
+      await runFlow(deps, "main");
     } catch (e) {
       err = e;
     }
+    // What the sync route does with the flow's error.
+    await reportSyncFailure({ runner, chatHistoryManager: deps.chatHistoryManager, git, sessionId: "s1", baseBranch: "main", err });
 
-    expect(err).toBeInstanceOf(Error);
     expect(rebase).toHaveBeenCalledTimes(1);
     expect(fs.existsSync(lock)).toBe(true);
     expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim()).toBe(headBefore);
-    expect(buildSyncFailureNotice("main", (err as Error).message, false, indexLockStateOf(err))).toBe(
-      "Sync with `main` failed: another git process holds this workspace's index lock, `.git/index.lock` "
-      + "(3 minutes old). Your branch was not changed by ShipIt. ShipIt removes the lock itself only once it "
-      + "is 10 minutes old, in case a git command is still running: wait for that command to finish, then sync "
-      + "again. If no git command is running in this workspace, delete that file, then sync again.",
-    );
+    expect(history.map((m) => m.text)).toEqual([
+      "Sync with `main` failed: git found this workspace's index lock, `.git/index.lock` (3 minutes old). "
+      + "A git command is still running, or one stopped without removing the lock. The rebase did not change "
+      + "your branch. ShipIt removes the lock only once it is 10 minutes old, so that it does not stop a running "
+      + "command. Wait for the command to finish, then sync again. If no git command is running in this "
+      + "workspace, delete that file, then sync again.",
+    ]);
   });
 
-  it("never removes a lock while a turn runs, however old it is", async () => {
+  it("never removes a lock while a turn runs, or when git refused on a different lock", async () => {
     const workDir = path.join(tmpDir, "repo");
     fs.mkdirSync(path.join(workDir, ".git"), { recursive: true });
     const lock = writeIndexLock(workDir, 60 * 60_000);
-    const step = vi.fn(() => Promise.reject(new Error(
-      `fatal: Unable to create '${lock}': File exists.\n\nAnother git process seems to be running in this repository.\n`,
-    )));
+    const refusal = (lockPath: string) => () => Promise.reject(new Error(
+      `fatal: Unable to create '${lockPath}': File exists.\n\nAnother git process seems to be running in this repository.\n`,
+    ));
+    const ownLock = vi.fn(refusal(lock));
+    const otherLock = vi.fn(refusal(path.join(tmpDir, "other", ".git", "index.lock")));
 
-    let err: unknown = null;
+    let duringTurn: unknown = null;
     try {
-      await retryRemovingStaleIndexLock(workDir, () => true, step);
+      await retryRemovingStaleIndexLock(workDir, () => true, ownLock);
     } catch (e) {
-      err = e;
+      duringTurn = e;
+    }
+    let elsewhere: unknown = null;
+    try {
+      await retryRemovingStaleIndexLock(workDir, () => false, otherLock);
+    } catch (e) {
+      elsewhere = e;
     }
 
-    expect(step).toHaveBeenCalledTimes(1);
+    expect(ownLock).toHaveBeenCalledTimes(1);
+    expect(otherLock).toHaveBeenCalledTimes(1);
     expect(fs.existsSync(lock)).toBe(true);
-    expect(indexLockStateOf(err)?.ageMs).toBeGreaterThanOrEqual(60 * 60_000);
+    expect(indexLockStateOf(duringTurn)?.ageMs).toBeGreaterThanOrEqual(60 * 60_000);
+    expect(indexLockStateOf(elsewhere)).toBeNull();
   });
 
   it("retries the git step only once, even when a stale lock is back after the retry", async () => {
