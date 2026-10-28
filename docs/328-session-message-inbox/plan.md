@@ -61,8 +61,11 @@ agent what became of a card in this way (`session-message-outcome-notice.ts`): a
 `[ShipIt]` line in front of the prompt. The inbox notice is one more line of that
 kind, in both places that compose a prompt. Unlike a card's outcome, it has no
 receipt of its own: an agent can produce its result and end its turn without the
-read, so only `shipit session inbox` clears what is owed (planning#222). The told
-number is no longer moved; a value an older ShipIt wrote is still respected.
+read, so only `shipit session inbox` clears it (planning#222), and the notice counts
+every unread message. The told number is no longer moved. A value that an older
+ShipIt wrote still holds back a turn that ShipIt would start for those messages, so an
+update does not wake every session that holds old unread messages; the notice in
+front of the session's next prompt counts them.
 
 So the notice needs no turn of its own when a turn is coming, whatever started that
 turn: a message the user typed, a queued message, an automatic turn. It needs no

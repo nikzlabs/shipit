@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { SessionRunner } from "../session-runner.js";
 import type { SystemTurnDeps } from "../session-runner.js";
@@ -6,6 +6,7 @@ import type { AgentId, LastTurnOutcome } from "../../shared/types.js";
 import type { PersistedMessage } from "../chat-history.js";
 import type { EmptyTurnReason } from "../turn-settlement.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
+import { UNREAD_PROMPT_NOTICE_DELAY_MS } from "../turn-executor.js";
 
 /** planning#222 — a successful turn that left no reply and no tool call is told and recorded. */
 
@@ -96,6 +97,13 @@ async function nextAgent(agents: FakeAgent[], count: number): Promise<FakeAgent>
   return agents[count - 1]!;
 }
 
+/** The deferred check for an unread prompt, run now instead of after its delay. */
+function unreadPromptCheck(timers: { mock: { calls: unknown[][] } }): () => void {
+  const call = timers.mock.calls.find((c) => c[1] === UNREAD_PROMPT_NOTICE_DELAY_MS);
+  if (!call) throw new Error("no unread-prompt check was armed");
+  return call[0] as () => void;
+}
+
 const echo = (agent: FakeAgent): void => {
   agent.emit("event", { type: "agent_user_replay", text: "do work" });
 };
@@ -106,6 +114,10 @@ const result = (agent: FakeAgent, extra: Record<string, unknown> = {}): void => 
 };
 
 describe("a turn that ends with no reply and no tool call (planning#222)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("tells the user and records that the model returned nothing", async () => {
     const { runner, agents, ends, notices } = setup();
     runner.dispatch(testDispatch({ text: "do work" }));
@@ -133,46 +145,67 @@ describe("a turn that ends with no reply and no tool call (planning#222)", () =>
     runner.dispose({ force: true });
   });
 
-  it("sends a prompt that the CLI never read again, one time, on a new process", async () => {
-    const { runner, agents, ends, notices, userRows } = setup();
-    runner.dispatch(testDispatch({ text: "do work" }));
-    const first = await nextAgent(agents, 1);
-    // The stale-notice shape: a zero-turn result that answered a task notification.
-    result(first, { numTurns: 0, origin: "task-notification" });
-
-    const second = await nextAgent(agents, 2);
-    expect(first.kill).toHaveBeenCalled();
-    expect(notices()).toEqual([expect.stringContaining("ShipIt is sending the message again")]);
-
-    echo(second);
-    second.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Done." }] });
-    result(second, { numTurns: 1 });
-    await waitFor(() => !runner.running && ends.length > 0, "turn end");
-
-    expect(ends).toEqual([{ outcome: "ok", emptyReason: null }]);
-    expect(notices()).toHaveLength(1);
-    expect(userRows()).toHaveLength(1);
-    expect(agents).toHaveLength(2);
-    runner.dispose({ force: true });
-  });
-
-  it("does not send it a third time, and says so, when the new process does not read it either", async () => {
+  it("tells the user after a wait that the CLI never read the prompt, and sends nothing again", async () => {
     const delivered = vi.fn();
+    const timers = vi.spyOn(globalThis, "setTimeout");
     const { runner, agents, ends, notices } = setup({ inboxDelivered: delivered });
     runner.dispatch(testDispatch({ text: "do work" }));
-    result(await nextAgent(agents, 1), { numTurns: 0 });
-    result(await nextAgent(agents, 2), { numTurns: 0 });
+    // The stale-notice shape: a zero-turn result that answered a task notification.
+    result(await nextAgent(agents, 1), { numTurns: 0, origin: "task-notification" });
     await waitFor(() => !runner.running && ends.length > 0, "turn end");
 
-    expect(agents).toHaveLength(2);
-    expect(notices()).toEqual([
-      expect.stringContaining("ShipIt is sending the message again"),
-      expect.stringContaining("before it read the message, so there is no reply"),
-    ]);
     expect(ends).toEqual([{ outcome: "ok", emptyReason: "prompt-not-echoed" }]);
     // A notice that rode a prompt the CLI never read was not delivered.
     expect(delivered).not.toHaveBeenCalled();
+    expect(notices()).toEqual([]);
+
+    unreadPromptCheck(timers)();
+    expect(notices()).toEqual([expect.stringContaining("before it read the message, so there is no reply")]);
+    expect(agents).toHaveLength(1);
     runner.dispose({ force: true });
+  });
+
+  it("says nothing when the CLI reads the prompt right after it ended the turn", async () => {
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    const { runner, agents, ends, notices } = setup();
+    runner.dispatch(testDispatch({ text: "do work" }));
+    const agent = await nextAgent(agents, 1);
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid", numTurns: 0 });
+    await waitFor(() => !runner.running && ends.length > 0, "turn end");
+    echo(agent);
+
+    unreadPromptCheck(timers)();
+    expect(notices()).toEqual([]);
+    runner.dispose({ force: true });
+  });
+
+  it("puts no notice in the place of a turn that started during the wait", async () => {
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    const { runner, agents, ends, notices } = setup();
+    runner.dispatch(testDispatch({ text: "do work" }));
+    result(await nextAgent(agents, 1), { numTurns: 0 });
+    await waitFor(() => !runner.running && ends.length > 0, "turn end");
+    runner.dispatch(testDispatch({ text: "are you there?" }));
+    await nextAgent(agents, 2);
+
+    unreadPromptCheck(timers)();
+    expect(notices()).toEqual([]);
+    // Nor among the running turn's own cards.
+    expect(runner.recordedCards.filter((c) => c.message.notice)).toEqual([]);
+    runner.dispose({ force: true });
+  });
+
+  it("gives the notice up when the runner was disposed during the wait, and keeps the reason", async () => {
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    const { runner, agents, ends, notices } = setup();
+    runner.dispatch(testDispatch({ text: "do work" }));
+    result(await nextAgent(agents, 1), { numTurns: 0 });
+    await waitFor(() => !runner.running && ends.length > 0, "turn end");
+    runner.dispose({ force: true });
+
+    unreadPromptCheck(timers)();
+    expect(notices()).toEqual([]);
+    expect(ends).toEqual([{ outcome: "ok", emptyReason: "prompt-not-echoed" }]);
   });
 
   it("acknowledges the notices of a prompt that the CLI read, also when the turn ends empty", async () => {
@@ -185,21 +218,6 @@ describe("a turn that ends with no reply and no tool call (planning#222)", () =>
     await waitFor(() => !runner.running && ends.length > 0, "turn end");
 
     expect(delivered).toHaveBeenCalledTimes(1);
-    runner.dispose({ force: true });
-  });
-
-  it("does not stop a process that runs background work to send the prompt again", async () => {
-    const { runner, agents, ends, notices } = setup();
-    vi.spyOn(runner, "backgroundWorkDescriptions", "get").mockReturnValue(["npm run build"]);
-    runner.dispatch(testDispatch({ text: "do work" }));
-    const agent = await nextAgent(agents, 1);
-    result(agent, { numTurns: 0 });
-    await waitFor(() => !runner.running && ends.length > 0, "turn end");
-
-    expect(agents).toHaveLength(1);
-    expect(agent.kill).not.toHaveBeenCalled();
-    expect(notices()).toEqual([expect.stringContaining("before it read the message, so there is no reply")]);
-    expect(ends).toEqual([{ outcome: "ok", emptyReason: "prompt-not-echoed" }]);
     runner.dispose({ force: true });
   });
 

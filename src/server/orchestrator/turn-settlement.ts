@@ -25,14 +25,6 @@ export type EmptyTurnReason =
   | "prompt-not-echoed"
   | "model-returned-nothing";
 
-export const EMPTY_TURN_REASONS: readonly EmptyTurnReason[] = [
-  "stopped",
-  "compaction",
-  "no-model-call",
-  "prompt-not-echoed",
-  "model-returned-nothing",
-];
-
 export type TurnOutcomeStatus =
   | "completed"
   | "errored"

@@ -1856,15 +1856,17 @@ describe("docs/324-scheduled-sessions — a run's session fields", () => {
   it("keep why the last turn ended empty, and clear it with the next outcome (planning#222)", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("s1");
-    expect(mgr.lastTurnEmptyReason("s1")).toBeUndefined();
+    const reason = () =>
+      (dbManager.db.prepare("SELECT last_turn_empty_reason FROM sessions WHERE id = ?").get("s1") as
+        { last_turn_empty_reason: string | null }).last_turn_empty_reason;
+    expect(reason()).toBeNull();
 
     mgr.setLastTurnOutcome("s1", "ok", "prompt-not-echoed");
-    expect(mgr.lastTurnEmptyReason("s1")).toBe("prompt-not-echoed");
+    expect(reason()).toBe("prompt-not-echoed");
     expect(mgr.get("s1")!.lastTurnOutcome).toBe("ok");
 
     mgr.setLastTurnOutcome("s1", "ok");
-    expect(mgr.lastTurnEmptyReason("s1")).toBeUndefined();
-    expect(mgr.lastTurnEmptyReason("missing")).toBeUndefined();
+    expect(reason()).toBeNull();
   });
 
   it("keep one notes grant per schedule (req 30)", () => {

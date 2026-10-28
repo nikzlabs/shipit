@@ -68,7 +68,7 @@ import {
 } from "./services/session-status.js";
 import { releaseQueuedTurn } from "./queue-drain.js";
 import { POST_TURN_HOLD_MAX_MS } from "./post-turn-hold.js";
-import { residentBackgroundWork, writeAnswerHold } from "./turn-admission.js";
+import { writeAnswerHold } from "./turn-admission.js";
 import { retireRewindUndo } from "./chat-history.js";
 import { forgetHeldTurn, restoreHeldTurns } from "./held-turns.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
@@ -113,8 +113,6 @@ export interface TurnInput {
   isNewSession: boolean;
   isAuthRetry?: boolean;
   recoveryRetryUsed?: boolean;
-  /** planning#222 — the one retry of a prompt that the CLI ended a turn on without reading. */
-  unreadPromptRetryUsed?: boolean;
   // A retry or adoption of a turn that already started: it does not count as
   // new use of a merged session (docs/316-done-sessions-return-memory req 5).
   continuesTurn?: boolean;
@@ -194,8 +192,11 @@ const EMPTY_TURN_NOTICES: Readonly<Partial<Record<EmptyTurnReason, string>>> = {
   "model-returned-nothing":
     "The model ended this turn with no reply and no tool call. Send the message again, or say it in different words.",
 };
-const UNREAD_PROMPT_RETRY_NOTICE =
-  "The agent CLI ended this turn before it read the message. ShipIt is sending the message again, to a new agent process.";
+/**
+ * A CLI that ends a turn before it reads the prompt usually reads it at once afterwards, and then
+ * works on it as a turn of its own, so the notice waits this long for the echo.
+ */
+export const UNREAD_PROMPT_NOTICE_DELAY_MS = 5_000;
 
 // A timer can fire a little early, which would read the hold as still open.
 const COMMIT_HOLD_EXPIRY_MARGIN_MS = 1_000;
@@ -379,12 +380,12 @@ export async function executeAgentTurn(
     cliTurnPending = true;
   };
 
+  let promptEchoed = false;
   /**
    * The CLI echoing this prompt back is the one positive proof it has read it —
    * stronger than the worker's own answer to the submission, and it can arrive
    * first, so it does not wait for one. Only a turn already ended stays ended.
    */
-  let promptEchoed = false;
   const notePromptReadBack = (text: string, messageId: string | undefined): void => {
     const echoed = text.trim();
     const exact = echoed === prompt.trim() || echoed === submittedPrompt.trim();
@@ -761,7 +762,6 @@ export async function executeAgentTurn(
     | undefined;
 
   let quotaRetryInProgress = false;
-  let unreadPromptRetryInProgress = false;
   const capturedRoutePolicy = (): CredentialFailurePolicy | undefined => {
     const captured = capturedCredentialRoute;
     if (!captured?.providerRouteKind || !captured.providerRouteId) return undefined;
@@ -776,9 +776,15 @@ export async function executeAgentTurn(
       servingCliStartedTurn(),
     );
 
-  // The old process stops first: before its credential subtree is reprovisioned, and so that a
-  // prompt it has not read cannot run on it as well.
-  const rerunOnFreshAgent = async (overrides: Partial<TurnInput>): Promise<void> => {
+  const retryOnNextAccount = async (
+    entry: RefusedAttempt,
+    consumeRecoveryBudget = false,
+  ): Promise<void> => {
+    console.log(
+      `[turn] ${agentId} reported a quota refusal for ${sessionId} on ${entry.routeId}; `
+      + "retrying on the next eligible credential",
+    );
+    // Stop the old process before reprovisioning its credential subtree.
     try {
       agent.kill();
     } catch {
@@ -792,25 +798,12 @@ export async function executeAgentTurn(
     }
     await executeAgentTurn(runner, deps, freshAgent, {
       ...input,
-      ...overrides,
+      attemptLedger: [...(input.attemptLedger ?? []), entry],
+      ...(consumeRecoveryBudget ? { recoveryRetryUsed: true } : {}),
       reuseExistingAgent: false,
       emitUserEcho: false,
       continuesTurn: true,
       persistGuard,
-    });
-  };
-
-  const retryOnNextAccount = async (
-    entry: RefusedAttempt,
-    consumeRecoveryBudget = false,
-  ): Promise<void> => {
-    console.log(
-      `[turn] ${agentId} reported a quota refusal for ${sessionId} on ${entry.routeId}; `
-      + "retrying on the next eligible credential",
-    );
-    await rerunOnFreshAgent({
-      attemptLedger: [...(input.attemptLedger ?? []), entry],
-      ...(consumeRecoveryBudget ? { recoveryRetryUsed: true } : {}),
     });
   };
 
@@ -1224,7 +1217,7 @@ export async function executeAgentTurn(
 
   // The successor owns teardown. Release this turn's hold and arm any already-made commit.
   agent.on("superseded", () => {
-    if (automaticRecoveryInProgress || quotaRetryInProgress || unreadPromptRetryInProgress) return;
+    if (automaticRecoveryInProgress || quotaRetryInProgress) return;
     wasSuperseded = true;
     finishTurn();
     releasePostTurn();
@@ -1619,17 +1612,8 @@ export async function executeAgentTurn(
   const slashCommandTurn = (): boolean => submittedPrompt.trimStart().startsWith("/");
 
   // Synchronous, so the result keeps its place before `done`; it never throws (post-turn invariant 3).
-  const tellEmptyTurn = (
-    reason: EmptyTurnReason,
-    event: Extract<AgentEvent, { type: "agent_result" }>,
-    retrying = false,
-  ): void => {
-    const next = retrying ? "; sending the prompt again on a new process" : "";
-    console.log(
-      `[turn] ${sessionId}: the turn ended with no reply and no tool call (${reason}; `
-      + `numTurns=${event.numTurns ?? "unknown"}, origin=${event.origin ?? "none"})${next}`,
-    );
-    const notice = retrying ? UNREAD_PROMPT_RETRY_NOTICE : EMPTY_TURN_NOTICES[reason];
+  const noticeEmptyTurn = (reason: EmptyTurnReason): void => {
+    const notice = EMPTY_TURN_NOTICES[reason];
     if (!notice || !runner || slashCommandTurn()) return;
     try {
       emitNoticeInTurn(runner, sessionId, notice, deps.listenerDeps.chatHistoryManager, "warn");
@@ -1638,34 +1622,29 @@ export async function executeAgentTurn(
     }
   };
 
-  /**
-   * The prompt can still wait in the CLI's input, so it runs again only on a new process, and
-   * not while the old one has background work to lose. True when the retry owns the turn now.
-   */
-  const retryUnreadPrompt = async (event: Extract<AgentEvent, { type: "agent_result" }>): Promise<boolean> => {
-    if (!runner || input.unreadPromptRetryUsed || residentBackgroundWork(runner).length > 0) return false;
-    unreadPromptRetryInProgress = true;
-    tellEmptyTurn("prompt-not-echoed", event, true);
-    try {
-      await rerunOnFreshAgent({ unreadPromptRetryUsed: true });
-    } catch (err) {
-      // The stopped process's `done` stood down for the retry, so the terminal steps run here.
-      console.error(`[turn] ${sessionId}: sending the unread prompt again failed:`, err);
-      recordTurnEnd("ok", undefined, "prompt-not-echoed");
-      tellEmptyTurn("prompt-not-echoed", event);
-      settleTurnFacts();
-      holdPostTurn();
-      try {
-        runner.running = false;
-        await postTurnStep("drain", tryDrain);
-        await postTurnStep("commit", runCommitAndPr);
-        await postTurnStep("finished", emitFinishedIfIdle);
-        finishTurn();
-      } finally {
-        releasePostTurn();
-      }
+  const tellEmptyTurn = (reason: EmptyTurnReason, event: Extract<AgentEvent, { type: "agent_result" }>): void => {
+    console.log(
+      `[turn] ${sessionId}: the turn ended with no reply and no tool call (${reason}; `
+      + `numTurns=${event.numTurns ?? "unknown"}, origin=${event.origin ?? "none"})`,
+    );
+    if (reason !== "prompt-not-echoed") {
+      noticeEmptyTurn(reason);
+      return;
     }
-    return true;
+    const timer = setTimeout(() => {
+      if (promptEchoed) {
+        console.log(`[turn] ${sessionId}: the agent CLI read the prompt after it ended the turn`);
+        return;
+      }
+      // The notice must not land in the place of a later turn. A disposed runner cannot tell
+      // whether its replacement started one, so it gives the notice up; the reason is stored.
+      if (!runner || runner.disposed || !turnIsCurrent() || runner.running) {
+        console.log(`[turn] ${sessionId}: no notice for the unread prompt, as the session has moved on`);
+        return;
+      }
+      noticeEmptyTurn(reason);
+    }, UNREAD_PROMPT_NOTICE_DELAY_MS);
+    timer.unref?.();
   };
 
   const handleResult = async (
@@ -1704,7 +1683,6 @@ export async function executeAgentTurn(
       if (!continuationPending) recordTurnEnd("quota-refused", refusal);
     } else {
       empty = settlesThisTurn ? emptyTurnReason(event) : null;
-      if (empty === "prompt-not-echoed" && await retryUnreadPrompt(event)) return;
       recordTurnEnd(resultIsTheAgentsOwn(event) ? "ok" : "errored", event.error, empty ?? undefined);
       if (empty) tellEmptyTurn(empty, event);
     }
@@ -1777,12 +1755,12 @@ export async function executeAgentTurn(
     deps.listenerDeps.broadcastLog("server", `Agent process exited with code ${code}`);
     // Recovery owns teardown and any hold it opened; do not release it here.
     if (automaticRecoveryInProgress) return;
-    if (quotaRetryInProgress || unreadPromptRetryInProgress) return;
+    if (quotaRetryInProgress) return;
     forgetJobsIfStopped();
     // After the handover, never before it: a turn adopted here owns this terminal path,
     // and the predecessor's snapshot would be discarded by the re-arm anyway.
     await settleHandovers();
-    if (automaticRecoveryInProgress || quotaRetryInProgress || unreadPromptRetryInProgress) return;
+    if (automaticRecoveryInProgress || quotaRetryInProgress) return;
     settleTurnFacts();
     holdPostTurn();
     let errorPathOwnsHold = false;

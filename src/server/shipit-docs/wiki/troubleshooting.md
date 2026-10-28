@@ -171,10 +171,11 @@ empty on purpose and get none.
 
 | The notice says | What it is | What happens next |
 |---|---|---|
-| *ShipIt is sending the message again, to a new agent process* | The agent CLI ended the turn before it read the message | ShipIt sends the message one more time on a new process, by itself. It does not do this while the process runs background work, because a new process would stop that work |
-| *…ended this turn before it read the message, so there is no reply* | The same, a second time, or when ShipIt could not send it again | The user sends the message again |
+| *…ended this turn before it read the message, so there is no reply* | The agent CLI ended the turn before it read the message, and had still not read it a few seconds later. When it reads the message in that time, it works on it, and no notice comes | The user sends the message again |
 | *…ended this turn without a call to the model* | The agent CLI answered by itself and never asked the model | The user sends the message again |
 | *The model ended this turn with no reply and no tool call* | The model was asked and returned nothing | The user sends the message again, or says it in different words |
+
+ShipIt does not send the message again by itself.
 
 ShipIt can say why only when the harness reports how many model calls the turn
 made. Today that is Claude Code, so an empty turn on another harness gets no

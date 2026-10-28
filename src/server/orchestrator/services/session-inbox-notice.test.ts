@@ -49,6 +49,13 @@ describe("the inbox notice (docs/328-session-message-inbox)", () => {
     expect(prepareInboxNotice(store, "parent")).toBeNull();
   });
 
+  it("counts a message that an older ShipIt marked as told and the agent never read (planning#222)", () => {
+    const told = store.add("parent", { origin: CHILD, body: "told before the fix" });
+    store.markNotified("parent", told.id);
+
+    expect(prepareInboxNotice(store, "parent")?.notice).toBe(buildInboxNotice(1));
+  });
+
   it("counts a message that arrives during the turn in the next notice", () => {
     store.add("parent", { origin: CHILD, body: "before the turn" });
     const notice = prepareInboxNotice(store, "parent")!;
@@ -100,8 +107,7 @@ describe("the inbox notice (docs/328-session-message-inbox)", () => {
 
   it("lets a turn start when the store cannot be read", () => {
     const broken = {
-      owed: () => { throw new Error("database is closed"); },
-      unread: () => [],
+      unread: () => { throw new Error("database is closed"); },
       markRead: () => {},
     };
     const logged: unknown[] = [];
