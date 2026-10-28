@@ -228,6 +228,24 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
     runner.dispose({ force: true });
   });
 
+  // planning#710 — the killed process takes its background tasks with it; the retry's
+  // streaming flag must not bring them back as "Waiting for: …".
+  it("does not carry the refused process's background tasks into the retry", async () => {
+    const session = { billingMode: "sub", providerRouteBillingMode: "sub", serviceId: "anthropic" };
+    const { agents, deps, runner } = harness(session as Partial<SessionInfo>);
+    const first = makeFakeAgent();
+
+    await start(runner, deps, first);
+    first.emit("event", { type: "agent_background_tasks", tasks: [{ id: "t1", description: "sleep 600" }] });
+    expect(runner.backgroundWorkDescriptions).toEqual(["sleep 600"]);
+    first.emit("event", { type: "agent_result", status: "error", error: EXHAUSTED });
+    await waitFor(() => agents.length === 1, "retry dispatched");
+    await waitFor(() => runner.isStreamingActive, "retry streaming");
+
+    expect(runner.backgroundWorkDescriptions).toEqual([]);
+    runner.dispose({ force: true });
+  });
+
   it("leaves an ordinary process error alone", async () => {
     const session = { billingMode: "sub", providerRouteBillingMode: "sub", serviceId: "anthropic" };
     const { agents, deps, runner } = harness(session as Partial<SessionInfo>);

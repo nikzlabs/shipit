@@ -20,6 +20,7 @@ import {
   stopAllTokenWriteBackWatches,
 } from "./session-token-publisher.js";
 import type { WsServerMessage } from "../shared/types.js";
+import { BACKGROUND_TASK_TTL_MS } from "./background-task-tracker.js";
 import {
   DEFAULT_SUB_AGENT_TIMEOUT_MS,
   SUB_AGENT_TRANSPORT_TIMEOUT_MS,
@@ -730,6 +731,60 @@ describe("ContainerSessionRunner — background-work marker", () => {
     expect(runner.backgroundWorkDescriptions).toEqual([]);
 
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  // planning#710 — the SSE announcement reaches the sidebar only, so the open chat kept its row.
+  function recordTaskMessages(runner: ContainerSessionRunner): WsServerMessage[] {
+    const seen: WsServerMessage[] = [];
+    runner.on("message", (m) => { if (m.type === "background_tasks") seen.push(m); });
+    return seen;
+  }
+  const drained = { type: "background_tasks", sessionId: "s1", count: 0, descriptions: [] };
+
+  it("tells the open chat when a kill site clears the task list", () => {
+    const runner = makeRunner();
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
+    const seen = recordTaskMessages(runner);
+    // Every kill site drops the streaming flag first, which already announced over SSE.
+    runner.isStreamingActive = false;
+    runner.clearBackgroundTasks();
+    expect(seen).toEqual([drained]);
+    runner.clearBackgroundTasks();
+    expect(seen).toHaveLength(1);
+  });
+
+  it("leaves the row while a consult still runs", () => {
+    const runner = makeRunner();
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
+    (runner as unknown as { _subAgentAborts: Map<string, unknown> })._subAgentAborts
+      .set("spawn-1", { controller: new AbortController(), agentId: "codex" });
+    const seen = recordTaskMessages(runner);
+    runner.clearBackgroundTasks();
+    expect(seen).toEqual([]);
+    expect(runner.backgroundWorkDescriptions).toEqual(["Codex consult"]);
+  });
+
+  it("announces the list the one-hour expiry drops, to the chat and the sidebar", () => {
+    vi.useFakeTimers();
+    try {
+      const runner = makeRunner();
+      runner.isStreamingActive = true;
+      runner.setBackgroundTasks([{ id: "t1", description: "until ! pgrep -f job; do sleep 1; done" }]);
+      const seen = recordTaskMessages(runner);
+      const announced: string[][] = [];
+      runner.on("background_work", () => announced.push(runner.backgroundWorkDescriptions));
+      vi.advanceTimersByTime(BACKGROUND_TASK_TTL_MS - 1);
+      expect(seen).toEqual([]);
+      expect(announced).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(seen).toEqual([drained]);
+      expect(announced).toEqual([[]]);
+      expect(runner.agentBusy).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

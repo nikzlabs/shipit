@@ -677,6 +677,23 @@ describe("block-branch-ops.mjs", () => {
       expect(r.stderr).not.toContain("Wait on the artifact");
     });
 
+    // planning#710 — Monitor runs its `command` in the same `bash -c` wrapper as Bash.
+    it("judges a Monitor command the same way, and says which tool ran it", () => {
+      const monitor = (command: string) => ({
+        hook_event_name: "PreToolUse",
+        tool_name: "Monitor",
+        tool_input: { command, description: "wait for the job", timeout_ms: 60_000 },
+      });
+      const r = runHook(monitor('until ! pgrep -f "my-job"; do sleep 1; done; echo done'));
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("matches ITSELF");
+      expect(r.stderr).toContain("The Monitor tool runs a command");
+      expect(runHook(monitor("git checkout -b feature/foo")).status).toBe(2);
+      expect(runHook(monitor("tail -f /tmp/run.log | grep --line-buffered FAIL")).status).toBe(0);
+      expect(runHook({ hook_event_name: "PreToolUse", tool_name: "Monitor", tool_input: { ws: { url: "wss://x" } } }).status)
+        .toBe(0);
+    });
+
     it("applies to a sandbox session, whose branch exemption is not about this", () => {
       // docs/211 exempts a sandbox because it owns its branch. A loop whose
       // test cannot change hangs a sandbox session exactly as it hangs any other.

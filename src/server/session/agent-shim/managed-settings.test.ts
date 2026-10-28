@@ -143,6 +143,16 @@ describe("managed-settings.json", () => {
     expect(parsed.disableClaudeAiConnectors).not.toBe(false);
   });
 
+  // planning#710 — a wait written as a Monitor command used to skip the self-match check.
+  it("runs the branch-op hook for the Bash and Monitor tools", () => {
+    const preToolUse = loadSettings().hooks?.PreToolUse as { matcher: string; hooks: { command: string }[] }[];
+    const entry = preToolUse.find((e) => e.hooks.some((h) => h.command.endsWith("block-branch-ops.mjs")));
+    const matcher = new RegExp(`^(?:${entry?.matcher ?? ""})$`);
+    expect(matcher.test("Bash")).toBe(true);
+    expect(matcher.test("Monitor")).toBe(true);
+    expect(matcher.test("Edit")).toBe(false);
+  });
+
   it("keeps the existing hooks and attribution settings intact", () => {
     const settings = loadSettings();
     expect(settings.includeCoAuthoredBy).toBe(false);

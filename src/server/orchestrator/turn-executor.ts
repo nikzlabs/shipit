@@ -777,6 +777,8 @@ export async function executeAgentTurn(
     if (runner) {
       runner.setAgent(freshAgent);
       runner.isStreamingActive = false;
+      // The killed process reaps its tasks; the retry's streaming flag would revive the list.
+      runner.clearBackgroundTasks();
       runner.residentRoute = undefined;
     }
     await executeAgentTurn(runner, deps, freshAgent, {

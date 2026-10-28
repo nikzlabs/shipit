@@ -13,6 +13,7 @@ import { TURN_COMPLETED, type TurnOutcome } from "./turn-settlement.js";
 import { noteTurnReady } from "./turn-stop-request.js";
 import { nextSendOrder } from "./queue-identity.js";
 import { returnQueueOnStop, returnedMessages } from "./queue-return.js";
+import { BACKGROUND_TASK_TTL_MS } from "./background-task-tracker.js";
 
 describe("SessionRunner", () => {
   afterEach(() => {
@@ -991,6 +992,31 @@ describe("SessionRunner", () => {
     runner.detachViewer();
     expect(runner.lastViewerDetachAt).toBeGreaterThanOrEqual(firstZero);
     runner.dispose();
+  });
+
+  // planning#710 — the SSE announcement reaches the sidebar only, so the open chat kept its row.
+  it("tells the open chat when the task list is cleared or expires", () => {
+    vi.useFakeTimers();
+    try {
+      const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+      const seen: unknown[] = [];
+      runner.on("message", (m) => { if (m.type === "background_tasks") seen.push(m); });
+      const drained = { type: "background_tasks", sessionId: "s1", count: 0, descriptions: [] };
+      runner.isStreamingActive = true;
+
+      runner.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
+      runner.clearBackgroundTasks();
+      runner.clearBackgroundTasks();
+      expect(seen).toEqual([drained]);
+
+      runner.setBackgroundTasks([{ id: "t2", description: "npm run build" }]);
+      vi.advanceTimersByTime(BACKGROUND_TASK_TTL_MS);
+      expect(seen).toEqual([drained, drained]);
+      expect(runner.backgroundWorkDescriptions).toEqual([]);
+      runner.dispose({ force: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

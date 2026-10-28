@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * ShipIt's PreToolUse guard for the Bash tool. It refuses two shapes: branch
+ * ShipIt's PreToolUse guard for the Bash and Monitor tools, which both run a
+ * `command` in a shell. It refuses two shapes: branch
  * changes and destructive git during merged-branch recovery, and a process
  * test whose own pattern matches the command it is written in.
  */
@@ -21,7 +22,8 @@ try {
   process.exit(0); // can't parse stdin — fail open
 }
 
-if (payload?.tool_name !== "Bash") process.exit(0);
+const tool = payload?.tool_name;
+if (tool !== "Bash" && tool !== "Monitor") process.exit(0);
 const command = payload?.tool_input?.command;
 if (typeof command !== "string" || !command.trim()) process.exit(0);
 
@@ -807,7 +809,7 @@ if (selfMatched) {
   process.stderr.write(
     `Blocked: this \`${selfMatched.program} -f\` looks for \`${selfMatched.pattern}\`, ` +
       "which is text in this very command.\n\n" +
-      "The Bash tool runs a command as `bash -c '<the whole command>'`, so every " +
+      `The ${tool} tool runs a command as \`bash -c '<the whole command>'\`, so every ` +
       "literal you write is part of the command line of the process that runs it — " +
       `and \`${selfMatched.program} -f\` matches full command lines. ` +
       `${consequence}\n` +

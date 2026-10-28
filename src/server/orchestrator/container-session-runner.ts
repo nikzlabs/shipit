@@ -116,7 +116,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _guardedUnavailable = false;
   readonly awaitingPermissionIds = new Set<string>();
   private _isStreamingActive = false;
-  private _backgroundTasks = new BackgroundTaskTracker();
+  private _backgroundTasks = new BackgroundTaskTracker(() => this.clearBackgroundTasks());
   // Retain the resident proxy when a one-shot process displaces `_agent`.
   private _streamingProxy: ProxyAgentProcess | null = null;
   // A streaming process the worker already held at the first connect: after an orchestrator
@@ -327,8 +327,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this.announceBackgroundWork();
   }
   clearBackgroundTasks(): void {
-    this._backgroundTasks.clear();
+    if (this._backgroundTasks.clear()) this.emitBackgroundTasksDrained();
     this.announceBackgroundWork();
+  }
+  // The SSE announcement updates the sidebar only; this clears the open chat's row.
+  // Independent consults may still be running, and then the row stays.
+  private emitBackgroundTasksDrained(): void {
+    if (this.backgroundWorkDescriptions.length > 0) return;
+    this.emitMessage({ type: "background_tasks", sessionId: this.sessionId, count: 0, descriptions: [] });
   }
   private announceBackgroundWork(): void {
     const next = JSON.stringify(this.backgroundWorkDescriptions);
@@ -2222,15 +2228,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._appliedSpawnIdentity = undefined;
     this._residentRoute = undefined;
     this._agent = null;
-    // Update the open chat as well as the sidebar; independent consults may still be running.
-    if (this.backgroundWorkDescriptions.length === 0) {
-      this.emitMessage({
-        type: "background_tasks",
-        sessionId: this.sessionId,
-        count: 0,
-        descriptions: [],
-      });
-    }
+    this.emitBackgroundTasksDrained();
     // Announce last: listeners can synchronously start a new turn and install its agent.
     this.announceBackgroundWork();
   }
