@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent, ToolResultEntry } from "./session-runner.js";
-import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, RepoSessionProposalCard, SessionMessageProposalCard, PresentInlineCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, SessionSettingsChangeCard, SettingsProposalCard, ScheduleProposalCard, ScheduleNotesAccessCard, NonTurnFailureCard, SshHostKeyCard, SessionMessageOrigin } from "../shared/types.js";
+import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, RepoSessionProposalCard, SessionMessageProposalCard, PresentInlineCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, SessionSettingsChangeCard, SettingsProposalCard, ScheduleProposalCard, ScheduleNotesAccessCard, NonTurnFailureCard, SshHostKeyCard, SessionMessageOrigin, PermissionUnanswered } from "../shared/types.js";
 import type { ReleaseStatusSummary } from "../shared/types/release-types.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { retireBackgroundSubagentResult } from "./subagent-completion.js";
@@ -51,6 +51,7 @@ export interface PersistedPermissionRequest {
   agentId?: string;
   createdAt: string;
   remembered?: boolean;
+  unanswered?: PermissionUnanswered;
 }
 
 /**

@@ -904,7 +904,7 @@ describe("AgentController — a permission request the agent stopped waiting for
       type: "agent_permission_resolved",
       requestId,
       behavior: "deny",
-      callEnded: { summary: expect.stringContaining("curl x") },
+      callEnded: { summary: expect.stringContaining("curl x"), waitedMs: expect.any(Number) },
     }]);
     expect(denials().some((e) => e.requestId === otherId)).toBe(false);
   });

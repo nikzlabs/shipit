@@ -17,6 +17,7 @@ import type {
   ScheduleNotesAccessCard as ScheduleNotesAccessCardData,
   SelfMergeWatchCard as SelfMergeWatchCardData,
   AiReviewCard,
+  PermissionUnanswered,
 } from "../../../server/shared/types.js";
 import type { ReleaseStatusSummary } from "../../../server/shared/types/release-types.js";
 import type { AgentInterfaceProvenance } from "../../../server/shared/agent-interface-sdk/protocol.js";
@@ -270,6 +271,7 @@ export interface ChatMessage {
     agentId?: string;
     createdAt?: string;
     remembered?: boolean;
+    unanswered?: PermissionUnanswered;
   };
 
   egressPrompt?: {

@@ -948,6 +948,18 @@ describe("ChatHistoryManager", () => {
       expect(mgr.load("sess-1")[0].permissionPrompt?.phase).toBe("denied");
     });
 
+    it("keeps the reason of a card that nobody answered after a reload (docs/193-sensitive-file-permission req 8)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", pendingCard("perm-1"));
+
+      mgr.updatePermissionCard("sess-1", "perm-1", { phase: "denied", unanswered: { waitedMs: 1_800_000 } });
+
+      const card = new ChatHistoryManager(dbManager).load("sess-1")[0].permissionPrompt;
+      expect(card?.phase).toBe("denied");
+      expect(card?.unanswered).toEqual({ waitedMs: 1_800_000 });
+      expect(card?.toolName).toBe("Write");
+    });
+
     it("returns false when no permission card matches the given id", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", pendingCard("perm-1"));

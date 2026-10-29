@@ -362,8 +362,11 @@ export interface AgentPermissionResolvedEvent {
   requestId: string;
   behavior: "allow" | "deny";
   remembered?: boolean;
-  /** The agent stopped waiting before anyone answered: the gated call got its result, or Codex withdrew it. */
-  callEnded?: { summary: string };
+  /**
+   * The agent stopped waiting before anyone answered: the gated call got its result, or Codex
+   * withdrew it. `waitedMs` is the broker's measured wait; a worker image older than it sends none.
+   */
+  callEnded?: { summary: string; waitedMs?: number };
 }
 
 export interface PermissionDecision {

@@ -2142,7 +2142,8 @@ describe("wireAgentListeners — an approval request that nobody answers (docs/1
     const runner = new SessionRunner({ sessionId: "session-ask", sessionDir: "/tmp/session-ask", defaultAgentId: "claude" });
     runner.setAgent(agent as unknown as AgentProcess);
     const d = deps();
-    Object.assign(d.chatHistoryManager, { updatePermissionCard: vi.fn(), hasInProgress: () => false });
+    const updatePermissionCard = vi.fn();
+    Object.assign(d.chatHistoryManager, { updatePermissionCard, hasInProgress: () => false });
     const appendPendingAgentNotice = vi.fn();
     Object.assign(d.sessionManager, { appendPendingAgentNotice });
     const deliverVoiceNote = vi.fn();
@@ -2155,7 +2156,7 @@ describe("wireAgentListeners — an approval request that nobody answers (docs/1
       agent.emit("event", { type: "agent_permission_request", requestId, toolName, summary: `${toolName}: x` } satisfies AgentEvent);
     const resolve = (requestId: string, extra: Partial<AgentPermissionResolvedEvent> = {}) =>
       agent.emit("event", { type: "agent_permission_resolved", requestId, behavior: "deny", ...extra } satisfies AgentEvent);
-    return { runner, request, resolve, deliverVoiceNote, appendPendingAgentNotice };
+    return { runner, request, resolve, deliverVoiceNote, appendPendingAgentNotice, updatePermissionCard };
   }
 
   afterEach(() => vi.restoreAllMocks());
@@ -2181,11 +2182,15 @@ describe("wireAgentListeners — an approval request that nobody answers (docs/1
   });
 
   it("tells the next turn that nobody answered when the call ended first", () => {
-    const { runner, request, resolve, appendPendingAgentNotice } = wireForApproval();
+    const { runner, request, resolve, appendPendingAgentNotice, updatePermissionCard } = wireForApproval();
     request("perm_1", "Write");
 
-    resolve("perm_1", { callEnded: { summary: "Write: .claude/skills/x/SKILL.md" } });
+    resolve("perm_1", { callEnded: { summary: "Write: .claude/skills/x/SKILL.md", waitedMs: 1_800_000 } });
 
+    expect(updatePermissionCard).toHaveBeenCalledWith("session-ask", "perm_1", {
+      phase: "denied",
+      unanswered: { waitedMs: 1_800_000 },
+    });
     expect(appendPendingAgentNotice).toHaveBeenCalledTimes(1);
     const [sessionId, notice] = appendPendingAgentNotice.mock.calls[0]!;
     expect(sessionId).toBe("session-ask");
@@ -2194,26 +2199,38 @@ describe("wireAgentListeners — an approval request that nobody answers (docs/1
     runner.dispose({ force: true });
   });
 
+  it("marks the card unanswered with no duration when the worker measured none", () => {
+    const { runner, request, resolve, updatePermissionCard } = wireForApproval();
+    request("perm_1", "Write");
+
+    resolve("perm_1", { callEnded: { summary: "Write: .claude/x" } });
+
+    expect(updatePermissionCard).toHaveBeenCalledWith("session-ask", "perm_1", { phase: "denied", unanswered: {} });
+    runner.dispose({ force: true });
+  });
+
   it("sends no notice for a deny that did not come from an ended call", () => {
-    const { runner, request, resolve, appendPendingAgentNotice } = wireForApproval();
+    const { runner, request, resolve, appendPendingAgentNotice, updatePermissionCard } = wireForApproval();
     request("perm_1", "Write");
 
     resolve("perm_1");
 
+    expect(updatePermissionCard).toHaveBeenCalledWith("session-ask", "perm_1", { phase: "denied" });
     expect(appendPendingAgentNotice).not.toHaveBeenCalled();
     runner.dispose({ force: true });
   });
 
-  it("sends no notice when the user's Stop ended the call", () => {
-    const { runner, request, resolve, appendPendingAgentNotice } = wireForApproval();
+  it("sends no notice and no reason when the user's Stop ended the call", () => {
+    const { runner, request, resolve, appendPendingAgentNotice, updatePermissionCard } = wireForApproval();
     runner.running = true;
     beginTurnSetup(runner);
     noteUserStop(runner);
     request("perm_1", "Write");
 
-    resolve("perm_1", { callEnded: { summary: "Write: .claude/x" } });
+    resolve("perm_1", { callEnded: { summary: "Write: .claude/x", waitedMs: 5_000 } });
 
     expect(appendPendingAgentNotice).not.toHaveBeenCalled();
+    expect(updatePermissionCard).toHaveBeenCalledWith("session-ask", "perm_1", { phase: "denied" });
     runner.dispose({ force: true });
   });
 });

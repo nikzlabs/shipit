@@ -491,6 +491,8 @@ export function wireAgentListeners(
     if (event.type === "agent_permission_resolved") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId && runner) {
+        // A Stop also ends the call, and the user who pressed it knows why.
+        const unanswered = event.callEnded && !stoppedByUser(runner) ? event.callEnded : undefined;
         settlePermissionCard(
           runner,
           turnSessionId,
@@ -498,12 +500,12 @@ export function wireAgentListeners(
           event.requestId,
           event.behavior === "allow" ? "approved" : "denied",
           event.remembered,
+          unanswered && { ...(unanswered.waitedMs !== undefined ? { waitedMs: unanswered.waitedMs } : {}) },
         );
-        // A Stop also ends the call, and the user who pressed it knows why.
-        if (event.callEnded && !stoppedByUser(runner)) {
+        if (unanswered) {
           deps.sessionManager.appendPendingAgentNotice(
             turnSessionId,
-            buildUnansweredPermissionNotice(event.callEnded.summary),
+            buildUnansweredPermissionNotice(unanswered.summary),
           );
         }
       }
