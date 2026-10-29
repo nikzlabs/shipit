@@ -204,14 +204,14 @@ describe("reportSyncFailure", () => {
   it("explains an untracked-overwrite failure and says the branch is unchanged", async () => {
     const { notice } = await report(new Error(gitStderr), false);
     expect(notice).toMatch(/^Sync with `main` failed: a commit being replayed adds files/);
-    expect(notice).toContain("Your branch was not changed by ShipIt.");
+    expect(notice).toContain("The rebase did not change your branch.");
     expect(notice).not.toContain("Permission denied");
   });
 
   it("says the workspace is still mid-rebase when the abort did not take, in the notice and the banner", async () => {
     const { emitMessage, notice } = await report(new Error(gitStderr), true);
     expect(notice).toContain("still mid-rebase");
-    expect(notice).not.toContain("was not changed");
+    expect(notice).not.toContain("did not change your branch");
     const banner = emitMessage.mock.calls.find(([m]) => (m as { type: string }).type === "rebase_aborted")?.[0] as
       { reason: string } | undefined;
     expect(banner?.reason).toContain("still mid-rebase");
@@ -220,7 +220,7 @@ describe("reportSyncFailure", () => {
   it("does not call the branch unchanged when git cannot say whether a rebase is in progress", async () => {
     const { notice } = await report(new Error(gitStderr), null);
     expect(notice).toContain("could not check whether the rebase was aborted");
-    expect(notice).not.toContain("was not changed");
+    expect(notice).not.toContain("did not change your branch");
   });
 
   it("adds no second notice for a failure the driver already explained", async () => {

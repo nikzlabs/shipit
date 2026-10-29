@@ -22,8 +22,15 @@ import {
   syncFailureAlreadyExplained,
 } from "./rebase-driver.js";
 import { PLUGIN_SKILL_RESTORE_WAIT_MS } from "./plugin-skill-clearing.js";
+import {
+  indexLockStateOf,
+  isStaleIndexLockKept,
+  retryRemovingStaleIndexLock,
+  STALE_INDEX_LOCK_MS,
+} from "./stale-index-lock.js";
 import { armFollowupNote, followupWindowOpen } from "./rebase-followup.js";
 import { withWorkspaceLock } from "./marketplace.js";
+import { reportSyncFailure } from "../api-routes-git.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { testDispatch } from "../integration_tests/dispatch-test-helpers.js";
@@ -3495,6 +3502,31 @@ describe("rebase-driver: the flow releases its own hold, not one that changed ha
     expect(runner.postTurnWorkInFlight).toBe(false);
   });
 
+  it("reports a cleanup failure after a completed rebase as one, not as a sync that changed nothing", async () => {
+    const { git, runner, deps } = setupDivergedSession();
+    const history: { role: string; text: string }[] = [];
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+    vi.mocked(handWorkspaceBackToWorker).mockImplementationOnce(() => { throw new Error("chown failed"); });
+    const syncDeps = { ...deps, chatHistoryManager: makeStubHistory(history), recordSyncCard: true };
+
+    let err: unknown = null;
+    try {
+      await runFlow(syncDeps, "main");
+    } catch (e) {
+      err = e;
+    }
+    await reportSyncFailure({ runner, chatHistoryManager: syncDeps.chatHistoryManager, git, sessionId: "s1", baseBranch: "main", err });
+
+    expect(fs.existsSync(path.join(runner.sessionDir, "main-only.txt"))).toBe(true);
+    expect(history.filter((m) => m.text.startsWith("Sync with")).map((m) => m.text)).toEqual([
+      "Sync with `main` rebased this branch onto `main` and force-pushed it, but a later step failed: handing "
+      + "the workspace files back to the session (chown failed). The rebase is done and was not undone.",
+    ]);
+    // The banner would otherwise read "Rebase failed".
+    expect(messages.filter((m) => m.type === "rebase_aborted")).toEqual([{ type: "rebase_aborted", sessionId: "s1" }]);
+  });
+
   it("leaves a hold taken over mid-flow alone, and drains nothing under it", async () => {
     const { git, runner, deps } = setupDivergedSession();
 
@@ -3567,7 +3599,7 @@ describe("rebase-driver: a sync blocked by untracked files at paths a replayed c
     const notice = buildSyncFailureNotice("main", (err as Error).message, false);
     expect(notice).toMatch(/^Sync with `main` failed: a commit being replayed adds files/);
     expect(notice).toContain("`cache/a.js`, `cache/b.js`, `cache/c.js` and 2 more");
-    expect(notice).toContain("Your branch was not changed by ShipIt.");
+    expect(notice).toContain("The rebase did not change your branch.");
     expect(notice).toContain("squash this branch");
     expect(notice).not.toMatch(/warning:|hint:|Rebasing \(/);
   });
@@ -3616,7 +3648,7 @@ describe("rebase-driver: buildSyncFailureNotice", () => {
       const notice = buildSyncFailureNotice("main", message, true);
       expect(notice).toContain("still mid-rebase");
       expect(notice).toContain("git rebase --abort");
-      expect(notice).not.toContain("was not changed");
+      expect(notice).not.toContain("did not change your branch");
     }
   });
 
@@ -3624,14 +3656,14 @@ describe("rebase-driver: buildSyncFailureNotice", () => {
     for (const message of [untracked, "fatal: could not read HEAD\n"]) {
       const notice = buildSyncFailureNotice("main", message, null);
       expect(notice).toContain("could not check whether the rebase was aborted");
-      expect(notice).not.toContain("was not changed");
+      expect(notice).not.toContain("did not change your branch");
       expect(notice).not.toContain("FAILED");
     }
   });
 
   it("leads an unclassified failure with git's error line, without doubling its full stop", () => {
     expect(buildSyncFailureNotice("main", "warning: noise\nfatal: invalid upstream 'origin/main'.\n", false)).toBe(
-      "Sync with `main` failed: fatal: invalid upstream 'origin/main'. Your branch was not changed by ShipIt; "
+      "Sync with `main` failed: fatal: invalid upstream 'origin/main'. The rebase did not change your branch; "
       + "check the workspace state and try again.",
     );
   });
@@ -3650,8 +3682,185 @@ describe("rebase-driver: buildSyncFailureNotice", () => {
     expect(notice).toBe(
       "Sync with `main` failed: the rebase replaces `.claude/skills` with a file or symlink, and git will not "
       + "delete the untracked files still inside. They are usually ignored files, which `git status` does not "
-      + "show. Your branch was not changed by ShipIt. To sync, move or delete those files, then sync again.",
+      + "show. The rebase did not change your branch. To sync, move or delete those files, then sync again.",
     );
+  });
+});
+
+describe("rebase-driver: a .git/index.lock left by a git process that died (planning#714)", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-index-lock-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeIndexLock(workDir: string, ageMs: number): string {
+    const lock = path.join(workDir, ".git", "index.lock");
+    fs.writeFileSync(lock, "");
+    const at = new Date(Date.now() - ageMs);
+    fs.utimesSync(lock, at, at);
+    return lock;
+  }
+
+  function flowDeps(git: GitManager, runner: SessionRunner, githubAuthenticated = false) {
+    return {
+      git,
+      githubAuthManager: makeStubAuth(githubAuthenticated),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    };
+  }
+
+  it("a manual sync removes a lock older than the threshold, logs it, and rebases on the retry", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const lock = writeIndexLock(workDir, STALE_INDEX_LOCK_MS + 60_000);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const rebase = vi.spyOn(git, "rebase");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await runFlow({ ...flowDeps(git, runner), recordSyncCard: true }, "main");
+
+    expect(result.status).toBe("rebased");
+    // Real git refused the first rebase on the lock; the helper did not skip it.
+    expect(rebase).toHaveBeenCalledTimes(2);
+    expect(fs.existsSync(lock)).toBe(false);
+    expect(fs.existsSync(path.join(workDir, "main-only.txt"))).toBe(true);
+    expect(warn.mock.calls.map(([line]) => String(line))).toContainEqual(
+      expect.stringMatching(/^\[rebase\] removed a stale \.git\/index\.lock \(11 minutes old\)/),
+    );
+  });
+
+  it("a younger lock is kept, and the reported sync notice names it and its age", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const lock = writeIndexLock(workDir, 3 * 60_000 + 5_000);
+    const headBefore = execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim();
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const rebase = vi.spyOn(git, "rebase");
+    const history: { role: string; text: string }[] = [];
+    const deps = { ...flowDeps(git, runner), chatHistoryManager: makeStubHistory(history), recordSyncCard: true };
+
+    let err: unknown = null;
+    try {
+      await runFlow(deps, "main");
+    } catch (e) {
+      err = e;
+    }
+    // What the sync route does with the flow's error.
+    await reportSyncFailure({ runner, chatHistoryManager: deps.chatHistoryManager, git, sessionId: "s1", baseBranch: "main", err });
+
+    expect(rebase).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(lock)).toBe(true);
+    expect(execSync("git rev-parse HEAD", { cwd: workDir }).toString().trim()).toBe(headBefore);
+    expect(history.map((m) => m.text)).toEqual([
+      "Sync with `main` failed: git found this workspace's index lock, `.git/index.lock` (3 minutes old). "
+      + "A git command is still running, or one stopped without removing the lock. The rebase did not change "
+      + "your branch. ShipIt removes the lock only once it is 10 minutes old, so that it does not stop a running "
+      + "command. Wait for the command to finish, then sync again. If no git command is running in this "
+      + "workspace, delete that file, then sync again.",
+    ]);
+  });
+
+  it("never removes a lock while a turn runs, or when git refused on a different lock", async () => {
+    const workDir = path.join(tmpDir, "repo");
+    fs.mkdirSync(path.join(workDir, ".git"), { recursive: true });
+    const lock = writeIndexLock(workDir, 60 * 60_000);
+    const refusal = (lockPath: string) => () => Promise.reject(new Error(
+      `fatal: Unable to create '${lockPath}': File exists.\n\nAnother git process seems to be running in this repository.\n`,
+    ));
+    const ownLock = vi.fn(refusal(lock));
+    const otherLock = vi.fn(refusal(path.join(tmpDir, "other", ".git", "index.lock")));
+
+    let duringTurn: unknown = null;
+    try {
+      await retryRemovingStaleIndexLock(workDir, () => true, ownLock);
+    } catch (e) {
+      duringTurn = e;
+    }
+    let elsewhere: unknown = null;
+    try {
+      await retryRemovingStaleIndexLock(workDir, () => false, otherLock);
+    } catch (e) {
+      elsewhere = e;
+    }
+
+    expect(ownLock).toHaveBeenCalledTimes(1);
+    expect(otherLock).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(lock)).toBe(true);
+    expect(indexLockStateOf(duringTurn)?.ageMs).toBeGreaterThanOrEqual(60 * 60_000);
+    expect(indexLockStateOf(elsewhere)).toBeNull();
+  });
+
+  it("retries the git step only once, even when a stale lock is back after the retry", async () => {
+    const workDir = path.join(tmpDir, "repo");
+    fs.mkdirSync(path.join(workDir, ".git"), { recursive: true });
+    const step = vi.fn(() => {
+      const lock = writeIndexLock(workDir, STALE_INDEX_LOCK_MS + 60_000);
+      return Promise.reject(new Error(`fatal: Unable to create '${lock}': File exists.\n`));
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    let err: unknown = null;
+    try {
+      await retryRemovingStaleIndexLock(workDir, () => false, step);
+    } catch (e) {
+      err = e;
+    }
+
+    expect(step).toHaveBeenCalledTimes(2);
+    expect(isStaleIndexLockKept(err)).toBe(true);
+  });
+
+  it("the automatic path counts a stale lock it could not remove as an error, and a young lock as a free deferral", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    const lock = writeIndexLock(workDir, STALE_INDEX_LOCK_MS + 60_000);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const deps = flowDeps(git, runner, true);
+    wireSystemTurnDeps(deps);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const realUnlink = fs.unlinkSync.bind(fs);
+    vi.spyOn(fs, "unlinkSync").mockImplementation((target) => {
+      if (String(target) === lock) throw new Error("EACCES: permission denied, unlink");
+      realUnlink(target);
+    });
+
+    const stale = await runAutoResolveAttempt(deps, "main");
+
+    // A free deferral would retry this every minute for ever.
+    expect(stale).toMatchObject({
+      outcome: "error",
+      didWork: true,
+      lastError: expect.stringContaining(".git/index.lock': File exists.") as unknown,
+    });
+    expect(fs.existsSync(lock)).toBe(true);
+
+    writeIndexLock(workDir, 60_000);
+    const young = await runAutoResolveAttempt(deps, "main");
+
+    expect(young).toMatchObject({ outcome: "deferred", didWork: false });
+    expect(fs.existsSync(lock)).toBe(true);
   });
 });
 
