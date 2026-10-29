@@ -117,7 +117,7 @@ describe("docs/316-done-sessions-return-memory — done sessions return their me
   });
 
   it("stops a done session the user has open, 10 minutes after it became done (req 8)", () => {
-    const runner = { viewerCount: 1, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 0 };
+    const runner = { viewerCount: 1, agentBusy: false, running: false, backgroundWorkDescriptions: [] as string[], disposed: false, queueLength: 0, lastViewerDetachAt: 0 };
     const { enforce, destroy, dispose } = harness([session()], runner);
     enforce();
     vi.advanceTimersByTime(WAIT - 60_000);
@@ -131,17 +131,33 @@ describe("docs/316-done-sessions-return-memory — done sessions return their me
   });
 
   it("leaves an open session with memory below the budget when it is not done", () => {
-    const runner = { viewerCount: 1, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 0 };
+    const runner = { viewerCount: 1, agentBusy: false, running: false, backgroundWorkDescriptions: [] as string[], disposed: false, queueLength: 0, lastViewerDetachAt: 0 };
     const { enforce, destroy } = harness([session({ mergedAt: undefined })], runner);
     afterWait(enforce);
     expect(destroy).not.toHaveBeenCalled();
   });
 
   it("leaves a done session whose agent is busy", () => {
-    const runner = { viewerCount: 0, agentBusy: true, disposed: false, queueLength: 0, lastViewerDetachAt: 0 };
+    const runner = { viewerCount: 0, agentBusy: true, running: false, backgroundWorkDescriptions: [] as string[], disposed: false, queueLength: 0, lastViewerDetachAt: 0 };
     const { enforce, destroy } = harness([session()], runner);
     afterWait(enforce);
     expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("starts the wait when the agent stops, not at a merge during its turn (reqs 4, 11)", () => {
+    const runner = {
+      viewerCount: 0, agentBusy: true, running: true, backgroundWorkDescriptions: [] as string[],
+      disposed: false, queueLength: 0, lastViewerDetachAt: 0,
+    };
+    const { enforce, destroy } = harness([session()], runner);
+    afterWait(enforce);
+    runner.running = false;
+    runner.agentBusy = false;
+    enforce();
+    expect(destroy).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(WAIT);
+    enforce();
+    expect(destroy).toHaveBeenCalledWith(ID);
   });
 
   it("leaves a merged parent with an unfinished child", () => {
@@ -165,7 +181,7 @@ describe("abandoned warm drafts return their memory", () => {
 
   const draft = (overrides: Partial<SessionInfo> = {}) =>
     session({ title: "Warm session", warm: true, mergedAt: undefined, ...overrides });
-  const unviewed = () => ({ viewerCount: 0, agentBusy: false, disposed: false, queueLength: 0, lastViewerDetachAt: 0 });
+  const unviewed = () => ({ viewerCount: 0, agentBusy: false, running: false, backgroundWorkDescriptions: [] as string[], disposed: false, queueLength: 0, lastViewerDetachAt: 0 });
 
   function afterWait(enforce: () => void): void {
     enforce();

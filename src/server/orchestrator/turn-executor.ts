@@ -1092,6 +1092,8 @@ export async function executeAgentTurn(
   };
 
   deps.listenerDeps.sseBroadcast("session_agent_started", { sessionId, activity });
+  // docs/316-done-sessions-return-memory req 11 — a row the sidebar cap left out returns while its agent works.
+  deps.listenerDeps.sseBroadcast("session_list", { sessions: deps.listenerDeps.sessionManager.list() });
 
   // Before the listeners below, so `onError` can read the error that ended the turn.
   agent.on("error", (err: Error) => { lastAgentError = err; });

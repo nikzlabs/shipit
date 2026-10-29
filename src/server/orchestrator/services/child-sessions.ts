@@ -3,7 +3,7 @@ import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import { isLiveMergeWatch, type SessionManager } from "../sessions.js";
 import { addUnreportedPr, unreportedPrs, withUnreportedPrs } from "../merge-watch-prs.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
-import { REPOSITORY_UNTRUSTED_CODE } from "../session-runner.js";
+import { REPOSITORY_UNTRUSTED_CODE, isAgentWorking } from "../session-runner.js";
 import { parseGitHubRemote, stripUrlCredentials } from "../git-utils.js";
 import type {
   SessionInfo,
@@ -98,7 +98,7 @@ function isChildLive(
   seen.add(child.id);
   const runner = runnerRegistry.get(child.id);
   const busy = runner?.agentBusy === true || (runner?.queueLength ?? 0) > 0;
-  if (busy || !isSessionDone(child, { hasUnfinishedDescendant: false })) return true;
+  if (!isSessionDone(child, { hasUnfinishedDescendant: false, agentWorking: busy })) return true;
   return sessionManager.findChildren(child.id)
     .some((grandchild) => isChildLive(sessionManager, runnerRegistry, grandchild, seen));
 }
@@ -711,10 +711,10 @@ export async function sendChildMessage(
     throw new ServiceError(400, "Message text exceeds 50,000 characters");
   }
   const child = assertChildOfParent(sessionManager, parentSessionId, childSessionId);
-  if (
-    runnerRegistry.get(child.id)?.running !== true
-    && isSessionDone(child, { hasUnfinishedDescendant: hasVisibleDirectChildren(sessionManager, child.id) })
-  ) {
+  if (isSessionDone(child, {
+    hasUnfinishedDescendant: hasVisibleDirectChildren(sessionManager, child.id),
+    agentWorking: isAgentWorking(runnerRegistry.get(child.id)),
+  })) {
     throw new ResolvedChildMessageError(child);
   }
   if (child.archived) {

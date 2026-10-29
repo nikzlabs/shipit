@@ -107,7 +107,12 @@ export function SessionSidebar({
     () => (hiddenUrls.size === 0 ? sessions : sessions.filter((s) => !s.remoteUrl || !hiddenUrls.has(s.remoteUrl))),
     [sessions, hiddenUrls],
   );
-  const isDone = useMemo(() => doneSessionTest(sessions), [sessions]);
+  const activeRunnerSessions = useSessionStore((s) => s.activeRunnerSessions);
+  const backgroundTaskSessions = useSessionStore((s) => s.backgroundTaskSessions);
+  const isDone = useMemo(
+    () => doneSessionTest(sessions, (id) => activeRunnerSessions.has(id) || backgroundTaskSessions.has(id)),
+    [sessions, activeRunnerSessions, backgroundTaskSessions],
+  );
   // docs/324-scheduled-sessions req 20 — runs have their own view and are not in the regular list.
   const [regularSessions, scheduledSessions] = useMemo(() => {
     const isScheduled = scheduledViewTest(sessions);

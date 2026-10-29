@@ -18,14 +18,34 @@ the idle enforcer did not ask at all.
 
 Now `src/server/shared/session-resolution.ts` owns it:
 
-- `isSessionDone(session, { hasUnfinishedDescendant })` — PR resolved and not
-  used since, not pinned, no workspace block, no **Keep preview running**
-  reservation (req 7), and no unfinished descendant.
-- `doneSessionTest(sessions)` — builds the descendant context from the session
-  list itself. Only a non-archived descendant whose own work is not finished
-  counts: it marks its root (`rootSessionId`) and each non-archived ancestor up
-  its `parentSessionId` chain, and the walk stops at an archived ancestor. So a
-  spawn tree whose every session is merged is done.
+- `isSessionDone(session, { hasUnfinishedDescendant, agentWorking })` — PR
+  resolved and not used since, not pinned, no workspace block, no **Keep
+  preview running** reservation (req 7), no agent working in it (req 11), and
+  no unfinished descendant.
+- `doneSessionTest(sessions, isAgentWorking)` — builds the descendant context
+  from the session list itself. Only a non-archived descendant whose own work
+  is not finished counts: it marks its root (`rootSessionId`) and each
+  non-archived ancestor up its `parentSessionId` chain, and the walk stops at an
+  archived ancestor. So a spawn tree whose every session is merged is done, and
+  a child an agent works in keeps its root out of **Recently resolved** — the
+  sidebar nests the child under that root.
+- "An agent works" is what the sidebar row shows as **Agent running**: a turn
+  in flight or background work. The browser reads `activeRunnerSessions` and
+  `backgroundTaskSessions`; the server reads the same two runner fields
+  (`running`, `backgroundWorkDescriptions`) through `isAgentWorking` in
+  `session-runner.ts`, which also feed the `active_runners` and
+  `session_attention` SSE snapshot. The parameter is required, so a caller
+  cannot decide "done" without it.
+- The sidebar cap runs inside `SessionManager.list()`, and the session manager
+  is built before the runner registry. So `bootstrap-managers.ts` sets the test
+  with `setAgentWorkingTest` when the registry exists; until then, and in tests
+  that do not set it, no agent works. The browser decides "done" itself, from
+  its own runner sets, so the row moves under **Recently resolved** as soon as
+  the agent stops; the cap can hide it from the next list the server builds.
+- A browser can only regroup rows it has. So the server sends `session_list`
+  again beside every `session_agent_started` — in `turn-executor.ts`, and for a
+  turn the CLI starts in `agent-listeners.ts` — and a row the cap left out
+  comes back while its agent works.
 - The server list holds rows the browser never gets: archived rows and done
   rows the cap hides. None of them can mark another session, so the browser
   and the server give the same answer for every row the browser gets (req 1).
@@ -42,8 +62,9 @@ longer stays visible only because it has spawned sessions. The ranking of the
 top five is unchanged.
 
 `child-sessions.ts` calls `isSessionDone` directly, because its "finished"
-walks live descendants; it checks "agent busy" beside the test, not inside it.
-The old optional `isRunning` input is gone, because only that caller set it.
+walks live descendants. The per-parent cap passes `agentBusy` (or a queued
+turn) as `agentWorking`, which is wider than req 11 needs: a child that costs a
+container also costs a slot. `sendChildMessage` passes `isAgentWorking`.
 
 ## Reclaim (reqs 3–6, 8, 9)
 
@@ -51,7 +72,9 @@ The old optional `isRunning` input is gone, because only that caller set it.
 whenever a runner goes idle), **before** the memory-budget check, so it runs
 below the budget too (req 6). A session is stopped when:
 
-- it is done, per `doneSessionTest(sessionManager.listAll())`;
+- it is done, per `doneSessionTest(sessionManager.listAll(), …)` with the
+  runner registry's `isAgentWorking`. So the wait starts when the agent stops,
+  not at a merge during its turn (reqs 4, 11);
 - `DONE_SESSION_RECLAIM_AFTER_MS` (10 min, fixed — reqs 4, 9) has passed since
   `doneWaitFrom`, the pass that first saw it done. It is not `mergedAt`,
   because a session can become done long after its PR resolved (a pin removed,
@@ -101,8 +124,9 @@ no longer done (req 5) and the next turn starts a fresh container.
   later entry into `executeAgentTurn` for the same turn — the interactive
   path's own call (it already recorded use), the executor's retries, the
   dispatched turn's no-result retry, and startup adoption. These pass
-  `continuesTurn`. So a PR that merges during a turn resolves the session at
-  once, and the rest of that turn does not undo it.
+  `continuesTurn`. So a PR that merges during a turn resolves the session, and
+  the rest of that turn does not undo it. The session becomes done when the
+  agent stops working (req 11).
 - `markMerged` / `markClosed` store the time with milliseconds
   (`strftime('%Y-%m-%dT%H:%M:%fZ')`), so a turn that starts in the same second
   as the merge is ordered correctly. Older rows keep the SQLite
@@ -119,5 +143,7 @@ stop its container soon after it ends, before the 10-minute wait.
 - `src/server/orchestrator/idle-enforcer.ts` (+ `idle-enforcer.test.ts`)
 - `src/server/orchestrator/session-container.ts` — `serializeTeardown`
 - `src/server/orchestrator/session-runner.ts` — `onViewersOrphaned`, wired in `runner-registry-factory.ts`
-- `src/server/orchestrator/sessions.ts` — `filterVisibleInSidebar`
+- `src/server/orchestrator/sessions.ts` — `filterVisibleInSidebar`, `setAgentWorkingTest`
+- `src/server/orchestrator/session-runner.ts` — `isAgentWorking`; bound in `bootstrap-managers.ts`
+- `src/client/components/SessionSidebar/SessionSidebar.tsx` — builds the browser's test
 - `src/client/components/SessionSidebar/useSessionGrouping.ts`, `SessionGroup.tsx`

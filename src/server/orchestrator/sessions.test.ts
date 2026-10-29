@@ -1079,10 +1079,23 @@ describe("SessionManager", () => {
         merged("reused", "2024-01-01 04:00:00", "2024-01-03 00:00:00"),
       ];
       const visible = new Set(filterVisibleInSidebar(sessions, 1).map((s) => s.id));
-      const isDone = doneSessionTest(sessions);
+      const isDone = doneSessionTest(sessions, () => false);
       const hidden = sessions.filter((s) => !visible.has(s.id));
       expect(hidden.map((s) => s.id).sort()).toEqual(["closed", "plain"]);
       for (const s of hidden) expect(isDone(s)).toBe(true);
+    });
+
+    it("docs/316-done-sessions-return-memory req 11: never hides a session an agent works in", () => {
+      const sessions = [
+        merged("new", "2024-01-05 09:00:00"),
+        merged("working", "2024-01-01 09:00:00"),
+        { ...merged("kid", "2024-01-01 08:00:00"), parentSessionId: "root", rootSessionId: "root" },
+        merged("root", "2024-01-01 07:00:00"),
+      ];
+      const working = new Set(["working", "kid"]);
+      const visible = filterVisibleInSidebar(sessions, 1, (id) => working.has(id)).map((s) => s.id).sort();
+      expect(visible).toEqual(["kid", "new", "root", "working"]);
+      expect(filterVisibleInSidebar(sessions, 1).map((s) => s.id)).toEqual(["new"]);
     });
 
     it("docs/241: keeps a reserved session visible through the merged cap", () => {
@@ -1307,8 +1320,8 @@ describe("SessionManager", () => {
           { ...active("low"), parentSessionId: "mid", rootSessionId: "root" },
         ];
         const visible = filterVisibleInSidebar(sessions, 1);
-        const onServer = doneSessionTest(sessions);
-        const inBrowser = doneSessionTest(visible);
+        const onServer = doneSessionTest(sessions, () => false);
+        const inBrowser = doneSessionTest(visible, () => false);
         expect(visible.map((s) => s.id).sort()).toEqual(["low", "other", "root"]);
         expect(inBrowser(sessions[0])).toBe(false);
         for (const s of visible) expect(inBrowser(s)).toBe(onServer(s));
@@ -1342,6 +1355,23 @@ describe("SessionManager", () => {
         .run("2024-06-01T00:00:00.000Z", "target");
 
       expect(mgr.list().map((s) => s.id)).toContain("target");
+    });
+
+    it("docs/316-done-sessions-return-memory req 11: keeps an old merged session in the list while an agent works in it", () => {
+      const mgr = new SessionManager(dbManager);
+      seedMerged(mgr, "target", "2024-01-01 09:00:00", "2024-01-01 09:00:00");
+      for (let i = 0; i < MAX_MERGED_SESSIONS_PER_REPO; i++) {
+        const day = String(i + 2).padStart(2, "0");
+        seedMerged(mgr, `m${i + 2}`, `2024-01-${day} 09:00:00`, `2024-01-${day} 09:00:00`);
+      }
+      expect(mgr.list().map((s) => s.id)).not.toContain("target");
+
+      let working = true;
+      mgr.setAgentWorkingTest((id) => working && id === "target");
+      expect(mgr.list().map((s) => s.id)).toContain("target");
+
+      working = false;
+      expect(mgr.list().map((s) => s.id)).not.toContain("target");
     });
 
     it("archiving a visible merged session lowers the count without surfacing a demoted one", () => {

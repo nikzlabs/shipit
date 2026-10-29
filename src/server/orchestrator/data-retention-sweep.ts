@@ -27,7 +27,7 @@ const SESSION_UPLOADS_SUBDIR = "uploads";
 export interface DataRetentionSweepDeps {
   sessionManager: Pick<
     SessionManager,
-    "listAll" | "setRetainedData" | "appendPendingAgentNotice" | "dataRetention"
+    "listAll" | "setRetainedData" | "appendPendingAgentNotice" | "dataRetention" | "isAgentWorking"
   >;
   chatHistory: { append(sessionId: string, message: PersistedMessage): unknown };
   /** A session directory is `<sessionsRoot>/<id>`; a workspace anywhere else is never touched. */
@@ -226,7 +226,8 @@ async function deleteDueSession(
     const sessions = deps.sessionManager.listAll();
     const session = sessions.find((s) => s.id === id);
     if (!session) return null;
-    const dueAt = dataDeletionTimeMs(session, doneSessionTest(sessions)(session), config);
+    const isDone = doneSessionTest(sessions, deps.sessionManager.isAgentWorking);
+    const dueAt = dataDeletionTimeMs(session, isDone(session), config);
     if (dueAt === undefined || dueAt > now()) return null;
     if (deps.isSessionLive(id)) return null;
     const dirs = retainedDataDirs(session, deps.sessionsRoot);
@@ -306,7 +307,7 @@ export async function sweepRetainedSessionData(
   const paceMs = deps.paceMs ?? 0;
 
   const sessions = deps.sessionManager.listAll();
-  const isDone = doneSessionTest(sessions);
+  const isDone = doneSessionTest(sessions, deps.sessionManager.isAgentWorking);
   for (const listed of sessions) {
     const done = isDone(listed);
     if (!isUnderDataRetention(listed, done)) continue;

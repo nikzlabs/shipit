@@ -38,8 +38,9 @@ export function holdsActiveReservation(session: SessionInfo | undefined | null):
 }
 
 // docs/298 — a broken checkout is not finished work, exactly as a pin is not.
-function isOwnWorkFinished(session: SessionInfo): boolean {
-  return isWorkResolved(session)
+function isOwnWorkFinished(session: SessionInfo, agentWorking: boolean): boolean {
+  return !agentWorking
+    && isWorkResolved(session)
     && !session.pinnedAt
     && !session.workspaceBlock
     && !holdsActiveReservation(session);
@@ -47,8 +48,11 @@ function isOwnWorkFinished(session: SessionInfo): boolean {
 
 // docs/316-done-sessions-return-memory: "done" puts a row under Recently
 // resolved, lets the sidebar cap hide it, and lets the idle enforcer stop it.
-export function isSessionDone(session: SessionInfo, context: { hasUnfinishedDescendant: boolean }): boolean {
-  return isOwnWorkFinished(session) && !context.hasUnfinishedDescendant;
+export function isSessionDone(
+  session: SessionInfo,
+  context: { hasUnfinishedDescendant: boolean; agentWorking: boolean },
+): boolean {
+  return isOwnWorkFinished(session, context.agentWorking) && !context.hasUnfinishedDescendant;
 }
 
 const isLive = (s: SessionInfo): boolean => !s.userArchived && !s.archived;
@@ -57,11 +61,16 @@ const isLive = (s: SessionInfo): boolean => !s.userArchived && !s.archived;
 // list. Only unfinished, unarchived descendants count, and the walk stops at an
 // archived ancestor: the server list holds rows the browser never gets (archived
 // ones, and done ones the cap hides), and none of them may change the answer.
-export function doneSessionTest(sessions: readonly SessionInfo[]): (session: SessionInfo) => boolean {
+// `isAgentWorking` is what the browser shows as "Agent running": a turn in
+// flight or background work.
+export function doneSessionTest(
+  sessions: readonly SessionInfo[],
+  isAgentWorking: (sessionId: string) => boolean,
+): (session: SessionInfo) => boolean {
   const byId = new Map(sessions.map((s) => [s.id, s]));
   const withUnfinishedDescendant = new Set<string>();
   for (const s of sessions) {
-    if (!isLive(s) || isOwnWorkFinished(s)) continue;
+    if (!isLive(s) || isOwnWorkFinished(s, isAgentWorking(s.id))) continue;
     if (s.rootSessionId && s.rootSessionId !== s.id) withUnfinishedDescendant.add(s.rootSessionId);
     const seen = new Set([s.id]);
     let parent = s.parentSessionId ? byId.get(s.parentSessionId) : undefined;
@@ -71,5 +80,8 @@ export function doneSessionTest(sessions: readonly SessionInfo[]): (session: Ses
       parent = parent.parentSessionId ? byId.get(parent.parentSessionId) : undefined;
     }
   }
-  return (session) => isSessionDone(session, { hasUnfinishedDescendant: withUnfinishedDescendant.has(session.id) });
+  return (session) => isSessionDone(session, {
+    hasUnfinishedDescendant: withUnfinishedDescendant.has(session.id),
+    agentWorking: isAgentWorking(session.id),
+  });
 }

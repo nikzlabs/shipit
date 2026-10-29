@@ -14,7 +14,7 @@ import type { AnchoredTurn, CacheTtl, UsageManager } from "../usage.js";
 import type { PersistedMessage } from "../chat-history.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
-import { DISPATCH_SETUP_FAILURE } from "../session-runner.js";
+import { DISPATCH_SETUP_FAILURE, isAgentWorking } from "../session-runner.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import type { TurnHandle, TurnOutcome } from "../turn-settlement.js";
 import { selectionOf } from "../turn-attribution.js";
@@ -289,7 +289,8 @@ export class IdleCompaction {
     if (!this.deps.isEnabled()) return `"${SETTING.label}" is off`;
     const session = this.deps.sessionManager.get(sessionId);
     if (!session || session.archived || session.userArchived) return "the session is archived";
-    if (doneSessionTest(this.deps.sessionManager.listAll())(session)) return "the session is done (req 7)";
+    const isWorking = (id: string): boolean => isAgentWorking(this.deps.runnerRegistry.get(id));
+    if (doneSessionTest(this.deps.sessionManager.listAll(), isWorking)(session)) return "the session is done (req 7)";
     const agentId = session.agentId ?? this.deps.defaultAgentId;
     if (agentId !== deadline.agentId || (session.model ?? null) !== deadline.model) {
       return "the session's harness or model changed, so its next turn reads another cache";

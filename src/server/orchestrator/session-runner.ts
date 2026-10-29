@@ -660,6 +660,13 @@ export function sessionHasLiveAgent(
   return (registry?.get(sessionId)?.getAgent() ?? null) !== null;
 }
 
+// The browser's "Agent running": `active_runners` and the background work of `session_attention`.
+export function isAgentWorking(
+  runner: Pick<SessionRunnerInterface, "running" | "backgroundWorkDescriptions"> | undefined,
+): boolean {
+  return !!runner && (runner.running || runner.backgroundWorkDescriptions.length > 0);
+}
+
 export interface SessionRunnerEvents {
   message: [WsServerMessage];
   idle: [];
