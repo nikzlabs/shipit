@@ -168,6 +168,29 @@ describe("routeVoiceNote", () => {
     expect(emitted).toHaveLength(1);
   });
 
+  it("delivers a permission note by both paths, and it leaves the authored flag alone", async () => {
+    const { runner, emitted } = fakeRunner();
+    const credentialStore = fakeCredentialStore({
+      mode: "both",
+      webhook: { url: "https://hook.example/notes", token: "t" },
+    });
+    const posted: string[] = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      posted.push(init?.body as string);
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await route({ summary: "I need your approval to run a command — approve or deny it on screen." }, {
+      runner, sessionId: "s1", credentialStore, source: "permission", fetchImpl,
+      idFactory: deterministicId, now: fixedNow,
+    });
+
+    expect(emitted[0]).toMatchObject({ type: "voice_note", kind: "permission" });
+    expect(runner.recordedCards[0]).toMatchObject({ message: { voiceNote: { kind: "permission" } } });
+    expect(JSON.parse(posted[0]!) as Record<string, unknown>).toMatchObject({ summary: expect.stringContaining("approval") });
+    expect(hasAuthoredVoiceNoteThisTurn(runner)).toBe(false);
+  });
+
   it("deduplicates event observation against the bridge fallback", async () => {
     const { runner, emitted } = fakeRunner();
     const credentialStore = fakeCredentialStore({

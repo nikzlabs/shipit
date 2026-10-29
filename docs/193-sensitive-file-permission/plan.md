@@ -417,6 +417,107 @@ Why it is not in this change:
 
 Whether to build it is a planning decision, recorded on planning#114.
 
+## A wait that nobody answers (planning#711)
+
+In 529 sessions from 2026-09-23 to 2026-10-28, 26 calls in 15 sessions waited
+for an approval that nobody gave, until the CLI's 30-minute timeout. The user
+away from the screen got no alert, and the agent got only the CLI's error text.
+
+### What still asks (measured)
+
+Claude Code 2.1.300, ShipIt's flags and the repository's
+`docker/agent-hooks/managed-settings.json`, with a probe
+`--permission-prompt-tool` that records each request:
+
+| Call | Request | With an allow rule for the path |
+|---|---|---|
+| Write `.claude/skills/x/SKILL.md` | yes | yes (`Edit(//<repo>/.claude/**)`, `Edit(.claude/**)`, `Edit(/.claude/**)`) |
+| Edit `.claude/skills/x/SKILL.md`; Write `.claude/skills/x/SKILL.md` through `.claude/skills` → `../.agents/skills` | yes | — |
+| Write, Edit, Bash `rm -rf` of `.agents/skills/x`, with `.claude/skills` → `../.agents/skills` | no | — |
+| Bash `mkdir -p .claude && ln -s ../.agents/skills .claude/skills`; `mv .claude/skills .agents/skills` | yes | — |
+| Bash `rm -rf` of `.claude/skills/x`, or of a `.claude` folder in `/tmp` | yes | — |
+| Bash `rm -rf <dir>/.git` | yes | yes (`Bash(rm -rf:*)`, `Edit(//<dir>/**)`) |
+| Bash `rm -f .gitconfig`, `rm -f ~/.gitconfig`, `rm -f /tmp/…/.gitconfig`, `echo x >> .bashrc` | yes | yes (`Edit(.gitconfig)`, `Edit(**/.gitconfig)`) |
+| Bash `rm -rf` of an ordinary folder in `/tmp`, `/persist` or the working folder; also depth 1, two paths, a glob, a variable, `cd … &&`, `..`, `rm -r`, `--permission-mode auto` | no | — |
+| Bash `git config --global …`, also after `cd`, with `HOME` changed, with `GIT_CONFIG_GLOBAL` unset, and in auto mode; `git config --file ~/.gitconfig …`, `git config --file /tmp/…`, `git -C <dir> config …` | no | — |
+| Bash `git rm -r --cached .claude/skills/x` | no | — |
+| Bash `cat ~/.gitconfig` | no | — |
+
+So the CLI asks for a write or a delete whose target it can read when the target
+has a `.claude` segment, is a `.git` folder (measured with `rm -rf` only) or is a
+file it treats as sensitive, and no allow rule that was tried removes the
+request. Two causes that planning#711 inferred did not
+reproduce: `git config --global` and `git rm --cached .claude/…` do not ask, and
+an ordinary `rm -rf` does not ask. The recorded cases most likely named a `.git`
+or `.claude` path or a sensitive file; the transcripts are not in this
+container, so that is not checked. A session container also sets
+`GIT_CONFIG_GLOBAL=/credentials/.gitconfig`, so `git config --global` does not
+touch `~/.gitconfig`.
+
+Nothing in ShipIt's settings can change this, so `/shipit-docs/environment.md`
+("Writes that wait for the user's approval") lists what asks and the forms that
+do not, and `/shipit-docs/skills.md` tells the agent to write Claude skills at
+`.agents/skills/` behind a `.claude/skills` symlink, as this repository has done
+since `c15fa77c2`.
+
+The timeout result, measured with a probe tool that never answers:
+`MCP server "probe" tool "permission_prompt" sent no response or progress for
+30s; aborting. If this server is configured in your MCP settings, set a
+per-server "timeout" (ms) …; otherwise set CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT (ms)
+globally (0 disables).` `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=20000` gave 30 s. The
+CLI sends no `notifications/cancelled`.
+
+### The alert (req 6)
+
+`agent_permission_request` calls `deliverVoiceNote` with the source
+`"permission"` and a headline from `derivePermissionHeadline`: the kind of call
+("to run a command", "to change a file") and the choice, never a path. The voice
+note router does the rest as for a question or a plan: a voice note card in
+native mode, a webhook post in external mode, both in both.
+
+The note goes out when the session **starts** to wait — when
+`runner.awaitingPermissionIds` was empty — not for each card. That is the same
+edge on which the sidebar mark turns on and `useAttentionNotifications` chimes,
+so the three alerts agree. On 2026-10-12, 8 background subagents opened a card
+each; one note per card would have played 8 headlines and posted
+8 webhooks for one thing the user must do. A card that opens while another
+waits adds no alert; one that opens after every card is answered starts a new
+wait and a new note.
+
+### The agent's notice (req 7)
+
+The broker's deny already tells why the wait ended, internally: `endToolUse`
+(the gated call got its result), an aborted `signal` (Codex withdrew the
+request, for example when its turn is interrupted) or `clearPending` (the agent
+process exited). In the first two the agent stopped waiting while it still
+runs, so those add `callEnded: { summary }` to `agent_permission_resolved`; an
+exit adds nothing, because the turn that would read the line is gone with the
+process. The orchestrator settles the card as before and
+then parks `buildUnansweredPermissionNotice` with
+`sessionManager.appendPendingAgentNotice`, so the next turn starts with a
+`[ShipIt]` line that names the call, says that nobody answered and nobody denied
+it, and that it did not run.
+
+- **A user's Stop gets no notice.** A one-shot CLI's interrupt also gives the
+  gated call a result, and Codex withdraws its request on an interrupt, so the
+  orchestrator skips the notice when `stoppedByUser(runner)`. A streaming Stop
+  kills the process, which is `clearPending`.
+- **The text names the Claude timeout only as a condition** ("if its result
+  said that the MCP tool `permission_prompt` sent no response"), because the
+  same flag also comes from `TaskStop` and from Codex.
+- **Two calls with the same summary give one line.**
+  `appendPendingAgentNotice` drops a notice that is already parked word for
+  word; the agent still learns that this call did not run.
+- **A subagent that the main agent stopped gets the notice.** `TaskStop` gives
+  the subagent's gated call a result too. The line is true there (nobody
+  answered, the call did not run), and the main agent already knows it.
+- **The card does not change.** It still reads "Denied", as the owner decided on
+  2026-09-30. A card state for "not answered", and the 10-minute bound above,
+  need the owner's decision on planning#711.
+- **A worker on an older image** sends no `callEnded`, so no notice.
+- The text is inline in `permission-wait-notice.ts`, like the one-line notices
+  in `gpu-container-start.ts` and `abandoned-rebase-sweep.ts`.
+
 ## Agent-agnostic seam
 
 The canonical core is agent-neutral; each adapter only translates its native
@@ -492,7 +593,8 @@ mid-turn card in that position reproduced it, not just this one.
 - `src/server/orchestrator/proxy-agent-process.ts` + `container-session-runner.ts` — `resolvePermission` → `/agent/permission/resolve`.
 - `src/server/orchestrator/ws-handlers/agent-listeners.ts` — `agent_permission_request` → emitChatCard + `session_attention` (Thread C); `agent_permission_resolved` → `settlePermissionCard`; an agent `error` denies the cards its process left.
 - `src/server/orchestrator/permission-cards.ts` — `settlePermissionCard` (patch the recorded card mid-turn via `persistCardTransition`, else the DB row; `permission_resolved`; clear attention with the last id) and `denyAbandonedPermissionCards`, called from `turn-executor.ts` (exit), `runner-registry-factory.ts` (`turn_abandoned`) and `startup-tasks.ts` (`handleContainerExited`); `reconcilePermissionCards`, called from `container-session-runner.ts` `reconcileSavedPermissionCards`.
-- `src/server/orchestrator/permission-wait-notice.ts` + `prompts/permission-wait-notice.md` — the `[ShipIt]` line for a background subagent's request that waits; armed by `agent-listeners.ts` on `agent_permission_request`.
+- `src/server/orchestrator/permission-wait-notice.ts` + `prompts/permission-wait-notice.md` — the `[ShipIt]` line for a background subagent's request that waits; armed by `agent-listeners.ts` on `agent_permission_request`. Also `buildUnansweredPermissionNotice`, the next turn's line for a call that ended before anyone answered (req 7).
+- `src/server/orchestrator/ws-handlers/agent-voice-handler.ts` — `derivePermissionHeadline`, the headline of the `"permission"` voice note that `agent-listeners.ts` sends when the session starts to wait (req 6).
 - `src/server/orchestrator/chat-card-persistence.ts` — `updateRecordedCard` (patch a recorded card in place for a transition that lands within its own turn, without re-emitting it); `emitChatCard` advances `lastPersistedBufferIndex` past the buffer after persisting (the switch/reconnect overlap fix that kept a pending card from vanishing).
 - `src/client/hooks/message-handlers/agent-event.ts` — the streaming-assistant merge excludes card-carrying messages (`CARD_MESSAGE_FIELDS`) as merge targets, so a replayed event can't rebuild a card message and drop its card field; `agent_tool_result` routes each result to the message whose `toolUse` holds the id (`indexOfToolUse` / `fallbackResultTarget`), so a card between a call and its result can't orphan the tool row.
 - `src/server/orchestrator/{session-runner,container-session-runner}.ts` — `awaitingPermissionIds` per-runner set (Thread C).
@@ -544,4 +646,5 @@ mid-turn card in that position reproduced it, not just this one.
 - `permission-broker.test.ts` — `describePermissionDetails` (raw command whole, JSON fallback, `PERMISSION_DETAILS_CHARS` bound) and the broadcast carrying `details` alongside the clipped `summary`.
 - `permission-broker.test.ts` — `SubagentCallTracker` (main, foreground, background, a closed call, `whenOpened`), and the request event carrying `subagent`. `agent-controller.test.ts` — the same three callers from the event order the Claude CLI emits, a request that arrives before its stream event, and a replaced process's late events. `session-worker.test.ts` (integration) — the endpoint marks a background subagent's request, also one that arrives before its stream event, and leaves the main agent's unmarked.
 - `permission-wait-notice.test.ts` — the line goes into the running turn after the delay and one time; it lists every request that waits; an answered request is not told; a later request gets a line of its own; no turn is started for an idle session and the next turn gets the line; a turn that cannot take a steer gets nothing queued; a dispatch that throws is tried again; the turn's permission mode stays. `agent-listeners.test.ts` — only a `background` request arms the line, and an answer ends it.
+- `agent-listeners.test.ts` — one `"permission"` voice note when the session starts to wait and none for a card that joins it; a deny with `callEnded` parks the notice, a plain deny and a user's Stop do not. `agent-voice-handler.test.ts` — `derivePermissionHeadline` for Claude's and Codex's tool names. `permission-broker.test.ts` and `agent-controller.test.ts` — the deny from a call's result and from a Codex withdrawal carries `callEnded`, an exit's does not. `voice-note-router.test.ts` — a `"permission"` note keeps its kind on the card and posts the webhook.
 - `managed-settings.test.ts` — the `Edit(//persist/**)` allow rule, and no allow rule the CLI ignores. The test reads the file; what the CLI does with the rules is the measurement above, which no test repeats.

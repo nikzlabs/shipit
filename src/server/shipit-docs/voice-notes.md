@@ -51,6 +51,9 @@ speak for itself on screen.
   about to see — so they can answer by ear without looking. If you skip the
   authored note, ShipIt derives a rougher headline from the interrupt so the
   user is never left silent — but the authored one is better. Author first.
+- **An approval card needs no note from you.** When a call of yours or of a
+  subagent starts to wait for the user's approval, ShipIt sends a note itself:
+  you wait inside the call and cannot.
 
 ## What you must NOT do
 

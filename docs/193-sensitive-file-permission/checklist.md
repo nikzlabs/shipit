@@ -20,3 +20,7 @@
 - [x] Mark a subagent's request on `agent_permission_request` (req 3)
 - [x] Steer a `[ShipIt]` line into the running turn when a background subagent's request has waited 2 minutes (req 2)
 - [x] State the proposal for a bound on a card that nobody can answer (req 5)
+- [x] Send a `"permission"` voice note when the session starts to wait for an approval (req 6)
+- [x] Park a `[ShipIt]` notice for the next turn when a call ends before anyone answered (req 7)
+- [x] Measure with Claude Code 2.1.300 which calls still ask and whether an allow rule removes the request (plan.md, "What still asks")
+- [x] Say in `/shipit-docs/environment.md` and `/shipit-docs/skills.md` which writes ask and which forms do not

@@ -122,7 +122,7 @@ export interface PersistedMessage {
   voiceNote?: {
     id: string;
     headline: string;
-    kind: "authored" | "ask" | "plan";
+    kind: "authored" | "ask" | "plan" | "permission";
     createdAt: string;
   };
   bugReport?: PersistedBugReport;

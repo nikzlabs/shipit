@@ -210,19 +210,28 @@ Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restri
 
 ### Writes that wait for the user's approval
 
-Some writes are neither allowed nor refused: the agent CLI asks, and ShipIt shows the user an approve/deny card. **The call returns nothing until the user answers.** With no user at the screen it waits: the Claude CLI ends an unanswered request as denied after 30 minutes. So know what asks before you plan around it, most of all for work you give to subagents.
+Some writes are neither allowed nor refused: the agent CLI asks, and ShipIt shows the user an approve/deny card. **The call returns nothing until the user answers.** With no user at the screen it waits: the Claude CLI ends an unanswered request after 30 minutes, and the call's result says that the MCP tool `permission_prompt` sent no response. Nobody denied it. ShipIt then puts a `[ShipIt]` line at the start of your next turn that names the call and says it did not run. So know what asks before you plan around it, most of all for work you give to subagents.
 
-For the Claude agent (measured with Claude Code 2.1.293):
+For the Claude agent (measured with Claude Code 2.1.293 and 2.1.300):
 
 | Write | Card? |
 |---|---|
 | An ordinary file under `/workspace`, by Write, Edit, or a shell command | No |
 | `/persist` or `/tmp` by its **real path**, by Write, Edit, or a shell command | No |
 | Through a **symlink in `/workspace` that points into `/persist`** | No |
+| `rm -rf` of an ordinary folder in `/workspace`, `/tmp` or `/persist`, also with a glob, a variable or `cd`; and `git config --global` | No |
 | Through a symlink in `/workspace` that points to **another place outside `/workspace`** (measured with `/tmp`), by Write, Edit, or a shell command whose target the CLI can read (`>`, `cp`, `mv`, `mkdir`, `touch`, `tee`, `sed -i`) | **Yes** |
-| A file the CLI treats as sensitive, for example `.env` or `.npmrc` | **Yes** |
+| A path with a **`.claude` segment** — for example `.claude/skills/<name>/SKILL.md`, also through a `.claude/skills` symlink, or a `.claude` folder in `/tmp` — by Write, Edit, `mkdir`, `ln -s` or `rm -rf` | **Yes** |
+| `rm -rf <dir>/.git` | **Yes** |
+| A file the CLI treats as sensitive, for example `.env`, `.npmrc`, `.gitconfig` or `.bashrc`, also when a shell command writes or deletes it (`rm -f ~/.gitconfig`, `echo … >> .bashrc`) | **Yes** |
 
 So a scratch directory that you move to `/persist` and link back into the workspace stays writable through the link. For any other place outside the workspace, use the real path, not a symlink in the workspace.
+
+For the `.claude`, `.git` and `.gitconfig` requests, an allow rule that names the path did not remove the request in any case that was measured, so do not expect a setting to remove them. Use a form that does not ask:
+
+- **Skills:** keep a Claude skill's files in `.agents/skills/<name>/`, with `.claude/skills` a symlink to `../.agents/skills`, and edit them at the `.agents/skills/` path. A write through `.claude/skills/` asks, and so does making that symlink, one time (see `/shipit-docs/skills.md`).
+- **Git config:** for a scratch repository, use `git -C <dir> config …` or `git config --file <path> …`. `git config --global` changes this session's own git config (`$GIT_CONFIG_GLOBAL`). Do not write or delete a `.gitconfig` file by its path.
+- **Cleanup:** to remove a scratch clone, remove its folder, not its `.git` folder.
 
 When a **background subagent** makes a call that asks, you get no result and no error from it. After two minutes ShipIt puts a `[ShipIt]` line in your running turn that lists the calls that wait. You can stop that subagent, or get its work done in a way that needs no approval. The line needs a turn of yours that runs and the user's live steering setting to be on: if your turn ended while you waited for the subagents, the line comes in your next turn when the call still waits then. A call of your own that asks keeps you inside the call until it has an answer, and so does a call of a subagent that you did not start in the background.
 

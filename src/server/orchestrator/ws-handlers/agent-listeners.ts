@@ -4,7 +4,7 @@ import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
-import { noteTurnReady, noteTurnSubmitted, setSteerRefused, turnInSetup } from "../turn-stop-request.js";
+import { noteTurnReady, noteTurnSubmitted, setSteerRefused, stoppedByUser, turnInSetup } from "../turn-stop-request.js";
 import { queueEntryId, requeueInSendOrder } from "../queue-identity.js";
 import { returnQueueSentBeforeStop } from "../queue-return.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
@@ -20,7 +20,7 @@ import {
 import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice-note-types.js";
 import { emitChatCard, emitNoticeInTurn, finalizeTurnRows, persistTurnInProgress } from "../chat-card-persistence.js";
 import { denyAbandonedPermissionCards, settlePermissionCard } from "../permission-cards.js";
-import { watchPermissionWait } from "../permission-wait-notice.js";
+import { buildUnansweredPermissionNotice, watchPermissionWait } from "../permission-wait-notice.js";
 import type { CompactionCard } from "../../shared/types.js";
 import crypto from "node:crypto";
 import {
@@ -41,7 +41,7 @@ import {
   stampLastGroup,
   steerToQueuedMessage,
 } from "./agent-message-builder.js";
-import { observeVoiceNotes } from "./agent-voice-handler.js";
+import { derivePermissionHeadline, observeVoiceNotes } from "./agent-voice-handler.js";
 import { retireFinishedBackgroundSubagent } from "./subagent-retire.js";
 import { wireAuthRequiredHandler } from "./agent-auth-handler.js";
 import {
@@ -467,11 +467,16 @@ export function wireAgentListeners(
           { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
         );
 
+        const startsWait = runner.awaitingPermissionIds.size === 0;
         runner.awaitingPermissionIds.add(event.requestId);
         deps.sseBroadcast("session_attention", {
           sessionId: turnSessionId,
           awaitingPermission: true,
         });
+        // One alert per wait, as the sidebar's: subagents can open several cards at once.
+        if (startsWait) {
+          deps.deliverVoiceNote?.({ summary: derivePermissionHeadline(event.toolName) }, runner, "permission");
+        }
         // The main agent is blocked inside any other gated call, and reads no line until it returns.
         if (event.subagent === "background") {
           watchPermissionWait(runner, {
@@ -494,6 +499,13 @@ export function wireAgentListeners(
           event.behavior === "allow" ? "approved" : "denied",
           event.remembered,
         );
+        // A Stop also ends the call, and the user who pressed it knows why.
+        if (event.callEnded && !stoppedByUser(runner)) {
+          deps.sessionManager.appendPendingAgentNotice(
+            turnSessionId,
+            buildUnansweredPermissionNotice(event.callEnded.summary),
+          );
+        }
       }
       return;
     }
