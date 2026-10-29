@@ -61,6 +61,7 @@ The main server cannot change any of these:
 - **`NET_ADMIN`** goes only to the egress containers, inside the session's own network namespace (`egress-firewall-install.ts:182-217`).
 - **A GPU** goes to a container only when the main server asks for one and this host's Docker can give it. Today's request is `session-gpu.ts:7-19`; the host agent reports whether its Docker gave the GPU, as the session's GPU state does today (docs/325-session-gpu-access).
 - **Docker for a session** only when this host's Docker-access setting allows it (req 14). The ops proxy only in its exact template (`compose-generator.ts:893-924`).
+- **Git** runs only as one of the typed `WorkspaceGit` operations (section 4). The host agent finds the workspace and the uid from its own session record. It never accepts raw git arguments, `-c` options, environment variables or spawn options from the main server, and it refuses a git call that would run as root.
 
 ### Actions
 
@@ -71,7 +72,7 @@ The main server cannot change any of these:
 | Install or reload a session's egress rules. Inputs: allowed hosts, CIDRs, SSH targets | `egress-firewall-install.ts`, `egress-reload.ts:26-60` |
 | Run Compose for a session: config, build, up, stop, down, ps, logs | `compose-generator.ts`, `compose-helper.ts`, `compose-cli.ts` |
 | Run a plugin command or a plugin install for a session | `plugin-cli-run.ts`, `plugin-install.ts` |
-| Run git on a session's workspace, as the workspace's owner (section 4) | `GitManager` through `safeSimpleGit` (`src/server/shared/git-hooks-guard.ts`), as the orchestrator runs it today |
+| Run a typed `WorkspaceGit` operation on a session's workspace, as the session's uid (section 4). A clone, fetch or push carries a credential for that one operation | `GitManager` through `safeSimpleGit` (`src/server/shared/git-hooks-guard.ts`), as the orchestrator runs it today |
 | Open a stream to a session's worker (port 9100), or to a preview target that the session's Compose state lists | new |
 | Report Docker events, memory use and disk state | `container-health.ts:84-89`, `docker-memory.ts` |
 | Stop an idle container; prune disk | `idle-enforcer.ts` decides on the main server; `steady-state-reclaim.ts`, `startup-janitor.ts`, `tier-escalation.ts` run on the host |
@@ -121,13 +122,18 @@ Preview traffic passes through the main server, so a web game on the workstation
 Today the main server works directly on session folders. For a session on a secondary host those folders are on that host. Three changes, from planning#672:
 
 1. **A callback token for each session** (planning#672 item 1). Each session gets a token, stored in the main server's database and given to its worker. Every call from the session carries it, and section 3 checks it. This keeps docs/319-api-reach-through-host req 1 true across hosts.
-2. **Git** (planning#672 item 3). The main server runs git in session workspaces at 84 call sites in 29 files; for example `ws-handlers/post-turn.ts:178`, `services/pre-turn-reset.ts:246`, `services/claim-session.ts:123`, and `api-routes-git.ts`. They move behind one `WorkspaceGit` interface:
+2. **Git** (planning#672 item 3). The main server runs git in session workspaces at 84 call sites in 29 files; for example `ws-handlers/post-turn.ts:178`, `services/pre-turn-reset.ts:246`, `services/claim-session.ts:123`, and `api-routes-git.ts`. They move behind one `WorkspaceGit` interface of typed operations, and so do the raw git spawns, such as the auto-commit's (`src/server/shared/git.ts:507-512`):
    - On the main host, it keeps today's direct git.
-   - On a secondary host, the host agent runs the same git in its own process, with today's guard from docs/266-orchestrator-git-trust-boundary: git runs as the uid that owns the workspace, never as root; `safe.directory` stays narrow; and the project's hooks run only on the auto-commit. The host agent finds that uid itself; the main server cannot choose it. This guard protects the orchestrator today, which also has the Docker socket (docs/266-orchestrator-git-trust-boundary req 11), so it protects the host agent in the same way. The session's uid must not be able to open the host agent's Docker socket. This works when the worker is down, for example after a crash or an idle reclaim.
-   - Git does not run in a one-shot container. docs/266-orchestrator-git-trust-boundary rejected that as its option C: the post-turn commit would then depend on Docker starting a container (its req 6), and every git call would wait for a container start. For example, the PR poller runs local git for each session with an open PR every 15 seconds (`pr-status-poller.ts:750-770`, `pr-polling-supervisor.ts:6`).
+   - On a secondary host, the host agent runs the same `GitManager` code in its own process, with today's guard from docs/266-orchestrator-git-trust-boundary: git runs as the session's uid from the session's protected identity record, never as root; `safe.directory` stays narrow; and the project's hooks run only on the auto-commit. It works when the worker is down, for example after a crash or an idle reclaim. This guard protects the orchestrator today, which also has the Docker socket (docs/266-orchestrator-git-trust-boundary req 11). It protects the host agent only when these conditions hold:
+     - The host agent runs as root, because git drops uid only from root (`src/server/shared/git-tree-uid.ts:34`). It refuses a git call when the uid would be root or cannot be found.
+     - Session uids cannot open the Docker socket, and cannot read or write the host agent's config file, which holds the Docker-access setting (req 14).
+     - The global git config stays readable and holds no token, and a token stays in a root-only file, as today (`git-config.ts:60-75`). A clone, fetch or push gets a credential for that one operation from the main server, as data.
+     - The main server can call only the typed operations (section 2).
+   - What stays open, as on the main host today: sessions share one uid, so code that a repository's git config runs in one session can reach the workspaces of the other sessions on the same host (docs/266-orchestrator-git-trust-boundary req 13).
+   - Git does not run in a one-shot container. docs/266-orchestrator-git-trust-boundary rejected that as its option C: the post-turn commit would then also depend on Docker starting a container (its req 6), and every git call would wait for a container start. For example, the PR poller runs local git for each session with an open PR every 15 or 120 seconds, depending on the session's state (`pr-polling-supervisor.ts:6-7`, `:36-60`; `pr-status-poller.ts:750-770`).
 3. **Session folders and files** (planning#672 item 4). Credentials, SSH config, uploads and `/persist` are written through a `SessionHost` interface, which also covers the containers and the folders of a session: direct work on the main host, host-agent actions on a secondary host. The host agent watches the session's token files and reports changes, as `session-token-publisher.ts` does today.
 
-**Clones.** On the main host a new session's clone comes from the bare cache with `git clone --local` (`repo-git.ts:201-217`). A secondary host has no bare cache in this version: the worker clones from GitHub with its own brokered credentials. So each session there holds its own full copy of the repository's objects (about 100 MB packed for ShipIt's own repository), and each new session downloads it. A cache on each host is a later speed-up.
+**Clones.** On the main host the claim clones a new session's workspace from the bare cache with `git clone --local`, before the session's containers exist (`services/claim-session.ts:275-315`, `repo-git.ts:201-217`). On a secondary host the claim asks the host agent to do it: the host agent clones from GitHub into the new session's folder as the session's uid, with a credential for that one clone, and then sets up the branch as the claim does today. A secondary host has no bare cache in this version, so each session there downloads and keeps its own full copy of the repository's objects. For scale, the packs of this checkout of ShipIt's repository are about 100 MB; the download size of a fresh clone was not measured. A cache on each host can come later, if download time or disk use calls for it.
 
 ## 5. Placement
 
@@ -158,7 +164,7 @@ Today the main server works directly on session folders. For a session on a seco
   Today an agent message always goes to the inbox; refusing it for a host that is off is the one new refusal (req 11). A refusal that the chat shows as a card is persisted with `emitChatCard` (`CLAUDE.md`, "Chat transcript content MUST be persisted").
 - **The composer** shows why it is disabled: a new "host off" reason beside today's model-provider reason (`src/client/utils/chat-runnable.ts:35-41`).
 - **A turn that is running when the tunnel drops** keeps running on the host. When the tunnel comes back, the main server reconnects to the worker's `/events` stream from the last event it saw (`sse-connection-manager.ts:78`) and catches up.
-- **Post-turn work after an outage.** A turn can end while its tunnel is down. The post-turn lease ends after 120 seconds (`post-turn-hold.ts:1`), and the local commit must come before the queue drains (`turn-executor.ts:1262`; `CLAUDE.md`, "Post-turn flow", invariants 1 and 2). So the main server records in its database that the session owes its post-turn steps. When the tunnel comes back, it runs them — the commit through `WorkspaceGit` first — before it lets the session's queue continue.
+- **Post-turn work after an outage.** A turn can end while its tunnel is down. The post-turn lease ends after 120 seconds (`post-turn-hold.ts:1`), and the local commit must come before the queue drains (`turn-executor.ts:1262`; `CLAUDE.md`, "Post-turn flow", invariants 1 and 2). So the main server records in its database that the session owes its post-turn steps. It records this when the tunnel drops during a turn or during its post-turn work, and when a post-turn git call fails because the tunnel is down. When the tunnel comes back, it runs them — the commit through `WorkspaceGit` first — before it lets the session's queue continue. Today a failed commit still lets the queue drain (`turn-executor.ts:1355-1368`), so the record is cleared only when the commit has run with the tunnel up; a commit that fails for another reason is handled as today. Running the auto-commit again is safe, because on a clean tree it does nothing (`src/server/shared/git.ts:355-360`). The PR card and the auto-push run after that commit, as today.
 - **When the tunnel comes back,** the host agent sends its full container list. The main server reattaches the sessions, as adoption does after a restart (`container-discovery.ts:105-174`), and the host turns on.
 
 ## 7. Subsystems for each host
@@ -192,7 +198,8 @@ Sessions on the main host keep today's code: direct Docker, direct git, direct f
 - How far back the worker's `/events` stream can replay after a long tunnel outage.
 - The host journal mounts of an ops session on Docker Desktop, where the "host" is Docker Desktop's VM.
 - Preview speed for a web game through the main server.
-- On Docker Desktop: that a session's uid cannot open the Docker socket in the host agent's container, and that git can drop to the workspace owner's uid on the host agent's data directory.
+- On Docker Desktop and on Docker Engine: that a session's uid cannot open the Docker socket in the host agent's container, and that git can drop to the session's uid on the host agent's data directory.
+- The download size of a fresh clone with no bare cache.
 
 ## Key files (today)
 
