@@ -17,6 +17,9 @@ Requirements 6 and 7 come from finding I2 of the owner's defect triage of
 Requirement 7 is the finding's proposed change 3, which the triage scheduled.
 The words are the finding's.
 
+Requirement 8 is the owner's decision of 2026-10-29 on planning#711, in the
+owner's words.
+
 1. A location that ShipIt recommends to the agent for its files agrees with the
    approval gate. For `/persist`, one of these is true: the agent's file tools
    write there with no approval card, also through a symlink from the
@@ -39,6 +42,9 @@ The words are the finding's.
 7. When a call that waits for the user's approval ends before anyone answers
    it, the agent learns in its next turn that nobody answered and that the call
    did not run.
+8. When nobody answers a permission card before the call ends, the card keeps
+   the state **Denied** and adds a reason line, such as "nobody answered in
+   30 min".
 
 ## Open questions
 
@@ -46,5 +52,9 @@ None.
 
 ## Resolved questions
 
-None. No human has answered a question about these requirements. The packet
-left each design choice to the fix session, to be stated in the pull request.
+- 2026-10-29 — When nobody answers a permission card before the call ends, does
+  the card get a state of its own ("not answered"), and is the 10-minute bound
+  that plan.md proposes for req 5 built? The owner, on planning#711: the card
+  keeps the state **Denied** and adds a reason line, such as "nobody answered in
+  30 min". There is no new card state, and the 10-minute bound is not built.
+  This added requirement 8; req 5 stays a proposal.

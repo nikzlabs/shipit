@@ -10,10 +10,19 @@ import {
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { usePermissionStore } from "../stores/permission-store.js";
+import { formatIdleDuration } from "./SessionHealthStrip/utils/healthState.js";
+import type { PermissionUnanswered } from "../../server/shared/types.js";
 
 export interface PermissionRequestCardProps {
   requestId: string;
   onResolve?: (requestId: string, behavior: "allow" | "deny", remember?: boolean) => void;
+}
+
+// The same line serves a Claude timeout and a Codex withdrawal, so only a measured wait is named.
+function unansweredReason({ waitedMs }: PermissionUnanswered): string {
+  return waitedMs !== undefined && Number.isFinite(waitedMs) && waitedMs >= 1000
+    ? `Nobody answered in ${formatIdleDuration(waitedMs)}`
+    : "Nobody answered before the call ended";
 }
 
 export function PermissionRequestCard({ requestId, onResolve }: PermissionRequestCardProps) {
@@ -39,6 +48,7 @@ export function PermissionRequestCard({ requestId, onResolve }: PermissionReques
         label: "Denied",
       },
     }[card.phase];
+    const reason = card.phase === "denied" && card.unanswered ? unansweredReason(card.unanswered) : null;
     return (
       <div
         data-testid="permission-request-card"
@@ -48,6 +58,11 @@ export function PermissionRequestCard({ requestId, onResolve }: PermissionReques
         <div className="min-w-0 flex-1 text-(--color-text-primary)">
           {resolved.label}
           <span className="text-(--color-text-tertiary)"> · {target}</span>
+          {reason && (
+            <div data-testid="permission-unanswered-reason" className="text-[11px] text-(--color-text-secondary)">
+              {reason}
+            </div>
+          )}
         </div>
       </div>
     );

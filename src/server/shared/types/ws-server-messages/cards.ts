@@ -98,6 +98,13 @@ export interface WsPermissionResolved {
   requestId: string;
   phase: "approved" | "denied";
   remembered?: boolean;
+  unanswered?: PermissionUnanswered;
+}
+
+/** docs/193-sensitive-file-permission req 8 — the call ended before anyone answered. */
+export interface PermissionUnanswered {
+  /** Absent when the worker did not measure the wait. */
+  waitedMs?: number;
 }
 
 export interface WsIssueWriteCard {

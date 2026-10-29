@@ -325,6 +325,18 @@ describe("loadSessionHistory — modelInfo seeding", () => {
                   remembered: true,
                 },
               },
+              {
+                role: "assistant",
+                text: "",
+                permissionPrompt: {
+                  requestId: "perm-unanswered",
+                  phase: "denied",
+                  toolName: "Bash",
+                  summary: "Bash: rm -f ~/.gitconfig",
+                  createdAt: "2026-06-11T00:00:00.000Z",
+                  unanswered: { waitedMs: 1_800_000 },
+                },
+              },
             ],
             commits: [],
             fileTree: [],
@@ -342,6 +354,7 @@ describe("loadSessionHistory — modelInfo seeding", () => {
     expect(card?.phase).toBe("approved");
     expect(card?.remembered).toBe(true);
     expect(card?.path).toBe(".npmrc");
+    expect(usePermissionStore.getState().cards["perm-unanswered"]?.unanswered).toEqual({ waitedMs: 1_800_000 });
   });
 });
 

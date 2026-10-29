@@ -6,7 +6,8 @@ description: Surface an agent-agnostic approve/deny card when an agent's edit to
 # 193 — Sensitive-file permission prompt (planning#114)
 
 Requirements: [requirements.md](requirements.md). They cover the 2026-10-12
-incident only; the first design below is older than the requirements rule.
+incident and planning#711; the first design below is older than the requirements
+rule.
 
 ## Context
 
@@ -132,7 +133,8 @@ Key properties:
   The backend can stop waiting on its own, though, and then the card becomes
   **Denied** and the session stops asking for attention: the worker settles the
   request as deny and broadcasts `agent_permission_resolved`, which the
-  orchestrator handles exactly like a user's Deny. Three signals, one per way the
+  orchestrator handles like a user's Deny, except that a call that ended before
+  anyone answered also gets a reason line (req 8). Three signals, one per way the
   wait ends:
   - **The gated call gets a result** (`PermissionBroker.endToolUse`, called by
     `agent-controller.ts` for every `tool_result` id). This is the Claude
@@ -415,7 +417,9 @@ Why it is not in this change:
 - req 4 must hold: a user who opens the session before the bound keeps unlimited
   time.
 
-Whether to build it is a planning decision, recorded on planning#114.
+The owner decided on 2026-10-29 not to build it, and to add no card state: a
+card that nobody answered keeps **Denied** and gets a reason line (req 8;
+requirements.md, "Resolved questions").
 
 ## A wait that nobody answers (planning#711)
 
@@ -511,12 +515,41 @@ it, and that it did not run.
 - **A subagent that the main agent stopped gets the notice.** `TaskStop` gives
   the subagent's gated call a result too. The line is true there (nobody
   answered, the call did not run), and the main agent already knows it.
-- **The card does not change.** It still reads "Denied", as the owner decided on
-  2026-09-30. A card state for "not answered", and the 10-minute bound above,
-  need the owner's decision on planning#711.
+- **The card keeps "Denied"** and gets a reason line, below (req 8).
 - **A worker on an older image** sends no `callEnded`, so no notice.
 - The text is inline in `permission-wait-notice.ts`, like the one-line notices
   in `gpu-container-start.ts` and `abandoned-rebase-sweep.ts`.
+
+### The card's reason line (req 8)
+
+The condition of the notice decides the line: `callEnded`, and not
+`stoppedByUser(runner)`. `agent-listeners.ts` then passes `unanswered` to
+`settlePermissionCard`, which puts it in the same patch as `phase: "denied"`. So
+it is in the persisted card (`PersistedPermissionRequest.unanswered`, inside the
+`permission_prompt` JSON, so no new column) and in `permission_resolved`, and a
+reload, a session switch and a reconnect show it. `PermissionRequestCard` shows
+it under "Denied · <call>": "Nobody answered in 30 min".
+
+- **The duration is measured, never assumed.** The broker records when it
+  opened the request (`performance.now()`, so a clock change cannot alter the
+  wait), and `expire` adds `waitedMs` to `callEnded`. The
+  orchestrator does not write the CLI's 30 minutes: a Codex withdrawal can come
+  at any time, and an environment can change the CLI's timeout. The worker
+  outlives an orchestrator restart, so the measurement does too.
+- **No measurement, no duration.** A worker on the image of #3292 sends
+  `callEnded` with no `waitedMs`; that card, and one that waited less than a
+  second, reads "Nobody answered before the call ended".
+- **A user's Deny or Stop gives no line**, and neither do an agent exit and the
+  orchestrator's own denies (`denyAbandonedPermissionCards`,
+  `reconcilePermissionCards`): none carries `callEnded`.
+- **A turn that ended while the orchestrator was down loses the line.** On
+  reconnect to a worker with no active turn, `container-session-runner.ts`
+  skips the stream (`fastForwardLastSeenSeq`), so that turn's `callEnded` never
+  arrives, and `reconcilePermissionCards` denies the saved card with no reason.
+  The req 7 notice is lost the same way. A turn still running at the restart is
+  adopted and its events are replayed, so it keeps both.
+- The text is the client's (`unansweredReason`), from the stored data, with
+  `formatIdleDuration`, the formatter of the health strip's idle time.
 
 ## Agent-agnostic seam
 
@@ -580,7 +613,7 @@ mid-turn card in that position reproduced it, not just this one.
 ## Key files
 
 **Worker / agent-agnostic core**
-- `src/server/session/permission-broker.ts` — the broker. `openRequest()`/`poll()` (long poll + `toolUseId` idempotency), `request()` (Codex direct-await, withdrawn by its `signal`), `resolve()`, and the abandoned-request deny: `endToolUse()`/`clearPending()`. Also `SubagentCallTracker`, which says whose call a `toolUseId` is.
+- `src/server/session/permission-broker.ts` — the broker. `openRequest()`/`poll()` (long poll + `toolUseId` idempotency), `request()` (Codex direct-await, withdrawn by its `signal`), `resolve()`, and the abandoned-request deny: `endToolUse()`/`clearPending()`; `callEnded.waitedMs` is the measured wait (req 8). Also `SubagentCallTracker`, which says whose call a `toolUseId` is.
 - `src/server/session/agent-controller.ts` — `wireAgentEvents` ends the request for every `tool_result` id, and clears pending requests when the agent exits. `/agent/status` reports the broker's `unansweredIds` as `pendingPermissionIds`. It feeds `SubagentCallTracker`, and `subagentCaller()` answers the permission endpoint.
 - `docker/agent-hooks/managed-settings.json` — the Claude CLI's permission rules, with the `Edit(//persist/**)` allow rule.
 - `src/server/session/mcp-permission-bridge.ts` — Claude's `--permission-prompt-tool`. `createPermissionBridgeServer()` factory; open + bounded `/await` poll loop with retry/backoff (Thread B).
@@ -605,7 +638,7 @@ mid-turn card in that position reproduced it, not just this one.
 - WS types: `ws-client-messages.ts` (`WsResolvePermission`), `ws-server-messages.ts` (`WsPermissionRequestCard`, `WsPermissionResolved`).
 
 **Client**
-- `src/client/stores/permission-store.ts`, `src/client/components/PermissionRequestCard.tsx` — card store + render (generic copy, Thread D; `details` disclosure on the pending card).
+- `src/client/stores/permission-store.ts`, `src/client/components/PermissionRequestCard.tsx` — card store + render (generic copy, Thread D; `details` disclosure on the pending card; the reason line of a card that nobody answered, req 8).
 - `src/client/hooks/message-handlers/{permission-request-card,permission-resolved}.ts` + registration.
 - `src/client/components/MessageList.tsx` (render + `onResolvePermission`), `visual-elements.ts` (`CARD_MESSAGE_FIELDS`), `utils/session-data.ts` (rehydrate), `App.tsx` (send `resolve_permission`; forward permission mode on `answer_question`, Thread A).
 - `src/client/hooks/useServerEvents.ts` (`session_attention` listener), `stores/session-store.ts` (`awaitingPermissionSessions`), `hooks/{useAttentionInfo,useAttentionNotifications}.ts` (Thread C).
@@ -647,4 +680,5 @@ mid-turn card in that position reproduced it, not just this one.
 - `permission-broker.test.ts` — `SubagentCallTracker` (main, foreground, background, a closed call, `whenOpened`), and the request event carrying `subagent`. `agent-controller.test.ts` — the same three callers from the event order the Claude CLI emits, a request that arrives before its stream event, and a replaced process's late events. `session-worker.test.ts` (integration) — the endpoint marks a background subagent's request, also one that arrives before its stream event, and leaves the main agent's unmarked.
 - `permission-wait-notice.test.ts` — the line goes into the running turn after the delay and one time; it lists every request that waits; an answered request is not told; a later request gets a line of its own; no turn is started for an idle session and the next turn gets the line; a turn that cannot take a steer gets nothing queued; a dispatch that throws is tried again; the turn's permission mode stays. `agent-listeners.test.ts` — only a `background` request arms the line, and an answer ends it.
 - `agent-listeners.test.ts` — one `"permission"` voice note when the session starts to wait and none for a card that joins it; a deny with `callEnded` parks the notice, a plain deny and a user's Stop do not. `agent-voice-handler.test.ts` — `derivePermissionHeadline` for Claude's and Codex's tool names. `permission-broker.test.ts` and `agent-controller.test.ts` — the deny from a call's result and from a Codex withdrawal carries `callEnded`, an exit's does not. `voice-note-router.test.ts` — a `"permission"` note keeps its kind on the card and posts the webhook.
+- Req 8: `permission-broker.test.ts` — `callEnded.waitedMs` is the time from open to the call's end. `agent-listeners.test.ts` — `callEnded` puts `unanswered` (with or without `waitedMs`) on the card; a plain deny and a user's Stop do not. `permission-cards.test.ts` — the reason reaches the row, the recorded card and `permission_resolved`. `chat-history.test.ts` — it survives a reload. `PermissionRequestCard.test.tsx` — "Denied" with "Nobody answered in 30 min", the line with no duration, and no line after a Deny or a Stop.
 - `managed-settings.test.ts` — the `Edit(//persist/**)` allow rule, and no allow rule the CLI ignores. The test reads the file; what the CLI does with the rules is the measurement above, which no test repeats.

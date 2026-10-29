@@ -317,7 +317,7 @@ describe("PermissionBroker", () => {
       type: "agent_permission_resolved",
       requestId: opened.requestId,
       behavior: "deny",
-      callEnded: { summary },
+      callEnded: { summary, waitedMs: expect.any(Number) },
     });
     expect(broker.pendingCount).toBe(0);
     await expect(broker.poll(opened.requestId!, 5000)).resolves.toEqual({
@@ -364,8 +364,29 @@ describe("PermissionBroker", () => {
     withdrawn.abort();
 
     await expect(decision).resolves.toEqual({ behavior: "deny" });
-    expect(events[1]).toEqual({ type: "agent_permission_resolved", requestId, behavior: "deny", callEnded: { summary } });
+    expect(events[1]).toEqual({
+      type: "agent_permission_resolved",
+      requestId,
+      behavior: "deny",
+      callEnded: { summary, waitedMs: expect.any(Number) },
+    });
     expect(broker.pendingCount).toBe(0);
+  });
+
+  // docs/193-sensitive-file-permission req 8 — the card names the wait only as measured here.
+  it("reports how long an unanswered request waited before its call ended", () => {
+    vi.useFakeTimers();
+    try {
+      const { broker, events } = makeBroker();
+      broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "toolu_1" });
+
+      vi.advanceTimersByTime(1_800_000);
+      broker.endToolUse("toolu_1");
+
+      expect(events[1]).toMatchObject({ callEnded: { waitedMs: 1_800_000 } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("an abort after the user answered changes nothing", async () => {

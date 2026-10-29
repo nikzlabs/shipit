@@ -1,6 +1,7 @@
 
 
 import { create } from "zustand";
+import type { PermissionUnanswered } from "../../server/shared/types.js";
 
 export type PermissionPhase = "pending" | "approved" | "denied";
 
@@ -16,6 +17,7 @@ export interface PermissionCardState {
   createdAt?: string;
 
   remembered?: boolean;
+  unanswered?: PermissionUnanswered;
 }
 
 interface PermissionStore {
@@ -27,7 +29,12 @@ interface PermissionStore {
 
   setPending: (requestId: string) => void;
 
-  setResolved: (requestId: string, phase: Exclude<PermissionPhase, "pending">, remembered?: boolean) => void;
+  setResolved: (
+    requestId: string,
+    phase: Exclude<PermissionPhase, "pending">,
+    remembered?: boolean,
+    unanswered?: PermissionUnanswered,
+  ) => void;
   reset: () => void;
 }
 
@@ -51,7 +58,7 @@ export const usePermissionStore = create<PermissionStore>((set) => ({
         ? { cards: { ...s.cards, [requestId]: { ...s.cards[requestId], phase: "pending" } } }
         : s,
     ),
-  setResolved: (requestId, phase, remembered) =>
+  setResolved: (requestId, phase, remembered, unanswered) =>
     set((s) =>
       s.cards[requestId]
         ? {
@@ -61,6 +68,7 @@ export const usePermissionStore = create<PermissionStore>((set) => ({
                 ...s.cards[requestId],
                 phase,
                 ...(remembered ? { remembered: true } : {}),
+                ...(unanswered ? { unanswered } : {}),
               },
             },
           }

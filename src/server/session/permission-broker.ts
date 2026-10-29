@@ -12,6 +12,8 @@ interface PendingRequest {
   path?: string;
   toolUseId?: string;
   summary: string;
+  /** `performance.now()`: a wall-clock change must not alter the measured wait. */
+  openedAt: number;
 }
 
 export const DEFAULT_PERMISSION_POLL_MS = 25_000;
@@ -200,6 +202,7 @@ export class PermissionBroker {
       ...(path ? { path } : {}),
       ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
       summary,
+      openedAt: performance.now(),
     });
     if (input.toolUseId) this.byToolUse.set(input.toolUseId, requestId);
 
@@ -297,7 +300,7 @@ export class PermissionBroker {
       type: "agent_permission_resolved",
       requestId,
       behavior: "deny",
-      ...(callEnded ? { callEnded: { summary: entry.summary } } : {}),
+      ...(callEnded ? { callEnded: { summary: entry.summary, waitedMs: Math.round(performance.now() - entry.openedAt) } } : {}),
     });
   }
 

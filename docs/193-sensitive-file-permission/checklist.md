@@ -24,3 +24,4 @@
 - [x] Park a `[ShipIt]` notice for the next turn when a call ends before anyone answered (req 7)
 - [x] Measure with Claude Code 2.1.300 which calls still ask and whether an allow rule removes the request (plan.md, "What still asks")
 - [x] Say in `/shipit-docs/environment.md` and `/shipit-docs/skills.md` which writes ask and which forms do not
+- [x] Keep "Denied" and add a reason line to a card that nobody answered before the call ended, stored with the card (req 8)
