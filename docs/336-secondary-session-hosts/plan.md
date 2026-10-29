@@ -38,10 +38,10 @@ A host agent that connects out needs no open port on the secondary host, and the
 
 A new `hosts` table holds the secondary hosts: an id, a name, the host's private-network address, the GPU setting (req 12) and the memory budget (req 21). The main host is not a row: an empty `host_id` on a session means the main host, and its GPU setting and memory budget stay where they are today (`advanced.sessionGpu`, `src/server/shared/settings-catalogue/global-settings.ts:220`; `advanced.memoryBudgetMb`, `credential-store.ts:806-808`).
 
-- **Adding a host.** The user adds a host in Settings → Hosts with its name and private-network address, then installs the host agent on that machine. The main server accepts a tunnel only from an address in this table, on a listener bound to the private-network address. On a tailnet an address belongs to one device, so this needs no authentication of its own (req 7). Authentication between hosts is a later version.
+- **Adding a host.** The user adds a host in Settings → Hosts with its name and private-network address, then installs the host agent on that machine. The main server accepts a tunnel only from an address in this table, on a listener bound to the private-network address. On a tailnet or another WireGuard network an address belongs to one device, so this needs no authentication of its own (req 7). Authentication between hosts is a later version.
 - **State.** A host is on when its tunnel is up and its version handshake matched (section 2, "Updates"). The state is not stored; it comes from the tunnel.
 - **State in the UI.** The host list, with each host's state, reaches the client in the bootstrap and on the global SSE stream (`/api/events`), as the session list does (`route-registry.ts:132`). The new-session screen and the session list read it.
-- **Docker access (req 14)** is the one host setting that is not on the main server. See section 2.
+- **Docker access (req 14)** is the one host setting that is not on the main server (req 5). See section 2.
 
 ## 2. Host agent (secondary host)
 
@@ -55,7 +55,7 @@ It starts with `docker compose up -d` on the secondary host. A config file on th
 
 The main server cannot change any of these:
 
-- **ShipIt's own containers** — the session worker, the Docker-capable worker, the egress containers, the Compose helper, the git helper (section 4) and the ops proxy (`templates-ops.ts:7-52`) — come only from the host agent's templates. They keep today's hardening: `CapDrop ALL` with five `CapAdd` (`container-lifecycle.ts:839-841`), `no-new-privileges` (`container-lifecycle.ts:834-836`), and resource limits sized from this host's memory and CPUs. Today the limits come from the orchestrator's own `os.totalmem()` and `os.cpus()` (`container-config-builder.ts:84-108`), which would be the wrong machine.
+- **ShipIt's own containers** — the session worker, the Docker-capable worker, the egress containers, the Compose helper and the ops proxy (`templates-ops.ts:7-52`) — come only from the host agent's templates. They keep today's hardening: `CapDrop ALL` with five `CapAdd` (`container-lifecycle.ts:839-841`), `no-new-privileges` (`container-lifecycle.ts:834-836`), and resource limits sized from this host's memory and CPUs. Today the limits come from the orchestrator's own `os.totalmem()` and `os.cpus()` (`container-config-builder.ts:84-108`), which would be the wrong machine.
 - **A repository's Compose services and plugin containers** use the repository's or the plugin's own images, as today. The host agent reads the repository's files on its own disk and runs today's checks on them itself: the Compose validation that refuses `privileged` and the other dangerous settings (`compose-generator.ts:1416` onward), and the plugin container settings (`plugin-cli-run.ts:494-520`, `plugin-install.ts:417-450`). The main server cannot send it a finished Compose model or container settings.
 - **Mounts** come only from the session's own folders under the data directory.
 - **`NET_ADMIN`** goes only to the egress containers, inside the session's own network namespace (`egress-firewall-install.ts:182-217`).
@@ -71,7 +71,7 @@ The main server cannot change any of these:
 | Install or reload a session's egress rules. Inputs: allowed hosts, CIDRs, SSH targets | `egress-firewall-install.ts`, `egress-reload.ts:26-60` |
 | Run Compose for a session: config, build, up, stop, down, ps, logs | `compose-generator.ts`, `compose-helper.ts`, `compose-cli.ts` |
 | Run a plugin command or a plugin install for a session | `plugin-cli-run.ts`, `plugin-install.ts` |
-| Run git in a one-shot container on a session's workspace (section 4) | new, in the pattern of `compose-helper.ts:665-680` |
+| Run git on a session's workspace, as the workspace's owner (section 4) | `GitManager` through `safeSimpleGit` (`src/server/shared/git-hooks-guard.ts`), as the orchestrator runs it today |
 | Open a stream to a session's worker (port 9100), or to a preview target that the session's Compose state lists | new |
 | Report Docker events, memory use and disk state | `container-health.ts:84-89`, `docker-memory.ts` |
 | Stop an idle container; prune disk | `idle-enforcer.ts` decides on the main server; `steady-state-reclaim.ts`, `startup-janitor.ts`, `tier-escalation.ts` run on the host |
@@ -91,7 +91,7 @@ Sessions can get two kinds of Docker today, and the one setting covers both:
 
 When the setting is off, the host agent refuses both. A session whose repository asks for Docker then starts without it and says why.
 
-The setting is in the host agent's config file on the host, and the main server only shows it. If the main server kept it, a main server that someone broke into could turn it on and get root access to the host, which req 13 forbids. This is in tension with req 5 (settings in one place), so it is an open question in requirements.md.
+The setting is in the host agent's config file on the host (req 14). The host agent sends it when the tunnel opens, and Settings → Hosts shows it without a control to change it. If the main server kept it, a main server that someone broke into could turn it on and get root access to the host, which req 13 forbids. Req 5 names this setting as its one exception.
 
 ### Updates (req 15)
 
@@ -114,7 +114,7 @@ The tunnel is not a browser connection, so the rule "WebSocket lifecycle must no
 
 Preview traffic passes through the main server, so a web game on the workstation loads its files through the main server. A preview proxy on the secondary host can fix that later. It is not in this version.
 
-**Encryption.** A tailnet encrypts the tunnel, so on a tailnet this version needs no TLS of its own (planning#672 item 2). Req 7 allows any private network, and a plain LAN does not encrypt. Whether req 7 needs an encrypted network is an open question in requirements.md.
+**Encryption.** Req 7 requires a private network that encrypts, such as a tailnet or another WireGuard network. So the tunnel needs no TLS of its own in this version (planning#672 item 2). ShipIt cannot see whether a network encrypts, so the host-agent install guide says that a plain LAN is not supported.
 
 ## 4. Work that leaves the main server's disk
 
@@ -123,11 +123,11 @@ Today the main server works directly on session folders. For a session on a seco
 1. **A callback token for each session** (planning#672 item 1). Each session gets a token, stored in the main server's database and given to its worker. Every call from the session carries it, and section 3 checks it. This keeps docs/319-api-reach-through-host req 1 true across hosts.
 2. **Git** (planning#672 item 3). The main server runs git in session workspaces at 84 call sites in 29 files; for example `ws-handlers/post-turn.ts:178`, `services/pre-turn-reset.ts:246`, `services/claim-session.ts:123`, and `api-routes-git.ts`. They move behind one `WorkspaceGit` interface:
    - On the main host, it keeps today's direct git.
-   - On a secondary host, it runs the git command in a one-shot container on the workspace, which the host agent starts in the pattern of the Compose helper (`compose-helper.ts:665-680`). This works when the worker is down, for example after a crash or an idle reclaim.
-   - Git never runs in the host agent's own process, because a repository's hooks would then run next to the Docker socket.
+   - On a secondary host, the host agent runs the same git in its own process, with today's guard from docs/266-orchestrator-git-trust-boundary: git runs as the uid that owns the workspace, never as root; `safe.directory` stays narrow; and the project's hooks run only on the auto-commit. The host agent finds that uid itself; the main server cannot choose it. This guard protects the orchestrator today, which also has the Docker socket (docs/266-orchestrator-git-trust-boundary req 11), so it protects the host agent in the same way. The session's uid must not be able to open the host agent's Docker socket. This works when the worker is down, for example after a crash or an idle reclaim.
+   - Git does not run in a one-shot container. docs/266-orchestrator-git-trust-boundary rejected that as its option C: the post-turn commit would then depend on Docker starting a container (its req 6), and every git call would wait for a container start. For example, the PR poller runs local git for each session with an open PR every 15 seconds (`pr-status-poller.ts:750-770`, `pr-polling-supervisor.ts:6`).
 3. **Session folders and files** (planning#672 item 4). Credentials, SSH config, uploads and `/persist` are written through a `SessionHost` interface, which also covers the containers and the folders of a session: direct work on the main host, host-agent actions on a secondary host. The host agent watches the session's token files and reports changes, as `session-token-publisher.ts` does today.
 
-**Clones.** On the main host a new session's clone comes from the bare cache with `git clone --local` (`repo-git.ts:201-217`). A secondary host has no bare cache in this version: the worker clones from GitHub with its own brokered credentials. A cache on each host is a later speed-up.
+**Clones.** On the main host a new session's clone comes from the bare cache with `git clone --local` (`repo-git.ts:201-217`). A secondary host has no bare cache in this version: the worker clones from GitHub with its own brokered credentials. So each session there holds its own full copy of the repository's objects (about 100 MB packed for ShipIt's own repository), and each new session downloads it. A cache on each host is a later speed-up.
 
 ## 5. Placement
 
@@ -192,7 +192,7 @@ Sessions on the main host keep today's code: direct Docker, direct git, direct f
 - How far back the worker's `/events` stream can replay after a long tunnel outage.
 - The host journal mounts of an ops session on Docker Desktop, where the "host" is Docker Desktop's VM.
 - Preview speed for a web game through the main server.
-- A post-turn commit through a one-shot git container after a worker crash.
+- On Docker Desktop: that a session's uid cannot open the Docker socket in the host agent's container, and that git can drop to the workspace owner's uid on the host agent's data directory.
 
 ## Key files (today)
 

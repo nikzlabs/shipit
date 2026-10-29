@@ -6,7 +6,7 @@ description: One ShipIt runs sessions on its main host and on secondary machines
 
 # Secondary session hosts — requirements
 
-There is no design yet. The investigation of 2026-10-28 and its proposed shape are in planning#708.
+The design is in [plan.md](./plan.md). The investigation of 2026-10-28 is in planning#708.
 
 The requirements are for any user who adds hosts to their ShipIt. One example, and the first use: a user makes 3D models, with rendering in Blender and in a web game. Sessions that need a GPU run on a workstation, and the other sessions run on a remote main host.
 
@@ -20,11 +20,11 @@ Requirements of other features that hold for every session hold for sessions on 
 
 4. A session that the user starts without choosing a host runs on the main host.
 
-5. The user's instructions and the other settings are kept in one place.
+5. The user's instructions and the other settings are kept in one place. The one exception is the Docker-access setting of a secondary host (req 14).
 
 6. The user works from one UI.
 
-7. All hosts are in one private network, such as a tailnet. This version adds no authentication between hosts.
+7. All hosts are in one private network that encrypts its traffic, such as a tailnet or another WireGuard network. A plain LAN is not supported in this version. This version adds no authentication between hosts.
 
 8. A secondary host is not always on. On the new-session screen, a host that is off is grayed out, and the user cannot choose it.
 
@@ -38,7 +38,7 @@ Requirements of other features that hold for every session hold for sessions on 
 
 13. The main server cannot get root access to a secondary host. The one exception is Docker access that the user allows on that host (req 14).
 
-14. Docker access for sessions is a setting for each host. It covers the filtered Docker that `compose.docker-socket` gives a session's agent, and the raw Docker socket that Compose services also get with the repository setting `project.allowDockerSocket`; a service with the raw socket controls its host. The user can allow it on some hosts and refuse it on others.
+14. Docker access for sessions is a setting for each host. It covers the filtered Docker that `compose.docker-socket` gives a session's agent, and the raw Docker socket that Compose services also get with the repository setting `project.allowDockerSocket`; a service with the raw socket controls its host. The user can allow it on some hosts and refuse it on others. The setting of a secondary host is kept on that host, and ShipIt's settings only show it, so that a main server that someone broke into cannot turn it on (req 13).
 
 15. Priority 2 (good to have, not important): server updates are done in one place. ShipIt's own code on a secondary host is updated on that host, because an update from the main server could give the main server root access there (req 13).
 
@@ -63,11 +63,6 @@ Requirements of other features that hold for every session hold for sessions on 
 - More placement strategies (req 16), for example: a child runs on its parent's host; a child runs on the main host.
 - Authentication between hosts, so that hosts do not have to share one private network (req 7).
 - A `--host` flag on `shipit session create` that names a host, so that a child can also reach a secondary host that has no GPU (req 2).
-
-## Open questions
-
-- Where is the Docker-access setting of a secondary host kept (req 14)? Req 5 keeps settings in one place, but req 13 says that the main server cannot get root access to a secondary host, except through Docker access that the user allows on that host. If the main server keeps the setting, a main server that someone broke into can turn it on and so get root access. Options: (a) on the secondary host, in the host agent's config file; ShipIt's settings only show it; (b) in ShipIt's settings with the other settings; then req 13 holds only while the main server is safe. Recommendation: (a), because req 13 is about the case where the main server is not safe.
-- Must the private network of req 7 encrypt its traffic? A tailnet does; a plain LAN does not. The traffic between hosts carries session credentials, and ShipIt has no built-in user authentication (`SECURITY-MODEL.md`, "Network exposure and access control"). Options: (a) yes: hosts must be in a private network that encrypts, such as a tailnet or another WireGuard network; a plain LAN is not supported in this version; (b) no: ShipIt encrypts the connection between hosts itself, so a plain LAN also works. Recommendation: (a) for this version, because it adds nothing to build and fits "no authentication between hosts yet"; (b) can come later with authentication.
 
 ## Resolved questions
 
@@ -98,3 +93,5 @@ Requirements of other features that hold for every session hold for sessions on 
 - 2026-10-28 — Should a role be able to name a host (req 10)? Nik: "I misunderstood it, I thought you meant a CLI flag. Roles define the agent behavior. Host is not related to agent behavior." and "no". Req 10 changed: a role names no host. This replaces the role part of the earlier answer on req 10, and point (3) of the consistency-review record. Req 2 now says how a child reaches a host in this version; the `--host` item under Later versions says what it would add.
 - 2026-10-28 — The user chooses a host with a GPU on the new-session screen, and that host is off: start the session on the main host (req 8), or refuse? Nik: "this option should be grayed out in the UI". Req 8 changed: a host that is off cannot be chosen. The fallback to the main host had no case left — a GPU request with no GPU host on is refused (req 19), and every other session runs on the main host anyway (req 4, 17) — so it was removed, with its notice. A session whose host goes off after the session is created stays on that host (req 9), and its messages are refused (req 11).
 - 2026-10-28 — A session that requested a GPU goes to a host where Docker cannot give the GPU: start it without the GPU (docs/325-session-gpu-access req 6), or refuse it? Nik: "yes let's try B. The agent may re-issue the session request withou the GPU flag, if the user insists." Req 22 and 23 added. Req 23 also covers the refusal of req 19, because it is the same refusal of a GPU request.
+- 2026-10-29 — Where is the Docker-access setting of a secondary host kept (req 14): (a) on that host, with ShipIt's settings only showing it, or (b) in ShipIt's settings with the other settings? If the main server keeps it, a main server that someone broke into can turn it on and get root access, which req 13 forbids. Nik: "a". Req 14 changed, and req 5 now names this setting as its one exception.
+- 2026-10-29 — Must the private network of req 7 encrypt its traffic? The traffic between hosts carries session credentials; a tailnet encrypts, a plain LAN does not. Options: (a) yes, and a plain LAN is not supported in this version; (b) no, and ShipIt encrypts the connection between hosts itself. Nik: "yes". Req 7 changed.
