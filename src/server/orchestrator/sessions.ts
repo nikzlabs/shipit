@@ -241,6 +241,7 @@ export function toListRow(session: SessionInfo): SessionListRow {
 export function filterVisibleInSidebar<T extends SessionListRow>(
   sessions: T[],
   maxMerged = MAX_MERGED_SESSIONS_PER_REPO,
+  isAgentWorking: (sessionId: string) => boolean = () => false,
 ): T[] {
   // Archived rows keep their rank so archiving does not promote an older session.
   // docs/324-scheduled-sessions — each view has its own cap, so daily runs never
@@ -268,7 +269,7 @@ export function filterVisibleInSidebar<T extends SessionListRow>(
   // sessions, so a hidden session is always one the idle enforcer may stop.
   // A root with unfinished work below it is not done, so it stays; a done
   // member stays with its root so the spawn tree is not torn apart.
-  const isDone = doneSessionTest(sessions);
+  const isDone = doneSessionTest(sessions, isAgentWorking);
   const byId = new Map(sessions.map((s) => [s.id, s]));
   const shownOnItsOwn = (s: T | undefined): boolean =>
     !!s && !s.userArchived && (!isDone(s) || topResolvedIds.has(s.id));
@@ -289,10 +290,18 @@ export class SessionManager {
 
   readonly dataRetention: DataRetentionConfig;
 
+  // The runner registry is built after this manager, so bootstrap sets the test later.
+  private agentWorkingTest: (sessionId: string) => boolean = () => false;
+  readonly isAgentWorking = (sessionId: string): boolean => this.agentWorkingTest(sessionId);
+
   constructor(dbManager: DatabaseManager, opts: { dataRetention?: DataRetentionConfig } = {}) {
     this.db = dbManager.db;
     this.dataRetention = opts.dataRetention ?? dataRetentionConfigFromEnv();
     this.adoptLegacySelfMergeWatches();
+  }
+
+  setAgentWorkingTest(test: (sessionId: string) => boolean): void {
+    this.agentWorkingTest = test;
   }
 
   /** For a store whose rows reference `sessions`: they must be in this database, not in another. */
@@ -489,14 +498,18 @@ export class SessionManager {
     const rows = this.db.prepare(
       "SELECT * FROM sessions WHERE warm = 0 ORDER BY last_used_at DESC, rowid DESC",
     ).all() as SessionRow[];
-    return filterVisibleInSidebar(this.withDataDeletionDates(rows.map((r) => this.listRowFromRow(r))));
+    return filterVisibleInSidebar(
+      this.withDataDeletionDates(rows.map((r) => this.listRowFromRow(r))),
+      MAX_MERGED_SESSIONS_PER_REPO,
+      this.isAgentWorking,
+    );
   }
 
   // docs/323-archived-session-data-retention req 7 — needs the whole list, because
   // "done" is decided from it.
   private withDataDeletionDates(sessions: SessionListRow[]): SessionListRow[] {
     if (!sessions.some((s) => (s.retainedDataBytes ?? 0) > 0)) return sessions;
-    const isDone = doneSessionTest(sessions);
+    const isDone = doneSessionTest(sessions, this.isAgentWorking);
     for (const s of sessions) {
       if (!s.retainedDataBytes) continue;
       const at = dataDeletionTimeMs(s, isDone(s), this.dataRetention);

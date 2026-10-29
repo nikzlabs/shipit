@@ -37,6 +37,7 @@ afterEach(() => {
 
   useSessionStore.setState({
     activeRunnerSessions: new Set<string>(),
+    backgroundTaskSessions: new Map<string, string[]>(),
     messages: [],
     rewindRecoveries: {},
     allSessionsDialogOpen: false,
@@ -576,6 +577,47 @@ describe("SessionSidebar", () => {
       const sessions = [baseSession({ id: "s1", title: "Just active", remoteUrl: repoA.url })];
       render(<SessionSidebar {...defaultProps} sessions={sessions} />);
       expect(screen.queryByText("Recently resolved")).toBeNull();
+    });
+
+    describe("docs/316-done-sessions-return-memory req 11: a session an agent works in", () => {
+      const merged = (over: Partial<SessionInfo>) => baseSession({
+        remoteUrl: repoA.url,
+        createdAt: "2024-01-01T00:00:00.000Z",
+        lastUsedAt: "2024-01-01T00:00:00.000Z",
+        mergedAt: "2024-01-01T00:00:00.000Z",
+        ...over,
+      });
+
+      it("stays out of 'Recently resolved' during its turn, and moves there when the agent stops", () => {
+        useSessionStore.setState({ activeRunnerSessions: new Set(["s-merged"]) });
+        render(<SessionSidebar {...defaultProps} sessions={[merged({ id: "s-merged", title: "Merged mid-turn" })]} />);
+        expect(screen.getByText("Merged mid-turn")).toBeTruthy();
+        expect(screen.queryByText("Recently resolved")).toBeNull();
+
+        act(() => useSessionStore.setState({ activeRunnerSessions: new Set<string>() }));
+        const header = screen.getByText("Recently resolved");
+        expect(header.compareDocumentPosition(screen.getByText("Merged mid-turn")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      });
+
+      it("stays out of 'Recently resolved' while its background work runs", () => {
+        useSessionStore.setState({ backgroundTaskSessions: new Map([["s-merged", ["npm test"]]]) });
+        render(<SessionSidebar {...defaultProps} sessions={[merged({ id: "s-merged", title: "Merged, tests running" })]} />);
+        expect(screen.getByText("Merged, tests running")).toBeTruthy();
+        expect(screen.queryByText("Recently resolved")).toBeNull();
+      });
+
+      it("keeps its merged parent out of 'Recently resolved' and is not tucked under the parent's resolved toggle", () => {
+        useSessionStore.setState({ activeRunnerSessions: new Set(["kid"]) });
+        const sessions = [
+          merged({ id: "root", title: "Merged parent" }),
+          merged({ id: "kid", title: "Working child", parentSessionId: "root", rootSessionId: "root" }),
+        ];
+        render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+        expect(screen.getByText("Merged parent")).toBeTruthy();
+        expect(screen.getByText("Working child")).toBeTruthy();
+        expect(screen.queryByText("Recently resolved")).toBeNull();
+        expect(screen.queryByTestId("resolved-children-toggle")).toBeNull();
+      });
     });
 
     it("keeps a reopened merged session (lastUsedAt > mergedAt) in the Active group", () => {

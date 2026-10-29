@@ -1,5 +1,6 @@
 import type { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "./session-runner.js";
+import { isAgentWorking } from "./session-runner.js";
 import type { DockerMemoryStats } from "../shared/types.js";
 import type { LogSource } from "../shared/types.js";
 import { bytesOverBudget } from "./memory-pressure.js";
@@ -92,7 +93,8 @@ export function createIdleEnforcer(
   function reclaimDoneSessions(now: number): void {
     if (!containerManager || !sessionManager) return;
     const sessions = sessionManager.listAll();
-    const isDone = doneSessionTest(sessions);
+    // req 4 — so the wait starts when the agent stops, not at a merge during its turn.
+    const isDone = doneSessionTest(sessions, (id) => isAgentWorking(runnerRegistry.get(id)));
     const stillDone = new Set<string>();
     for (const session of sessions) {
       if (!isDone(session)) continue;

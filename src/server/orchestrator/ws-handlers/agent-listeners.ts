@@ -234,6 +234,7 @@ export function wireAgentListeners(
       });
       if (startsTurn && opts.useStreaming === true) {
         deps.sseBroadcast("session_agent_started", { sessionId: turnSessionId });
+        deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
       }
     }
     console.log(`[cli-turn] runner=${runner.sessionId} adopted a turn the orchestrator did not start (${reason})`);

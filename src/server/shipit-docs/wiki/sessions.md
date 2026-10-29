@@ -117,7 +117,8 @@ out to stop finished work burying live work.
 
 Several things exempt a session from that cap: a **pin**, a **Keep preview
 running** reservation, a workspace ShipIt could not commit to (which needs the
-user, so it is never hidden), and belonging to a live parent-and-children tree.
+user, so it is never hidden), an agent working in it (a turn or background
+work), and belonging to a live parent-and-children tree.
 A session that is not resolved at all is never capped.
 
 Nothing dropped is gone. **All sessions** — reached from a repository group's
@@ -271,13 +272,14 @@ pinning does not.
 
 **Done sessions.** A session under **Recently resolved**, or one the sidebar
 hides because of the resolved-session cap, is *done*. About 10 minutes after
-its pull request merged or closed, ShipIt stops its agent container and its
-whole Compose stack, whatever the memory budget says — also while the user has
-it open, but never while its agent is working. A pin, **Keep preview running**,
-a broken workspace or a spawned session that is not done makes a session not
-done. A merged session moves under **Recently resolved** at once, also when
-the merge happens during one of its turns. A message sent after the merge makes
-it active again, and the next message restarts it.
+it became done, ShipIt stops its agent container and its whole Compose stack,
+whatever the memory budget says — also while the user has it open. A pin,
+**Keep preview running**, a broken workspace, an agent working in it (a turn or
+background work) or a spawned session that is not done makes a session not
+done. A merged session moves under **Recently resolved** at once, also when the
+user has it open; when the merge happens during one of its turns, it moves there
+when the agent stops working. A message sent after the merge makes it active
+again, and the next message restarts it.
 
 **New sessions nobody used.** Picking a repository for a new session hands the
 user a ready session before they type anything. If it has no first message and
