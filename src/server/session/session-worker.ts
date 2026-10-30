@@ -341,13 +341,17 @@ export class SessionWorker extends EventEmitter {
         if (typeof body.toolName !== "string" || !body.toolName) {
           return reply.code(400).send({ error: "toolName is required" });
         }
-        const agentId = this.agentController.currentAgentId;
         const subagent = body.toolUseId ? await this.agentController.subagentCaller(body.toolUseId) : undefined;
+        // After the wait: Auto can apply during it, and that change allows only requests already in the broker.
+        if (this.agentController.approvesEveryCall) return { behavior: "allow" };
+        const agentId = this.agentController.currentAgentId;
+        // A kill or an exit, also one during the wait, left no process to act on an answer.
+        if (!agentId) return { behavior: "deny", message: "The agent process that made this request has ended." };
         const opened = this.permissionBroker.openRequest({
           toolName: body.toolName,
           input: body.input,
           ...(body.toolUseId ? { toolUseId: body.toolUseId } : {}),
-          ...(agentId ? { agentId } : {}),
+          agentId,
           ...(subagent ? { subagent } : {}),
         });
         if (opened.immediate) {

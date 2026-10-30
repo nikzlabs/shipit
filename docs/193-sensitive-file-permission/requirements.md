@@ -1,7 +1,7 @@
 ---
 issue: planning#114
 title: Sensitive-file permission prompt — requirements
-description: What the approval gate must do for a write outside the workspace and for a call that waits with no answer.
+description: What the approval gate must do for a write outside the workspace, for a call that waits with no answer, and in Auto mode.
 ---
 
 # Sensitive-file permission prompt
@@ -18,6 +18,9 @@ Requirement 7 is the finding's proposed change 3, which the triage scheduled.
 The words are the finding's.
 
 Requirement 8 is the owner's decision of 2026-10-29 on planning#711, in the
+owner's words.
+
+Requirement 9 is the owner's request of 2026-10-30 in a chat session, in the
 owner's words.
 
 1. A location that ShipIt recommends to the agent for its files agrees with the
@@ -45,6 +48,7 @@ owner's words.
 8. When nobody answers a permission card before the call ends, the card keeps
    the state **Denied** and adds a reason line, such as "nobody answered in
    30 min".
+9. Claude in auto mode should not require any approvals.
 
 ## Open questions
 

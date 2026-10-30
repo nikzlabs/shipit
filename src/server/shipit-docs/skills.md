@@ -46,14 +46,15 @@ The Claude CLI asks the user to approve a write or a delete on a path with a
 `.claude` (measured for Write, Edit, `mkdir`, `ln -s` and `rm -rf`). The allow
 rules that were tried do not remove the request (`/shipit-docs/environment.md`,
 "Writes that wait for the user's approval"). With no user at the screen, the
-call waits 30 minutes and then does not run.
+call waits 30 minutes and then does not run. In Auto mode ShipIt allows these
+writes at once; in Plan and Guarded mode they ask.
 
 So keep a Claude skill's real files in `<workspace>/.agents/skills/<name>/`,
 make `.claude/skills` a symlink to `../.agents/skills`, and write, edit and
 delete skill files at the `.agents/skills/` path. Claude still finds them
 through `.claude/skills`. If the project has no such symlink yet, making it (or
-moving a real `.claude/skills/` folder) writes under `.claude` and asks: do it
-while the user is present. `ls -ld .claude/skills` shows which layout the
+moving a real `.claude/skills/` folder) writes under `.claude` and asks outside
+Auto mode: there, do it while the user is present. `ls -ld .claude/skills` shows which layout the
 project has; where `.claude/skills` is a real folder, the Claude skill
 directories named below are in `.claude/skills/`, and writing there asks.
 

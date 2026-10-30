@@ -895,7 +895,9 @@ The user picks a permission mode per turn from the chat input. There are three
   before 5.5, and needs a Max/Team/Enterprise plan; when unavailable the turn
   silently falls back to auto and the user is told.
 - **Auto** — autonomous with no classifier. The default. Safety here rests on
-  the tool allowlist, the branch-block hook, and container isolation.
+  the tool allowlist, the branch-block hook, and container isolation. For
+  Claude, no call waits for the user's approval: ShipIt allows each call the
+  CLI would ask about, and a deny rule still refuses.
 
 Independently of the mode, the branch-block hook refuses the common
 branch-moving git commands you run in this container. It reads command text,
