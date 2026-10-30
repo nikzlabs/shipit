@@ -1035,6 +1035,8 @@ export class PrStatusPoller {
     repo: string;
     prNumber: number;
     guard?: (pr: TerminalPrFacts) => boolean;
+    /** The commit a merge call pinned; it anchors the reset instead of the head read later. */
+    mergedHeadSha?: string;
   }): Promise<{ pr: TerminalPrFacts; promoted: boolean } | null> {
     const pr = await this.githubAuth.findPullRequestByNumber(args.owner, args.repo, args.prNumber);
     if (!pr) return null;
@@ -1045,7 +1047,7 @@ export class PrStatusPoller {
       owner: args.owner,
       repo: args.repo,
       branch: pr.head_ref,
-      pr,
+      pr: args.mergedHeadSha && pr.merged_at !== null ? { ...pr, head_sha: args.mergedHeadSha } : pr,
       force: true,
     });
     return { pr, promoted: true };
