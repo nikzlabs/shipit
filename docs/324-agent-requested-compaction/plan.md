@@ -15,7 +15,7 @@ Implements [`requirements.md`](./requirements.md). Reuses the compaction turn of
 ## Shape
 
 ```
-agent turn ──► shipit compact [INSTRUCTIONS] [--note N] ──► sessions.pending_compaction = {instructions, note}
+agent turn ──► shipit compact [INSTRUCTIONS] [--note N] [--user-asked] ──► sessions.pending_compaction = {instructions, note, userAsked}
 turn ends ──► commit ──► PR/release flows ──► push armed ──► restart step ──► compaction step ──► idle
 compaction step, on the current runner only:
    busy (a turn runs, a flow holds the session, a question waits, background work) ──► leave it pending
@@ -56,9 +56,22 @@ get` and ask for it with `shipit settings propose`. Read in two places:
   user turned the setting off does not run — it is reported like any other
   compaction that cannot start (piece 7).
 
+**1c. A compaction the user asked for (req 13, 14).** The system prompt
+(`prompts/skeleton.md`, *Compacting your context*) tells every agent that when
+the user asks it to compact, it runs `shipit compact --user-asked` itself and
+never tells the user to type `/compact`. Without that section the agent knew
+the command only from `/shipit-docs`, and the harness's own knowledge says
+`/compact` is the user's to type. The same section, the command's help and
+`/shipit-docs/sessions.md` say not to repeat the system prompt in the
+instructions: ShipIt sends it with every spawn (`session-agent-run-params.ts`
+joins ShipIt's and the user's instructions; each harness passes them on every
+spawn, Codex on `thread/resume` too), so a compaction cannot remove it. The
+flag is the agent's word that the user asked; nothing checks it, and a wrong
+use costs one early compaction.
+
 **2. The request is persisted.** A nullable `sessions.pending_compaction` column
-holds `{instructions?, note?}` as JSON, so an orchestrator restart keeps an
-accepted request.
+holds `{instructions?, note?, userAsked?}` as JSON, so an orchestrator restart
+keeps an accepted request. Stop drops only the note.
 
 **3. The post-turn step.** `runRequestedCompaction`
 (`services/agent-compaction-request.ts`) runs at the end of `runCommitAndPr`,
@@ -86,8 +99,9 @@ continuation of an earlier compaction, the usual case in an autonomous run)
 still owns its hold here, which settling releases. If the release started a
 queued entry, the request waits for it.
 
-**3b. The minimum (req 12).** After the setting, harness and runner checks, the
-step reads the context size (`UsageManager.latestContextTokens`, with a
+**3b. The minimum (req 12).** A request with `userAsked` skips this check, as
+the user's `/compact` does (req 13). Otherwise, after the setting, harness and
+runner checks, the step reads the context size (`UsageManager.latestContextTokens`, with a
 compaction card newer than the reading taking its place). By then it counts the
 requesting turn: the listener records the usage row synchronously at the
 result (`agent-listeners.ts`), and the step runs only after the awaited commit
@@ -222,6 +236,8 @@ step posts it.
   while the setting is on.
 - `src/server/shipit-docs/wiki/settings-and-accounts.md` — the Advanced tab row.
 - `agent-shim/shipit.ts` — `HELP`.
+- `src/server/orchestrator/prompts/skeleton.md` — *Compacting your context*
+  (req 13, 14).
 
 ## Key files
 
@@ -235,6 +251,7 @@ step posts it.
 | `src/server/orchestrator/services/agent-compaction-request.ts` | The request, and the step: checks, settle, parked instructions, compaction turn, queued continuation, failure |
 | `src/server/orchestrator/services/agent-compaction-stop.ts` | What Stop ends: the pending note and a queued continuation |
 | `src/server/orchestrator/prompts/agent-compaction-*.md` | The instructions notice, the continuation, the not-started notice, the under-minimum notice |
+| `src/server/orchestrator/prompts/skeleton.md` | *Compacting your context*: compact when the user asks, never send them to `/compact`, do not repeat the system prompt (req 13, 14) |
 | `src/server/shared/compaction-threshold.ts` | The 200,000-token minimum (req 12) |
 | `src/server/orchestrator/turn-executor.ts` | Call the step after the restart step |
 | `src/server/orchestrator/session-runner.ts`, `ws-handlers/types.ts` | The `runRequestedCompaction` seam |

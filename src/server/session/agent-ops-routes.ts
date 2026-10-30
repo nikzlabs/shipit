@@ -716,7 +716,7 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/restart-after-turn", request.body ?? {}, reply),
   );
 
-  app.post<{ Body: { instructions?: string; note?: string } }>(
+  app.post<{ Body: { instructions?: string; note?: string; userAsked?: boolean } }>(
     "/agent-ops/compact",
     async (request, reply) => relay("POST", "/compact-after-turn", request.body ?? {}, reply),
   );

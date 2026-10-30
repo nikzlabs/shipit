@@ -655,13 +655,18 @@ verify it.
 ## Compacting your own context — `shipit compact`
 
 ```
-shipit compact [INSTRUCTIONS] [--note "TEXT"] [--json]
+shipit compact [INSTRUCTIONS] [--note "TEXT"] [--user-asked] [--json]
 ```
 
 Compacts **your own** context at a point you choose — typically when you finish
 one feature and are about to start the next, so the next one does not carry the
 step-by-step detail of the last. It is in addition to the harness's own
 automatic compaction, which is unchanged.
+
+**When the user asks you to compact your context, do it yourself** with
+`shipit compact --user-asked`, then end your turn. Never tell them to type
+`/compact`: their request is the same as their own `/compact`. Use
+`--user-asked` only when the user asked.
 
 **It needs a setting the user owns**, `advanced.agentCompaction` (*Let the agent
 compact its own context*, Settings → Advanced), which is off by default. While it
@@ -680,10 +685,13 @@ compacting would genuinely help, propose it with
   turn ends — the same minimum as every other compaction ShipIt starts by
   itself. Under that, nothing is compacted, the user sees no card, and your
   next turn starts with a notice that gives the size. A `--note` still gives you
-  that turn. Only the user's `/compact` compacts a smaller context.
+  that turn. A compaction the user asked for (`--user-asked`) has no minimum,
+  as their own `/compact` has none.
 - **`INSTRUCTIONS`** (optional, quote them as one argument) say what the
-  compaction must keep: decisions, the user's standing instructions, the plan
-  for what comes next. Claude and Grok honour them; Codex and both OpenCode harnesses compact
+  compaction must keep from the conversation: decisions, what the user told you
+  in chat, the plan for what comes next. **Do not repeat your system prompt** —
+  ShipIt's instructions and the user's own instructions: ShipIt sends it with
+  every turn, and a compaction does not touch it. Claude and Grok honour them; Codex and both OpenCode harnesses compact
   on their own terms. After a compaction, on **every** harness, your next turn
   starts with the instructions handed back to you word for word, so what they
   name survives either way.

@@ -49,10 +49,13 @@ export interface CompactionRequestDeps {
 export function recordCompactionRequest(
   deps: CompactionRequestDeps,
   sessionId: string,
-  body: { instructions?: unknown; note?: unknown },
+  body: { instructions?: unknown; note?: unknown; userAsked?: unknown },
 ): { requested: true; continues: boolean } {
   const instructions = optionalText(body.instructions, "instructions");
   const note = optionalText(body.note, "note");
+  if (body.userAsked !== undefined && typeof body.userAsked !== "boolean") {
+    throw new ServiceError(400, "userAsked must be true or false.");
+  }
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
   if (!deps.isEnabled()) throw new ServiceError(403, AGENT_COMPACTION_OFF);
@@ -66,6 +69,7 @@ export function recordCompactionRequest(
   deps.sessionManager.setPendingCompaction(sessionId, {
     ...(instructions !== undefined ? { instructions } : {}),
     ...(note !== undefined ? { note } : {}),
+    ...(body.userAsked === true ? { userAsked: true as const } : {}),
   });
   return { requested: true, continues: note !== undefined };
 }
@@ -163,8 +167,8 @@ export async function runRequestedCompaction(
     notStarted(deps, runner, request, "this session cannot start a turn of its own");
     return;
   }
-  // req 12; an unknown size compacts.
-  const context = deps.getContextTokens(sessionId);
+  // req 12, which a compaction the user asked for skips (req 13); an unknown size compacts.
+  const context = request.userAsked ? undefined : deps.getContextTokens(sessionId);
   if (context !== undefined && context < AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS) {
     skipUnderMinimum(deps, runner, request, context);
     return;

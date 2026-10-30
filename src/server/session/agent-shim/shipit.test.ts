@@ -1875,6 +1875,16 @@ describe("shipit compact (docs/324-agent-requested-compaction)", () => {
     expect(out.calls[0]?.body).toEqual({});
   });
 
+  it("sends --user-asked, and says that no minimum applies (req 13)", async () => {
+    const { run } = makeRunner();
+    let out = await run(["compact", "--user-asked"], { "POST /agent-ops/compact": REQUESTED });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]?.body).toEqual({ userAsked: true });
+    expect(out.stdout).toMatch(/^minimum: none/m);
+    out = await run(["compact"], { "POST /agent-ops/compact": REQUESTED });
+    expect(out.stdout).not.toMatch(/^minimum: none/m);
+  });
+
   it("refuses an empty --note rather than silently not continuing", async () => {
     const { run } = makeRunner();
     const out = await run(["compact", "--note", "  "]);

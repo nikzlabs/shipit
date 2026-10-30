@@ -186,6 +186,8 @@ function safeParseCapabilities(json: string): unknown {
 export interface PendingCompaction {
   instructions?: string;
   note?: string;
+  /** req 13 — the user asked for it, so it compacts under the req 12 minimum, as `/compact` does. */
+  userAsked?: true;
 }
 
 export interface DiskLadderThresholds {
@@ -741,6 +743,7 @@ export class SessionManager {
       return {
         ...(typeof parsed.instructions === "string" ? { instructions: parsed.instructions } : {}),
         ...(typeof parsed.note === "string" ? { note: parsed.note } : {}),
+        ...(parsed.userAsked === true ? { userAsked: true as const } : {}),
       };
     } catch {
       return {};
@@ -751,7 +754,8 @@ export class SessionManager {
   dropPendingCompactionNote(id: string): void {
     const request = this.getPendingCompaction(id);
     if (request?.note === undefined) return;
-    this.setPendingCompaction(id, request.instructions !== undefined ? { instructions: request.instructions } : {});
+    const { note: _dropped, ...kept } = request;
+    this.setPendingCompaction(id, kept);
   }
 
   /**

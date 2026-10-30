@@ -4,7 +4,8 @@ import { turnContextTokens, type TurnUsage } from "./types/usage-types.js";
  * The one minimum for every compaction ShipIt starts by itself: after a merge
  * (docs/295-compact-context-on-merge req 15), at the agent's request
  * (docs/324-agent-requested-compaction req 12) and when idle (docs/333-idle-compaction req 6).
- * Under it, only the user's `/compact` compacts.
+ * Under it, only a compaction the user asks for runs: their `/compact`, or one they ask the
+ * agent for (docs/324-agent-requested-compaction req 13).
  */
 export const AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS = 200_000;
 

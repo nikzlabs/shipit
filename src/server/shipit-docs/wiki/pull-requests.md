@@ -321,8 +321,9 @@ off, which holds for these turns too.
 No continuation compacts a context under 200,000 tokens — not even one sent
 with **Compact the context** ticked. The box is still shown, with a hint under
 it that says so, and the branch is still reset; only the compaction is left
-out. Under that size, the context is compacted only when the user sends
-`/compact`.
+out. Under that size, the context is compacted only when the user asks for it:
+they send `/compact`, or they ask you to compact and you run
+`shipit compact --user-asked`.
 
 The context is compacted at most once for each merge: after a message
 compacted it, or was sent with **Compact the context** unticked, that box does
