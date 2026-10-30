@@ -566,7 +566,24 @@ is Claude and its mode is Auto (`undefined` or `"auto"`). The mode is the start
 params' mode, then each `/agent/permission-mode` change and each mode the CLI
 reports (`reportedPermissionMode`: an init's mode, a main-thread
 `EnterPlanMode`), so it follows a plan-mode entry and a Guarded turn that the
-CLI ran as `default`. Plan and Guarded keep the card.
+CLI ran as `default`. Plan and Guarded keep the card. When Auto takes effect
+while a card from another mode still waits — the user steers in Auto mode — the
+worker allows every unanswered request (`notePermissionMode`), so no call stays
+held. The endpoint reads the mode after its wait for the stream
+(`subagentCaller`), with no `await` between that check and the card, so a
+change to Auto during the wait cannot leave a card behind.
+
+A late request from a process that was already replaced gets the answer for the
+new process's mode, because the bridge sends no process identity. This is not
+guarded: `/agent/start` refuses while a process holds the slot, and the kill
+signals the old CLI's whole tree, MCP bridge included (`killProcessTree`), so
+the answer reaches at most a process that is ending. The kill does not wait for
+the exit.
+
+A request that waits in `subagentCaller` across a kill opens a card after
+`clearPending`, with no process behind it, in every mode. That race is older
+than req 9. In Auto mode the next process's first mode report allows it, so the
+card reads Approved.
 
 What still holds in Auto mode: a deny rule resolves before the CLI calls the
 permission tool, so the managed settings' deny list still refuses, and the
@@ -577,11 +594,11 @@ Measured on 2026-10-30 with Claude Code 2.1.300 and Haiku, through a
 and the shipit bridge. The prompt was to Write `.claude/probe-<nonce>.txt`; the
 CLI's init reported `default` in each run.
 
-| Run | Requests | File written |
-|---|---|---|
-| `approvesEveryCall` forced false (the behaviour before this change); the probe denied the card | 1 | no |
-| As built | 0 | yes |
-| As built, with `--settings` denying `Edit(//<ws>/.claude/**)` | 0 | no |
+| Run | Endpoint calls (reply) | Cards | File written |
+|---|---|---|---|
+| `approvesEveryCall` forced false (the behaviour before this change); the probe denied the card | 1 (`requestId`) | 1 | no |
+| As built | 1 (`allow`) | 0 | yes |
+| As built, with `--settings` denying `Edit(//<ws>/.claude/**)` | 0 | 0 | no |
 
 Two other ways were not used:
 
@@ -593,8 +610,9 @@ Two other ways were not used:
   ask, which is the defect this feature started from.
 
 Not affected: Codex raises its requests through `setPermissionRequester`, not
-this endpoint; a one-shot agent from `shipit agent run` gets no permission tool;
-local mode has no worker.
+this endpoint; a one-shot agent from `shipit agent run` gets no permission tool,
+so its CLI denies what it would ask and no card appears; local mode has no
+worker.
 
 ## Agent-agnostic seam
 
@@ -659,7 +677,7 @@ mid-turn card in that position reproduced it, not just this one.
 
 **Worker / agent-agnostic core**
 - `src/server/session/permission-broker.ts` — the broker. `openRequest()`/`poll()` (long poll + `toolUseId` idempotency), `request()` (Codex direct-await, withdrawn by its `signal`), `resolve()`, and the abandoned-request deny: `endToolUse()`/`clearPending()`; `callEnded.waitedMs` is the measured wait (req 8). Also `SubagentCallTracker`, which says whose call a `toolUseId` is.
-- `src/server/session/agent-controller.ts` — `wireAgentEvents` ends the request for every `tool_result` id, and clears pending requests when the agent exits. `/agent/status` reports the broker's `unansweredIds` as `pendingPermissionIds`. It feeds `SubagentCallTracker`, and `subagentCaller()` answers the permission endpoint. `approvesEveryCall` is true for Claude in Auto mode (req 9).
+- `src/server/session/agent-controller.ts` — `wireAgentEvents` ends the request for every `tool_result` id, and clears pending requests when the agent exits. `/agent/status` reports the broker's `unansweredIds` as `pendingPermissionIds`. It feeds `SubagentCallTracker`, and `subagentCaller()` answers the permission endpoint. `approvesEveryCall` is true for Claude in Auto mode, and `notePermissionMode` allows the requests that still wait when Auto applies (req 9).
 - `docker/agent-hooks/managed-settings.json` — the Claude CLI's permission rules, with the `Edit(//persist/**)` allow rule.
 - `src/server/session/mcp-permission-bridge.ts` — Claude's `--permission-prompt-tool`. `createPermissionBridgeServer()` factory; open + bounded `/await` poll loop with retry/backoff (Thread B).
 - `src/server/session/session-worker.ts` — broker construction, `/agent-ops/permission/request` (now non-blocking) + `/agent-ops/permission/await` (Thread B) + `/agent/permission/resolve`, `permissionBridgePaths`, Codex requester injection, reject-all on teardown.
@@ -711,7 +729,7 @@ mid-turn card in that position reproduced it, not just this one.
 - `agent-listeners.test.ts` — an agent error denies its cards; a replaced process's late error does not; the worker's deny settles the card.
 - `turn-crash-commit.test.ts` — an exit with a pending card denies it and still commits; `runner-registry-factory.test.ts` — `turn_abandoned`; `container-exit-logging.test.ts` — a container exit denies the card and saves the turn with it denied.
 - `mcp-permission-bridge.test.ts` — open→poll→allow envelope, inline pre-approval, `pending` loop, transient-failure retry, sustained-failure fail-closed, 4xx no-retry (Thread B).
-- `session-worker.test.ts` (integration) — open returns requestId + await-then-resolve round-trip, and duplicate-open idempotency (Thread B); Claude in Auto mode gets `allow` with no card, and asks again after the CLI reports `plan` (req 9).
+- `session-worker.test.ts` (integration) — open returns requestId + await-then-resolve round-trip, and duplicate-open idempotency (Thread B); Claude in Auto mode gets `allow` with no card, asks again after the CLI reports `plan`, and a card still waiting when the CLI reports `default` is allowed (req 9).
 - `ask-user-question.test.ts` (integration) — answering a question in plan mode re-pins plan mode on resume (Thread A).
 - `useAttentionInfo.test.ts` — `awaitingPermission` is the highest-priority reason and outranks `isAgentRunning` (Thread C).
 - `chat-history.test.ts` — round-trip + `updatePermissionCard` + the `EVERY_OPTIONAL_FIELD_MESSAGE` / `CARD_MESSAGE_FIELDS` guards.

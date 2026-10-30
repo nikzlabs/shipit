@@ -649,7 +649,7 @@ describe("Integration: Session Worker IPC", () => {
     runner.dispose();
   });
 
-  it("allows a request of Claude in Auto mode at once, with no card, and asks again in the mode the CLI reports (docs/193-sensitive-file-permission req 9)", async () => {
+  it("allows a request of Claude in Auto mode at once, with no card, asks again in the mode the CLI reports, and allows a waiting card when Auto applies (docs/193-sensitive-file-permission req 9)", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-perm-auto",
       sessionDir: "/tmp/test",
@@ -684,7 +684,23 @@ describe("Integration: Session Worker IPC", () => {
     await waitFor(() => cards === 1, 3000, "the plan-mode card");
 
     init("default");
+    const waited = await fetch(`${workerUrl}/agent-ops/permission/await`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId: inPlan.requestId, timeoutMs: 1000 }),
+    });
+    expect(await waited.json()).toEqual({ behavior: "allow" });
+
     expect(await open("auto-2")).toEqual({ behavior: "allow" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(cards).toBe(1);
+
+    // The endpoint waits for the stream to show an unseen call; Auto can apply in that wait.
+    init("plan");
+    const unseen = open("unseen-1");
+    await new Promise((r) => setTimeout(r, 30));
+    init("default");
+    expect(await unseen).toEqual({ behavior: "allow" });
     await new Promise((r) => setTimeout(r, 50));
     expect(cards).toBe(1);
 

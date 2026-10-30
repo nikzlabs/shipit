@@ -531,6 +531,11 @@ export class AgentController {
   // planning#700 — a restarted orchestrator restores it, so it follows the CLI's own changes too.
   private notePermissionMode(mode: PermissionMode | undefined): void {
     this.permissionMode = mode;
+    // A card opened in Plan or Guarded mode must not hold its call once Auto applies.
+    if (this.approvesEveryCall) {
+      const broker = this.deps.permissionBroker;
+      for (const id of broker.unansweredIds) broker.resolve(id, { behavior: "allow" });
+    }
     const resident = this.residentSpawn;
     if (!resident?.spawn) return;
     const { permissionMode: _previous, ...rest } = resident.spawn;
