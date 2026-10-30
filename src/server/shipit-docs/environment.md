@@ -210,9 +210,11 @@ Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restri
 
 ### Writes that wait for the user's approval
 
+**In Auto mode the Claude agent never waits here:** ShipIt allows each such request at once and shows no card. A deny rule above still refuses. The rest of this section is about Plan and Guarded mode.
+
 Some writes are neither allowed nor refused: the agent CLI asks, and ShipIt shows the user an approve/deny card. **The call returns nothing until the user answers.** With no user at the screen it waits: the Claude CLI ends an unanswered request after 30 minutes, and the call's result says that the MCP tool `permission_prompt` sent no response. Nobody denied it. ShipIt then puts a `[ShipIt]` line at the start of your next turn that names the call and says it did not run. So know what asks before you plan around it, most of all for work you give to subagents.
 
-For the Claude agent (measured with Claude Code 2.1.293 and 2.1.300):
+For the Claude agent (measured with Claude Code 2.1.293 and 2.1.300, in the CLI's `default` mode, which ShipIt now answers with allow in Auto mode):
 
 | Write | Card? |
 |---|---|

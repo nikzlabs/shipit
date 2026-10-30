@@ -85,6 +85,9 @@ export class AgentController {
   /** docs/327 — the declared MCP servers the running agent process holds. */
   private liveServiceMcp: ServiceMcpServer[] = [];
 
+  // Undefined is ShipIt's Auto mode, as on the wire.
+  private permissionMode: PermissionMode | undefined;
+
   // Delivery identity belongs to the turn, not the resident process that can outlive it.
   private turnDeliveryId: string | undefined;
   // The id of a prompt that went in behind a turn the CLI started; the next turn takes it.
@@ -118,6 +121,13 @@ export class AgentController {
 
   get currentAgentId(): AgentId | undefined {
     return this.agent?.agentId;
+  }
+
+  // docs/193-sensitive-file-permission req 9 — ShipIt's Auto mode runs the Claude CLI in its
+  // "default" mode, which still asks for sensitive files and symlinks out of the workspace.
+  get approvesEveryCall(): boolean {
+    return this.agent?.agentId === "claude"
+      && (this.permissionMode === undefined || this.permissionMode === "auto");
   }
 
   async subagentCaller(toolUseId: string): Promise<PermissionSubagent | undefined> {
@@ -169,6 +179,7 @@ export class AgentController {
         };
         const agent = this.deps.agentFactory(agentId);
         this.agent = agent;
+        this.permissionMode = params.permissionMode;
         this.wireAgentEvents(agent, runToken);
         agent.setPermissionRequester?.((input) => this.deps.permissionBroker.request(input));
         const mcpWrite = this.deps.mcpConfig.invokeAgentMcpWriter(agent, params);
@@ -519,6 +530,7 @@ export class AgentController {
 
   // planning#700 — a restarted orchestrator restores it, so it follows the CLI's own changes too.
   private notePermissionMode(mode: PermissionMode | undefined): void {
+    this.permissionMode = mode;
     const resident = this.residentSpawn;
     if (!resident?.spawn) return;
     const { permissionMode: _previous, ...rest } = resident.spawn;

@@ -513,7 +513,8 @@ describe("Integration: Session Worker IPC", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    const proxy = await runner.startAgentOnWorker("codex", { prompt: "edit .npmrc", cwd: "/workspace" });
+    // The fake reports itself as Claude, which asks for no approval in Auto mode (docs/193-sensitive-file-permission req 9).
+    const proxy = await runner.startAgentOnWorker("codex", { prompt: "edit .npmrc", cwd: "/workspace", permissionMode: "guarded" });
 
     interface PermEvent { type: string; requestId?: string; path?: string; behavior?: string }
     let cardRequestId: string | undefined;
@@ -572,7 +573,7 @@ describe("Integration: Session Worker IPC", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    const proxy = await runner.startAgentOnWorker("codex", { prompt: "write", cwd: "/workspace" });
+    const proxy = await runner.startAgentOnWorker("codex", { prompt: "write", cwd: "/workspace", permissionMode: "guarded" });
     const requests: { toolName?: string; subagent?: string }[] = [];
     proxy.on("event", (event: { type: string }) => {
       if (event.type === "agent_permission_request") requests.push(event as { type: string; subagent?: string });
@@ -621,7 +622,7 @@ describe("Integration: Session Worker IPC", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    const proxy = await runner.startAgentOnWorker("codex", { prompt: "edit .npmrc", cwd: "/workspace" });
+    const proxy = await runner.startAgentOnWorker("codex", { prompt: "edit .npmrc", cwd: "/workspace", permissionMode: "guarded" });
 
     let cards = 0;
     proxy.on("event", (event: { type: string }) => {
@@ -642,6 +643,48 @@ describe("Integration: Session Worker IPC", () => {
 
     expect(first.requestId).toBeTruthy();
     expect(second.requestId).toBe(first.requestId);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(cards).toBe(1);
+
+    runner.dispose();
+  });
+
+  it("allows a request of Claude in Auto mode at once, with no card, and asks again in the mode the CLI reports (docs/193-sensitive-file-permission req 9)", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-perm-auto",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const proxy = await runner.startAgentOnWorker("claude", { prompt: "edit .claude/skills/x/SKILL.md", cwd: "/workspace" });
+    let cards = 0;
+    proxy.on("event", (event: { type: string }) => {
+      if (event.type === "agent_permission_request") cards += 1;
+    });
+
+    const open = async (toolUseId: string): Promise<{ requestId?: string; behavior?: string }> => {
+      const r = await fetch(`${workerUrl}/agent-ops/permission/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toolName: "Write", input: { file_path: ".claude/skills/x/SKILL.md" }, toolUseId }),
+      });
+      return (await r.json()) as { requestId?: string; behavior?: string };
+    };
+    const init = (permissionMode: string) =>
+      lastAgent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "cli-1", model: "opus", tools: [], permissionMode });
+
+    expect(await open("auto-1")).toEqual({ behavior: "allow" });
+
+    init("plan");
+    const inPlan = await open("plan-1");
+    expect(inPlan.requestId).toBeTruthy();
+    await waitFor(() => cards === 1, 3000, "the plan-mode card");
+
+    init("default");
+    expect(await open("auto-2")).toEqual({ behavior: "allow" });
     await new Promise((r) => setTimeout(r, 50));
     expect(cards).toBe(1);
 

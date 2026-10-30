@@ -341,6 +341,7 @@ export class SessionWorker extends EventEmitter {
         if (typeof body.toolName !== "string" || !body.toolName) {
           return reply.code(400).send({ error: "toolName is required" });
         }
+        if (this.agentController.approvesEveryCall) return { behavior: "allow" };
         const agentId = this.agentController.currentAgentId;
         const subagent = body.toolUseId ? await this.agentController.subagentCaller(body.toolUseId) : undefined;
         const opened = this.permissionBroker.openRequest({

@@ -43,7 +43,7 @@ supports appear, so on a harness with one mode there is nothing to choose.
 |---|---|
 | **Plan** | Read-only. You research and plan; you do not edit |
 | **Guarded** | Autonomous, but every shell and network command is safety-checked before it runs and risky ones are blocked. Slower, and costs a little more. Conditions below |
-| **Auto** | Autonomous, no command safety check |
+| **Auto** | Autonomous, no command safety check. Claude asks for no approval: ShipIt allows each call the CLI would ask about, and shows no card |
 
 **Guarded mode can be picked and then not happen, and this is worth getting
 right** — it is the one place where reassuring the user wrongly has a cost. The
@@ -215,7 +215,7 @@ Three things stop and wait for an answer, and they look different on purpose.
 
 | Card | Appears when | The user can |
 |---|---|---|
-| **Permission needed** | A tool call needs approval | **Approve**, **Deny**, or **Approve & remember** — the last only when the request names a file, and it then allows that file for the rest of the session. **Show details**, where the call has more to show than the one-line summary, expands it in full. ShipIt sets no deadline, but the agent can stop waiting — Claude Code gives up on an unanswered prompt after 30 minutes, and Stop ends it too. The card then reads **Denied** and the session no longer asks for attention. When the call ended before anyone answered, and not by the user's Stop, the card adds a line that says so, such as "Nobody answered in 30 min" |
+| **Permission needed** | A tool call needs approval — never for Claude in Auto mode | **Approve**, **Deny**, or **Approve & remember** — the last only when the request names a file, and it then allows that file for the rest of the session. **Show details**, where the call has more to show than the one-line summary, expands it in full. ShipIt sets no deadline, but the agent can stop waiting — Claude Code gives up on an unanswered prompt after 30 minutes, and Stop ends it too. The card then reads **Denied** and the session no longer asks for attention. When the call ended before anyone answered, and not by the user's Stop, the card adds a line that says so, such as "Nobody answered in 30 min" |
 | **A question** | You call `AskUserQuestion` | Pick an option, tick several where the question allows it, or choose **Other** and type — with a mic on that field where voice input is on. Answering starts a turn. An answer given while a different turn runs goes to that turn as a message, or to the queue |
 | **Plan ready** | You end plan mode with `ExitPlanMode` — the card hangs off that tool call, so plan-shaped prose alone does not produce one | Accept, accept guarded, or suggest changes (above) |
 

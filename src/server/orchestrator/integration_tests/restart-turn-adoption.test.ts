@@ -150,14 +150,14 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     return runner;
   }
 
-  async function startPreRestartTurn(runToken = "pre-restart-token"): Promise<void> {
+  async function startPreRestartTurn(runToken = "pre-restart-token", permissionMode?: PermissionMode): Promise<void> {
     const res = await fetch(`${workerUrl}/agent/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         agentId: "claude",
         runToken,
-        params: { prompt: "refactor the parser", cwd: "/workspace", useStreaming: true },
+        params: { prompt: "refactor the parser", cwd: "/workspace", useStreaming: true, ...(permissionMode ? { permissionMode } : {}) },
       }),
     });
     expect(res.status).toBe(200);
@@ -316,7 +316,8 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
 
   it("keeps a saved card the adopted worker still waits on and denies one it no longer holds (docs/193)", async () => {
     savePendingCard("perm_from_an_older_turn");
-    await startPreRestartTurn();
+    // Claude in Auto mode raises no card (docs/193-sensitive-file-permission req 9).
+    await startPreRestartTurn(undefined, "guarded");
     const liveId = await openWorkerPermissionRequest();
     seedPreCrashHistory();
     savePendingCard(liveId, true);

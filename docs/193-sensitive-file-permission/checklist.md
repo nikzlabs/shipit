@@ -25,3 +25,5 @@
 - [x] Measure with Claude Code 2.1.300 which calls still ask and whether an allow rule removes the request (plan.md, "What still asks")
 - [x] Say in `/shipit-docs/environment.md` and `/shipit-docs/skills.md` which writes ask and which forms do not
 - [x] Keep "Denied" and add a reason line to a card that nobody answered before the call ended, stored with the card (req 8)
+- [x] Answer every request of Claude in Auto mode with allow and no card, and measure it with the real CLI (req 9)
+- [x] Say in `/shipit-docs/` and the wiki that Claude in Auto mode asks for no approval
