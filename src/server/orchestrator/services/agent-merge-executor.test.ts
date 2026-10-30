@@ -324,6 +324,29 @@ describe("runOneRequest — ending the request", () => {
     expect(notices().join(" ")).toContain("is now merged");
   });
 
+  it("leaves an already-merged request pending while another settler holds the session", async () => {
+    const p = poller();
+    const gh = github({ read: observation({ prState: "MERGED" }) as never });
+    claims.beginSettlement(SESSION);
+    const out = await runOneRequest(deps({ githubAuthManager: gh, prStatusPoller: p }), armed());
+
+    expect(out).toMatchObject({ result: "waiting" });
+    expect(claims.get(SESSION)).toMatchObject({ state: "pending" });
+    expect(p.promoteMergedPrByNumber).not.toHaveBeenCalled();
+
+    claims.endSettlement(SESSION);
+    expect(await runOneRequest(deps({ githubAuthManager: gh, prStatusPoller: p }), armed()))
+      .toEqual({ result: "merged" });
+  });
+
+  it("keeps a witnessed merge as settling when another settler holds the session", async () => {
+    const gh = github({ onMerge: () => { claims.beginSettlement(SESSION); } });
+    const out = await runOneRequest(deps({ githubAuthManager: gh }), armed());
+
+    expect(out).toMatchObject({ result: "waiting" });
+    expect(claims.get(SESSION)).toMatchObject({ state: "settling" });
+  });
+
   it("does not retry an attempt whose outcome was never learned", async () => {
     const gh = github({ attempt: { outcome: "indeterminate", message: "socket hang up" } as MergeAttempt });
     const out = await runOneRequest(deps({ githubAuthManager: gh }), armed());

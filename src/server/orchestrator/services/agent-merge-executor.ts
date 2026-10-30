@@ -336,28 +336,35 @@ async function settle(
   claim: AgentMergeClaim,
   witnessed: boolean,
 ): Promise<boolean> {
-  // Promote even unwitnessed merges so reconciliation can finish a failed settlement.
-  deps.claims.beginMerging(claim);
+  // Before the guard: a settling row is the evidence no later open read may discard.
   if (witnessed) deps.claims.markSettling(claim.sessionId, claim.expectedSha);
-  const live = deps.claims.get(claim.sessionId);
-  if (live?.expectedSha !== claim.expectedSha) return true;
-  const outcome = await settleAgentMerge(
-    {
-      claims: deps.claims,
-      sessionManager: deps.sessionManager,
-      chatHistoryManager: deps.chatHistoryManager,
-      ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
-      ...(deps.runnerRegistry ? { runnerRegistry: deps.runnerRegistry } : {}),
-    },
-    live,
-    {
-      witnessed,
-      turn: null,
-      // Unwitnessed settlement has no hold; recheck after its GitHub read.
-      stillSafeToSettle: () => isIdle(deps, claim.sessionId, { underHold: witnessed }),
-    },
-  );
-  return outcome.result === "settled";
+  // The row leaves `pending` below, where a reconciliation would also settle it.
+  if (!deps.claims.beginSettlement(claim.sessionId)) return false;
+  try {
+    // Promote even unwitnessed merges so reconciliation can finish a failed settlement.
+    deps.claims.beginMerging(claim);
+    const live = deps.claims.get(claim.sessionId);
+    if (live?.expectedSha !== claim.expectedSha) return true;
+    const outcome = await settleAgentMerge(
+      {
+        claims: deps.claims,
+        sessionManager: deps.sessionManager,
+        chatHistoryManager: deps.chatHistoryManager,
+        ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
+        ...(deps.runnerRegistry ? { runnerRegistry: deps.runnerRegistry } : {}),
+      },
+      live,
+      {
+        witnessed,
+        turn: null,
+        // Unwitnessed settlement has no hold; recheck after its GitHub read.
+        stillSafeToSettle: () => isIdle(deps, claim.sessionId, { underHold: witnessed }),
+      },
+    );
+    return outcome.result === "settled";
+  } finally {
+    deps.claims.endSettlement(claim.sessionId);
+  }
 }
 
 function end(
