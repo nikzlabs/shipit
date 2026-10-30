@@ -345,11 +345,13 @@ export class SessionWorker extends EventEmitter {
         // After the wait: Auto can apply during it, and that change allows only requests already in the broker.
         if (this.agentController.approvesEveryCall) return { behavior: "allow" };
         const agentId = this.agentController.currentAgentId;
+        // A kill or an exit, also one during the wait, left no process to act on an answer.
+        if (!agentId) return { behavior: "deny", message: "The agent process that made this request has ended." };
         const opened = this.permissionBroker.openRequest({
           toolName: body.toolName,
           input: body.input,
           ...(body.toolUseId ? { toolUseId: body.toolUseId } : {}),
-          ...(agentId ? { agentId } : {}),
+          agentId,
           ...(subagent ? { subagent } : {}),
         });
         if (opened.immediate) {

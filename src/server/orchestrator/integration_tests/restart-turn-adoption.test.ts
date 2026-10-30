@@ -332,7 +332,20 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
   });
 
   it("denies a saved card when no adopted turn can relay the answer (docs/193)", async () => {
+    // A background subagent's request still waits after the main turn ended.
+    await startPreRestartTurn(undefined, "guarded");
+    lastAgent.emit("event", { type: "agent_assistant", content: [{ type: "tool_use", id: "agent-bg", name: "Agent", input: {} }] });
+    lastAgent.emit("event", { type: "agent_tool_result", content: [{ type: "tool_result", tool_use_id: "agent-bg", content: "launched" }] });
+    lastAgent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "tool_use", id: "toolu_live", name: "Bash", input: { command: "curl example.com" } }],
+      parentToolUseId: "agent-bg",
+    });
     const orphanId = await openWorkerPermissionRequest();
+    lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+    const status = await (await fetch(`${workerUrl}/agent/status`)).json() as WorkerAgentStatus;
+    expect(status.turnActive).toBe(false);
+    expect(status.pendingPermissionIds).toEqual([orphanId]);
     savePendingCard(orphanId, true);
 
     const runner = makeRunner();

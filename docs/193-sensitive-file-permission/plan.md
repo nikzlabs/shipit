@@ -580,10 +580,11 @@ signals the old CLI's whole tree, MCP bridge included (`killProcessTree`), so
 the answer reaches at most a process that is ending. The kill does not wait for
 the exit.
 
-A request that waits in `subagentCaller` across a kill opens a card after
-`clearPending`, with no process behind it, in every mode. That race is older
-than req 9. In Auto mode the next process's first mode report allows it, so the
-card reads Approved.
+A request that reaches the endpoint, or ends its wait in `subagentCaller`, when
+no process holds the slot gets a deny and no card. A kill or an exit denies the
+requests already open (`clearPending`) and empties the slot, which also ends
+that wait; a card opened after that had no process behind it in any mode, and
+nothing would settle it until the next process ended.
 
 What still holds in Auto mode: a deny rule resolves before the CLI calls the
 permission tool, so the managed settings' deny list still refuses, and the
@@ -680,7 +681,7 @@ mid-turn card in that position reproduced it, not just this one.
 - `src/server/session/agent-controller.ts` — `wireAgentEvents` ends the request for every `tool_result` id, and clears pending requests when the agent exits. `/agent/status` reports the broker's `unansweredIds` as `pendingPermissionIds`. It feeds `SubagentCallTracker`, and `subagentCaller()` answers the permission endpoint. `approvesEveryCall` is true for Claude in Auto mode, and `notePermissionMode` allows the requests that still wait when Auto applies (req 9).
 - `docker/agent-hooks/managed-settings.json` — the Claude CLI's permission rules, with the `Edit(//persist/**)` allow rule.
 - `src/server/session/mcp-permission-bridge.ts` — Claude's `--permission-prompt-tool`. `createPermissionBridgeServer()` factory; open + bounded `/await` poll loop with retry/backoff (Thread B).
-- `src/server/session/session-worker.ts` — broker construction, `/agent-ops/permission/request` (now non-blocking) + `/agent-ops/permission/await` (Thread B) + `/agent/permission/resolve`, `permissionBridgePaths`, Codex requester injection, reject-all on teardown.
+- `src/server/session/session-worker.ts` — broker construction, `/agent-ops/permission/request` (now non-blocking; a deny with no card when no process holds the slot) + `/agent-ops/permission/await` (Thread B) + `/agent/permission/resolve`, `permissionBridgePaths`, Codex requester injection, reject-all on teardown.
 - `src/server/session/agents/claude/{adapter,process}.ts` — register `shipit-permission`; pass `--permission-prompt-tool`.
 - `src/server/session/agents/codex/adapter.ts` — `setPermissionRequester` + `resolveApproval` routing (replaces unconditional auto-accept); `buildCodexPermissionInput`. `codex-event-handler.ts` withdraws a request on `serverRequest/resolved`.
 - `src/server/shared/types/agent-types.ts` — `AgentPermissionRequestEvent`, `AgentPermissionResolvedEvent`, `PermissionDecision`, `PermissionRequester`, `AgentMcpPermissionBridge`, `AgentProcess.{resolvePermission,setPermissionRequester}`.
@@ -725,11 +726,11 @@ mid-turn card in that position reproduced it, not just this one.
 - `codex/adapter.test.ts` — `serverRequest/resolved` aborts the pending request and sends no response.
 - `database.test.ts` — the migration denies legacy pending cards and leaves answered cards and unreadable JSON alone.
 - `permission-cards.test.ts` — mid-turn vs. finished-turn persistence, attention cleared only with the last id, the abandoned-card deny, and the reconcile against the worker's live ids.
-- `restart-turn-adoption.test.ts` (integration) — after a restart, a saved card the adopted worker still waits on stays pending and needs attention, an older one is denied, and a card no adopted turn can relay, or one from a replaced container, is denied.
+- `restart-turn-adoption.test.ts` (integration) — after a restart, a saved card the adopted worker still waits on stays pending and needs attention, an older one is denied, and a card no adopted turn can relay (the worker still holds it after the turn ended), or one from a replaced container, is denied.
 - `agent-listeners.test.ts` — an agent error denies its cards; a replaced process's late error does not; the worker's deny settles the card.
 - `turn-crash-commit.test.ts` — an exit with a pending card denies it and still commits; `runner-registry-factory.test.ts` — `turn_abandoned`; `container-exit-logging.test.ts` — a container exit denies the card and saves the turn with it denied.
 - `mcp-permission-bridge.test.ts` — open→poll→allow envelope, inline pre-approval, `pending` loop, transient-failure retry, sustained-failure fail-closed, 4xx no-retry (Thread B).
-- `session-worker.test.ts` (integration) — open returns requestId + await-then-resolve round-trip, and duplicate-open idempotency (Thread B); Claude in Auto mode gets `allow` with no card, asks again after the CLI reports `plan`, and a card still waiting when the CLI reports `default` is allowed (req 9).
+- `session-worker.test.ts` (integration) — open returns requestId + await-then-resolve round-trip, and duplicate-open idempotency (Thread B); Claude in Auto mode gets `allow` with no card, asks again after the CLI reports `plan`, and a card still waiting when the CLI reports `default` is allowed (req 9); a request whose agent is killed during the endpoint's wait gets a deny and opens no card.
 - `ask-user-question.test.ts` (integration) — answering a question in plan mode re-pins plan mode on resume (Thread A).
 - `useAttentionInfo.test.ts` — `awaitingPermission` is the highest-priority reason and outranks `isAgentRunning` (Thread C).
 - `chat-history.test.ts` — round-trip + `updatePermissionCard` + the `EVERY_OPTIONAL_FIELD_MESSAGE` / `CARD_MESSAGE_FIELDS` guards.

@@ -707,6 +707,43 @@ describe("Integration: Session Worker IPC", () => {
     runner.dispose();
   });
 
+  it("opens no card for a request whose agent is killed while the endpoint waits for its call (docs/193)", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-perm-kill",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const proxy = await runner.startAgentOnWorker("claude", { prompt: "write", cwd: "/workspace", permissionMode: "guarded" });
+    let cards = 0;
+    proxy.on("event", (event: { type: string }) => {
+      if (event.type === "agent_permission_request") cards += 1;
+    });
+
+    // The stream never shows this call, so the endpoint waits for it.
+    const waiting = fetch(`${workerUrl}/agent-ops/permission/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ toolName: "Write", input: { file_path: "link/f.txt" }, toolUseId: "killed-1" }),
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    const killed = await fetch(`${workerUrl}/agent/kill`, { method: "POST" });
+    expect(await killed.json()).toEqual({ killed: true });
+
+    const reply = (await (await waiting).json()) as { behavior?: string; requestId?: string };
+    expect(reply.behavior).toBe("deny");
+    expect(reply.requestId).toBeUndefined();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(cards).toBe(0);
+    const status = (await (await fetch(`${workerUrl}/agent/status`)).json()) as { pendingPermissionIds?: string[] };
+    expect(status.pendingPermissionIds ?? []).toEqual([]);
+
+    runner.dispose();
+  });
+
   it("resolving an unknown permission requestId reports not-found (stale card)", async () => {
     const res = await worker.getApp().inject({
       method: "POST",
