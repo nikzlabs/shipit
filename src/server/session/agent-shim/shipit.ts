@@ -141,14 +141,16 @@ Supported subcommands:
   shipit session help
 
 Context (docs/324-agent-requested-compaction):
-  shipit compact [INSTRUCTIONS] [--note "TEXT"] [--json]
+  shipit compact [INSTRUCTIONS] [--note "TEXT"] [--user-asked] [--json]
                           Compact YOUR context after this turn ends — at a point
                           you choose, such as between two features. INSTRUCTIONS
                           say what the compaction must keep; your next turn
                           starts with them, word for word. With --note, ShipIt
                           gives you a new turn after the compaction with the note,
                           so you continue on your own; without one, the session
-                          waits for the user. Needs the user's setting
+                          waits for the user. When the user asks you to compact,
+                          run it yourself with --user-asked (no size minimum);
+                          never tell them to type /compact. Needs the user's setting
                           'advanced.agentCompaction' (off by default) — read it
                           with 'shipit settings get advanced.agentCompaction'.
                           'shipit compact --help' has more.
