@@ -653,6 +653,8 @@ describe("SessionManager", () => {
 
       mgr.setPendingCompaction("sess-1", { instructions: "keep the API", note: "start B" });
       expect(mgr.getPendingCompaction("sess-1")).toEqual({ instructions: "keep the API", note: "start B" });
+      mgr.setPendingCompaction("sess-1", { userAsked: true });
+      expect(mgr.getPendingCompaction("sess-1")).toEqual({ userAsked: true });
       mgr.setPendingCompaction("sess-1", {});
       expect(mgr.getPendingCompaction("sess-1")).toEqual({});
       mgr.setPendingCompaction("sess-1", null);
@@ -675,9 +677,9 @@ describe("SessionManager", () => {
     it("Stop drops only the note (req 10)", () => {
       const mgr = new SessionManager(dbManager);
       mgr.track("sess-1", "Test");
-      mgr.setPendingCompaction("sess-1", { instructions: "keep the API", note: "start B" });
+      mgr.setPendingCompaction("sess-1", { instructions: "keep the API", note: "start B", userAsked: true });
       mgr.dropPendingCompactionNote("sess-1");
-      expect(mgr.getPendingCompaction("sess-1")).toEqual({ instructions: "keep the API" });
+      expect(mgr.getPendingCompaction("sess-1")).toEqual({ instructions: "keep the API", userAsked: true });
       mgr.dropPendingCompactionNote("sess-2");
       expect(mgr.getPendingCompaction("sess-2")).toBeUndefined();
     });

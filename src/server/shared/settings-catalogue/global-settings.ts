@@ -76,8 +76,9 @@ export const GLOBAL_SETTINGS = {
     description:
       "Lets the agent compact its context itself with the shipit compact command, at a point it chooses — "
       + "for example between two features — keeping the instructions it names. The compaction "
-      + "runs after the agent's turn, and only on a context of 200K tokens or more. The "
-      + "harness's automatic compaction and your own /compact work either way.",
+      + "runs after the agent's turn, and only on a context of 200K tokens or more, except when "
+      + "you ask the agent to compact. The harness's automatic compaction and your own /compact "
+      + "work either way.",
     type: bool({ default: false }),
     store: { kind: "credential-store", field: "agentCompaction" },
     wire: "agentCompaction",

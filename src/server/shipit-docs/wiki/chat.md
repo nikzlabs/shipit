@@ -333,9 +333,12 @@ ways it happens:
   after your turn ends, and with a note you continue on your own. It compacts
   only a context of 200K tokens or more when your turn ends: then your next turn
   starts with your instructions word for word; under that, nothing is compacted
-  and your next turn says so. When the user says context is
-  the problem, do this if the setting is on; if it is off, propose turning it on
-  with `shipit settings propose`, or let them type `/compact`. Details:
+  and your next turn says so. **When the user asks you to compact your context,
+  do it yourself** with `shipit compact --user-asked`, which compacts at any
+  size, as their `/compact` does; never tell them to type `/compact`. If the
+  setting is off, propose turning it on with `shipit settings propose`. Do not
+  repeat your system prompt — ShipIt's instructions and the user's own — in the
+  instructions: it comes with every turn. Details:
   `/shipit-docs/sessions.md` → *Compacting your own context*.
 - **The harness does it itself** when its context fills.
 - **After a merge.** When a session's pull request has merged and the user's
@@ -456,7 +459,7 @@ to say "this part, specifically".
 | Types, dictates, attaches, and sends | Read the message, including the attachments and the `@` files |
 | Interrupts, queues, cancels a queued message | Stop cleanly; in an ordinary session ShipIt commits the partial work, and a Stop returns their queued messages to the composer |
 | Answers a question, approves or denies a permission, accepts a plan | Ask only when the answer changes what you do |
-| Types `/compact` when context is full; turns on *Let the agent compact its own context* | Compact your own context with `shipit compact` at a point you choose, such as between features — only while that setting is on |
+| Types `/compact` when context is full, or asks you to compact; turns on *Let the agent compact its own context* | Compact your own context with `shipit compact` at a point you choose, such as between features, and with `--user-asked` when they ask — only while that setting is on |
 | Sets and clears a goal | Work toward it |
 | Chooses the permission mode | Say what the work needs, and why |
 | Ticks a proposed action | Offer them; then do the work |

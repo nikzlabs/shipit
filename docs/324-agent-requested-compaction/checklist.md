@@ -12,3 +12,5 @@
 - [x] `shipit-docs/sessions.md` and the wiki
 - [x] Independent review against the requirements, and its findings applied
 - [x] `advanced.agentCompaction` setting, off by default, read by the route and the step (req 11)
+- [x] `--user-asked`: stored with the request, kept by Stop, skips the minimum (req 12, 13)
+- [x] System prompt section *Compacting your context*; help, `sessions.md`, wiki and under-minimum notice say to compact when the user asks and not to repeat the system prompt (req 13, 14)
