@@ -381,6 +381,47 @@ describe("reconcileAgentMergeClaims", () => {
   });
 });
 
+describe("reconciling a `settling` claim", () => {
+  it.each<[string, string | null]>([
+    ["no head", null],
+    ["a different head", "head-after-the-merge"],
+  ])("records the merge when GitHub reports %s", async (_label, headSha) => {
+    claimOne();
+    claims.markSettling(SESSION, "sha-head");
+    const p = poller(facts({ head_sha: headSha }));
+    await reconcileAgentMergeClaims(deps({ prStatusPoller: p }));
+
+    expect(claims.get(SESSION)).toBeNull();
+    expect(p.promoted).toHaveLength(1);
+    expect(p.promoteMergedPrByNumber).toHaveBeenCalledWith(
+      expect.objectContaining({ mergedHeadSha: "sha-head" }),
+    );
+    expect(notices().join("\n")).toContain("Merged pull request #7");
+  });
+
+  it("records the merge after the session moved to another pull request", async () => {
+    claimOne();
+    claims.markSettling(SESSION, "sha-head");
+    sessions.recordPrProvenance(SESSION, 9, REPO_ID);
+    await reconcileAgentMergeClaims(deps({ prStatusPoller: poller(facts({ head_sha: null })) }));
+
+    expect(claims.get(SESSION)).toBeNull();
+    expect(notices().join("\n")).toContain("Merged pull request #7 in acme/shipit");
+  });
+
+  it("records it without a GitHub read when the session moved on", async () => {
+    claimOne();
+    claims.markSettling(SESSION, "sha-head");
+    sessions.recordPrProvenance(SESSION, 9, REPO_ID);
+    const p = poller(facts({ merged_at: null, state: "open" }));
+    await reconcileAgentMergeClaims(deps({ prStatusPoller: p }));
+
+    expect(p.readPrByNumber).not.toHaveBeenCalled();
+    expect(claims.get(SESSION)).toBeNull();
+    expect(notices().join("\n")).toContain("Merged pull request #7 in acme/shipit");
+  });
+});
+
 describe("captureTurn", () => {
   it("answers null when nothing is running, so the merge route refuses", () => {
     expect(captureTurn(registry(null), SESSION)).toBeNull();

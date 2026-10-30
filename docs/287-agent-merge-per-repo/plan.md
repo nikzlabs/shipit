@@ -438,9 +438,11 @@ request in which repository. Settlement then runs **one canonical
 terminal-promotion operation, addressed by pull-request number**, supplied with
 the complete pull-request facts it needs — the promotion that builds the
 persisted card needs URL, title, body, base, branch and diff statistics; the
-notification needs URL, title and branch; the reset anchor needs the head SHA;
-the issue lifecycle needs the body. The merge response carries none of that, so
-settlement fetches those facts for that number before promoting. It is the same
+notification needs URL, title and branch; the issue lifecycle needs the body. The
+merge response carries none of that, so settlement fetches those facts for that
+number before promoting. The reset anchor is the one fact it does not take from
+that read: it is `expected_sha`, the commit the merge call pinned, because a head
+read after the merge can be empty or name another commit. It is the same
 operation `verifyMissingPr` reaches on detection, and it leaves `merged_at`, the
 merged snapshot, `mergedHeadSha` and reset eligibility exactly as a detected
 merge does — which is what requirement 11 asks for.

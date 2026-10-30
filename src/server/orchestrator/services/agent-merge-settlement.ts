@@ -63,9 +63,11 @@ export async function settleAgentMerge(
   if (!deps.prStatusPoller) return { result: "deferred", reason: "no pull-request poller" };
   const target = ownerRepoFor(claim);
   if (!target) return { result: "deferred", reason: "the claim has no readable repository" };
+  // A settling row stores a merge response received before it could be recorded.
+  const witnessed = opts.witnessed || live.state === "settling";
 
   if (!sessionStillOwns(deps, claim)) {
-    return settleWithoutSession(deps, claim, target);
+    return settleWithoutSession(deps, claim, target, { witnessed, settling: live.state === "settling" });
   }
 
   if (opts.witnessed && deps.runnerRegistry) {
@@ -85,11 +87,12 @@ export async function settleAgentMerge(
     owner: target.owner,
     repo: target.repo,
     prNumber: claim.prNumber,
+    mergedHeadSha: claim.expectedSha,
     // Recheck after the GitHub await, before promotion writes session state.
     guard: (pr) => {
       if (opts.stillSafeToSettle && !opts.stillSafeToSettle()) return false;
       // Witnessed merges pinned expected_sha; branch deletion can change head_sha.
-      if (!opts.witnessed && pr.merged_at !== null && pr.head_sha !== claim.expectedSha) return false;
+      if (!witnessed && pr.merged_at !== null && pr.head_sha !== claim.expectedSha) return false;
       return true;
     },
   });
@@ -118,7 +121,7 @@ export async function settleAgentMerge(
     return { result: "not-merged" };
   }
 
-  if (!opts.witnessed && facts.head_sha !== claim.expectedSha) {
+  if (!witnessed && facts.head_sha !== claim.expectedSha) {
     console.warn(
       `[agent-merge] ${mergeRecordId(claim)} — PR #${claim.prNumber} merged at `
       + `${facts.head_sha ?? "an unknown commit"}, not the claimed commit. Recording nothing.`,
@@ -135,7 +138,7 @@ export async function settleAgentMerge(
 
   if (!read.promoted) return { result: "deferred", reason: "a turn started on this session" };
 
-  const message = opts.witnessed
+  const message = witnessed
     ? `Merged pull request #${claim.prNumber} at ${claim.expectedSha.slice(0, 8)}.`
     // Recovery proves the commit merged, but not who merged it.
     : `The commit this session asked to merge (${claim.expectedSha.slice(0, 8)}) is now merged as `
@@ -153,36 +156,45 @@ async function settleWithoutSession(
   deps: AgentMergeSettlementDeps,
   claim: AgentMergeClaim,
   target: { owner: string; repo: string },
+  opts: { witnessed: boolean; settling: boolean },
 ): Promise<SettlementOutcome> {
+  const { witnessed } = opts;
   const recordId = mergeRecordId(claim);
   if (!deps.sessionManager.get(claim.sessionId)) {
     deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "not-merged" };
   }
-  const facts = await deps.prStatusPoller?.readPrByNumber(target.owner, target.repo, claim.prNumber);
-  if (facts === undefined || facts === null) {
-    return { result: "deferred", reason: "GitHub did not answer about the moved pull request" };
+  // A settling row is the merge response itself, and a moved session has nothing to promote.
+  if (!opts.settling) {
+    const facts = await deps.prStatusPoller?.readPrByNumber(target.owner, target.repo, claim.prNumber);
+    if (facts === undefined || facts === null) {
+      return { result: "deferred", reason: "GitHub did not answer about the moved pull request" };
+    }
+    if (facts.merged_at === null || (!witnessed && facts.head_sha !== claim.expectedSha)) {
+      console.warn(
+        `[agent-merge] ${recordId} — the session's pull request moved on, and the claimed commit is `
+        + "not merged. Nothing to record.",
+      );
+      noticeForRequest(
+        deps, claim,
+        `ShipIt checked, and the commit this session asked to merge (${claim.expectedSha.slice(0, 8)}) `
+        + `is not merged in pull request #${claim.prNumber}. Nothing was merged.`,
+      );
+      deps.claims.release(claim.sessionId, claim.expectedSha);
+      return { result: "not-merged" };
+    }
   }
-  if (facts.merged_at === null || facts.head_sha !== claim.expectedSha) {
-    console.warn(
-      `[agent-merge] ${recordId} — the session's pull request moved on, and the claimed commit is `
-      + "not merged. Nothing to record.",
-    );
-    noticeForRequest(
-      deps, claim,
-      `ShipIt checked, and the commit this session asked to merge (${claim.expectedSha.slice(0, 8)}) `
-      + `is not merged in pull request #${claim.prNumber}. Nothing was merged.`,
-    );
-    deps.claims.release(claim.sessionId, claim.expectedSha);
-    return { result: "not-merged" };
-  }
+  const merged = witnessed
+    ? `Merged pull request #${claim.prNumber} in ${target.owner}/${target.repo} at `
+      + `${claim.expectedSha.slice(0, 8)}.`
+    : `The commit this session asked to merge (${claim.expectedSha.slice(0, 8)}) is now merged as `
+      + `pull request #${claim.prNumber} in ${target.owner}/${target.repo}.`;
   deps.claims.releaseAfterRecording(claim.sessionId, claim.expectedSha, () => {
     persistNoticeUnattached(
       deps.chatHistoryManager,
       claim.sessionId,
-      `The commit this session asked to merge (${claim.expectedSha.slice(0, 8)}) is now merged as `
-      + `pull request #${claim.prNumber} in ${target.owner}/${target.repo}. This session has since `
-      + "moved to a different pull request, so its own state is unchanged.",
+      `${merged} This session has since moved to a different pull request, so its own state is `
+      + "unchanged.",
       "info",
     );
   });
