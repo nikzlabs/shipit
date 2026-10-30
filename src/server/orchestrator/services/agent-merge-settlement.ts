@@ -199,6 +199,7 @@ export async function reconcileAgentMergeClaims(
 
   for (const claim of claims) {
     if (hasActiveTurn(deps, claim)) continue;
+    if (!deps.claims.beginSettlement(claim.sessionId)) continue;
     try {
       const outcome = await settleAgentMerge(deps, claim, {
         witnessed: false,
@@ -211,6 +212,8 @@ export async function reconcileAgentMergeClaims(
       }
     } catch (err) {
       console.error(`[agent-merge] reconciling ${claim.sessionId} PR #${claim.prNumber} failed:`, err);
+    } finally {
+      deps.claims.endSettlement(claim.sessionId);
     }
   }
 }

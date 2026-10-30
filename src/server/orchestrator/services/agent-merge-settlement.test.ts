@@ -339,6 +339,28 @@ describe("reconcileAgentMergeClaims", () => {
     expect(p.promoteMergedPrByNumber).not.toHaveBeenCalled();
   });
 
+  it("does not settle one session twice when two triggers overlap", async () => {
+    claimOne();
+    let overlapping: Promise<void> | undefined;
+    let started = false;
+    const p = poller(facts(), {
+      onFetch: () => {
+        if (started) return;
+        started = true;
+        overlapping = reconcileAgentMergeClaims(deps({ prStatusPoller: p }));
+      },
+    });
+
+    await reconcileAgentMergeClaims(deps({ prStatusPoller: p }));
+    await overlapping;
+    expect(p.promoteMergedPrByNumber).toHaveBeenCalledTimes(1);
+    expect(claims.get(SESSION)).toBeNull();
+
+    claimOne();
+    await reconcileAgentMergeClaims(deps({ prStatusPoller: p }));
+    expect(p.promoteMergedPrByNumber).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps going when one claim throws", async () => {
     claimOne();
     const p = {

@@ -1181,6 +1181,7 @@ export async function registerGitHubRoutes(
         }
         : null;
       let turn: TurnToken | null = null;
+      let settlementHeld = false;
       try {
       if (repoBound) {
         let currentBranch: string | null;
@@ -1290,7 +1291,9 @@ export async function registerGitHubRoutes(
                   return `Not merged — PR #${num} is no longer the pull request ShipIt opened for `
                     + "this session. Nothing was merged.";
                 }
-                if (!claimDeps.claims.claim({
+                // Held until the request resolves: the turn can end before GitHub answers.
+                settlementHeld = claimDeps.claims.beginSettlement(request.params.id);
+                if (!settlementHeld || !claimDeps.claims.claim({
                   sessionId: request.params.id,
                   repoId: claimRepoId,
                   prNumber: num,
@@ -1359,6 +1362,8 @@ export async function registerGitHubRoutes(
           return;
         }
         return { success: false, message: `Merge failed: ${getErrorMessage(err)}` };
+      } finally {
+        if (settlementHeld) claimDeps?.claims.endSettlement(request.params.id);
       }
     },
   );

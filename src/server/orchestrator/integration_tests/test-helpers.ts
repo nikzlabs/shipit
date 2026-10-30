@@ -465,6 +465,7 @@ export class StubGitHubAuthManager extends EventEmitter {
     this.mergePullRequestCalls.push({
       owner, repo, pullNumber, method, ...(expectedSha ? { expectedSha } : {}),
     });
+    await this._onMergeAttempt?.();
     if (this._mergeAttempt) return this._mergeAttempt;
     const legacy = this._mergeResult;
     if (legacy && !legacy.success) return { outcome: "refused" as const, message: legacy.message };
@@ -479,6 +480,11 @@ export class StubGitHubAuthManager extends EventEmitter {
 
   setMergeAttempt(attempt: typeof this._mergeAttempt) {
     this._mergeAttempt = attempt;
+  }
+
+  private _onMergeAttempt: (() => Promise<void>) | null = null;
+  setOnMergeAttempt(fn: (() => Promise<void>) | null) {
+    this._onMergeAttempt = fn;
   }
 
   private _prByNumber: Record<number, unknown> = {};
