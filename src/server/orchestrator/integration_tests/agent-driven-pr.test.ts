@@ -1591,6 +1591,54 @@ describe("repo-aware PR brokering (docs/211)", () => {
   );
 
   it(
+    "resolves an unresolved merge when its turn ends, so a later merge is not refused (#3296)",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      githubAuth.setMergeAttempt({
+        outcome: "indeterminate", message: "GitHub returned 502 for the merge of PR #7",
+      });
+
+      await withLiveTurn(sessionId, async () => {
+        await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/pr/7/merge`, payload: {} });
+        expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toMatchObject({ state: "merging" });
+        // The merge went through on GitHub although its answer was lost.
+        githubAuth.setPullRequestByNumber(7, {
+          url: "https://github.com/test-user/test-repo/pull/7", number: 7, base: "main",
+          title: "Feature", body: "", state: "closed", merged_at: "2026-10-30T12:00:00Z",
+          merge_commit_sha: "merge-sha", head_sha: head, head_ref: "shipit/test-feature",
+          additions: 1, deletions: 0,
+        });
+      });
+
+      await vi.waitFor(
+        () => expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toBeNull(),
+        { timeout: 5_000 },
+      );
+
+      sessionManager.recordPrProvenance(sessionId, 8, "github:test-user/test-repo");
+      githubAuth.setMergeAttempt({ outcome: "merged", message: "Pull request merged", mergeCommitSha: "m8" });
+      const res = await withLiveTurn(sessionId, () => {
+        const nextHead = execSync("git rev-parse HEAD", {
+          cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+        }).toString().trim();
+        githubAuth.setMergeGateResult({ headRefOid: nextHead, rollupState: "SUCCESS" });
+        return app.inject({ method: "POST", url: `/api/sessions/${sessionId}/pr/8/merge`, payload: {} });
+      });
+
+      expect(res.json()).toMatchObject({ success: true });
+      expect(githubAuth.mergePullRequestCalls.at(-1)).toMatchObject({ pullNumber: 8 });
+    },
+  );
+
+  it(
     "agent merge is 403 for a sandbox without the dangerousGitHubOps grant",
     { timeout: 15_000 },
     async () => {

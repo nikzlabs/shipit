@@ -404,7 +404,11 @@ start while its settlement is unresolved.
 *It must be retryable.* A transient GitHub or authentication failure must not
 strand a row until the next process restart. Reconciliation therefore runs from
 three triggers, all cheap and all inside this feature: once at startup, at the end
-of any turn on that session, and when the session is next activated. No polling
+of any turn on that session, and when the session is next activated. The
+end-of-turn trigger runs at `idle` and again when the turn's post-turn hold comes
+off (`work_released`): `idle` fires inside that hold, where the no-active-turn
+test reads the session as busy and stands down, so only the second call can
+settle a claim after an ordinary turn (#3296). No polling
 integration is required, because a direct claim never waits for anything external
 — it is created inside a turn and resolved as soon as that turn is over.
 (`docs/288-agent-merge-arming` adds rows that *do* wait, and with them the
