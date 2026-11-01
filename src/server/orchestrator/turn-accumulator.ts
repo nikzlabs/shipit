@@ -1,5 +1,6 @@
-import type { WsServerMessage, ClaudeContentBlockToolUse } from "../shared/types.js";
+import type { WsServerMessage, WsQueueRow, ClaudeContentBlockToolUse } from "../shared/types.js";
 import type { QueuedMessage, ChatMessageGroup, SteeredMessage, RecordedChatCard } from "./session-runner.js";
+import { nextSendOrder, queueSnapshot } from "./queue-identity.js";
 import { settleDroppedQueueEntries } from "./turn-settlement.js";
 import { withoutHeldEntries } from "./held-turns.js";
 import { createCommittedBodyIds } from "./transcript-projection.js";
@@ -39,6 +40,7 @@ export class TurnAccumulator {
     if (this._messageQueue.length >= MAX_QUEUE_SIZE) {
       throw new Error(`Message queue is full (max ${MAX_QUEUE_SIZE})`);
     }
+    msg.sendOrder ??= nextSendOrder();
     this._messageQueue.push(msg);
     return this._messageQueue.length;
   }
@@ -53,8 +55,8 @@ export class TurnAccumulator {
     this._messageQueue.length = 0;
   }
 
-  getQueueSnapshot(): { text: string; position: number }[] {
-    return this._messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 }));
+  getQueueSnapshot(): WsQueueRow[] {
+    return queueSnapshot(this._messageQueue);
   }
 
   getTurnEventBuffer(): WsServerMessage[] { return [...this._turnEventBuffer]; }

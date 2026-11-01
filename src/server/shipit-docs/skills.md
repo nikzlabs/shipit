@@ -10,7 +10,8 @@ ShipIt surfaces two kinds of skill directories under the workspace:
   resolvable as `$<name>` in chat.
 - `<workspace>/.opencode/skills/<name>/SKILL.md` — OpenCode agent skills,
   `/`-invoked like Claude's. OpenCode also natively reads `.claude/skills/`,
-  so on an OpenCode session both directories' skills are disclosed.
+  so on an OpenCode session both directories' skills are disclosed. OpenCode 2
+  reads the same directories, plus `.agents/skills/`.
 - `<workspace>/.grok/skills/<name>/SKILL.md` — Grok Build agent skills,
   `/`-invoked like Claude's. Grok also natively reads `.claude/skills/`
   (verified, docs/274), so on a Grok session both directories' skills are
@@ -38,6 +39,25 @@ The layouts coexist in the same directory; ShipIt distinguishes them by the
 marker file each carries (`.shipit-installed.json`, `.shipit-plugin-skill.json`)
 — never by the directory name, which anyone may write.
 
+## Write Claude skills at `.agents/skills/`
+
+The Claude CLI asks the user to approve a write or a delete on a path with a
+`.claude` segment, also when that path is a symlink to a folder outside
+`.claude` (measured for Write, Edit, `mkdir`, `ln -s` and `rm -rf`). The allow
+rules that were tried do not remove the request (`/shipit-docs/environment.md`,
+"Writes that wait for the user's approval"). With no user at the screen, the
+call waits 30 minutes and then does not run. In Auto mode ShipIt allows these
+writes at once; in Plan and Guarded mode they ask.
+
+So keep a Claude skill's real files in `<workspace>/.agents/skills/<name>/`,
+make `.claude/skills` a symlink to `../.agents/skills`, and write, edit and
+delete skill files at the `.agents/skills/` path. Claude still finds them
+through `.claude/skills`. If the project has no such symlink yet, making it (or
+moving a real `.claude/skills/` folder) writes under `.claude` and asks outside
+Auto mode: there, do it while the user is present. `ls -ld .claude/skills` shows which layout the
+project has; where `.claude/skills` is a real folder, the Claude skill
+directories named below are in `.claude/skills/`, and writing there asks.
+
 ## Do not edit installed skill directories by hand
 
 A `<plugin>__<skill>/` directory carrying `.shipit-installed.json` is
@@ -46,9 +66,10 @@ and a sha256 of the `SKILL.md` body at install time. If you edit the
 `SKILL.md`, the user's next upgrade attempt for that plugin will be refused
 to protect your edits. To customize an installed skill safely:
 
-- **Fork it**: copy the contents into a new `.claude/skills/<your-name>/` or
-  `.codex/skills/<your-name>/` directory (no marker, no double-underscore),
-  then modify freely.
+- **Fork it**: copy the contents into a new `.agents/skills/<your-name>/` (for
+  Claude when `.claude/skills` links there, see above) or
+  `.codex/skills/<your-name>/` directory (no marker, no double-underscore), then
+  modify freely.
 - **Remove and rewrite**: delete the `<plugin>__<skill>/` directory (marker
   and all) and commit, then re-author as a hand-written skill.
 
@@ -70,9 +91,10 @@ in an unrelated in-progress session.
 **Removing a skill has no dedicated UI** — by design (CLAUDE.md §5). Removing a
 marketplace skill is just deleting its directory: if the user asks you to
 remove or uninstall an installed skill, do exactly that — delete
-`.claude/skills/<plugin>__<skill>/` or `.codex/skills/<plugin>__<skill>/` and
-commit. (A hand-written skill is the same: delete its `.claude/skills/<name>/`
-or `.codex/skills/<name>/` directory.)
+`.agents/skills/<plugin>__<skill>/` (for Claude when `.claude/skills` links
+there, see above; else `.claude/skills/<plugin>__<skill>/`) or
+`.codex/skills/<plugin>__<skill>/` and commit. (A hand-written skill is the
+same: delete its directory in the same place.)
 
 ## How to know which skills are available right now
 

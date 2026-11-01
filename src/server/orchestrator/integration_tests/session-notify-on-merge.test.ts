@@ -17,7 +17,7 @@ import { RepoStore } from "../repo-store.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { DatabaseManager } from "../../shared/database.js";
-import { MAX_DELIVERY_ATTEMPTS } from "../merge-watch.js";
+import { buildInboxNotice, INBOX_TURN_TEXT } from "../services/session-inbox-notice.js";
 import {
   TestClient,
   StubAuthManager,
@@ -38,8 +38,17 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10000, label = "con
   }
 }
 
-const isMergeWakePrompt = (prompt: string | undefined): boolean =>
-  prompt?.includes("Child PR #") === true && prompt.includes(" merged:");
+// docs/328-session-message-inbox req 6 — the parent's agent reads this in its inbox. It is
+// in no prompt: the turn that ShipIt starts only says that messages wait.
+const mergeNotice = (prNumber: number) => expect.stringContaining(`Child PR #${prNumber} merged:`);
+
+const namesAChildPr = (prompt: string | undefined): boolean => prompt?.includes("Child PR #") === true;
+
+const isInboxTurn = (agent: FakeClaudeProcess): boolean =>
+  agent.runCalled && agent.lastPrompt.endsWith(INBOX_TURN_TEXT);
+
+const isSelfWakePrompt = (prompt: string | undefined): boolean =>
+  prompt?.includes("shipit branch reset-to-base") === true;
 
 describe("Integration: notify-on-merge watch (docs/196)", () => {
   let app: FastifyInstance;
@@ -50,6 +59,7 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
   let dbManager: DatabaseManager;
   let origGitTerminalPrompt: string | undefined;
   let spawnedAgents: FakeClaudeProcess[];
+  let githubAuth: StubGitHubAuthManager;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -66,13 +76,14 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     repoStore.setReady(REPO_URL);
     repoStore.setTrusted(REPO_URL, true);
 
+    githubAuth = new StubGitHubAuthManager();
     app = await buildApp({
       credentialStore,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       repoStore,
       authManager: new StubAuthManager() as unknown as AuthManager,
-      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      githubAuthManager: githubAuth as unknown as GitHubAuthManager,
       agentFactory: () => {
         const a = new FakeClaudeProcess();
         spawnedAgents.push(a);
@@ -137,6 +148,13 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     return (await parentCards(parentId)).map((c) => c.outcome);
   }
 
+  /** What `shipit session inbox` gives the session's agent; `all` reads without marking. */
+  async function inbox(sessionId: string, all = false): Promise<string[]> {
+    const res = await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/inbox/read`, payload: { all } });
+    expect(res.statusCode).toBe(200);
+    return (res.json() as { messages: { text: string }[] }).messages.map((m) => m.text);
+  }
+
   it("arms a watch via the register route", { timeout: 15_000 }, async () => {
     const parentId = await createParent();
     const childId = await spawnChild(parentId);
@@ -158,7 +176,7 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     expect(sessionManager.getMergeWatch(strangerChild)).toBeUndefined();
   });
 
-  it("merged: surfaces the parent card + dispatches the wake-turn, marks delivered only once it runs", { timeout: 15_000 }, async () => {
+  it("merged: the parent card, a watch that ends at once, and one short turn that tells an idle parent", { timeout: 15_000 }, async () => {
     const parentId = await createParent();
     const childId = await spawnChild(parentId);
     await armWatch(parentId, childId);
@@ -174,33 +192,23 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     });
 
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
-    await waitFor(
-      () => {
-        const r = app.runnerRegistry.get(parentId);
-        return !!r && (r.running || r.queueLength > 0);
-      },
-      10_000,
-      "parent wake-turn dispatched",
-    );
+    // The stored notice is the delivery: the watch does not wait for a turn.
+    expect(sessionManager.getMergeWatch(childId)).toMatchObject({
+      state: "delivered",
+      reportedPr: { prNumber: 7, outcome: "merged" },
+    });
 
-    expect(sessionManager.getMergeWatch(childId)?.state).toBe("merge-observed");
+    await waitFor(() => spawnedAgents.some(isInboxTurn), 10_000, "the turn that tells the parent");
+    const turn = spawnedAgents.find(isInboxTurn)!;
+    expect(turn.lastPrompt).toContain(buildInboxNotice(1));
+    expect(namesAChildPr(turn.lastPrompt)).toBe(false);
 
-    await waitFor(
-      () => spawnedAgents.some((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)),
-      10_000,
-      "wake-turn agent started",
-    );
-    spawnedAgents.find((a) => isMergeWakePrompt(a.lastPrompt))!.finish();
-    await waitFor(
-      () => sessionManager.getMergeWatch(childId)?.state === "delivered",
-      10_000,
-      "watch delivered after wake-turn completion",
-    );
-
-    expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
+    expect(await inbox(parentId)).toEqual([mergeNotice(7)]);
+    expect(await inbox(parentId)).toEqual([]);
+    turn.finish();
   });
 
-  it("merged: a wake-turn queued behind a REAL interactive parent turn reaches delivered in-process (planning#257)", { timeout: 20_000 }, async () => {
+  it("merged: a parent that is busy with the user's turn gets no queued turn, and is told when that turn ends", { timeout: 20_000 }, async () => {
     const parentId = await createParent();
     const childId = await spawnChild(parentId);
     await armWatch(parentId, childId);
@@ -227,29 +235,21 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     });
 
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
-    await waitFor(() => runner.queueLength === 1, 10_000, "wake-turn queued behind the user turn");
-    expect(sessionManager.getMergeWatch(childId)?.state).toBe("merge-observed");
+    expect(sessionManager.getMergeWatch(childId)?.state).toBe("delivered");
+    // docs/328-session-message-inbox req 1 — nothing waits in the queue behind the user's turn.
+    expect(runner.queueLength).toBe(0);
+    expect(spawnedAgents.some(isInboxTurn)).toBe(false);
 
     userTurn.finish("parent-user-turn");
-    await waitFor(
-      () => spawnedAgents.some((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)),
-      10_000,
-      "wake-turn started from the interactive drain",
-    );
-    expect(runner.systemTurnInProgress).toBe(true);
+    await waitFor(() => spawnedAgents.some(isInboxTurn), 10_000, "the turn that tells the parent");
+    expect(spawnedAgents.some((a) => namesAChildPr(a.lastPrompt))).toBe(false);
+    expect(await inbox(parentId)).toEqual([mergeNotice(7)]);
 
-    spawnedAgents.find((a) => isMergeWakePrompt(a.lastPrompt))!.finish("parent-wake-turn");
-    await waitFor(
-      () => sessionManager.getMergeWatch(childId)?.state === "delivered",
-      10_000,
-      "watch delivered in-process (no restart)",
-    );
-    expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
-
+    spawnedAgents.find(isInboxTurn)!.finish("parent-inbox-turn");
     client.close();
   });
 
-  it("merged: a restart before the wake-turn runs is recovered by reconcile (no second card)", { timeout: 15_000 }, async () => {
+  it("merged: a restart after the notice was stored reports nothing again", { timeout: 15_000 }, async () => {
     const parentId = await createParent();
     const childId = await spawnChild(parentId);
     await armWatch(parentId, childId);
@@ -265,14 +265,8 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     };
 
     await app.mergeWatchManager!.handleChildPrTerminal(info);
-    await waitFor(
-      () => spawnedAgents.some((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)),
-      10_000,
-      "first wake-turn agent started",
-    );
-    expect(sessionManager.getMergeWatch(childId)?.state).toBe("merge-observed");
-    const firstWakeAgents = spawnedAgents.filter((a) => isMergeWakePrompt(a.lastPrompt)).length;
-    expect(firstWakeAgents).toBe(1);
+    await waitFor(() => spawnedAgents.some(isInboxTurn), 10_000, "the turn that tells the parent");
+    spawnedAgents.find(isInboxTurn)!.finish();
 
     app.runnerRegistry.dispose(parentId, { force: true });
     app.mergeWatchManager!.setPrStatusLookup((id) =>
@@ -296,18 +290,10 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
         : undefined,
     );
     await app.mergeWatchManager!.reconcilePending();
+    await app.mergeWatchManager!.retryStalledDeliveries();
 
-    await waitFor(
-      () => spawnedAgents.filter((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)).length >= 2,
-      10_000,
-      "wake-turn re-dispatched after restart",
-    );
-    [...spawnedAgents].reverse().find((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt))!.finish();
-    await waitFor(
-      () => sessionManager.getMergeWatch(childId)?.state === "delivered",
-      10_000,
-      "watch delivered after reconcile re-delivery",
-    );
+    expect(sessionManager.getMergeWatch(childId)?.state).toBe("delivered");
+    expect(await inbox(parentId, true)).toEqual([mergeNotice(7)]);
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
   });
 
@@ -328,9 +314,10 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     await app.mergeWatchManager!.handleChildPrTerminal(info);
 
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
+    expect(await inbox(parentId, true)).toHaveLength(1);
   });
 
-  it("merged: a delivery that THROWS is retried in-process and recovers (planning#260)", { timeout: 20_000 }, async () => {
+  it("merged: a parent that cannot be started loses nothing: the watch ends, and the notice waits in its inbox", { timeout: 20_000 }, async () => {
     const parentId = await createParent();
     const childId = await spawnChild(parentId);
     await armWatch(parentId, childId);
@@ -348,69 +335,19 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
       branch: sessionManager.get(childId)!.branch!,
       mergeSha: "deadbeefcafe1234",
     });
-
-    expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
-    const failed = sessionManager.getMergeWatch(childId);
-    expect(failed?.state).toBe("merge-observed");
-    expect(failed?.deliveryAttempts).toBe(1);
-    expect(failed?.lastDeliveryError).toContain("could not be resumed");
-    expect(spawnedAgents.some((a) => isMergeWakePrompt(a.lastPrompt))).toBe(false);
-
-    getOrCreate.mockRestore();
-    sessionManager.setMergeWatch(childId, {
-      ...sessionManager.getMergeWatch(childId)!,
-      lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-    });
-    await app.mergeWatchManager!.retryStalledDeliveries();
-
-    await waitFor(
-      () => spawnedAgents.some((a) => a.runCalled && isMergeWakePrompt(a.lastPrompt)),
-      10_000,
-      "wake-turn dispatched by the retry pass",
-    );
-    spawnedAgents.find((a) => isMergeWakePrompt(a.lastPrompt))!.finish();
-    await waitFor(
-      () => sessionManager.getMergeWatch(childId)?.state === "delivered",
-      10_000,
-      "watch delivered after the in-process retry",
-    );
-    expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
-  });
-
-  it("merged: a permanently-failing delivery gives up and persists a failure card (planning#260)", { timeout: 20_000 }, async () => {
-    const parentId = await createParent();
-    const childId = await spawnChild(parentId);
-    await armWatch(parentId, childId);
-
-    const getOrCreate = vi
-      .spyOn(app.runnerRegistry, "getOrCreate")
-      .mockImplementation(() => { throw new Error("container could not be resumed"); });
-
-    await app.mergeWatchManager!.handleChildPrTerminal({
-      sessionId: childId,
-      outcome: "merged",
-      prNumber: 7,
-      prUrl: "https://github.com/owner/notify-on-merge-test/pull/7",
-      prTitle: "Foundation",
-      branch: sessionManager.get(childId)!.branch!,
-    });
-    for (let i = 1; i < MAX_DELIVERY_ATTEMPTS; i++) {
-      sessionManager.setMergeWatch(childId, {
-        ...sessionManager.getMergeWatch(childId)!,
-        lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-      });
-      await app.mergeWatchManager!.retryStalledDeliveries();
-    }
+    expect(getOrCreate).toHaveBeenCalled();
     getOrCreate.mockRestore();
 
-    expect(sessionManager.getMergeWatch(childId)?.state).toBe("delivery-failed");
+    // The watch has no attempt to count and no failure card: its inbox starts the parent later.
+    const watch = sessionManager.getMergeWatch(childId);
+    expect(watch?.state).toBe("delivered");
+    expect(watch?.deliveryAttempts).toBeUndefined();
     expect(sessionManager.listPendingMergeWatches()).toHaveLength(0);
-
+    expect(spawnedAgents.some(isInboxTurn)).toBe(false);
     const cards = await parentCards(parentId);
-    expect(cards).toHaveLength(2);
+    expect(cards.map((c) => c.outcome)).toEqual(["merged"]);
     expect(cards[0].deliveryFailure).toBeUndefined();
-    expect(cards[1].deliveryFailure?.attempts).toBe(MAX_DELIVERY_ATTEMPTS);
-    expect(cards[1].deliveryFailure?.error).toContain("could not be resumed");
+    expect(await inbox(parentId)).toEqual([mergeNotice(7)]);
   });
 
   it("closed-unmerged: surfaces a distinct card and a terminal watch state", { timeout: 15_000 }, async () => {
@@ -429,5 +366,218 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
 
     expect(sessionManager.getMergeWatch(childId)?.state).toBe("closed-unmerged");
     expect(await parentCardOutcomes(parentId)).toEqual(["closed-unmerged"]);
+    expect(await inbox(parentId)).toEqual([expect.stringContaining("Child PR #7 closed without merging:")]);
+  });
+
+  describe("a child that also watches its own PR (docs/239)", () => {
+    const PR = {
+      url: "https://github.com/owner/notify-on-merge-test/pull/7",
+      number: 7,
+      base: "main",
+      title: "Foundation",
+    };
+
+    async function armSelf(childId: string) {
+      await githubAuth.setToken("test-token");
+      githubAuth.setPrData(PR);
+      return app.inject({ method: "POST", url: `/api/sessions/${childId}/notify-on-merge-self` });
+    }
+
+    it("neither arm displaces the other, in either order", { timeout: 15_000 }, async () => {
+      const parentId = await createParent();
+      const selfFirst = await spawnChild(parentId, "Self first");
+      const parentFirst = await spawnChild(parentId, "Parent first");
+
+      expect((await armSelf(selfFirst)).statusCode).toBe(200);
+      expect((await armWatch(parentId, selfFirst)).statusCode).toBe(200);
+      expect((await armWatch(parentId, parentFirst)).statusCode).toBe(200);
+      expect((await armSelf(parentFirst)).statusCode).toBe(200);
+
+      for (const childId of [selfFirst, parentFirst]) {
+        expect(sessionManager.getMergeWatch(childId)).toMatchObject({ parentSessionId: parentId, state: "armed" });
+        expect(sessionManager.getSelfMergeWatch(childId)).toMatchObject({ kind: "self", prNumber: 7, state: "armed" });
+      }
+    });
+
+    it("one merge, seen by the poller, tells the parent AND wakes the child", { timeout: 30_000 }, async () => {
+      const parentId = await createParent();
+      const childId = await spawnChild(parentId);
+      // The spawn starts the child's first turn; a wake must find the child idle to start at once.
+      await waitFor(() => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("Build the foundation")));
+      spawnedAgents.find((a) => a.lastPrompt?.includes("Build the foundation"))!.finish("child-first-turn");
+      await waitFor(() => app.runnerRegistry.get(childId)?.running === false, 10_000, "child idle");
+
+      expect((await armSelf(childId)).statusCode).toBe(200);
+      expect((await armWatch(parentId, childId)).statusCode).toBe(200);
+
+      githubAuth.setPrData(null);
+      githubAuth.setFindPrAnyStateResult({
+        ...PR, body: "", state: "closed", merged_at: "2026-10-10T02:53:43Z", additions: 3, deletions: 1,
+      });
+      app.prStatusPoller!.trackSession(childId, REPO_URL);
+      await app.prStatusPoller!.forceVerifySessionPrState(childId);
+
+      await waitFor(() => spawnedAgents.some(isInboxTurn), 15_000, "the turn that tells the parent");
+      // A branch that can be reset gets a compaction turn before its wake; whether this one can
+      // depends on how the child's first post-turn flow interleaves with the merge. End it if it runs.
+      const compacted = new Set<FakeClaudeProcess>();
+      await waitFor(
+        () => {
+          for (const a of spawnedAgents) {
+            if (!a.runCalled || !a.lastCompact || compacted.has(a)) continue;
+            compacted.add(a);
+            a.finish("child-compaction");
+          }
+          return spawnedAgents.some((a) => a.runCalled && !a.lastCompact && isSelfWakePrompt(a.lastPrompt));
+        },
+        15_000,
+        "child wake-turn started",
+      );
+      expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
+      expect(spawnedAgents.find((a) => !a.lastCompact && isSelfWakePrompt(a.lastPrompt))!.lastPrompt).toContain("#7");
+
+      expect(sessionManager.getMergeWatch(childId)?.state).toBe("delivered");
+      expect(await inbox(parentId)).toEqual([mergeNotice(7)]);
+      spawnedAgents.find(isInboxTurn)!.finish("parent-inbox-turn");
+      spawnedAgents.find((a) => !a.lastCompact && isSelfWakePrompt(a.lastPrompt))!.finish("child-wake-turn");
+      await waitFor(
+        () => sessionManager.getSelfMergeWatch(childId)?.state === "delivered",
+        10_000,
+        "self-watch delivered",
+      );
+      expect(sessionManager.listPendingMergeWatches()).toEqual([]);
+    });
+  });
+
+  describe("a parent that follows a child across several PRs (docs/196-session-notify-on-merge)", () => {
+    const prData = (n: number) => ({
+      url: `https://github.com/owner/notify-on-merge-test/pull/${n}`,
+      number: n,
+      base: "main",
+      title: `Step ${n}`,
+    });
+    const settle = () => new Promise((r) => setTimeout(r, 300));
+    const reportedPr = (childId: string) => sessionManager.getMergeWatch(childId)?.reportedPr;
+
+    async function idleChild(parentId: string): Promise<string> {
+      const childId = await spawnChild(parentId);
+      await waitFor(() => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("Build the foundation")));
+      spawnedAgents.find((a) => a.lastPrompt?.includes("Build the foundation"))!.finish("child-first-turn");
+      await waitFor(() => app.runnerRegistry.get(childId)?.running === false, 10_000, "child idle");
+      return childId;
+    }
+
+    async function mergeSeenByPoller(childId: string, n: number): Promise<void> {
+      githubAuth.setPrData(null);
+      githubAuth.setFindPrAnyStateResult({
+        ...prData(n), body: "", state: "closed", merged_at: "2026-10-10T02:53:43Z", additions: 3, deletions: 1,
+      });
+      app.prStatusPoller!.trackSession(childId, REPO_URL);
+      await app.prStatusPoller!.forceVerifySessionPrState(childId);
+    }
+
+    it("an arm after each notice gives one notice for each PR, and none twice", { timeout: 40_000 }, async () => {
+      const parentId = await createParent();
+      const childId = await idleChild(parentId);
+      await githubAuth.setToken("test-token");
+      expect((await armWatch(parentId, childId)).statusCode).toBe(200);
+
+      await mergeSeenByPoller(childId, 7);
+      await waitFor(() => reportedPr(childId)?.prNumber === 7, 15_000, "PR #7 reported");
+      await waitFor(() => spawnedAgents.some(isInboxTurn), 15_000, "the turn that tells the parent");
+
+      // req 3 — the parent's agent arms again in the turn in which it reads the notice.
+      expect(await inbox(parentId)).toEqual([mergeNotice(7)]);
+      const during = await armWatch(parentId, childId);
+      expect(during.json()).toMatchObject({ armed: true, state: "armed", alreadyArmed: false, skipsPr: 7 });
+      spawnedAgents.find(isInboxTurn)!.finish("parent-inbox-7");
+      expect(reportedPr(childId)).toEqual({ prNumber: 7, outcome: "merged" });
+
+      // req 4 — the child's stored state still names PR #7: as its PR snapshot, or as its previous
+      // merge when its own post-turn flow re-armed first. Neither that arm nor a new one reports it again.
+      expect((await armWatch(parentId, childId)).json()).toMatchObject({ state: "armed", alreadyArmed: true, skipsPr: 7 });
+      await settle();
+      expect(await inbox(parentId, true)).toHaveLength(1);
+      expect((await parentCards(parentId)).map((c) => c.prNumber)).toEqual([7]);
+
+      // req 2 — the child continues (its snapshot is cleared) and its next PR merges.
+      app.prStatusPoller!.reArm(childId, 7);
+      await mergeSeenByPoller(childId, 8);
+      await waitFor(() => reportedPr(childId)?.prNumber === 8, 15_000, "PR #8 reported");
+      expect(sessionManager.getMergeWatch(childId)?.state).toBe("delivered");
+      expect(await inbox(parentId)).toEqual([mergeNotice(8)]);
+
+      // req 4 — an arm in a later turn, after the notice.
+      expect((await armWatch(parentId, childId)).json()).toMatchObject({ state: "armed", alreadyArmed: false, skipsPr: 8 });
+      await settle();
+      expect(await inbox(parentId, true)).toHaveLength(2);
+      expect(sessionManager.getMergeWatch(childId)?.state).toBe("armed");
+      expect((await parentCards(parentId)).map((c) => c.prNumber)).toEqual([7, 8]);
+      // End the turns that are still running, so the app closes with nothing in flight.
+      for (const a of spawnedAgents) if (a.runCalled) a.finish("done");
+    });
+  });
+
+  describe("the --self arm card says when its watch is gone (docs/239)", () => {
+    const prData = (n: number) => ({
+      url: `https://github.com/owner/notify-on-merge-test/pull/${n}`,
+      number: n,
+      base: "main",
+      title: `Step ${n}`,
+    });
+
+    async function armSelfOn(sessionId: string, n: number): Promise<string> {
+      await githubAuth.setToken("test-token");
+      githubAuth.setPrData(prData(n));
+      const res = await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/notify-on-merge-self` });
+      expect(res.statusCode).toBe(200);
+      return (res.json() as { watchId: string }).watchId;
+    }
+
+    async function armCards(sessionId: string): Promise<{ prNumber: number; ended?: string }[]> {
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+      const messages = (res.json() as { messages: { selfMergeWatch?: { prNumber: number; ended?: string } }[] }).messages;
+      return messages.flatMap((m) => (m.selfMergeWatch ? [{ prNumber: m.selfMergeWatch.prNumber, ended: m.selfMergeWatch.ended }] : []));
+    }
+
+    it("replaced, cancelled and merged are in the history that a reload reads", { timeout: 40_000 }, async () => {
+      // A spawned session has a branch for the poller, and its first turn left it a runner.
+      const sessionId = await spawnChild(await createParent(), "Chained");
+      await waitFor(() => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("Build the foundation")));
+      spawnedAgents.find((a) => a.lastPrompt?.includes("Build the foundation"))!.finish("first-turn");
+      await waitFor(() => app.runnerRegistry.get(sessionId)?.running === false, 10_000, "session idle");
+
+      await armSelfOn(sessionId, 7);
+      const second = await armSelfOn(sessionId, 8);
+      expect(await armCards(sessionId)).toEqual([
+        { prNumber: 7, ended: "replaced" },
+        { prNumber: 8, ended: undefined },
+      ]);
+
+      const cancel = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/notify-on-merge-self/cancel`,
+        payload: { watchId: second },
+      });
+      expect(cancel.json()).toEqual({ cancelled: true });
+      expect((await armCards(sessionId)).map((c) => c.ended)).toEqual(["replaced", "cancelled"]);
+
+      await armSelfOn(sessionId, 9);
+      githubAuth.setPrData(null);
+      githubAuth.setFindPrAnyStateResult({
+        ...prData(9), body: "", state: "closed", merged_at: "2026-10-10T02:53:43Z", additions: 3, deletions: 1,
+      });
+      app.prStatusPoller!.trackSession(sessionId, REPO_URL);
+      await app.prStatusPoller!.forceVerifySessionPrState(sessionId);
+
+      await waitFor(
+        () => sessionManager.getSelfMergeWatch(sessionId)?.state === "merge-observed",
+        15_000,
+        "self-watch observed its merge",
+      );
+      expect((await armCards(sessionId)).map((c) => c.ended)).toEqual(["replaced", "cancelled", "merged"]);
+      // End the turns that the wake started, so the app closes with nothing in flight.
+      for (const a of spawnedAgents) if (a.runCalled) a.finish("done");
+    });
   });
 });

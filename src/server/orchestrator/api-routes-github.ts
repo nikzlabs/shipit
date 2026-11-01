@@ -51,6 +51,7 @@ import { parseGitHubRemote, repoId } from "./git-utils.js";
 import { mergeMethodFor } from "./agent-merge-claims.js";
 import { resolvePrTarget, gitCredentialAllowed, mergeDisposition, agentMergeOwnership } from "./pr-target.js";
 import { recordWitnessedPrCreate } from "./services/pr-provenance.js";
+import { reArmForPrOpenedPastMerge } from "./services/pr-rearm.js";
 import type { FastifyReply } from "fastify";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
@@ -269,6 +270,16 @@ export async function registerGitHubRoutes(
           runnerRegistry: deps.runnerRegistry,
           ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
           chatHistory: deps.chatHistoryManager,
+        });
+        // Before the provenance write: clearMerged also clears the recorded PR number.
+        reArmForPrOpenedPastMerge({
+          deps: {
+            sessionManager,
+            sseBroadcast: deps.sseBroadcast,
+            ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
+          },
+          sessionId: request.params.id,
+          created: result,
         });
         recordWitnessedPrCreate(sessionManager, request.params.id, result);
         if (deps.prStatusPoller && session.remoteUrl) {
@@ -1170,6 +1181,7 @@ export async function registerGitHubRoutes(
         }
         : null;
       let turn: TurnToken | null = null;
+      let settlementHeld = false;
       try {
       if (repoBound) {
         let currentBranch: string | null;
@@ -1249,6 +1261,7 @@ export async function registerGitHubRoutes(
           auto: request.body?.auto,
           remoteUrl,
           repoBound,
+          backgroundWork: () => deps.runnerRegistry.get(request.params.id)?.backgroundWorkDescriptions ?? [],
           ...(localHead ? { localHead } : {}),
           ...(deps.prStatusPoller && session.remoteUrl && mergeRepoKey
             ? {
@@ -1278,7 +1291,9 @@ export async function registerGitHubRoutes(
                   return `Not merged — PR #${num} is no longer the pull request ShipIt opened for `
                     + "this session. Nothing was merged.";
                 }
-                if (!claimDeps.claims.claim({
+                // Held until the request resolves: the turn can end before GitHub answers.
+                settlementHeld = claimDeps.claims.beginSettlement(request.params.id);
+                if (!settlementHeld || !claimDeps.claims.claim({
                   sessionId: request.params.id,
                   repoId: claimRepoId,
                   prNumber: num,
@@ -1317,13 +1332,19 @@ export async function registerGitHubRoutes(
                 return null;
               },
               onMerged: async (expectedSha: string) => {
-                const claim = claimDeps.claims.get(request.params.id);
-                if (claim?.expectedSha !== expectedSha) return "settled";
-                claimDeps.claims.markSettling(request.params.id, expectedSha);
-                const outcome = await settleAgentMerge(
-                  claimDeps, { ...claim, state: "settling" }, { witnessed: true, turn },
-                );
-                return outcome.result === "settled" ? "settled" : "deferred";
+                // The merge is done: a recording that throws is retried, and is not a failed merge.
+                try {
+                  const claim = claimDeps.claims.get(request.params.id);
+                  if (claim?.expectedSha !== expectedSha) return "settled";
+                  claimDeps.claims.markSettling(request.params.id, expectedSha);
+                  const outcome = await settleAgentMerge(
+                    claimDeps, { ...claim, state: "settling" }, { witnessed: true, turn },
+                  );
+                  return outcome.result === "settled" ? "settled" : "deferred";
+                } catch (err) {
+                  console.error(`[agent-merge] recording the merge for ${request.params.id} failed:`, err);
+                  return "deferred";
+                }
               },
               onRefused: (expectedSha: string) => {
                 claimDeps.claims.releaseUnmerged(request.params.id, expectedSha);
@@ -1341,6 +1362,8 @@ export async function registerGitHubRoutes(
           return;
         }
         return { success: false, message: `Merge failed: ${getErrorMessage(err)}` };
+      } finally {
+        if (settlementHeld) claimDeps?.claims.endSettlement(request.params.id);
       }
     },
   );
@@ -1407,6 +1430,25 @@ export async function registerGitHubRoutes(
       if (request.body.paused) deps.prStatusPoller?.withdrawAutoFix(request.params.id);
       deps.sseBroadcast("session_list", { sessions: sessionManager.list() });
       return { paused: request.body.paused };
+    },
+  );
+
+  // docs/295-compact-context-on-merge reqs 5, 16 — the composer control and the PR card menu both
+  // write here; the session's viewers get the new value on `session_details`.
+  app.post<{ Params: { id: string }; Body: { enabled: boolean } }>(
+    "/api/sessions/:id/pr/compact-after-merge",
+    async (request, reply) => {
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      if (typeof request.body?.enabled !== "boolean") {
+        reply.code(400).send({ error: "\"enabled\" field is required (boolean)" });
+        return;
+      }
+      sessionManager.setCompactAfterMergeOff(request.params.id, !request.body.enabled);
+      return { enabled: request.body.enabled };
     },
   );
 

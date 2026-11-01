@@ -8,7 +8,8 @@ import {
 import path from "node:path";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
-import type { SessionRunnerRegistry } from "../session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
+import type { TurnHandle } from "../turn-settlement.js";
 import type { SessionManager } from "../sessions.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
@@ -154,13 +155,17 @@ export function extractErrorLines(cleanLog: string, maxLines = 30): string[] {
   return errors.slice(0, maxLines);
 }
 
+/** A turn of its own: the fix waits for a running turn and is never steered into it. */
+export function dispatchAutoFix(runner: Pick<SessionRunnerInterface, "dispatch">, prompt: string): TurnHandle {
+  return runner.dispatch(autoFixDispatch(prompt), { whenBusy: "queue" });
+}
+
 /** The automatic fix turn. A manual Fix CI is not tagged, so a pause leaves it alone. */
 export function autoFixDispatch(prompt: string): PreparedDispatch {
   return prepareDispatch({
     text: prompt,
     agentInterface: undefined,
     activity: "Auto-fixing CI...",
-    systemTurn: true,
     automatic: true,
     ciAutoFix: true,
     heldId: undefined,
@@ -272,7 +277,6 @@ export async function triggerCIFix(
     uploads: undefined,
     permissionMode: undefined,
     postTurn: undefined,
-    systemTurn: undefined,
     automatic: undefined,
     heldId: undefined,
     onTurnComplete: undefined,

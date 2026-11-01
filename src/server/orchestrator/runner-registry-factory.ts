@@ -30,7 +30,7 @@ import type { SystemPromptScope } from "./global-system-prompt.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnEnd, TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
-import type { QuotaContinuationManager } from "./services/quota-continuation.js";
+import type { QuotaContinuationManager, StandDownCause } from "./services/quota-continuation.js";
 import type { RequestedRestartTurn } from "./services/agent-restart-request.js";
 import {
   applyShipitConfigChange,
@@ -65,6 +65,9 @@ import type { ScheduleNotesRequestStore } from "./schedule-notes-request-store.j
 import { prepareCardOutcomeNotices } from "./services/card-kinds.js";
 import { prepareRepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
 import { prepareSessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
+import { containerPredatesShipIt, prepareInboxNotice } from "./services/session-inbox-notice.js";
+import type { SessionInbox } from "./services/session-inbox.js";
+import type { SessionInboxStore } from "./session-inbox-store.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
@@ -136,6 +139,8 @@ export interface RunnerRegistryDeps {
   runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
   /** docs/324-agent-requested-compaction — likewise. */
   runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
+  /** docs/235-agent-self-wake-liveness §9 — likewise. */
+  reportStoppedBackgroundJobs?: SystemTurnDeps["reportStoppedBackgroundJobs"];
   markCredentialRouteAuthFailed?: (routeId: string) => void;
   clearCredentialRouteAuthFailed?: (routeId: string) => void;
   nudgeClaudeOAuthRefresh?: () => void;
@@ -158,6 +163,9 @@ export interface RunnerRegistryDeps {
   settingsProposals?: SettingsProposalStore;
   scheduleProposals?: ScheduleProposalStore;
   scheduleNotesRequests?: ScheduleNotesRequestStore;
+  /** Absent in minimal setups; a turn then carries no inbox notice (docs/328-session-message-inbox). */
+  sessionInboxStore?: SessionInboxStore;
+  getSessionInbox?: () => SessionInbox | undefined;
   /** Absent in minimal setups; a run's first turn then carries no `<scheduled_run>` block. */
   scheduledRuns?: { store: ScheduleStore; notes: ScheduleNotes };
 }
@@ -193,6 +201,7 @@ export function createRunnerRegistry(
     getQuotaContinuation,
     runRequestedRestart,
     runRequestedCompaction,
+    reportStoppedBackgroundJobs,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
@@ -202,6 +211,8 @@ export function createRunnerRegistry(
     settingsProposals,
     scheduleProposals,
     scheduleNotesRequests,
+    sessionInboxStore,
+    getSessionInbox,
     scheduledRuns,
   } = registryDeps;
 
@@ -218,6 +229,7 @@ export function createRunnerRegistry(
       enforceIdleContainerLimit();
       getPrStatusPoller?.()?.notifyRunnerIdle(sessionId);
       reconcileAgentMergeClaimsFor?.(sessionId);
+      getSessionInbox?.()?.onRunnerIdle(sessionId);
     },
     // Same event restartContainer sends: it tells an open tab to reconnect.
     onViewersOrphaned: (sessionId, incarnation) => {
@@ -257,11 +269,15 @@ export function createRunnerRegistry(
           backgroundTasks: runner.backgroundWorkDescriptions,
         });
         // The release re-enters dispatch, preserving the entry's settlement callback, and
-        // leaves it queued in order if another gate (a system hold) still holds.
+        // leaves it queued in order if another gate (a session hold) still holds.
         if (runner.backgroundWorkDescriptions.length === 0) releaseQueuedTurn(runner);
         onRunnerSettled?.(runner.sessionId);
       });
       if (onRunnerSettled) runner.on("work_released", () => onRunnerSettled(runner.sessionId));
+      // `idle` fires inside the post-turn hold, where reconciliation reads the session as busy (#3296).
+      if (reconcileAgentMergeClaimsFor) {
+        runner.on("work_released", () => reconcileAgentMergeClaimsFor(runner.sessionId));
+      }
       // The worker reports no agent, so nothing can answer a request the lost one raised.
       // A throw here would stop verifyRunningState before it releases the queue.
       runner.on("turn_abandoned", () => {
@@ -334,7 +350,7 @@ export function createRunnerRegistry(
         agentFactory: (agentId) => {
           if (runner.createAgent) return runner.createAgent(agentId);
           if (agentFactory) return agentFactory(agentId);
-          throw new Error("No agent factory available for system turn");
+          throw new Error("No agent factory available for a dispatched turn");
         },
         ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
         ...(rebindDelivery ? { rebindDelivery } : {}),
@@ -377,6 +393,7 @@ export function createRunnerRegistry(
             sessionDir: runner.sessionDir,
             ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
             ...(runParamOpts?.compact ? { compact: true } : {}),
+            serviceMcp: runner.serviceMcp?.() ?? null,
           });
         },
         ...(credentialsDir && credentialStore ? {
@@ -402,7 +419,7 @@ export function createRunnerRegistry(
               enforceAccountRouting: true,
               ...agentEnvTurnArgs(envOpts),
               deps: {
-                credentialsDir, credentialStore, sessionManager, chatHistoryManager, sseBroadcast,
+                credentialsDir, credentialStore, sessionManager,
                 ...(providerAccountManager ? { providerAccountManager } : {}),
                 ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
               },
@@ -434,17 +451,19 @@ export function createRunnerRegistry(
             }),
         } : {}),
         ...(getQuotaContinuation ? {
-          recordQuotaStandDown: (args: {
+          recordStandDown: (args: {
             sessionId: string;
             agentId: AgentId;
             benchedRouteId?: string;
+            cause?: StandDownCause;
           }) => getQuotaContinuation()?.recordStandDown(args) ?? { continues: false },
-          continueAfterQuotaStandDown: async (sessionId: string) => {
+          continueAfterStandDown: async (sessionId: string) => {
             await getQuotaContinuation()?.continueNow(sessionId);
           },
         } : {}),
         ...(runRequestedRestart ? { runRequestedRestart } : {}),
         ...(runRequestedCompaction ? { runRequestedCompaction } : {}),
+        ...(reportStoppedBackgroundJobs ? { reportStoppedBackgroundJobs } : {}),
         commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash, runner: turnRunner, emit, deferPushArm }) =>
           postTurnCommit(
             {
@@ -495,6 +514,9 @@ export function createRunnerRegistry(
               getPrStatus: (id) => sessionManager.getPrStatus(id),
               createGitManager,
               getAutoResetMergedBranch: () => credentialStore.getAutoResetMergedBranch(),
+              markCompacted: (id, anchor) => sessionManager.setMergeContinueCompacted(id, anchor),
+              getContextTokens: (id) =>
+                usageManager.latestContextTokens(id, chatHistoryManager.latestCompactionCard(id)),
               ...(prStatusPoller
                 ? {
                     mergeRecheckDeps: {
@@ -529,6 +551,14 @@ export function createRunnerRegistry(
           prepareRepoSessionOutcomeNotice({ chatHistoryManager }, sessionId),
         sessionMessageOutcomeNotice: (sessionId) =>
           prepareSessionMessageOutcomeNotice({ chatHistoryManager }, sessionId),
+        ...(sessionInboxStore
+          ? {
+              inboxNotice: (sessionId: string) =>
+                prepareInboxNotice(sessionInboxStore, sessionId, {
+                  inline: containerPredatesShipIt(containerManager, sessionId),
+                }),
+            }
+          : {}),
         ...(credentialStore
           ? { takeRoleInstructions: (sessionId: string) =>
               takeRoleStandingInstructions(sessionId, { sessionManager, credentialStore }) }

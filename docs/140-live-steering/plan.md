@@ -678,10 +678,12 @@ in which that state is not this turn's:
   to do with whose prompt is running. The two questions are now separate:
   `willRecoverAuth` answers only "can the credential be healed", and
   `recoverAuth` skips the re-run for an adopted turn, ending it through the same
-  terminal teardown the failed-heal path uses. For a turn that reaches recovery
-  at all, the card is reserved for a heal that was attempted and refused (the
-  listener still decides the rest on its own: a metered key, a non-vendor
-  subscription, a turn with no healer wired). Pinned by `turn-self-wake-commit.test.ts`.
+  terminal teardown the failed-heal path uses — which, until Phase 6.13, also
+  meant ending it with nothing said and nothing to carry the work on. For a turn
+  that reaches recovery at all, the card is reserved for a heal that was
+  attempted and refused (the listener still decides the rest on its own: a
+  metered key, a non-vendor subscription, a turn with no healer wired). Pinned by
+  `turn-self-wake-commit.test.ts`.
 
   **And the flag is read after the hand-over, not before it.** `servingAdoptedTurn`
   is set at the END of `rearmForCliStartedTurn`, which first awaits the finished
@@ -885,6 +887,105 @@ the commit even when a second turn is adopted first", which is what pins the
 `resultTurnSummary` half — the other cases commit while `turnIsCurrent()` is
 still true and so never read the snapshot. Plus `agent-listeners.test.ts` ("DOES
 add a row for a quota refusal on a CLI-started turn").
+
+**Phase 6.13 — a stand-down that said nothing (healed sign-in, adopted turn).**
+Production 2026-10-11, session `83d3273c`, deployed commit `92a1fc92`. Another
+session on the same account rotated the shared Claude token mid-turn; this
+session's CLI got a 401, the heal succeeded, and because the turn was an
+**adopted** one `recoverAuth` logged `adopted turn ends without re-dispatch`,
+committed the partial work and returned. No chat row, no recorded turn end, no
+wake: the transcript stopped after a tool call and the session went idle. A
+sibling on the same account, serving a dispatched turn, re-dispatched and carried
+on. This is Phase 6.12's defect on the other half of the "No re-dispatch" bullet
+— the quota half learned to speak there, the auth half did not.
+
+Two defects met in that incident, and each is fixed where it lives:
+
+- **The turn should not have been an adopted one.** It was the answer to the
+  user's own prompt. A resumed CLI closes the notice for a background job its
+  previous process left with a zero-turn `result` *before* it reads its prompt,
+  and that result settled the dispatched turn, so the real answer arrived
+  "after the result" and was adopted. The Claude adapter now drops that result;
+  the measurement and the rule are in docs/235-agent-self-wake-liveness §8. With
+  it gone the prompt keeps its dispatched turn and its retry rights.
+- **A genuinely adopted turn still must not end silently.** A self-wake or a late
+  steer's answer can meet the same 401. The rule is unchanged — its prompt is
+  not this executor's to re-run — but `standDownAfterAuthHeal`
+  (`turn-executor.ts`) now completes the stand-down the way
+  `retireOnSpentAccount` does for quota:
+  - it asks `recordStandDown` (the docs/306-quota-continuation manager, with
+    `cause: "auth"`) whether the work can continue now, and the continuation
+    runs as the last step of `settleTurnWithoutRedispatch`, inside the post-turn
+    hold and after the commit — the same position, for the same three reasons,
+    as docs/306's;
+  - it posts a persisted notice that names the credential and says what ShipIt
+    is doing: continuing the work now, or continuing it as soon as a credential
+    is free. The manager keeps the session for that second case and resumes it
+    itself, so neither wording asks for a message (docs/306-quota-continuation
+    req 3). Like the quota notice it says nothing about which kind of turn was
+    cut;
+  - it records the turn's end (`errored`) when no continuation will record one
+    of its own, so docs/324-scheduled-sessions does not read a cut turn as the
+    predecessor's `ok`;
+  - it stands down from all of that when the user stopped the turn: a Stop is
+    the user's last word, and a continuation would overrule it. Seeing that
+    Stop took a change of its own. The 401 has already killed the process, so a
+    Stop pressed while the sign-in is renewed found no agent to signal and was
+    dropped (`interruptAgentTurn` returned false). `willRecoverAuth` now reopens
+    the turn's setup phase, which is where a Stop with no process is recorded.
+    The same record ends the quiet retry of a *dispatched* prompt, which had
+    lost such a Stop and run the prompt again;
+  - it runs through `postTurnStep`, for Phase 6.12's reason: it writes to SQLite
+    ahead of the commit, inside an un-awaited listener.
+
+  The continuation turn is a dispatched system turn, so a 401 on *it* takes the
+  ordinary quiet retry and then the sign-in card. A credential that keeps
+  failing therefore ends at the card and cannot loop.
+
+  None of that reached the turn in the incident's own position until the hooks
+  were wired where a composer message builds its executor: only the runner's
+  dispatch passed them, so a turn adopted on a chat-started process had no
+  manager to ask. docs/306-quota-continuation → "A second cause" has the detail.
+
+Coverage, each verified red with its part of the change removed:
+`turn-self-wake-commit.test.ts` → "a healed sign-in that cut a CLI-started turn
+short" (continues after the commit and says why; asks for no message when no
+credential is free; does not continue a turn stopped through the real Stop path
+while the sign-in is renewed; still commits and continues when the notice cannot
+be persisted), "does not re-dispatch a prompt the user stops while the sign-in is
+renewed", plus a guard that a task notice ahead of the answer leaves the prompt
+re-dispatchable; `quota-continuation.test.ts` → "a stand-down after a sign-in
+renewal"; `adapter.test.ts` → "a task notice left by the previous process";
+`integration_tests/chat-turn-stand-down-wiring.test.ts` for the composer site.
+
+**The row finalize in `recoverAuth` could abandon the recovery.**
+`finalizeAttemptOutput()` writes to SQLite and ran bare at four points: before
+the teardown of a refused renewal, before the teardown of a healed adopted turn,
+and before each of the two retries (the quiet re-dispatch and the next-account
+retry). A throw at any of them rejected `recoverAuth`, and the auth listener's
+answer to a rejection is the sign-in card and nothing else — no drain, no commit,
+no retry, and `running` left true. That is post-turn invariant 3 on a path its
+guard test did not reach, and it is not hypothetical once a test makes the
+finalize throw: all four cases timed out. The helper now runs through
+`postTurnStep` itself, so no caller can leave it bare, and each call is awaited
+in the place it already had.
+
+That is a trade of history for liveness, and it is the one invariant 3 makes
+everywhere. The write was already best-effort and stays so: when
+`replaceInProgress` throws and a successor then takes the runner, its reset
+drops the accumulator and the partial rows are gone; when only
+`finalizeInProgress` throws, the rows are saved but the latch is not set, so a
+later finalize in the same turn can write them twice. The rejection handler's
+own finalize could sometimes rescue rows the first one lost, and going on gives
+that up where a retry or a continuation follows. What it buys is that the turn
+is no longer stranded with its work uncommitted. Coverage:
+`turn-self-wake-commit.test.ts` → "a row finalize that throws during auth
+recovery", one case for each of the four. The history in those tests is a mock,
+so they pin that the recovery goes on, not what happens to the rows.
+
+One weakness on this path is older than this phase and is not closed by it: a
+continuation whose wake cannot be delivered in three attempts leaves the cut turn
+with no recorded end, because the record was left to the continuation.
 
 **Phase 6.10 — a mid-session model change never reached the resident process.**
 User report: "if a model was Fable and I change it to Opus, after the turn ends

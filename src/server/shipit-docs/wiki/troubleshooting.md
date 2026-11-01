@@ -148,11 +148,39 @@ the provider's own text. Three shapes:
 - **Anything else** — the error text is the provider's. Read it before
   retrying.
 
+A sign-in that ShipIt renews by itself is not one of these, and usually shows
+nothing: the turn the user sent runs again. One case leaves a trace. When the
+renewal lands while the agent is working on a turn it started itself — after a
+background job or a consult came back — that turn cannot be run again, so the
+transcript gets a **notice** saying the sign-in was renewed, and ShipIt starts a
+turn that continues the work. Nothing is asked of the user. When no credential
+is free at that moment, the notice says so, and ShipIt continues the work when
+one is.
+
 Background work ShipIt does *outside* a turn — naming the session, writing a
 pull-request description — fails quietly instead, as a **notice** card saying
 what it fell back to (for instance, the session kept its placeholder title). It
 is not an alert and nothing is broken; dismissing it collapses it to one muted
 line rather than deleting it, so a repeating failure stays visible.
+
+## "It didn't answer" / "the turn ended with nothing"
+
+A turn that ends without an error, a reply or a tool call gets a **notice** in
+the transcript that says why. A turn the user stopped, and a compaction, end
+empty on purpose and get none.
+
+| The notice says | What it is | What happens next |
+|---|---|---|
+| *…ended this turn before it read the message, so there is no reply* | The agent CLI ended the turn before it read the message, and had still not read it a few seconds later. When it reads the message in that time, it works on it, and no notice comes | The user sends the message again |
+| *…ended this turn without a call to the model* | The agent CLI answered by itself and never asked the model | The user sends the message again |
+| *The model ended this turn with no reply and no tool call* | The model was asked and returned nothing | The user sends the message again, or says it in different words |
+
+ShipIt does not send the message again by itself.
+
+ShipIt can say why only when the harness reports how many model calls the turn
+made. Today that is Claude Code, so an empty turn on another harness gets no
+notice. A message the user typed as a slash command (`/…`) gets no notice
+either: the CLI answers it by itself.
 
 ## "It stopped committing my work"
 
@@ -283,6 +311,17 @@ A container that has simply *stopped* is not automatically one of these. It may
 be idle reclaim, which is normal and explained in [sessions.md](sessions.md), or
 it may have exited on its own. The health strip's **Diagnostics** carries the
 exit code; read it before calling it either.
+
+A container that exits while ShipIt still uses it leaves a **notice** in the
+transcript, *Session container exited unexpectedly*, followed by the cause and
+the exit code. The work up to that point is kept; the next message starts a new
+container.
+
+| The notice ends with | What it means |
+|---|---|
+| *: Out of memory (exit 137)* | The kernel killed the container for memory. Repeated, it trips the breaker above |
+| *(exit 0): it was stopped from outside ShipIt…* | A clean stop that ShipIt did not ask for: a host reboot, a Docker restart, or a manual `docker stop`. ShipIt's own stops — idle reclaim, a restart, archiving — never show this notice. Many sessions with it at the same time point at the host; the operator can check its boot and Docker logs for that time |
+| *(exit N)* for any other N | The container's main process ended with that code. Read the session's server log before the next restart |
 
 ## "Everything's getting slow" / "my sessions keep stopping"
 
@@ -444,6 +483,31 @@ first start may pull a large image or run a `build:` and take minutes — a
 
 Changing the *shape* of the stack is always an edit to `docker-compose.yml`;
 there is no create or delete command. `/shipit-docs/compose.md`.
+
+One start failure is not the service's fault: **"all predefined address pools
+have been fully subnetted"**. Docker on the host has no network left to give.
+ShipIt takes up to two for each session with a preview, and a daemon with the
+default configuration holds about thirty. A stopped session gives its networks
+back, so the error means that many previews run at the same time, or that the
+host also runs other Compose projects. Nothing inside a session changes it. The
+fix is the user's to make on the host, and the preview's error shows it: add a
+wider `default-address-pools` entry to the Docker daemon configuration —
+**Settings → Docker Engine** in Docker Desktop, the file
+`/etc/docker/daemon.json` for Docker Engine on Linux — and restart Docker. The
+VPS setup script does this already; a local install has the daemon's default
+unless its user changed it.
+
+A second refusal comes from the host too: **on Docker Desktop, ShipIt refuses a
+mount of one subdirectory or one file** — `./frontend:/app`,
+`./nginx.conf:/etc/nginx/nginx.conf`, `persist/<dir>:/data`. Docker Desktop
+cannot mount one and keep it inside the session. The refusal names the service
+and the mount. Fix the compose file yourself: mount all of the workspace
+(`.:/src`) or all of `/persist` (`persist:/data`), and point the service at the
+path inside it (`/shipit-docs/compose.md`). A plugin that this repository
+develops for itself (`repo: self`) has the same limit: when one of its plugin
+services mounts a subdirectory, ShipIt starts none of the repository's plugin
+services, and the repository's card in the Plugins tab gives the reason. Fix the plugin's compose fragment: remove the
+mount and use the same files under `/plugin` (`/shipit-docs/plugin-authoring.md`).
 
 ## "Dictation isn't working"
 

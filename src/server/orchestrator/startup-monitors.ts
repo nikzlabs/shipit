@@ -8,6 +8,7 @@ import {
   registerShutdownHook,
 } from "./app-lifecycle.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
+import { ServiceEventRouter } from "./service-event-router.js";
 import { sweepRetainedSessionData } from "./data-retention-sweep.js";
 import { isRestoreInFlight } from "./services/session.js";
 import { runDiskJanitor, runSteadyStateReclaim, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks, COLD_ARTIFACT_RETENTION_DAYS } from "./disk-janitor.js";
@@ -46,8 +47,9 @@ export async function startStartupMonitors(
     loopDetector, oomBreaker, chatHistoryManager,
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
-    mergeWatchManager, quotaContinuationManager, autoPushScheduler, agentMergeExecutor,
+    mergeWatchManager, sessionInbox, quotaContinuationManager, autoPushScheduler, agentMergeExecutor,
     cleanupContainer, version, agentRegistry, providerAccountManager, scheduleRunner,
+    idleCompaction,
   } = rt;
 
   // docs/324-scheduled-sessions — a pass now, which also finishes what a restart cut off,
@@ -147,7 +149,9 @@ export async function startStartupMonitors(
         ensureStandbyForWarmSession: rt.ensureStandbyForWarmSession,
         waitForWarmSession: rt.waitForWarmSession,
         stopPreview: (sessionId: string) => stopWarmPreview(serviceManagers, sessionId, composeStopPromises),
-        ...(rt.preStartWarmPreview ? { repairPreview: rt.preStartWarmPreview } : {}),
+        // Through the warm pool, so a repair passes the same trust and install gates (docs/288 req 2).
+        repairPreview: rt.repairWarmPreview,
+        refreshWarm: rt.refreshWarmSession,
         getMemoryStats: () => latestMemoryStats.value,
       })
     : null;
@@ -156,6 +160,11 @@ export async function startStartupMonitors(
   const coldArtifactRetentionDays = Number.isFinite(coldArtifactRetentionRaw)
     ? coldArtifactRetentionRaw
     : COLD_ARTIFACT_RETENTION_DAYS;
+  const sessionIsLive = (sid: string): boolean =>
+    runnerRegistry.get(sid) !== undefined
+    || serviceManagers.has(sid)
+    || containerManager?.get(sid) !== undefined
+    || isRestoreInFlight(sid);
   if (!isTestMode) {
     const janitorPaceMs = parseFloat(process.env.DISK_JANITOR_PACE_MS ?? "");
     // Recover failed teardown at boot; ongoing cache growth is handled below.
@@ -173,6 +182,7 @@ export async function startStartupMonitors(
       getBareCacheDir,
       sweepOrphanBranches: process.env.DISK_JANITOR_ORPHAN_BRANCHES !== "false",
       stackName: process.env.DOCKER_STACK,
+      isSessionLive: sessionIsLive,
       ...(containerManager ? { docker: containerManager.dockerClient } : {}),
     });
   }
@@ -259,11 +269,7 @@ export async function startStartupMonitors(
           sessionManager,
           chatHistory: chatHistoryManager,
           sessionsRoot: rt.sessionsRoot,
-          isSessionLive: (sid) =>
-            runnerRegistry.get(sid) !== undefined
-            || serviceManagers.has(sid)
-            || containerManager.get(sid) !== undefined
-            || isRestoreInFlight(sid),
+          isSessionLive: sessionIsLive,
           stopComposeStack: (sid) => serializeStackOp(
             sid, () => downComposeStackByProject(containerManager.dockerClient, sid),
           ),
@@ -395,6 +401,16 @@ export async function startStartupMonitors(
       sseBroadcast,
     );
     app.addHook("onClose", async () => keepPreviewSupervisor.dispose());
+
+    // Compose service status is event-driven; this is what replaced the per-session poll (docs/332).
+    const serviceEventRouter = new ServiceEventRouter({
+      docker: containerManager.dockerClient,
+      serviceManagers,
+      containerManager,
+      ...(process.env.DOCKER_STACK ? { stackName: process.env.DOCKER_STACK } : {}),
+    });
+    serviceEventRouter.start();
+    app.addHook("onClose", async () => serviceEventRouter.stop());
   }
 
   app.addHook("onClose", async () => {
@@ -413,7 +429,9 @@ export async function startStartupMonitors(
     claudeOAuthRefresherRef.ref?.stop();
     codexOAuthRefresherRef.ref?.stop();
     mergeWatchManager?.stopRetryLoop();
+    sessionInbox?.stop();
     quotaContinuationManager?.stop();
+    idleCompaction.stop();
   });
   registerShutdownHook(app, {
     startupTimer, authManagers, runnerRegistry, autoPushScheduler,

@@ -14,6 +14,7 @@ import { AuthManager } from "./agents/claude/auth-manager.js";
 import { CodexAuthManager } from "./agents/codex/auth-manager.js";
 import { XaiAuthManager } from "./agents/grok/auth-manager.js";
 import { AntigravityAuthManager } from "./agents/antigravity/auth-manager.js";
+import { loginManagers } from "./agents/index.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
@@ -176,6 +177,8 @@ export function makeInProcessGenerateText(deps: {
                   ...(event.tokens.cacheWrite !== undefined ? { cacheCreateTokens: event.tokens.cacheWrite } : {}),
                 }
               : {}),
+            ...(event.requests ? { requests: event.requests } : {}),
+            ...(event.contextTokens !== undefined ? { contextTokens: event.contextTokens } : {}),
           };
         }
       });
@@ -294,6 +297,10 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const xaiAuthManager = deps.xaiAuthManager ?? new XaiAuthManager();
   const antigravityAuthManager = deps.antigravityAuthManager ?? new AntigravityAuthManager();
   console.log("[server] xAI subscription credentials found:", providerAccountManager.hasAnyAuthForProvider("grok"));
+  // Before agent detection, which counts a row that reads `authenticating` as a credential.
+  providerAccountManager.endInterruptedSignIns(
+    loginManagers({ authManager, codexAuthManager, xaiAuthManager, antigravityAuthManager }),
+  );
 
   if (!process.env.GIT_CONFIG_GLOBAL) {
     initGlobalGitConfig(credentialsDir);
@@ -410,10 +417,11 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
 // Load adapters lazily: the production orchestrator image omits session/.
 async function buildLocalAgentFactory(): Promise<LocalAgentFactory> {
-  const [{ ClaudeAdapter }, { CodexAdapter }, { OpencodeAdapter }, { GrokAdapter }, { AntigravityAdapter }] = await Promise.all([
+  const [{ ClaudeAdapter }, { CodexAdapter }, { OpencodeAdapter }, { Opencode2Adapter }, { GrokAdapter }, { AntigravityAdapter }] = await Promise.all([
     import("../session/agents/claude/adapter.js"),
     import("../session/agents/codex/adapter.js"),
     import("../session/agents/opencode/adapter.js"),
+    import("../session/agents/opencode2/adapter.js"),
     import("../session/agents/grok/adapter.js"),
     import("../session/agents/antigravity/adapter.js"),
   ]);
@@ -426,6 +434,8 @@ async function buildLocalAgentFactory(): Promise<LocalAgentFactory> {
         return new CodexAdapter(undefined, opts);
       case "opencode":
         return new OpencodeAdapter(opts);
+      case "opencode2":
+        return new Opencode2Adapter(opts);
       case "grok":
         return new GrokAdapter(opts);
       case "antigravity":

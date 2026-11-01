@@ -2,6 +2,7 @@
 
 import {
   ArrowSquareOutIcon,
+  ChatCircleTextIcon,
   GitBranchIcon,
   InfoIcon,
   MegaphoneIcon,
@@ -17,8 +18,9 @@ export interface SessionReportCardProps {
   fromTitle: string;
   fromBranch?: string;
 
-  relation: "child" | "sibling";
-  severity: "fyi" | "warn" | "blocker";
+  relation: "child" | "sibling" | "parent" | "proposed";
+  /** A report has one. Without it the card shows a message from another session. */
+  severity?: "fyi" | "warn" | "blocker";
   subject?: string;
   body: string;
 
@@ -31,10 +33,20 @@ const SEVERITY_STYLE = {
   blocker: { color: "text-(--color-error)", label: "Report — blocker" },
 } as const;
 
+const MESSAGE_STYLE = { color: "text-(--color-text-tertiary)", label: "Message" } as const;
+
+const SENDER: Record<SessionReportCardProps["relation"], string> = {
+  child: "a child session",
+  sibling: "a sibling session",
+  parent: "the parent session",
+  proposed: "another session, approved by you",
+};
+
 function SeverityIcon({ severity }: { severity: SessionReportCardProps["severity"] }) {
   if (severity === "blocker") return <WarningOctagonIcon size={ICON_SIZE.SM} weight="fill" />;
   if (severity === "warn") return <WarningIcon size={ICON_SIZE.SM} weight="fill" />;
-  return <MegaphoneIcon size={ICON_SIZE.SM} weight="fill" />;
+  if (severity === "fyi") return <MegaphoneIcon size={ICON_SIZE.SM} weight="fill" />;
+  return <ChatCircleTextIcon size={ICON_SIZE.SM} weight="fill" />;
 }
 
 export function SessionReportCard({
@@ -49,7 +61,7 @@ export function SessionReportCard({
 }: SessionReportCardProps) {
   const reporterRow = useSessionStore((s) => s.sessions.find((row) => row.id === fromSessionId));
   const sessionMissing = !reporterRow;
-  const style = SEVERITY_STYLE[severity];
+  const style = severity ? SEVERITY_STYLE[severity] : MESSAGE_STYLE;
 
   const handleOpen = () => {
     if (sessionMissing) return;
@@ -63,7 +75,7 @@ export function SessionReportCard({
   return (
     <div
       data-testid="session-report-card"
-      data-severity={severity}
+      data-severity={severity ?? "message"}
       className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) px-3 py-2.5 text-xs flex flex-col gap-2"
     >
       <div className="flex items-start gap-2">
@@ -72,7 +84,7 @@ export function SessionReportCard({
         </span>
         <div className="min-w-0 flex-1">
           <div className="text-(--color-text-tertiary) text-[10px] uppercase tracking-wide font-medium">
-            {style.label} · from {relation === "child" ? "a child session" : "a sibling session"}
+            {style.label} · from {SENDER[relation]}
           </div>
           <div className="text-(--color-text-primary) font-medium truncate" title={fromTitle}>
             {fromTitle}
@@ -90,7 +102,7 @@ export function SessionReportCard({
           onClick={handleOpen}
           disabled={sessionMissing}
           className="shrink-0 gap-1"
-          aria-label={`Open reporting session ${fromTitle}`}
+          aria-label={`Open ${severity ? "reporting" : "sending"} session ${fromTitle}`}
         >
           <ArrowSquareOutIcon size={ICON_SIZE.XS} />
           Open
@@ -108,7 +120,7 @@ export function SessionReportCard({
 
       <div className="flex items-center gap-1.5 text-[11px] text-(--color-text-tertiary)">
         <InfoIcon size={ICON_SIZE.XS} className="shrink-0" />
-        <span>Delivered to this session's agent as a queued turn.</span>
+        <span>In this session's inbox, where its agent reads it.</span>
       </div>
     </div>
   );

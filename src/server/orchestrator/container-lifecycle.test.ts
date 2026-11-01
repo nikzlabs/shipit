@@ -10,6 +10,7 @@ import {
   buildOrchestratorCallbackEnv,
   buildContainerConfig,
   createContainer,
+  resolveWorkerImageName,
   destroyContainer,
   ContainerCreateCancelledError,
   prepareOverlayDirs,
@@ -122,6 +123,7 @@ describe("buildMounts", () => {
     expect(result.binds).not.toContain("/credentials:/credentials:rw");
   });
 
+  // The cross-session lock in shipit-docs/environment.md needs /dep-cache writable and shared.
   it("mounts depCacheDir at /dep-cache as bind mount when no volume", () => {
     const config = baseConfig({ depCacheDir: "/workspace/dep-cache/abc123" });
     const result = buildMounts(config, undefined, undefined);
@@ -145,6 +147,7 @@ describe("buildMounts", () => {
     expect(depMount).toBeDefined();
     expect(depMount!.Source).toBe("my-workspace-vol");
     expect(depMount!.VolumeOptions?.Subpath).toBe("dep-cache/abc123");
+    expect(depMount!.ReadOnly).toBeFalsy();
   });
 
   // Every session's own store maps to the SAME container path: pnpm records storeDir in
@@ -522,7 +525,8 @@ describe("buildEnv", () => {
     const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {} as NodeJS.ProcessEnv);
     expect(env).toContain("HOME=/home/shipit");
     expect(env).toContain("AGENT_HOME=/home/shipit");
-    expect(env).toContain("PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers");
+    // docs/335: the session's own writable store, not the image's read-only one.
+    expect(env).toContain("PLAYWRIGHT_BROWSERS_PATH=/session-state/playwright-browsers");
   });
 
   it("docs/213: sets ANDROID_SDK_ROOT, ANDROID_HOME, and JAVA_HOME for the baked Android toolchain", () => {
@@ -828,6 +832,37 @@ describe("buildContainerConfig", () => {
       }),
     ).toThrow(/<sessionDir>\/workspace/);
   });
+});
+
+describe("resolveWorkerImageName (docs/128)", () => {
+  it("gives ops and Docker-access sessions the Docker-capable image, and nobody else", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(resolveWorkerImageName(baseConfig({ opsSession: true }), "worker:docker")).toBe("worker:docker");
+      expect(resolveWorkerImageName(baseConfig({ dockerAccess: true }), "worker:docker")).toBe("worker:docker");
+      expect(resolveWorkerImageName(baseConfig(), "worker:docker")).toBe("shipit-worker:test");
+      expect(resolveWorkerImageName(baseConfig(), undefined)).toBe("shipit-worker:test");
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The base image has no docker CLI and no journalctl, and this fallback once went unlogged.
+  it.each([{ opsSession: true }, { dockerAccess: true }])(
+    "names the session and the missing setting when %o falls back to the base image",
+    (overrides) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        expect(resolveWorkerImageName(baseConfig(overrides), undefined)).toBe("shipit-worker:test");
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0][0]).toContain("sess-1");
+        expect(warn.mock.calls[0][0]).toContain("SESSION_WORKER_DOCKER_IMAGE");
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
 });
 
 describe("destroyContainer — overlay volume teardown", () => {
@@ -1189,6 +1224,32 @@ describe("createContainer — overlay volume re-verification (nikzlabs/shipit#24
     expect(deps.containers.has("3f6d1497-c466-4b2c-b9af-0f1800fbf759")).toBe(false);
   });
 
+  // "running" hands a claiming runner the worker, which may start an install; a stamp landing
+  // after that install dropped the marker would survive its failure.
+  it("is not running until the install-marker pre-stamp has finished", async () => {
+    const daemon = fakeDaemon();
+    const deps = { ...makeDeps(daemon.docker), stateDir: tmpDir() } as LifecycleDeps;
+    const tmp = tmpDir();
+    const sessionId = "3f6d1497-c466-4b2c-b9af-0f1800fbf759";
+    const spec = {
+      ...overlaySpec("node_modules", NODE_MODULES_VOL),
+      scope: { repoUrl: "r", runtimeKey: "rt", depDir: "node_modules" },
+    } as DepDirOverlaySpec;
+    const statusAtStamp: (string | undefined)[] = [];
+    const realExists = fs.existsSync.bind(fs);
+    const exists = vi.spyOn(fs, "existsSync").mockImplementation((p) => {
+      if (String(p).endsWith(".install-done")) statusAtStamp.push(deps.containers.get(sessionId)?.status);
+      return realExists(p);
+    });
+    try {
+      const sc = await createContainer(deps, configWithSpecs(tmp, [spec]));
+      expect(statusAtStamp).toEqual(["starting"]);
+      expect(sc.status).toBe("running");
+    } finally {
+      exists.mockRestore();
+    }
+  });
+
   it("leaves a non-overlay session's create path untouched", async () => {
     const daemon = fakeDaemon();
     const deps = makeDeps(daemon.docker);
@@ -1203,6 +1264,76 @@ describe("createContainer — overlay volume re-verification (nikzlabs/shipit#24
 
     expect(daemon.started).toEqual(["cid-new"]);
     expect(sc.status).toBe("running");
+  });
+});
+
+describe("createContainer — an ops session's worker image (docs/128)", () => {
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  async function createdImage(dockerImageName: string | undefined): Promise<string | undefined> {
+    let image: string | undefined;
+    const docker = {
+      listContainers: async () => [],
+      getContainer: () => ({
+        inspect: async () => { throw Object.assign(new Error("no such container"), { statusCode: 404 }); },
+        stop: async () => {},
+        remove: async () => {},
+      }),
+      createContainer: async (cfg: { Image?: string }) => {
+        image = cfg.Image;
+        return {
+          id: "cid-new",
+          start: async () => {},
+          inspect: async () => ({
+            Config: { Labels: {} },
+            NetworkSettings: { Networks: { "shipit-net": { IPAddress: "172.20.0.9" } } },
+          }),
+        };
+      },
+    } as unknown as Docker;
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-ops-image-"));
+    tmpDirs.push(tmp);
+    fs.mkdirSync(path.join(tmp, "session", "workspace"), { recursive: true });
+
+    await createContainer({
+      docker,
+      containers: new Map(),
+      standbySessionIds: new Set<string>(),
+      destroyEpochs: new Map<string, number>(),
+      emitter: new EventEmitter(),
+      baseLabels: () => ({ "shipit-managed": "true" }),
+      networkName: "shipit-net",
+      workerPort: 9100,
+      imageName: "shipit-worker:test",
+      skipHealthCheck: true,
+      dockerImageName,
+    } as unknown as LifecycleDeps, baseConfig({
+      sessionId: "3f6d1497-c466-4b2c-b9af-0f1800fbf759",
+      sessionDir: path.join(tmp, "session"),
+      workspaceDir: path.join(tmp, "session", "workspace"),
+      sessionStateDir: path.join(tmp, "session", "state"),
+      opsSession: true,
+    }));
+    return image;
+  }
+
+  it("asks the daemon for the Docker-capable image", async () => {
+    expect(await createdImage("worker:docker")).toBe("worker:docker");
+  });
+
+  it("starts on the base image when none is configured, and says so", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await createdImage(undefined)).toBe("shipit-worker:test");
+      const said = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("SESSION_WORKER_DOCKER_IMAGE"));
+      expect(said).toHaveLength(1);
+      expect(said[0]).toContain("3f6d1497-c466-4b2c-b9af-0f1800fbf759");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

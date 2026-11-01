@@ -12,6 +12,7 @@ import {
 } from "./services/session-status.js";
 import type { SessionStatusDeps } from "./services/session-status.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
+import { buildAccountFailoverNote } from "./account-failover-note.js";
 
 /**
  * docs/303 req 35 — a turn is submitted more than once, and the prompt it was given the
@@ -283,8 +284,9 @@ describe("a retried attempt reads the card as it stands (docs/303 req 35)", () =
       () => h.agents.length === 2 && h.agents[1]!.run.mock.calls.length === 1,
       "the retried attempt",
     );
-    // With the card off it is not ShipIt's to edit, so the attempt keeps what it had.
-    expect(h.prompts[1]).toBe(h.prompts[0]);
+    // With the card off it is not ShipIt's to edit, so the attempt keeps what it had,
+    // behind the failover note (planning#712).
+    expect(h.prompts[1]).toBe(`${buildAccountFailoverNote([])}\n\n${h.prompts[0]}`);
 
     h.agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
     h.agents[1]!.emit("done", 0);

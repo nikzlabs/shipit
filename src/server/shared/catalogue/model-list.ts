@@ -9,6 +9,7 @@ import {
   type BillingMode,
   type BillingModeDef,
   type ContextWindow,
+  type FlatPrice,
   type HarnessId,
   type ModelDef,
   type ModelPrice,
@@ -270,12 +271,22 @@ function parseStyles(raw: unknown): ApiStyle[] | undefined {
   return raw.every((s) => STYLE_IDS.includes(s)) ? (raw as ApiStyle[]) : undefined;
 }
 
-function parsePrice(raw: unknown): ModelPrice | undefined {
+function parseFlatPrice(raw: unknown): FlatPrice | undefined {
   if (!isRecord(raw)) return undefined;
   const { input, output, cacheRead, cacheWrite } = raw;
   // Zero is a real price; the catalogue's negative "unknown" sentinel never ships.
   if (![input, output, cacheRead, cacheWrite].every((n) => isFiniteNumber(n) && n >= 0)) return undefined;
-  return { input, output, cacheRead, cacheWrite } as ModelPrice;
+  return { input, output, cacheRead, cacheWrite } as FlatPrice;
+}
+
+function parsePrice(raw: unknown): ModelPrice | undefined {
+  const flat = parseFlatPrice(raw);
+  if (!flat || !isRecord(raw) || raw.longPrompt === undefined) return flat;
+  const tier = parseFlatPrice(raw.longPrompt);
+  const aboveTokens = isRecord(raw.longPrompt) ? raw.longPrompt.aboveTokens : undefined;
+  // A malformed tier is a bad price: dropping it would charge long prompts the lower rate.
+  if (!tier || !isPositive(aboveTokens)) return undefined;
+  return { ...flat, longPrompt: { aboveTokens, ...tier } };
 }
 
 function parseContextWindow(raw: unknown): ContextWindow | undefined {

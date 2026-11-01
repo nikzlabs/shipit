@@ -10,11 +10,7 @@ import {
   stopAllTokenWriteBackWatches,
   hasTokenWriteBackWatch,
 } from "./session-token-publisher.js";
-import {
-  clearSubtreeBorrows,
-  provisionSubAgentCredentials,
-  writeSessionAccountMarker,
-} from "./session-credentials.js";
+import { writeSessionAccountMarker } from "./session-credentials.js";
 
 const FAST = { pollIntervalMs: 15, debounceMs: 5 } as const;
 
@@ -69,7 +65,6 @@ describe("session token publisher (docs/153 mid-turn publication)", () => {
   afterEach(() => {
     stopAllTokenWriteBackWatches();
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    clearSubtreeBorrows();
   });
 
   it("publishes a rotation to the source mid-turn, without waiting for turn end", async () => {
@@ -135,23 +130,6 @@ describe("session token publisher (docs/153 mid-turn publication)", () => {
 
     await waitFor(() => readExpiry(accountSourceFile("acct-work")) === 2_000_000_000_000);
     expect(readExpiry(sourceFile())).toBe(1_000);
-  });
-
-  it("does not publish a borrowed account's token into the session's own account root", async () => {
-    writeToken(accountSourceFile("acct-b"), 1_000);
-    writeToken(accountSourceFile("acct-a"), 2_000_000_000_000);
-    writeToken(sessionFile(), 1_000);
-    markSubtreeAccount("s1", "acct-b");
-
-    startTokenWriteBackWatch({
-      credentialsDir: tmpDir, sessionId: "s1", agentId: "claude", accountId: "acct-b", ...FAST,
-    });
-
-    provisionSubAgentCredentials(tmpDir, "s1", "claude", "acct-a");
-    await settle();
-
-    expect(readExpiry(accountSourceFile("acct-b"))).toBe(1_000);
-    expect(readExpiry(accountSourceFile("acct-a"))).toBe(2_000_000_000_000);
   });
 
   it("publishes a rotation after the subtree's marker went missing mid-turn", async () => {

@@ -19,6 +19,7 @@ import type { UsageManager } from "./usage.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { AgentMergeClaimStore } from "./agent-merge-claims.js";
 import type { SessionContainerManager } from "./session-container.js";
+import type { CreateSessionDir } from "./session-dir-factory.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { AuthManager } from "./agents/claude/auth-manager.js";
 import type { CodexAuthManager } from "./agents/codex/auth-manager.js";
@@ -27,6 +28,8 @@ import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { ReleaseStatusPoller } from "./release-status-poller.js";
 import type { MergeWatchManager } from "./merge-watch.js";
+import type { SessionInbox } from "./services/session-inbox.js";
+import type { QuotaResumeRecorder } from "./services/quota-continuation.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { LogRingEntry } from "../shared/types.js";
@@ -155,11 +158,15 @@ export interface ApiDeps {
   warmSessionForRepo?: (repoUrl: string) => Promise<void>;
   waitForWarmSession?: (repoUrl: string) => Promise<void> | undefined;
   shouldSkipClaimFetch?: (repoUrl: string) => boolean;
-  createSessionDirFull: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
+  createSessionDirFull: CreateSessionDir;
   containerManager?: SessionContainerManager;
   prStatusPoller?: PrStatusPoller;
   releaseStatusPoller?: ReleaseStatusPoller;
   mergeWatchManager?: MergeWatchManager;
+  /** docs/328-session-message-inbox; absent in minimal setups, which then deliver no session message. */
+  sessionInbox?: SessionInbox;
+  /** docs/306-quota-continuation — resumes a session whose consult result wake no credential could run. */
+  quotaContinuation?: QuotaResumeRecorder;
   databaseManager?: DatabaseManager;
   /** The private half of a settings proposal; `propose` writes its row. */
   settingsProposals?: SettingsProposalStore;

@@ -1,0 +1,92 @@
+import { getContainerFreshness } from "../container-freshness.js";
+import { fillPromptTokens, loadPrompt } from "../load-prompt.js";
+import type { SessionContainerManager } from "../session-container.js";
+import type { InboxMessage, SessionInboxStore } from "../session-inbox-store.js";
+import { formatSessionMessagePrompt } from "../session-message-origin.js";
+import type { NoticeDelivery } from "../turn-settlement.js";
+
+const INBOX_NOTICE = loadPrompt(import.meta.url, "./session-inbox-notice.md");
+const INBOX_INLINE = loadPrompt(import.meta.url, "./session-inbox-inline.md");
+
+/** The prompt of the turn ShipIt starts so that the notice has a prompt to ride. */
+export const INBOX_TURN_TEXT = loadPrompt(import.meta.url, "./session-inbox-turn.md").trim();
+
+function waiting(unread: number): string {
+  return unread === 1 ? "1 unread message waits" : `${unread} unread messages wait`;
+}
+
+export function buildInboxNotice(unread: number): string {
+  return fillPromptTokens(INBOX_NOTICE, { WAITING: waiting(unread) }).trim();
+}
+
+/** A message as the agent reads it: an agent's text carries the frame that names its sender. */
+export function renderInboxMessage(message: InboxMessage): string {
+  return message.origin ? formatSessionMessagePrompt(message.body, message.origin) : message.body;
+}
+
+export function inboxMessageHeader(message: Pick<InboxMessage, "id" | "createdAt">): string {
+  return `--- message ${message.id} · sent ${message.createdAt}`;
+}
+
+export function buildInlineInboxNotice(messages: readonly InboxMessage[]): string {
+  return fillPromptTokens(INBOX_INLINE, {
+    WAITING: waiting(messages.length),
+    MESSAGES: messages.map((m) => `${inboxMessageHeader(m)}\n${renderInboxMessage(m)}`).join("\n\n"),
+  }).trim();
+}
+
+/**
+ * A container older than the running ShipIt can lack the `inbox` command. Its agent is not
+ * told to run it: the notice carries the messages.
+ */
+export function containerPredatesShipIt(
+  containerManager: Pick<SessionContainerManager, "get"> | null | undefined,
+  sessionId: string,
+): boolean {
+  const container = containerManager?.get(sessionId);
+  if (!container) return false;
+  return getContainerFreshness(container.workerBuildId, process.env.SHIPIT_BUILD_ID).state === "stale";
+}
+
+export interface InboxNotice extends NoticeDelivery {
+  readonly notice: string;
+}
+
+/**
+ * docs/328-session-message-inbox — the notice that rides the next turn's prompt, or `null`
+ * when no message is unread. A notice that names the read command has no receipt: an agent can
+ * end its turn without the read, so only the read clears it (planning#222). It also counts a
+ * message that an older ShipIt marked as told and the agent never read. With `inline`, the
+ * notice is the messages themselves, and its receipt marks read what it COVERED, so one that
+ * arrives during the turn is told by the next.
+ */
+export function prepareInboxNotice(
+  store: Pick<SessionInboxStore, "unread" | "markRead">,
+  sessionId: string,
+  opts: { inline?: boolean } = {},
+): InboxNotice | null {
+  let notice: string;
+  let through: number;
+  try {
+    const unread = store.unread(sessionId);
+    const last = unread.at(-1);
+    if (!last) return null;
+    through = last.id;
+    notice = opts.inline ? buildInlineInboxNotice(unread) : buildInboxNotice(unread.length);
+  } catch (err) {
+    // A turn must never fail to start over a notice; the next turn tries again.
+    console.error(`[session-inbox] reading the inbox of ${sessionId} failed:`, err);
+    return null;
+  }
+  return {
+    notice,
+    delivered() {
+      if (!opts.inline) return;
+      try {
+        store.markRead(sessionId, through);
+      } catch (err) {
+        console.error(`[session-inbox] marking ${sessionId}'s inbox as read failed:`, err);
+      }
+    },
+  };
+}

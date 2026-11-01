@@ -76,7 +76,7 @@ import { reloadEgressSidecars, staleEgressSidecars } from "./egress-reload.js";
 import { listEgressAllowedHosts } from "./egress-policy.js";
 import type { PluginEgressPolicy } from "./plugin-egress.js";
 import { STACK_LABEL } from "./stack-label.js";
-import type { ResolvedEgressConfig } from "./egress-allowlist.js";
+import { EGRESS_DEFAULT_ALLOWLIST, type ResolvedEgressConfig } from "./egress-allowlist.js";
 import type { SessionGpu } from "./session-gpu.js";
 import type { SessionCapabilities, SessionInfo } from "../shared/types.js";
 
@@ -231,6 +231,10 @@ export interface SessionContainerManagerEvents {
     oom: boolean;
     egressSidecar: boolean;
   }];
+  /** A Compose project's container appeared or went away; its status needs reconciling (docs/332). */
+  compose_project_changed: [project: string];
+  /** A `shipit-session-*` network lost an endpoint or was removed. */
+  session_network_changed: [networkName: string];
   health_monitor_resumed: [info: { gapMs: number }];
 }
 
@@ -587,10 +591,16 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     sidecarImage: string,
     decided: StaleSidecarDecision,
   ): Promise<void> {
+    const current = this.resolveEgressConfig?.(sc.sessionId) ?? { contained: true, extraHosts: [] };
     decided.stale ??= await staleEgressSidecars(this.docker, {
       sessionId: sc.sessionId,
       agentContainerId: sc.id,
-      ...(egressDnsEnabled() ? { internalNames: sessionInternalNames({ opsSession: sc.opsSession }) } : {}),
+      ...(egressDnsEnabled()
+        ? {
+          internalNames: sessionInternalNames({ opsSession: sc.opsSession }),
+          allowlist: [...(current.base ?? EGRESS_DEFAULT_ALLOWLIST), ...current.extraHosts],
+        }
+        : {}),
       ...(egressProxyEnabled() ? { decisionUrl: agentEgressDecisionUrl() } : {}),
     });
     const stale = decided.stale;

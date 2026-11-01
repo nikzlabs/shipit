@@ -458,7 +458,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       mgr.reconcile = async () => { reconciles += 1; };
 
       adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
-        serviceManagers: new Map(),
+        serviceManagers: new Map([["s1", mgr as unknown as ServiceManager]]),
         composeStopPromises: new Map(),
         containerManager: buildOverlayContainerManager(),
         installPromise: null,
@@ -494,7 +494,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       mgr.updateComposeConfig = (c) => { applied.push(c); return false; };
 
       adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
-        serviceManagers: new Map(),
+        serviceManagers: new Map([["s1", mgr as unknown as ServiceManager]]),
         composeStopPromises: new Map(),
         containerManager: buildOverlayContainerManager(),
         installPromise: null,
@@ -517,6 +517,65 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       const { reconciles, applied } = await driveAdoption(false);
       expect(applied).toEqual([PAIRS]);
       expect(reconciles).toBe(0);
+    });
+
+    // Disposal resolves `whenWorkerReady()`, and `start()` clears a manager's disposal.
+    describe("a runner that is disposed before its worker is ready", () => {
+      function adoptAndDispose(opts: { preserve: boolean; containmentChanged?: boolean; warm?: boolean }) {
+        const runner = makeRunner("s1");
+        const calls: string[] = [];
+        const mgr = makeStubServiceManager() as StubServiceManager & {
+          setOverlayDepDirs: (v: unknown[]) => boolean;
+          reconcile: () => Promise<void>;
+          updateEgressContainment: () => boolean;
+          preStartedWarm: boolean;
+        };
+        mgr.setOverlayDepDirs = () => false;
+        mgr.reconcile = async () => { calls.push("reconcile"); };
+        mgr.updateEgressContainment = () => opts.containmentChanged ?? false;
+        mgr.preStartedWarm = opts.warm ?? false;
+        const serviceManagers = new Map([["s1", mgr as unknown as ServiceManager]]);
+
+        adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
+          serviceManagers,
+          composeStopPromises: new Map(),
+          containerManager: buildOverlayContainerManager(),
+          installPromise: null,
+          session: SESSION as never,
+          workspaceDir: "/ws/s1",
+          resetSessionNetwork: async () => { calls.push("reset network"); },
+        });
+        runner.preserveComposeOnDispose = opts.preserve;
+        runner.dispose({ force: true });
+        return { calls, serviceManagers };
+      }
+      const settle = async (): Promise<void> => {
+        for (let i = 0; i < 50; i++) await Promise.resolve();
+        await new Promise((resolve) => setImmediate(resolve));
+      };
+
+      it("does not reconcile the manager that the disposal took out and stopped", async () => {
+        const { calls, serviceManagers } = adoptAndDispose({ preserve: false, warm: true });
+        await settle();
+
+        expect(serviceManagers.has("s1")).toBe(false);
+        expect(calls).toEqual([]);
+      });
+
+      it("does not reset the session network for that manager either", async () => {
+        const { calls } = adoptAndDispose({ preserve: false, containmentChanged: true });
+        await settle();
+
+        expect(calls).toEqual([]);
+      });
+
+      it("still reconciles a manager that the disposal kept for the preview", async () => {
+        const { calls, serviceManagers } = adoptAndDispose({ preserve: true, containmentChanged: true });
+        await settle();
+
+        expect(serviceManagers.has("s1")).toBe(true);
+        expect(calls).toEqual(["reset network", "reconcile"]);
+      });
     });
   });
 

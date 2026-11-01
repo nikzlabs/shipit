@@ -426,7 +426,8 @@ Two consequences, both load-bearing:
    spawns `ClaudeProcess` (one-shot PTY) and the CLI reaps background work at
    turn end. Nothing survives for the container to protect, so today's eviction
    behavior is already correct there. The fix only needs to hold when
-   `runner.isStreamingActive`.
+   `runner.isStreamingActive`. (The *agent* still has to learn that its work was
+   stopped — §9.)
 2. **Gate the count on process liveness.** Because a task cannot outlive the
    process, `backgroundTaskCount > 0` is only meaningful while the streaming
    process is alive. Make the getter return 0 unless `isStreamingActive` — that
@@ -536,6 +537,10 @@ follow — so adopting on a bare init can wedge a session as permanently busy. T
 `task_notification` edge is unaffected (it genuinely precedes a wake turn); the
 init half of this sentence should not be reused as an adoption signal.
 
+**And a caveat on that caveat, 2026-10-11:** a `task_notification` does not always
+precede a turn either. One with `status: "stopped"` for a job the previous process
+left is closed by a `result` that ran no model call — see §8.
+
 Three gates make the re-arm safe, and each is pinned by a test in
 `turn-self-wake-commit.test.ts` that fails without it:
 
@@ -563,6 +568,285 @@ describe the turn this executor was invoked for: clearing the first would arm th
 the user's original prompt) if the wake turn's process later died, and clearing
 the second would settle a dispatch handle twice.
 
+### 8. A resumed conversation announces the job its previous process left
+
+Probe A in §5 shows a one-shot process stopping its background job as it exits.
+The conversation it leaves still owes that job a notice, and the **next** process
+to resume the conversation pays it before it reads its prompt. Measured
+2026-10-11 on claude 2.1.284: process 1 is the one-shot invocation, told to start
+a backgrounded `sleep 300` and end its turn; process 2 resumes with a prompt on
+stdin. The streaming invocation:
+
+```
+  573ms  system/task_notification  status:"stopped", summary:"Background shell command
+                                   didn't finish before the previous session ended"
+  639ms  system/init
+  640ms  result/success            num_turns:0, duration_api_ms:0, result:"",
+                                   origin:{kind:"task-notification"}
+  657ms  system/init
+ 1884ms  user (isReplay)           <- the prompt is read only now
+ 1887ms  assistant …
+ 1939ms  result/success            num_turns:1, result_index:1
+```
+
+The one-shot invocation emits the same sequence, without the replay. Three facts
+from the same runs:
+
+- **The first `result` ends no turn.** No model call ran (`num_turns: 0`, zero
+  usage, an empty `iterations`), and the CLI says what it answered:
+  `origin.kind` is `"task-notification"`. A prompt's own result carries no
+  `origin`.
+- **It fires once.** A second resume of the same conversation emits neither the
+  notice nor the result.
+- **The model is still told.** Asked in the resumed turn, it reports the
+  unfinished command, so the notice reaches its context with the prompt.
+
+**What it cost.** Every layer reads `agent_result` as "the running turn ended",
+and the running turn is the prompt the process was spawned for. Production
+2026-10-11, session `83d3273c`: the user's prompt was dispatched on a fresh
+streaming process, the notice's result arrived under a second later, and the
+executor settled the user's turn — commit, PR flow, idle — while the CLI had not
+read the prompt. The session read idle for the 18 s the model then spent
+thinking, the answer was adopted as a CLI-started turn (`post-result assistant
+output`), and a 401 five minutes later took the adopted-turn path, which does not
+re-run a prompt (docs/140-live-steering Phase 6.13). The worker counts the same
+way: `AgentController.endTurn` cleared `turnActive` and the delivery id under a
+turn that had not begun, and on the one-shot path nothing sets them again.
+
+**The rule** (`closesTaskNoticeWithoutTurn` in `session/agents/claude/task-notice.ts`,
+`ClaudeAdapter.dropsStaleNoticeResult` in `adapter.ts`): the adapter drops a successful zero-turn
+result whose origin is a task notification, from the spawn until the CLI first
+shows work on the spawn prompt — a replay, assistant output, or any other
+result. The `agent_self_wake` for the notice is still forwarded, so a
+backgrounded subagent's card still retires.
+
+Two bounds on that rule, both deliberate:
+
+- **Only before the spawn prompt's turn shows.** In that window every layer
+  already counts the prompt's turn as running, so the notice began no turn in
+  anyone's books and nothing waits on its result. Later is different: a notice
+  on an idle resident process makes the worker and the orchestrator mark the
+  session busy, and only a result clears that. Dropping one there would wedge the
+  session, which is §7's bare-`init` hazard again.
+- **Only the shape the CLI names.** A zero-turn result is also how the CLI
+  answers a command itself (`/goal`, docs/297), and a failed result must always
+  be seen. Neither is dropped: the test is all of `subtype: "success"`,
+  `is_error` not true, `num_turns: 0` and the `task-notification` origin.
+
+**A second reader of the same stream.** `runClaudeGoalControl` (`claude-goal.ts`)
+resumes the conversation in a process of its own and took the first `result` as
+the command's answer. On a conversation in this state that is the notice's empty
+result, so the first goal read failed with an empty message, and the second
+succeeded because the first one had spent the notice. Measured on the same CLI,
+the command's own result follows and is told apart by shape — it carries
+`local_command: "goal"` and no `origin`:
+
+```
+ 1165ms  system/task_notification  status:"stopped"
+ 1936ms  system/init
+ 1937ms  result/success            num_turns:0, result:"", origin:{kind:"task-notification"}
+ 1948ms  system/init
+ 1948ms  assistant (synthetic)     "No goal set. Usage: `/goal <condition>`"
+ 1949ms  result/success            num_turns:0, result:"No goal set. …", local_command:"goal"
+```
+
+The control process now skips a result that matches the same predicate and reads
+on. It needs no window of its own: the process exists for one command, and a
+notice's result is never that command's answer. What it cannot change is that
+the read still spends the notice, so the session's next turn is not told about
+the job.
+
+Coverage: `adapter.test.ts` → "a task notice left by the previous process";
+`claude-goal.test.ts` → "on a thread whose previous process left a background job".
+
+### 9. Tell the agent when a one-shot process stops its jobs
+
+Probe A and §7 agree that a one-shot CLI leaves "nothing to wake". That is correct for
+the container, and it left the *agent* with no signal. The agent cannot see which kind
+of process its turn runs on, and when this was written every turn that ShipIt starts was
+one-shot (`docs/287-consult-result-delivery/plan.md` §1). Since
+`docs/329-user-steers-every-turn` a turn that ShipIt starts for work runs on the process a
+typed turn would run on, so this section applies where that process is one-shot: Live
+steering off, or a harness that cannot hold a process. So an agent that ended a message to
+wait for a `run_in_background` build — a pattern that works on a turn the user typed —
+lost the build about 5 s later, got no notice, and was never started again. In
+production a session stayed idle for 9 h 13 min this way, on the second link of a
+`notify-on-merge --self` chain; the same path is every link after the first.
+
+**What the CLI does, measured on 2.1.284** with the exact one-shot invocation
+(`--print --input-format stream-json`, stdin closed after the prompt):
+
+```
+ 2938ms  system/background_tasks_changed  tasks=[{task_id, task_type:"local_bash", description}]
+ 4820ms  result/success
+ 9862ms  system/background_tasks_changed  tasks=[]
+ 9862ms  system/task_updated              patch:{status:"killed"}
+ 9862ms  system/task_notification         status:"stopped"
+ 9889ms  CLI PROCESS EXITED code=0        (the job's output file was never written)
+```
+
+Two more facts from the same probes:
+
+- A job that **ends inside the 5 s window** is not lost. The CLI reports
+  `task_notification status:"completed"`, emits a new `system/init`, runs a turn of its
+  own, and exits after that turn's `result`.
+- `description` is the Bash call's own `description` when the agent gave one, and the
+  command only when it did not. So the text does not identify a command.
+
+**The CLI's own notice is not enough.** §8 shows that the next process to resume the
+conversation tells the model that the job did not finish. That notice needs a next turn,
+and on this path none came: the session waited for a user who came back 9 h later. The
+wake of this section is that next turn, so its model reads the CLI's notice and the wake
+prompt together. The notice's zero-turn result is dropped by the adapter (§8), so it
+does not reach the executor as an `agent_result` and takes no reading of the task list;
+its `task_notification` has `status: "stopped"`, so it removes no job from one either.
+
+**The mechanism.** On a non-streaming turn, `turn-executor` keeps the task list the CLI
+reports and takes a reading of it at each `agent_result`. A `completed` notification
+removes that job from the reading, and the result of the CLI's own follow-up turn takes
+the reading again. What is left when `done` arrives is the set of jobs the CLI stopped.
+(On this path the stop is certain; the prompt's wording allows for the path below.)
+The executor passes their descriptions to `reportStoppedBackgroundJobs`
+(`services/stopped-background-jobs.ts`) as the **last** thing the `done` handler does —
+in its `finally`, so that a throw earlier in the sequence cannot skip it, and after the
+commit, the idle signal and the settlement, because the report can start a turn. The
+call is a no-op unless a non-streaming turn had a result, which is what keeps the early
+returns of that handler out of it. It also runs after the post-turn hold is released,
+and not inside it as `runQuotaContinuation` does on the streaming path: a step before
+the release moves this executor's `endPostTurnWork` later, and a late `end()` of an
+expired lease consumes the lease a rebase driver took in between (planning#556;
+`rebase-driver.test.ts` went red on exactly that). The wake needs no lease of its own, because `wakeSessionWithTurn`
+resumes a session whose runner was disposed. The executor's own maps are used rather
+than `runner.backgroundTaskDescriptions`, which is gated to zero off a resident process
+by design (the liveness gate above).
+
+The service then does one of four things:
+
+| Case | What happens |
+|---|---|
+| The ordinary case | `wakeSessionWithTurn` starts a system turn whose prompt (`prompts/stopped-background-jobs-wake.md`) names the jobs. If that turn never reaches the agent, the prompt is parked as a pending agent notice. |
+| The turn that ended **was this wake** | No second wake. The prompt is parked as a pending agent notice for the next turn, and the transcript gets a `warn` notice for the user. This is what stops a loop when the agent backgrounds a job again. |
+| A `shipit agent run` consult is in flight | No wake. The prompt is parked, and it rides the turn that the consult's result starts (docs/287-consult-result-delivery). One of the jobs is then likely the consult's own local command, and the description cannot say which, so the prompt carries a sentence that a consult must not be run again. |
+| The process was **displaced** (`mayWake: false`, below) | No wake. The prompt is parked and the user gets the `warn` notice. With a consult in flight the row above applies first, so there is no notice. |
+
+The wake recognises its own turn by the **delivery id** it dispatched with
+(`stopped-background-jobs:<uuid>`), which the executor passes back with the report. A
+delivery id is persisted to the worker and to a held turn, so the guard also holds across
+an orchestrator restart and a docs/322 answer hold, with no state in the service.
+
+**The executor can lose the process before its `done`.** Another turn can take the
+runner in the 5 s after the result: a queued one, which the one-shot path starts at
+`agent_result`, or a new message. Its agent takes the runner's slot, the runner emits
+`superseded` on the old one, and a container runner drops the old process's later events
+at its run-token guard — `done` included. A credential change, a spawn-identity change
+and an account failover retire a process the same way. So the `superseded` handler
+reports too, from the reading taken at the result. That is the process's one report:
+the report empties the reading, and a displaced process takes no new one. The second
+half matters on the local runner, which has no such guard and still delivers the later
+events of a process it displaced — a job that ends, the turn the CLI runs for it, and
+that turn's result, which would otherwise fill the reading again for `done` to report
+with leave to start a turn. Two things are different on this path:
+
+- **The report starts no turn.** A one-shot turn commits in `done`, or before the drain
+  when the queue is not empty. A process retired with an empty queue — a credential
+  change does that — has committed nothing, and its `done` never comes: the `superseded`
+  handler releases its commit hold without a commit, and the displacing turn's own
+  commit is the only one its work gets. So the executor passes `mayWake: false` at every
+  displacement, and the service parks the note. A wake that only "queues behind the
+  displacing turn" was tried and taken out, because a displacing turn that fails during
+  the wake's preparation let the wake start on uncommitted work. Since
+  docs/240-unlosable-turn-dispatch Fix G that holds only for one way of failing. A
+  displacing turn that fails inside the executor holds its commit hold until the commit
+  of the whole tree settles, and `dispatchOnRunner` queues the wake behind it. A turn that
+  fails in setup, before the executor takes the hold (the catch in `dispatchOnRunner`, or
+  an interactive turn whose composition throws), commits nothing and holds nothing, so a
+  wake would still start on the displaced process's uncommitted work. That case keeps
+  this rule. Where the parked note lands depends on the
+  turn that displaced the process. An interactive turn installs its agent before it reads
+  the pending notice (`ws-handlers/agent-execution.ts`), so it carries the note itself.
+  A dispatched turn composed its prefix first, so the note rides the turn after it.
+- **The job's end is not known.** Displacement is not the end of the process. A job can
+  still end in the seconds that are left, and those events are dropped. This is why the
+  prompt says the work "most probably did not finish" and tells the agent to check what
+  it wrote, on both paths, and does not say that it was stopped.
+
+A turn the user stopped is not reported. The executor reads the user's Stop record
+(`stoppedByUser`, which the Stop button and a force-kill set and a question's own
+interrupt does not) where the process ends. That alone is not enough: a stopped process
+still sends its `task_notification`, `agent-listeners` adopts it as a turn, and the
+`running` false → true of that adoption starts a new record. So a listener registered
+*before* `wireAgentListeners` latches the Stop on every event of a non-streaming
+process, the way the `error` listener beside it does for the last error. The record
+belongs to the runner's current turn, not to a process, which leaves the two cases
+under Residuals.
+
+A wake that was admitted can still fail before the agent reads it (no credential is
+free at env preparation, the runner is disposed). The prompt is then parked for the next
+turn. This rule is wider than `shouldRepark`, which leaves a plain `errored` alone so
+that work is not repeated: this note only informs, so a repeat costs little and a loss
+leaves the agent waiting. It is `informingWakeMissed` in `turn-settlement.ts`, which the
+finished-consult wake shares (`docs/287-consult-result-delivery`).
+
+**The agent is also told before it makes the mistake.** `dispatched-turn.ts` puts
+`prompts/one-shot-turn-note.md` in the prompt prefix of every turn that ShipIt started
+and that will run on a one-shot process (`docs/329-user-steers-every-turn`), except
+compaction and a driver-owned turn (`postTurn: "none"`, whose prompt is the driver's
+script; the pending notice and the status card stay off it too), for a harness with
+`startsOwnTurns` (the only kind whose agent has a reason to end a message and wait). `/shipit-docs/environment.md` and the `notify-on-merge`
+chain section of `/shipit-docs/sessions.md` state the same rule.
+
+**Not done, on purpose.**
+
+- *Keeping the process alive until the jobs end.* The one-shot process is the streaming
+  invocation with stdin closed, so holding stdin open would do it. But a one-shot turn
+  drains the queue at `agent_result` and commits in `done` (before the drain only when
+  the queue is not empty): a held process would delay the commit for the length of the
+  job and let a drained successor run beside a live predecessor. §7's first gate exists
+  to keep those two apart.
+- *Running system turns on a resident process.* Ruled out at the time for the reasons in
+  `docs/287-consult-result-delivery/requirements.md` (resolved 2026-09-03), and reversed on
+  2026-10-12 (`docs/329-user-steers-every-turn` req 1). It would also
+  leave a user-typed turn uncovered when `advanced.liveSteering` is off, which is one-shot
+  too; the report covers both because it keys on the process, not on who started the turn.
+
+**Residuals.**
+
+- The one-shot note rides turns that ShipIt started only; a user-typed one-shot turn (live
+  steering off) gets the wake but not the note.
+- A displaced process gets no wake. When a dispatched turn displaced it, the note waits
+  for the turn after that one, and the user's notice is the only prompt for it.
+- A parked note is the session's pending agent notice, which it shares. A branch sync and
+  a manual reset replace that whole field on purpose (`setPendingAgentNotice`: branch
+  movement supersedes earlier notices), so a parked note that no turn has read is lost
+  then. The user's transcript notice is not.
+- The Stop record is per turn. A Stop on this process is missed when another turn claims
+  the runner before this process sends one more event, and the report then leaves a
+  note. A Stop on a successor that is still in setup when it displaces this process
+  drops this process's report.
+- A wake does not wait for work that no commit covers. Since
+  docs/240-unlosable-turn-dispatch Fix G, `runner.dispatch` queues every wake while
+  `runner.turnCommitPending` is set, and the executor releases the queue when its local
+  commit settles or its hold expires, so a wake no longer starts while a *later* turn
+  that failed is still committing. Two cases stay open: a turn that failed in setup
+  never takes the hold and commits nothing (the displacement rule above), and once the
+  hold's 120 s deadline has passed the gate is open again.
+- The consult gate reads `subAgentSpawnsInFlight`, which drops when the worker's spawn
+  returns — before the consult's result is delivered. A consult that ends in the few
+  seconds between the turn's result and the report is therefore not counted, and the
+  session gets both turns. The second one costs a turn and loses nothing; the opposite
+  error (park, with no turn coming) would be the silent wait this section removes.
+- An auth-heal or quota retry runs the prompt again on a new process and a new executor.
+  Jobs the first process started are not carried into the new executor's reading.
+- A turn adopted after an orchestrator restart did not see the task list from before the
+  restart, so a job started before it is not reported. The wake's `onSettled` is an
+  in-memory callback, so a wake that fails after a restart parks nothing.
+- A resident process that *dies* with jobs outstanding (a crash, an OOM kill) is a
+  different event and still tells nobody.
+
+Guards: `turn-self-wake-commit.test.ts` → "background jobs a one-shot process stops at
+its exit" (each case verified red with its line removed), `services/stopped-background-jobs.test.ts`,
+`dispatched-turn-one-shot-note.test.ts`.
+
 ## Bounds — what this does not do
 
 A self-wake still cannot resurrect a container that has *already* been destroyed;
@@ -576,7 +860,12 @@ shell work a supported persistence primitive.
 
 - `src/server/orchestrator/turn-executor.ts` — `rearmForCliStartedTurn` (§7) and
   the post-turn guards it re-arms
-- `src/server/orchestrator/turn-self-wake-commit.test.ts` — §7's regression tests
+- `src/server/orchestrator/turn-self-wake-commit.test.ts` — §7's and §9's regression tests
+- `src/server/orchestrator/services/stopped-background-jobs.ts` — §9: the wake, the
+  loop guard and the parked note
+- `src/server/orchestrator/prompts/stopped-background-jobs-wake.md`,
+  `prompts/one-shot-turn-note.md` — §9's two prompt texts
+- `src/server/orchestrator/dispatched-turn.ts` — puts the one-shot note on a system turn
 - `src/server/orchestrator/idle-enforcer.ts` — count-based idle eviction
 - `src/server/orchestrator/tier-escalation.ts` — 24h/2d/14d disk ladder
 - `src/server/session/agents/claude/process.ts` — `StreamingClaudeProcess`
@@ -647,9 +936,22 @@ before or after the HTTP history it contradicts.
 request time, so history is the single attach-time source and there is no race
 left to lose.
 
-**Residual, accepted.** `BackgroundTaskTracker` decays a non-zero count after
-its TTL through the getter alone, with no mutation to announce. A marker can
-therefore outlive the tracker's own honoring of it by up to one window in a
-browser that stays connected. The decay only fires when events stopped arriving
-entirely — the liveness gate catches the ordinary process-death case first — and
-the connect snapshot corrects it.
+**The expiry is announced (planning#710).** The decay first worked through the
+getter alone, with no mutation to announce, so an open chat kept "Waiting for:
+…" after the tracker had stopped honoring it. `BackgroundTaskTracker` now keeps
+one timer, armed only while its list is not empty and restarted by each list
+update. At the TTL it calls the runner, which clears the list through
+`clearBackgroundTasks()` — the same path a kill site takes. A clear that drops
+a list sends the WS `background_tasks` message (with the consults that still
+run, else count 0) as well as the SSE announcement, because `session_attention`
+updates the sidebar and not the open chat's row; `clearResidentProcessState`
+already did this. The announcement also releases a turn queued behind the work,
+which the getter alone never did.
+
+A streaming turn that starts on a new process clears the list first
+(`executeAgentTurn`, unless it reuses the resident or adopts a turn; a one-shot
+turn already counts no tasks). Several
+paths kill a resident and drop it from the slot without clearing its list — a
+quota or account failover, a credential change, an answer that replaces a
+one-shot process — and the new turn's `isStreamingActive = true` made the dead
+process's tasks count again.

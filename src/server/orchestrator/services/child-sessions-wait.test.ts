@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
@@ -177,5 +177,190 @@ describe("registerMergeWatch — arm-time archived guards (docs/196)", () => {
   it("refuses to arm a watch on an archived CHILD (existing guard, still holds)", () => {
     sessionManager.archive(CHILD);
     expect(() => registerMergeWatch(sessionManager, PARENT, CHILD)).toThrow(/Child session is archived/);
+  });
+});
+
+describe("registerMergeWatch — arming again (docs/196-session-notify-on-merge)", () => {
+  let sessionManager: SessionManager;
+  const PARENT = "parent_1";
+  const CHILD = "child_1";
+  const MERGED_PR = { prNumber: 12, prUrl: "https://github.com/o/r/pull/12", prTitle: "Step", branch: "b" };
+
+  beforeEach(() => {
+    sessionManager = new SessionManager(new DatabaseManager(":memory:"));
+    sessionManager.track(PARENT, "Parent", "/tmp/parent");
+    sessionManager.track(CHILD, "Child", "/tmp/child");
+    sessionManager.setParentSession(CHILD, PARENT);
+  });
+
+  it("gives every armed watch its own id", () => {
+    registerMergeWatch(sessionManager, PARENT, CHILD);
+    const first = sessionManager.getMergeWatch(CHILD)?.watchId;
+    expect(first).toBeTypeOf("string");
+
+    sessionManager.setMergeWatch(CHILD, { parentSessionId: PARENT, state: "delivered", registeredAt: "t0" });
+    registerMergeWatch(sessionManager, PARENT, CHILD);
+    expect(sessionManager.getMergeWatch(CHILD)?.watchId).not.toBe(first);
+  });
+
+  it("an armed watch stays as it is", () => {
+    registerMergeWatch(sessionManager, PARENT, CHILD);
+    const before = sessionManager.getMergeWatch(CHILD);
+    expect(registerMergeWatch(sessionManager, PARENT, CHILD)).toEqual({ childId: CHILD, state: "armed", alreadyArmed: true });
+    expect(sessionManager.getMergeWatch(CHILD)).toEqual(before);
+  });
+
+  it("req 3: during a delivery it records the arm on the watch and leaves the delivery alone", () => {
+    const delivering = {
+      parentSessionId: PARENT, watchId: "w1", state: "merge-observed" as const, registeredAt: "t0",
+      observedAt: "t1", deliveryAttempts: 1, lastAttemptAt: "t1", deliveryId: "w1:1", mergedPr: MERGED_PR,
+    };
+    sessionManager.setMergeWatch(CHILD, delivering);
+
+    expect(registerMergeWatch(sessionManager, PARENT, CHILD)).toEqual({
+      childId: CHILD, state: "merge-observed", alreadyArmed: false, skipsPr: 12,
+    });
+    const queued = sessionManager.getMergeWatch(CHILD)!;
+    expect(queued).toMatchObject(delivering);
+    expect(queued.rearmedAt).toBeTypeOf("string");
+
+    expect(registerMergeWatch(sessionManager, PARENT, CHILD)).toMatchObject({
+      state: "merge-observed", alreadyArmed: true, skipsPr: 12,
+    });
+    expect(sessionManager.getMergeWatch(CHILD)).toEqual(queued);
+  });
+
+  it("req 4: a new watch inherits the pull request that the parent already knows", () => {
+    for (const state of ["delivered", "closed-unmerged", "delivery-failed"] as const) {
+      const reportedPr = { prNumber: 12, outcome: state === "closed-unmerged" ? "closed" as const : "merged" as const };
+      sessionManager.setMergeWatch(CHILD, { parentSessionId: PARENT, state, registeredAt: "t0", reportedPr });
+
+      expect(registerMergeWatch(sessionManager, PARENT, CHILD)).toEqual({
+        childId: CHILD, state: "armed", alreadyArmed: false, skipsPr: 12,
+      });
+      expect(sessionManager.getMergeWatch(CHILD)).toMatchObject({ state: "armed", reportedPr });
+    }
+  });
+
+  it("req 2: a new watch inherits the pull requests that the old one kept for it", () => {
+    const kept = [13, 14].map((prNumber) => ({
+      outcome: "merged" as const, prNumber, prUrl: `https://github.com/o/r/pull/${prNumber}`, prTitle: "Next", branch: "b",
+    }));
+    sessionManager.setMergeWatch(CHILD, {
+      parentSessionId: PARENT, state: "delivered", registeredAt: "t0",
+      reportedPr: { prNumber: 12, outcome: "merged" }, unreportedPrs: kept,
+    });
+    registerMergeWatch(sessionManager, PARENT, CHILD);
+    expect(sessionManager.getMergeWatch(CHILD)).toMatchObject({ state: "armed", unreportedPrs: kept });
+  });
+
+  it("a watch whose delivery failed hands over its own merge in front of the ones it kept", () => {
+    const later = { outcome: "merged" as const, prNumber: 13, prUrl: "https://github.com/o/r/pull/13", prTitle: "Next", branch: "b" };
+    sessionManager.setMergeWatch(CHILD, {
+      parentSessionId: PARENT, state: "delivery-failed", registeredAt: "t0", mergedPr: MERGED_PR, unreportedPrs: [later],
+    });
+    expect(registerMergeWatch(sessionManager, PARENT, CHILD)).toEqual({ childId: CHILD, state: "armed", alreadyArmed: false });
+    const armed = sessionManager.getMergeWatch(CHILD);
+    expect(armed?.reportedPr).toBeUndefined();
+    expect(armed?.unreportedPrs).toEqual([{ outcome: "merged", ...MERGED_PR }, later]);
+  });
+
+  it("a failed merge that goes in front takes the place of no PR in a full list", () => {
+    const kept = Array.from({ length: 20 }, (_, i) => ({
+      outcome: "closed" as const, prNumber: 13 + i, prUrl: `https://github.com/o/r/pull/${13 + i}`, prTitle: "Later", branch: "b",
+    }));
+    sessionManager.setMergeWatch(CHILD, {
+      parentSessionId: PARENT, state: "delivery-failed", registeredAt: "t0", mergedPr: MERGED_PR, unreportedPrs: kept,
+    });
+    registerMergeWatch(sessionManager, PARENT, CHILD);
+    expect(sessionManager.getMergeWatch(CHILD)?.unreportedPrs?.map((p) => p.prNumber))
+      .toEqual([12, ...kept.map((p) => p.prNumber)]);
+  });
+
+  it("logs which case an arm was", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      sessionManager.setMergeWatch(CHILD, {
+        parentSessionId: PARENT, state: "merge-observed", registeredAt: "t0", mergedPr: MERGED_PR,
+      });
+      registerMergeWatch(sessionManager, PARENT, CHILD);
+      registerMergeWatch(sessionManager, PARENT, CHILD);
+      sessionManager.setMergeWatch(CHILD, {
+        parentSessionId: PARENT, state: "delivered", registeredAt: "t0", reportedPr: { prNumber: 12, outcome: "merged" },
+      });
+      registerMergeWatch(sessionManager, PARENT, CHILD);
+
+      const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("[merge-watch]"));
+      expect(lines).toHaveLength(3);
+      expect(lines[0]).toContain("before the notice about PR #12 was stored: armed for the next PR");
+      expect(lines[1]).toContain("already queued");
+      expect(lines[2]).toContain("PR #12 was already reported");
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
+
+describe("registerMergeWatch — a child that holds its own self-watch (docs/239)", () => {
+  let sessionManager: SessionManager;
+  const PARENT = "parent_1";
+  const CHILD = "child_1";
+  const SELF_WATCH = {
+    parentSessionId: CHILD, kind: "self" as const, watchId: "w1", prNumber: 251,
+    state: "armed" as const, registeredAt: "t0",
+  };
+
+  beforeEach(() => {
+    sessionManager = new SessionManager(new DatabaseManager(":memory:"));
+    sessionManager.track(PARENT, "Parent", "/tmp/parent");
+    sessionManager.track(CHILD, "Child", "/tmp/child");
+    sessionManager.setParentSession(CHILD, PARENT);
+  });
+
+  it("arms beside a live self-watch and leaves that watch as it was", () => {
+    sessionManager.setSelfMergeWatch(CHILD, SELF_WATCH);
+
+    const res = registerMergeWatch(sessionManager, PARENT, CHILD);
+
+    expect(res).toMatchObject({ childId: CHILD, state: "armed", alreadyArmed: false });
+    expect(sessionManager.getMergeWatch(CHILD)).toMatchObject({ parentSessionId: PARENT, state: "armed" });
+    expect(sessionManager.getSelfMergeWatch(CHILD)).toEqual(SELF_WATCH);
+    expect(sessionManager.listPendingMergeWatches().map((e) => e.watch.kind ?? "parent").sort())
+      .toEqual(["parent", "self"]);
+  });
+
+  it("leaves a self-watch that is mid-delivery as it was, on a first arm and on a re-arm", () => {
+    const delivering = {
+      ...SELF_WATCH, state: "merge-observed" as const, observedAt: "t1",
+      deliveryAttempts: 1, lastAttemptAt: "t1", deliveryId: "w1:1",
+    };
+    sessionManager.setSelfMergeWatch(CHILD, delivering);
+
+    registerMergeWatch(sessionManager, PARENT, CHILD);
+    expect(registerMergeWatch(sessionManager, PARENT, CHILD).alreadyArmed).toBe(true);
+    sessionManager.setMergeWatch(CHILD, {
+      parentSessionId: PARENT, state: "delivered", registeredAt: "t0", deliveredAt: "t2",
+    });
+    expect(registerMergeWatch(sessionManager, PARENT, CHILD).alreadyArmed).toBe(false);
+
+    expect(sessionManager.getSelfMergeWatch(CHILD)).toEqual(delivering);
+  });
+
+  it("logs each arm with the [merge-watch] prefix, and names the self-watch it sits beside", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      sessionManager.setSelfMergeWatch(CHILD, SELF_WATCH);
+      registerMergeWatch(sessionManager, PARENT, CHILD);
+      registerMergeWatch(sessionManager, PARENT, CHILD);
+      const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("[merge-watch]"));
+      expect(lines).toHaveLength(2);
+      for (const line of lines) {
+        expect(line).toContain(PARENT);
+        expect(line).toContain(CHILD);
+      }
+      expect(lines[0]).toContain("PR #251");
+    } finally {
+      log.mockRestore();
+    }
   });
 });

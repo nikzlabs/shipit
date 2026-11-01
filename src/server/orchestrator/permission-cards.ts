@@ -1,4 +1,5 @@
 import type { ChatHistoryManager } from "./chat-history.js";
+import type { PermissionUnanswered } from "../shared/types.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { persistCardTransition } from "./chat-card-persistence.js";
 
@@ -26,8 +27,9 @@ export function settlePermissionCard(
   requestId: string,
   phase: "approved" | "denied",
   remembered?: boolean,
+  unanswered?: PermissionUnanswered,
 ): void {
-  const patch = { phase, ...(remembered ? { remembered: true } : {}) };
+  const patch = { phase, ...(remembered ? { remembered: true } : {}), ...(unanswered ? { unanswered } : {}) };
   // Mid-turn the recorded card must change too, or the next rebuild restores it as pending (docs/193).
   persistCardTransition(
     runner,

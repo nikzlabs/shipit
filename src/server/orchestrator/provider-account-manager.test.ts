@@ -440,6 +440,28 @@ describe("ProviderAccountManager", () => {
       });
     });
 
+    it("does not route a turn to an account whose sign-in has removed its credential", () => {
+      const { mgr, claude, account } = setup();
+      const other = mgr.create("anthropic", "Other");
+      mgr.setAccountStatus("anthropic", other.id, "ready");
+      claude.configured = false;
+      mgr.startAccountAuth("anthropic", account.id);
+
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: other.id } });
+
+      mgr.setAccountStatus("anthropic", other.id, "unavailable");
+      const alone = mgr.selectAccountForTurn("anthropic");
+      expect(alone.ok && alone.route.kind === "account").toBe(false);
+    });
+
+    it("still routes a turn to an account that keeps its credential while it signs in again", () => {
+      const { mgr, claude, account } = setup();
+      claude.configured = true;
+      mgr.startAccountAuth("anthropic", account.id);
+
+      expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: account.id } });
+    });
+
     it("cancelAccountAuth resets status from the on-disk credential check", () => {
       const { mgr, claude, account } = setup();
       mgr.startAccountAuth("anthropic", account.id);
@@ -451,6 +473,19 @@ describe("ProviderAccountManager", () => {
       mgr.startAccountAuth("anthropic", account.id);
       claude.configured = true;
       expect(mgr.cancelAccountAuth("anthropic", account.id).status).toBe("ready");
+    });
+
+    it("endInterruptedSignIns leaves a row whose sign-in is still running", () => {
+      const { mgr, claude, codex, account } = setup();
+      const interrupted = mgr.create("anthropic", "Interrupted");
+      mgr.setAccountStatus("anthropic", interrupted.id, "authenticating");
+      mgr.startAccountAuth("anthropic", account.id);
+
+      mgr.endInterruptedSignIns(new Map([["anthropic-oauth", claude], ["openai-chatgpt", codex]]));
+
+      expect(mgr.get("anthropic", account.id)?.status).toBe("authenticating");
+      expect(mgr.get("anthropic", interrupted.id)?.status).toBe("unavailable");
+      expect(claude.cancelCalls).toBe(0);
     });
 
     it("submitAccountCode delegates to the manager's submitCode", () => {

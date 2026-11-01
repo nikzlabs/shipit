@@ -123,7 +123,7 @@ describe("agent-requested restart over real runners (docs/321)", () => {
     second!.dispose({ force: true });
   });
 
-  it("keeps a message sent during the restart and runs it after the follow-up turn", async () => {
+  it("keeps a message sent during the restart and runs it before the follow-up turn (docs/329 req 2)", async () => {
     const { sessionManager, containerManager, agents, registry, prompts } = setup();
     const first = registry.getOrCreate(SESSION, "/tmp/s1", "claude");
     first.dispatch(testDispatch({ text: "pin node 22 in .nvmrc" }));
@@ -137,20 +137,20 @@ describe("agent-requested restart over real runners (docs/321)", () => {
       }
     });
     endTurn(agents[0]!);
-    await waitForTurn(() => agents.length === 2, "the follow-up turn");
+    await waitForTurn(() => agents.length === 2, "the kept message's turn");
 
     const second = registry.get(SESSION)!;
-    expect(second.messageQueue.map((m) => m.text)).toEqual(["sent while restarting"]);
-    await waitForTurn(() => prompts().length === 2, "follow-up prompt");
-    expect(prompts()[1]).toContain(NOTE);
+    expect(second.messageQueue.map((m) => m.text)).toEqual([buildRestartFollowupPrompt(NOTE)]);
+    await waitForTurn(() => prompts().length === 2, "kept message prompt");
+    expect(prompts()[1]).toContain("sent while restarting");
 
     endTurn(agents[1]!);
-    await waitForTurn(() => agents.length === 3, "the kept message's turn");
-    await waitForTurn(() => prompts().length === 3, "kept message prompt");
-    expect(prompts()[2]).toContain("sent while restarting");
+    await waitForTurn(() => agents.length === 3, "the follow-up turn");
+    await waitForTurn(() => prompts().length === 3, "follow-up prompt");
+    expect(prompts()[2]).toContain(NOTE);
 
     endTurn(agents[2]!);
-    await waitForTurn(() => !second.running, "kept message settled");
+    await waitForTurn(() => !second.running, "follow-up settled");
     second.dispose({ force: true });
   });
 
@@ -168,15 +168,17 @@ describe("agent-requested restart over real runners (docs/321)", () => {
       first.dispatch(testDispatch({ text: "sent in the gap" }));
     };
     endTurn(agents[0]!);
-    await waitForTurn(() => agents.length === 2, "the follow-up turn");
+    await waitForTurn(() => agents.length === 2, "the kept message's turn");
 
     const second = registry.get(SESSION)!;
-    expect(second.messageQueue.map((m) => m.text)).toEqual(["sent in the gap"]);
+    expect(second.messageQueue.map((m) => m.text)).toEqual([buildRestartFollowupPrompt(NOTE)]);
+    await waitForTurn(() => prompts().length === 2, "kept message prompt");
+    expect(prompts()[1]).toContain("sent in the gap");
     endTurn(agents[1]!);
-    await waitForTurn(() => prompts().length === 3, "the kept message's turn");
-    expect(prompts()[2]).toContain("sent in the gap");
+    await waitForTurn(() => prompts().length === 3, "the follow-up turn");
+    expect(prompts()[2]).toContain(NOTE);
     endTurn(agents[2]!);
-    await waitForTurn(() => !second.running, "kept message settled");
+    await waitForTurn(() => !second.running, "follow-up settled");
     second.dispose({ force: true });
   });
 

@@ -1,7 +1,7 @@
 # Self-merge wake — checklist
 
-The existing merge-watch pointed back at the same session. No new column, no parallel
-manager, no chain object, no card lifecycle. If an item here looks like a subsystem,
+The existing merge-watch pointed back at the same session. No parallel manager, no chain
+object, no family of cards. If an item here looks like a subsystem,
 it has been cut — see the plan's "Resolved decisions".
 
 ## Prerequisite
@@ -14,7 +14,14 @@ it has been cut — see the plan's "Resolved decisions".
 ## Watch
 
 - [x] Optional `{ kind: "self", watchId, prNumber }` on `SessionMergeWatch`; `parentSessionId === sessionId`
-- [x] Self-arm refused when the row holds a genuine parent→child watch
+- [x] The self-watch has its own column (`self_merge_watch`); a parent's watch and the
+      session's own coexist, and one merge delivers both
+- [x] Older rows that hold a self-watch in `merge_watch` are moved on every start, so a
+      watch that the older code armed or delivered during a rollback is not read as a
+      parent's (a watch it *cancelled* is the one open case; see the plan's Storage section)
+- [x] Every arm, replacement and refusal logs with the `[merge-watch]` prefix; so does
+      every watch the manager drops and every cancel that clears one
+- [x] Replacing a watch still armed on another PR appends a persisted note
 - [x] Arming always replaces an existing self-watch, including one delivering
 
 ## Arm / cancel
@@ -28,7 +35,8 @@ it has been cut — see the plan's "Resolved decisions".
 ## Delivery
 
 - [x] Fire from `onMergeDetectedCb` after `markMergedAndPruneExcess` resolves
-- [x] Read PR facts from the persisted snapshot — no callback signature change
+- [x] Read PR facts from the merge's own terminal event, stored on the watch
+      (`mergedPr`); the persisted snapshot is the fallback — no callback signature change
 - [x] Merged PR number ≠ anchor → append a note, clear the watch, no turn
 - [x] Closed-without-merge from `onPrTerminalState` → note, clear, no turn
 - [x] `watchId` checked on asynchronous settlement
@@ -52,11 +60,16 @@ it has been cut — see the plan's "Resolved decisions".
 - [x] `orchestrator/prompts/self-merge-wake.md`: merged; run reset first; stop if it refuses; continue the earlier request unless redirected; re-arm if work remains
 - [x] Arm card via `emitChatCard`, with Cancel
 - [x] Notes (not cards) for closed / mismatch / delivery failure
+- [x] The arm card records why its watch is gone (`ended`: merged, wake-failed, closed,
+      other-pr-merged, cancelled, replaced), shows it, and offers no Cancel — live and
+      after a reload
 
 ## Tests
 
 - [x] Arm refused with no open PR; live lookup after `gh pr create` anchors to the new PR
 - [x] Arm card persists and round-trips; stale-`watchId` Cancel doesn't cancel a newer watch
+- [x] Arm card end: each end is written, sent to live viewers and read back from history;
+      a card ended inside its own turn keeps the end; a failed card update stops nothing
 - [x] Fires after merge bookkeeping
 - [x] Anchor mismatch → note, no turn
 - [x] Closed-without-merge → note, no turn

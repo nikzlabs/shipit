@@ -1,5 +1,6 @@
 import type { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "./session-runner.js";
+import { isAgentWorking } from "./session-runner.js";
 import type { DockerMemoryStats } from "../shared/types.js";
 import type { LogSource } from "../shared/types.js";
 import { bytesOverBudget } from "./memory-pressure.js";
@@ -8,6 +9,7 @@ import type { SessionManager } from "./sessions.js";
 import { holdsActiveReservation } from "./sessions.js";
 import { doneSessionTest } from "../shared/session-resolution.js";
 import { isShipItOwnSession } from "./shipit-own-sessions.js";
+import type { IdleCompaction, WokenSession } from "./services/idle-compaction.js";
 
 export interface IdleServiceHooks {
   liveSessions: () => string[];
@@ -25,6 +27,8 @@ export interface IdleEnforcementDeps {
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   /** Each repo's current pool warm session; without it, drafts cannot be told apart and are left alone. */
   poolWarmSessionIds?: () => ReadonlySet<string>;
+  /** docs/333-idle-compaction — sessions that wait for their idle compaction are stopped last, compacted first. */
+  idleCompaction?: Pick<IdleCompaction, "isWaiting" | "fire" | "wokenSessions" | "forgetWoken" | "isStarting">;
 }
 
 // docs/316-done-sessions-return-memory req 4 — time to continue work first.
@@ -36,6 +40,8 @@ interface Candidate {
   sessionId: string;
   runner: SessionRunnerInterface | undefined;
   idleSince: number;
+  /** docs/333-idle-compaction req 8 — stopped after every session that does not wait. */
+  waitsForCompaction?: boolean;
 }
 
 // Run from memory-pressure or periodic checks, never directly from a WebSocket close.
@@ -44,10 +50,13 @@ export function createIdleEnforcer(
 ): () => void {
   const {
     containerManager, runnerRegistry, sessionManager, getMemoryStats,
-    services, sseBroadcast, broadcastLog, poolWarmSessionIds,
+    services, sseBroadcast, broadcastLog, poolWarmSessionIds, idleCompaction,
   } = enforceDeps;
 
   const tier1At = new Map<string, number>();
+  // docs/333-idle-compaction req 8 — compacting before their stop; their memory is already
+  // counted. What the fire saw, so that any later use of the session is seen.
+  const compactingToReclaim = new Map<string, { containerId: string; detachedAt: number; turnEpoch: number }>();
   // The first pass that saw each session done.
   const doneWaitFrom = new Map<string, number>();
   // The first pass that saw each draft without a viewer.
@@ -66,6 +75,8 @@ export function createIdleEnforcer(
     // first dictation after a quiet period would pay a container start.
     if (isShipItOwnSession(sessionId)) return false;
     if (holdsActiveReservation(sessionManager?.get(sessionId))) return false;
+    // docs/333-idle-compaction — between its wake and its dispatch no turn holds the runner yet.
+    if (idleCompaction?.isStarting(sessionId)) return false;
     if (!runner) return true;
     // agentBusy includes autonomous turns and pending background work.
     if (runner.agentBusy) return false;
@@ -74,14 +85,16 @@ export function createIdleEnforcer(
   }
 
   function byReclaimOrder(a: Candidate, b: Candidate): number {
-    return a.idleSince - b.idleSince;
+    return Number(a.waitsForCompaction ?? false) - Number(b.waitsForCompaction ?? false)
+      || a.idleSince - b.idleSince;
   }
 
   // docs/316-done-sessions-return-memory: a done session stops whatever the budget says.
   function reclaimDoneSessions(now: number): void {
     if (!containerManager || !sessionManager) return;
     const sessions = sessionManager.listAll();
-    const isDone = doneSessionTest(sessions);
+    // req 4 — so the wait starts when the agent stops, not at a merge during its turn.
+    const isDone = doneSessionTest(sessions, (id) => isAgentWorking(runnerRegistry.get(id)));
     const stillDone = new Set<string>();
     for (const session of sessions) {
       if (!isDone(session)) continue;
@@ -152,11 +165,65 @@ export function createIdleEnforcer(
     for (const id of draftWaitFrom.keys()) if (!stillWaiting.has(id)) draftWaitFrom.delete(id);
   }
 
+  // A session used since the fire — a visit, a turn after the compaction's own, a new
+  // container — is no longer on its way out.
+  function forgetUsedCompactions(): void {
+    for (const [sessionId, atFire] of compactingToReclaim) {
+      const container = containerManager?.get(sessionId);
+      const runner = runnerRegistry.get(sessionId);
+      const used = runner !== undefined && (
+        runner.viewerCount > 0
+        || runner.lastViewerDetachAt !== atFire.detachedAt
+        || runner.turnEpoch > atFire.turnEpoch + 1
+      );
+      if (used || container?.id !== atFire.containerId || containerManager?.isStandby(sessionId)) {
+        compactingToReclaim.delete(sessionId);
+      }
+    }
+  }
+
+  // The wake's runner is new, so any visit leaves a detach time; any turn but the silent
+  // compaction moves `lastUsedAt`.
+  function usedSinceWake(sessionId: string, atWake: WokenSession): boolean {
+    const runner = runnerRegistry.get(sessionId);
+    if (runner && (runner.viewerCount > 0 || runner.lastViewerDetachAt !== 0)) return true;
+    const session = sessionManager?.get(sessionId);
+    return session !== undefined && session.lastUsedAt !== atWake.lastUsedAt;
+  }
+
+  // docs/333-idle-compaction req 13 — a container an idle compaction started is stopped again
+  // once the compaction is over, whatever the budget, unless the session was used meanwhile.
+  function stopWokenSessions(): void {
+    if (!idleCompaction || !containerManager) return;
+    for (const [sessionId, atWake] of idleCompaction.wokenSessions()) {
+      if (idleCompaction.isStarting(sessionId)) continue;
+      const runner = runnerRegistry.get(sessionId);
+      // A container still being created has no record yet.
+      const gone = !containerManager.get(sessionId) && !runner?.awaitingContainer;
+      if (usedSinceWake(sessionId, atWake) || gone || containerManager.isStandby(sessionId)) {
+        idleCompaction.forgetWoken(sessionId);
+        continue;
+      }
+      // The compaction, or its post-turn lease, still holds the session.
+      if (!containerManager.get(sessionId) || !isReclaimable(sessionId, runner)) continue;
+      // Disposal stops the preview services the runner holds, unless they ran before the wake.
+      const keepsPreview = atWake.previewBefore && !!services?.has(sessionId);
+      if (!disposeRunner(sessionId, runner, keepsPreview)) continue;
+      idleCompaction.forgetWoken(sessionId);
+      if (keepsPreview) tier1At.set(sessionId, Date.now());
+      else tier1At.delete(sessionId);
+      console.log(`[idle-cleanup] Stopping the agent container started for the idle compaction of ${sessionId}`);
+      destroyAgentOnly(sessionId);
+    }
+  }
+
   return () => {
     if (!containerManager) return;
 
+    forgetUsedCompactions();
     if (teardownsInFlight === 0) reclaimDoneSessions(Date.now());
     if (teardownsInFlight === 0) reclaimAbandonedDrafts(Date.now());
+    if (teardownsInFlight === 0) stopWokenSessions();
 
     const stats = getMemoryStats?.() ?? null;
     let need = bytesOverBudget(stats);
@@ -190,13 +257,45 @@ export function createIdleEnforcer(
       if (!measured) { shortfallIsStale = true; break; }
     }
 
+    // docs/333-idle-compaction req 8 — while its compaction runs, a session's memory counts as on
+    // its way back; once it is over, the session is stopped first while memory is still short,
+    // and forgotten when it no longer is. Either way tier 1 below must not count it again.
+    const compactedThisPass = new Set(compactingToReclaim.keys());
+    const compacted: string[] = [];
+    for (const sessionId of compactedThisPass) {
+      if (isReclaimable(sessionId, runnerRegistry.get(sessionId))) compacted.push(sessionId);
+      else need -= usage[sessionId]?.agentBytes ?? 0;
+    }
+    for (const sessionId of compacted) {
+      if (need <= 0 || shortfallIsStale) {
+        compactingToReclaim.delete(sessionId);
+        continue;
+      }
+      const runner = runnerRegistry.get(sessionId);
+      const stopped = stopAgentContainer({ sessionId, runner, idleSince: runner?.lastViewerDetachAt ?? 0 }, now, usage);
+      if (!stopped) {
+        need -= usage[sessionId]?.agentBytes ?? 0;
+        continue;
+      }
+      compactingToReclaim.delete(sessionId);
+      need -= stopped.freed;
+      reclaimedSomething = true;
+      if (!stopped.measured) shortfallIsStale = true;
+    }
+
     // Stop idle agent containers before stopping any claimed session's preview.
     const tier1: Candidate[] = [];
     for (const sc of containerManager.getAll()) {
       if (containerManager.isStandby(sc.sessionId)) continue;
+      if (compactedThisPass.has(sc.sessionId)) continue;
       const runner = runnerRegistry.get(sc.sessionId);
       if (!isReclaimable(sc.sessionId, runner)) continue;
-      tier1.push({ sessionId: sc.sessionId, runner, idleSince: runner?.lastViewerDetachAt ?? 0 });
+      tier1.push({
+        sessionId: sc.sessionId,
+        runner,
+        idleSince: runner?.lastViewerDetachAt ?? 0,
+        waitsForCompaction: idleCompaction?.isWaiting(sc.sessionId) ?? false,
+      });
     }
     tier1.sort(byReclaimOrder);
 
@@ -205,41 +304,32 @@ export function createIdleEnforcer(
       const runner = runnerRegistry.get(c.sessionId);
       if (!isReclaimable(c.sessionId, runner)) continue;
 
-      const keepsPreview = !!services?.has(c.sessionId);
-      if (keepsPreview && runner) {
-        (runner as SessionRunnerInterface & { preserveComposeOnDispose?: boolean })
-          .preserveComposeOnDispose = true;
-      }
-
-      // Disposal can refuse; destroy only after it accepts.
-      runnerRegistry.dispose(c.sessionId);
-      if (runner && !runner.disposed) {
+      if (c.waitsForCompaction && idleCompaction) {
+        // Its bytes count now, so one pass compacts only as many sessions as the shortfall needs.
+        compactingToReclaim.set(c.sessionId, {
+          containerId: containerManager.get(c.sessionId)?.id ?? "",
+          detachedAt: runner?.lastViewerDetachAt ?? 0,
+          turnEpoch: runner?.turnEpoch ?? 0,
+        });
+        const measured = usage[c.sessionId];
+        need -= measured?.agentBytes ?? 0;
+        reclaimedSomething = true;
         console.log(
-          `[idle-cleanup] Skipping container destroy for session ${c.sessionId}`
-          + ` — runner declined disposal (still holds live work)`,
+          `[idle-cleanup] Compacting session ${c.sessionId} before stopping its agent container`
+          + ` (over budget; it waits for its idle compaction)`,
         );
-        if (keepsPreview && runner) {
-          (runner as SessionRunnerInterface & { preserveComposeOnDispose?: boolean })
-            .preserveComposeOnDispose = false;
-        }
+        void idleCompaction.fire(c.sessionId).catch((err: unknown) => {
+          console.error(`[idle-cleanup] the compaction of ${c.sessionId} failed:`, getErrorMessage(err));
+        });
+        if (!measured) { shortfallIsStale = true; break; }
         continue;
       }
 
-      const measured = usage[c.sessionId];
-      const freed = measured?.agentBytes ?? 0;
-      need -= freed;
+      const stopped = stopAgentContainer(c, now, usage);
+      if (!stopped) continue;
+      need -= stopped.freed;
       reclaimedSomething = true;
-      if (keepsPreview) tier1At.set(c.sessionId, now);
-      const idleMs = c.idleSince > 0 ? Math.max(0, now - c.idleSince) : undefined;
-      console.log(
-        `[idle-cleanup] Stopping agent container for session ${c.sessionId}`
-        + ` (over budget, freed≈${Math.round(freed / 1024 / 1024)}MB,`
-        + ` preview=${keepsPreview ? "kept" : "none"}`
-        + `${idleMs !== undefined ? ` idleMs=${idleMs}` : ""})`,
-      );
-      announce(c.sessionId, keepsPreview ? "agent-reclaimed" : "memory-pressure", idleMs, runner?.queueLength ?? 0);
-      destroyAgentOnly(c.sessionId);
-      if (!measured) { shortfallIsStale = true; break; }
+      if (!stopped.measured) { shortfallIsStale = true; break; }
     }
 
     if (need > 0 && !shortfallIsStale && services) {
@@ -280,6 +370,47 @@ export function createIdleEnforcer(
       );
     }
   };
+
+  // Disposal can refuse; destroy only after it accepts. Null when it refused.
+  function stopAgentContainer(
+    c: Candidate,
+    now: number,
+    usage: NonNullable<DockerMemoryStats["bySession"]>,
+  ): { freed: number; measured: boolean } | null {
+    const runner = runnerRegistry.get(c.sessionId);
+    const keepsPreview = !!services?.has(c.sessionId);
+    if (!disposeRunner(c.sessionId, runner, keepsPreview)) {
+      console.log(
+        `[idle-cleanup] Skipping container destroy for session ${c.sessionId}`
+        + ` — runner declined disposal (still holds live work)`,
+      );
+      return null;
+    }
+
+    const measured = usage[c.sessionId];
+    const freed = measured?.agentBytes ?? 0;
+    if (keepsPreview) tier1At.set(c.sessionId, now);
+    const idleMs = c.idleSince > 0 ? Math.max(0, now - c.idleSince) : undefined;
+    console.log(
+      `[idle-cleanup] Stopping agent container for session ${c.sessionId}`
+      + ` (over budget, freed≈${Math.round(freed / 1024 / 1024)}MB,`
+      + ` preview=${keepsPreview ? "kept" : "none"}`
+      + `${idleMs !== undefined ? ` idleMs=${idleMs}` : ""})`,
+    );
+    announce(c.sessionId, keepsPreview ? "agent-reclaimed" : "memory-pressure", idleMs, runner?.queueLength ?? 0);
+    destroyAgentOnly(c.sessionId);
+    return { freed, measured: measured !== undefined };
+  }
+
+  // False when the runner declined disposal.
+  function disposeRunner(sessionId: string, runner: SessionRunnerInterface | undefined, keepsPreview: boolean): boolean {
+    type Preserving = SessionRunnerInterface & { preserveComposeOnDispose?: boolean };
+    if (keepsPreview && runner) (runner as Preserving).preserveComposeOnDispose = true;
+    runnerRegistry.dispose(sessionId);
+    if (!runner || runner.disposed) return true;
+    if (keepsPreview) (runner as Preserving).preserveComposeOnDispose = false;
+    return false;
+  }
 
   function announce(
     sessionId: string,

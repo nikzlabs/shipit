@@ -759,6 +759,10 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
   }
 
   function spec(scopeHash: string, generation: number): DepDirOverlaySpec {
+    const sessionScopeDir = fs.mkdtempSync(path.join(os.tmpdir(), "prestamp-layer-"));
+    tmpDirs.push(sessionScopeDir);
+    const upperdir = path.join(sessionScopeDir, `g${generation}`, "upper");
+    fs.mkdirSync(upperdir, { recursive: true });
     return {
       volumeName: `shipit-x_overlay-${scopeHash.slice(0, 8)}`,
       lowerdir: `/mp/overlay-base/${scopeHash}/g${generation}`,
@@ -769,6 +773,12 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
       scope: { repoUrl: "r", runtimeKey: "rt", depDir: "node_modules" },
       scopeHash,
       generation,
+      orchDirs: {
+        lowerdir: path.join(sessionScopeDir, "lower"),
+        upperdir,
+        workdir: path.join(sessionScopeDir, `g${generation}`, "work"),
+        sessionScopeDir,
+      },
     };
   }
 
@@ -1021,6 +1031,52 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
         pointer("f".repeat(40), 3, { runtimeKey: WORKER_RT, installCommands: ["pnpm install"], depsHash }),
     });
     expect(ok).toBe(false);
+  });
+
+  // A killed install leaves its partial tree in the session's upper with no marker; stamping over
+  // it skips the install that would repair it.
+  it("refuses to stamp when any mounted dep dir's upper holds files, whatever its kind", async () => {
+    const { dir, head } = await gitWorkspace();
+    fs.writeFileSync(
+      path.join(dir, "shipit.yaml"),
+      "agent:\n  install:\n    - npm install\n  dep-dirs:\n    - node_modules\n    - .venv\n",
+    );
+    const ptr = pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] });
+    const venv = (): DepDirOverlaySpec => ({ ...spec("h2", 3), depDir: ".venv", mountPath: "/workspace/.venv" });
+    const cleanVenv = venv();
+    const usedVenv = venv();
+    fs.mkdirSync(path.join(usedVenv.orchDirs!.upperdir, "lib"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // Control: the same inputs over empty uppers do stamp.
+    expect(await preStampInstallMarker({
+      stateDir: "/state", workspaceDir: dir, specs: [spec("h1", 3), cleanVenv], readPointer: () => ptr,
+    })).toBe(true);
+    fs.rmSync(markerPathFor(dir));
+
+    expect(await preStampInstallMarker({
+      stateDir: "/state", workspaceDir: dir, specs: [spec("h1", 3), usedVenv], readPointer: () => ptr,
+    })).toBe(false);
+    expect(fs.existsSync(markerPathFor(dir))).toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("own layer for .venv already holds"));
+    warn.mockRestore();
+  });
+
+  it("refuses to stamp when it cannot inspect the session's upper", async () => {
+    const { dir, head } = await gitWorkspace();
+    const ptr = pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] });
+    const { orchDirs: _orchDirs, ...withoutOrchDirs } = spec("h1", 3);
+    const missingUpper = spec("h1", 3);
+    fs.rmSync(missingUpper.orchDirs!.upperdir, { recursive: true });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    for (const s of [withoutOrchDirs, missingUpper]) {
+      expect(await preStampInstallMarker({
+        stateDir: "/state", workspaceDir: dir, specs: [s], readPointer: () => ptr,
+      })).toBe(false);
+    }
+    expect(fs.existsSync(markerPathFor(dir))).toBe(false);
+    warn.mockRestore();
   });
 
   it("requires EVERY dep dir's pointer to match (one cold scope blocks the stamp)", async () => {

@@ -190,6 +190,60 @@ describe("FileTree", () => {
     expect(onAddToChat).toHaveBeenCalledWith("/uploads/data.csv");
   });
 
+  describe("/persist section", () => {
+    const persistTree: FileTreeNode[] = [
+      {
+        name: "notes",
+        path: "/persist/notes",
+        type: "directory",
+        children: [{ name: "plan.md", path: "/persist/notes/plan.md", type: "file" }],
+      },
+      { name: "chart.html", path: "/persist/chart.html", type: "file" },
+    ];
+
+    it("is absent when /persist is empty", () => {
+      render(<FileTree tree={sampleTree} persistTree={[]} onRefresh={() => {}} />);
+      expect(screen.queryByText("/persist")).not.toBeInTheDocument();
+    });
+
+    it("opens and downloads /persist files by their absolute path", () => {
+      const onFileClick = vi.fn();
+      const onDownload = vi.fn();
+      render(
+        <FileTree tree={sampleTree} persistTree={persistTree} onRefresh={() => {}} onFileClick={onFileClick} onDownload={onDownload} />,
+      );
+      expect(screen.getByText("/persist")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText("notes"));
+      fireEvent.click(screen.getByText("plan.md"));
+      expect(onFileClick).toHaveBeenCalledWith("/persist/notes/plan.md");
+
+      fireEvent.click(screen.getByLabelText("Download chart.html"));
+      expect(onDownload).toHaveBeenCalledWith("/persist/chart.html");
+    });
+
+    it("adds /persist files to chat by their absolute path, and offers no edit", () => {
+      const onAddToChat = vi.fn();
+      render(
+        <FileTree tree={sampleTree} persistTree={persistTree} onRefresh={() => {}} onEdit={() => {}} onAddToChat={onAddToChat} />,
+      );
+      expect(screen.queryByLabelText("Edit chart.html")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByLabelText("Add chart.html to chat"));
+      expect(onAddToChat).toHaveBeenCalledWith("/persist/chart.html");
+
+      const setData = vi.fn();
+      fireEvent.dragStart(screen.getByText("chart.html").closest("[draggable]")!, { dataTransfer: { setData } });
+      expect(setData).toHaveBeenCalledWith("application/x-shipit-file", JSON.stringify({ path: "/persist/chart.html" }));
+    });
+
+    it("shows /persist when the workspace is still empty", () => {
+      render(<FileTree tree={[]} persistTree={persistTree} onRefresh={() => {}} />);
+      expect(screen.queryByText("No files in /workspace yet.")).not.toBeInTheDocument();
+      expect(screen.getByText("chart.html")).toBeInTheDocument();
+    });
+  });
+
   it("keeps rows compact and lets hover action buttons overflow (-my-1) instead of growing the row", () => {
     const uploads = [
       { id: "1", name: "data.csv", status: "ready" as const, path: "/uploads/data.csv", size: 100, progress: 100 },

@@ -95,6 +95,23 @@ describe("the CLI's NDJSON stream, replayed from the vendored 1.x captures", () 
     expect(acc.tokens).toEqual({ input: 10, output: 5, cacheRead: 100, thinking: 0 });
   });
 
+  it("lists each step once, summing exactly to the turn's totals (docs/329-tiered-model-pricing)", () => {
+    const acc = new AntigravityUsageAccumulator();
+    const usage = { input_tokens: 10, output_tokens: 5, total_tokens: 15, cache_read_tokens: 100 };
+    acc.observe({ step_index: 1, state: "ACTIVE", usage });
+    acc.observe({ step_index: 1, state: "DONE", usage });
+    expect(acc.requests).toEqual([{ input: 10, output: 5, cacheRead: 100 }]);
+
+    for (const name of ["plugin-mcp.ndjson", "compact-b.ndjson"]) {
+      const turn = sumTurn(name);
+      const sum = (field: "input" | "output" | "cacheRead") =>
+        turn.requests.reduce((n, r) => n + (r[field] ?? 0), 0);
+      expect(sum("input"), name).toBe(turn.tokens!.input);
+      expect(sum("output"), name).toBe(turn.tokens!.output);
+      expect(sum("cacheRead"), name).toBe(turn.tokens!.cacheRead);
+    }
+  });
+
   it("reports no tokens at all when the stream carried none, rather than zeros", () => {
     expect(new AntigravityUsageAccumulator().tokens).toBeUndefined();
   });

@@ -1,5 +1,6 @@
 
 import type { ToolDescriptor } from "./types.js";
+import { MAX_BUG_REPORT_BODY_LENGTH, MAX_BUG_REPORT_TITLE_LENGTH } from "../../shared/bug-report-limits.js";
 
 const TOOL_DESCRIPTION = [
   "Propose a bug report about ShipIt ITSELF (the IDE/platform — e.g. the preview",
@@ -17,6 +18,9 @@ const TOOL_DESCRIPTION = [
   "issue number and URL on a confirmation or a decline on a cancellation. So don't",
   "ask the user how a card was resolved. Delivery is best-effort: treat a report",
   "you have heard nothing about as probably, not certainly, still pending.",
+  `A title above ${MAX_BUG_REPORT_TITLE_LENGTH} characters or a body above`,
+  `${MAX_BUG_REPORT_BODY_LENGTH.toLocaleString("en-US")} characters is refused and no card is posted: quote`,
+  "only the log lines that show the problem, not a whole log.",
 ].join(" ");
 
 const inputSchema = {
@@ -25,11 +29,13 @@ const inputSchema = {
     title: {
       type: "string",
       minLength: 1,
+      maxLength: MAX_BUG_REPORT_TITLE_LENGTH,
       description: "A short, specific issue title summarizing the ShipIt bug.",
     },
     body: {
       type: "string",
       minLength: 1,
+      maxLength: MAX_BUG_REPORT_BODY_LENGTH,
       description:
         "The report body: what happened and how to reproduce it, in the user's words. This is redacted server-side before the user reviews it.",
     },

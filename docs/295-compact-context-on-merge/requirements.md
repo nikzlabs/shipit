@@ -31,11 +31,14 @@ later turn, and the agent reads them as live work in progress.
    percentage of the window.
 
 4. When the control is ticked and the user sends the message, the agent's
-   context is compacted before the turn runs.
+   context is compacted before the turn runs, if the context is large enough
+   (requirement 15).
 
-5. The user can untick the control. The untick applies to that one message. The
-   next merged session that continues shows the control ticked again. This
-   matches the sibling control in docs/218.
+5. The user can untick the control. The choice is kept for the session: after
+   the session's next pull request merges, the control shows the choice that
+   the user made last, and it does not tick itself again. A new session starts
+   ticked (requirement 2). The sibling control of docs/218 is not changed by
+   this: its untick still applies to one message.
 
 6. The two controls are independent. Each one governs only its own action, and
    the state of one does not change what the other does.
@@ -67,11 +70,44 @@ later turn, and the agent reads them as live work in progress.
 
 13. A continuation that the user did not type also compacts, under the same
     setting and in the same conditions in which its branch is reset. It has no
-    checkbox, so the setting alone decides.
+    checkbox, so the setting decides, together with the session's own choice
+    (requirement 17). Requirement 14 takes a message from an agent-built page
+    out of this rule.
+
+14. A message that a page built by the agent sends to the agent, from the
+    Preview or the Present tab, obeys the two composer controls as a typed
+    message does. When the user unticked a control, that message does not do
+    that action. An untick of "Start from the latest base" is used up by that
+    message; an untick of the compaction stays (requirement 5). A continuation that
+    starts with no ShipIt view in front of the user — a wake turn after a
+    merge, a message from another session — stays under requirement 13.
+
+15. A continuation does not compact when the agent's context is smaller than
+    200,000 tokens. This applies when the control of requirements 1 to 3 is
+    ticked, and to a continuation that has no checkbox (requirement 13). Its
+    branch is still reset. The control is still offered whatever the size of
+    the context (requirement 3). Under that size, only a `/compact` that the
+    user sends compacts the context. The 200,000 tokens are the same minimum as
+    docs/333-idle-compaction req 6 and docs/324-agent-requested-compaction
+    req 12.
+
+16. The user can also see and change the session's compaction choice of
+    requirement 5 in the pull request card's menu. The menu and the composer
+    control show the same choice, and a change in one shows in the other.
+
+17. When the user turned the compaction off for the session (requirement 5), a
+    continuation that has no checkbox (requirement 13) — a wake turn after a
+    merge, a message from another session — does not compact either.
+
+18. When the context is smaller than the minimum of requirement 15, the
+    composer shows a short hint by the compaction control. The hint says that
+    the context is under 200,000 tokens, so no compaction runs, and that a
+    `/compact` that the user sends still compacts. The control itself is still
+    offered (requirement 3).
 
 ## Requirement provenance
 
-Requirements 1 to 6, 11 and 13 come from what the user asked for and decided.
+Requirements 1 to 6, 11 and 13 to 18 come from what the user asked for and decided.
 Requirements 7 to 10 and 12 were not asked for: each one keeps a guarantee that
 already ships (docs/218 for the merge notice, docs/178 for how a compaction
 appears and for the `/compact` boundary) from becoming weaker. They are recorded
@@ -111,3 +147,58 @@ None.
   offered and rejected: it would split programmatic continuations into two
   classes that docs/218 treats as one, and the two gates could then disagree.
   Recorded as requirement 13.
+
+- **2026-10-11 — The user unticked "Compact the context", then a message from
+  an agent-built page compacted the context. What must a message that the user
+  did not type do on a merged session?** A click in an agent-built page uses
+  the composer's tick state and spends it, the same as a button on a ShipIt
+  card. A wake turn and a session message have no view, so they keep the global
+  setting. This changes the 2026-09-07 answer above for one of its three
+  examples: the click inside an agent-built page. The user also saw a
+  compaction on a merge event and on a message from another session; the answer
+  keeps the setting for those two. "The composer's tick state" is both
+  controls, so the same message also obeys "Start from the latest base".
+  Recorded as requirement 14.
+
+- **2026-10-12 — A session that watches its own pull request is compacted when
+  the merge wakes it, and nothing can turn that off. What must happen when the
+  session was compacted not long before?** The user: "A simple solution would be
+  just not compact if the context is <50k." Recorded as requirement 15, for the
+  continuations that have no checkbox, which is where the user saw the problem.
+  The 2026-09-07 answer above rejected a *percentage* gate on the control,
+  because a percentage is model-dependent; this is an absolute floor, and it
+  does not gate the control, so requirement 3 stands. Whether the floor must
+  also apply where the checkbox is shown was not asked.
+
+- **2026-10-17 — Must an untick of the compaction apply to one message, as
+  requirement 5 said?** No. The user: "make 'compact context' setting
+  persistent per session, i.e. not toggle back to 'yes' when a new pr is
+  merged. Should be also editable via the PR card menu." Requirement 5 now
+  keeps the choice for the session, requirement 14 no longer uses up the
+  compaction untick, and requirement 16 adds the menu. Only the compaction
+  control was named, so the branch-reset untick still applies to one message.
+
+- **2026-10-17 — Does the session's compaction choice also govern a
+  continuation that has no checkbox — a wake turn after a merge, a message from
+  another session?** Yes. Offered "they skip it too" or "only my messages", the
+  user chose "Yes, they skip it too". Recorded as requirement 17, and
+  requirement 13 now names it. This gives the wake turn of the 2026-10-12
+  answer above the off switch that answer said it lacked.
+
+- **2026-10-24 — Must the floor of requirement 15 also apply where the checkbox
+  is shown, the case the 2026-10-12 answer left unasked?** Yes, and the floor
+  is 200,000 tokens. The user: "let's have a single value of 200k for
+  compaction threshold: auto-compaction would always not do anything if the
+  threshold is not reached, even if the 'compact' checkbox is ticked. The only
+  way to compact in this case would be an explicit '/compact' command."
+  Requirement 15 now applies to every continuation at 200,000 tokens, and
+  requirement 4 names it. Requirement 3 stands: the floor gates the
+  compaction, not the control. The same minimum now governs
+  docs/324-agent-requested-compaction (its req 12) and was already
+  docs/333-idle-compaction req 6.
+
+- **2026-10-24 — The user approved the offered follow-up "Show a hint by
+  Compact the context under 200K":** a hint by the control, when the context
+  is under the minimum, that says no compaction runs and that `/compact`
+  still compacts. An instruction, not an answer to an open question; recorded
+  here as its receipt. Requirement 18 added.

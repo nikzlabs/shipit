@@ -237,14 +237,14 @@ describe("model selection seed (docs/252)", () => {
   });
 
   it("migrates a legacy bare id in place on first read", () => {
-    localStorage.setItem(KEY, "gpt-5.6-sol");
+    localStorage.setItem(KEY, "gpt-6.1-sol");
     expect(getSavedModelSelection()).toEqual({
       serviceId: "openai",
       billingMode: "sub",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
     });
 
-    expect(localStorage.getItem(KEY)).toBe("openai:sub:gpt-5.6-sol");
+    expect(localStorage.getItem(KEY)).toBe("openai:sub:gpt-6.1-sol");
   });
 
   it("leaves a legacy id the catalogue cannot place readable and unmigrated", () => {
@@ -273,7 +273,7 @@ describe("model selection seed (docs/252)", () => {
     expect(getSavedModelSelection()).toBeUndefined();
 
     localStorage.clear();
-    saveModelSelection({ serviceId: "obsolete", billingMode: "key", modelId: "gpt-5.6-sol" });
+    saveModelSelection({ serviceId: "obsolete", billingMode: "key", modelId: "gpt-6.1-sol" });
     expect(localStorage.getItem(KEY)).toBeNull();
   });
 

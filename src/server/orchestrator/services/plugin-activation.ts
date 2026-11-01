@@ -9,6 +9,7 @@ import {
   type ValidateStagedGeneration,
 } from "../plugin-generations.js";
 import { releaseSessionGenerationHolds } from "../plugin-leases.js";
+import { dropIdlePluginNetns } from "../plugin-netns-pool.js";
 import {
   createPluginImportResolver,
   preparePluginState,
@@ -164,6 +165,7 @@ export function recordPluginServiceFailures(
 export function clearActivationState(sessionId: string): void {
   epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
   releaseSessionGenerationHolds(sessionId);
+  dropIdlePluginNetns(sessionId);
   for (const key of [...activationState.keys()]) {
     if (key.startsWith(`${sessionId}::`)) activationState.delete(key);
   }

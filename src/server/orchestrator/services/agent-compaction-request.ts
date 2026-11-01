@@ -5,13 +5,14 @@ import type { AgentId } from "../../shared/types.js";
 import { getAgentCapabilities } from "../../shared/agent-registry.js";
 import { GLOBAL_SETTINGS } from "../../shared/settings-catalogue/global-settings.js";
 import { settingPath } from "../../shared/settings-catalogue/tabs.js";
+import { AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS } from "../../shared/compaction-threshold.js";
 import type { PendingCompaction, SessionManager } from "../sessions.js";
 import type { PersistedMessage } from "../chat-history.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 import { DISPATCH_SETUP_FAILURE, toQueuedMessage } from "../session-runner.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import type { TurnHandle, TurnOutcome } from "../turn-settlement.js";
-import { systemTurnBlockedByResidentWork } from "../turn-admission.js";
+import { residentBackgroundWork } from "../turn-admission.js";
 import { stoppedByUser } from "../turn-stop-request.js";
 import { reconcileRunnerAgent } from "../reconcile-runner-agent.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
@@ -26,6 +27,7 @@ import { ServiceError } from "./types.js";
 const INSTRUCTIONS = loadPrompt(import.meta.url, "../prompts/agent-compaction-instructions.md").trim();
 const NOTE = loadPrompt(import.meta.url, "../prompts/agent-compaction-note.md").trim();
 const NOT_STARTED = loadPrompt(import.meta.url, "../prompts/agent-compaction-not-started.md").trim();
+const UNDER_MINIMUM = loadPrompt(import.meta.url, "../prompts/agent-compaction-under-minimum.md").trim();
 const COMPACTION_ACTIVITY = "Compacting context…";
 const FOLLOWUP_ACTIVITY = "Continuing after the compaction…";
 const MAX_CHARS = 4000;
@@ -47,10 +49,13 @@ export interface CompactionRequestDeps {
 export function recordCompactionRequest(
   deps: CompactionRequestDeps,
   sessionId: string,
-  body: { instructions?: unknown; note?: unknown },
+  body: { instructions?: unknown; note?: unknown; userAsked?: unknown },
 ): { requested: true; continues: boolean } {
   const instructions = optionalText(body.instructions, "instructions");
   const note = optionalText(body.note, "note");
+  if (body.userAsked !== undefined && typeof body.userAsked !== "boolean") {
+    throw new ServiceError(400, "userAsked must be true or false.");
+  }
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
   if (!deps.isEnabled()) throw new ServiceError(403, AGENT_COMPACTION_OFF);
@@ -64,6 +69,7 @@ export function recordCompactionRequest(
   deps.sessionManager.setPendingCompaction(sessionId, {
     ...(instructions !== undefined ? { instructions } : {}),
     ...(note !== undefined ? { note } : {}),
+    ...(body.userAsked === true ? { userAsked: true as const } : {}),
   });
   return { requested: true, continues: note !== undefined };
 }
@@ -99,6 +105,8 @@ export interface CompactionStepDeps {
   runnerRegistry: Pick<SessionRunnerRegistry, "get">;
   chatHistoryManager: { append(sessionId: string, message: PersistedMessage): unknown };
   isEnabled: () => boolean;
+  /** `UsageManager.latestContextTokens`, which by now has the requesting turn's row. */
+  getContextTokens: (sessionId: string) => number | undefined;
 }
 
 /**
@@ -106,11 +114,11 @@ export interface CompactionStepDeps {
  * nothing unless the agent asked for a compaction; leaves the request pending while another
  * turn or flow has the session, so the next turn's end retries it.
  *
- * The compaction is the docs/295 silent system turn, and what follows it is fixed BEFORE it
+ * The compaction is the docs/295 silent turn, and what follows it is fixed BEFORE it
  * starts: the instructions are parked as a notice, which the compaction does not consume and
- * the next turn does, and the continuation goes to the queue's head, which the compaction's
- * own drain takes. Neither waits for the compaction to settle: queued work drains at the
- * result, before settlement.
+ * the next turn does, and the continuation goes to the queue's head. The compaction's own
+ * drain takes it, after any message the user queued meanwhile. Neither waits for the
+ * compaction to settle: queued work drains at the result, before settlement.
  */
 export async function runRequestedCompaction(
   deps: CompactionStepDeps,
@@ -123,19 +131,18 @@ export async function runRequestedCompaction(
   // req 10 — covers a request that landed after the Stop; the Stop handlers cover the rest.
   if (stoppedByUser(runner)) deps.sessionManager.dropPendingCompactionNote(sessionId);
 
-  const busy = busyReason(runner, turn);
+  const busy = busyReason(runner);
   if (busy) {
     console.log(`[agent-compaction] ${sessionId}: ${busy}; the compaction waits for the next turn's end`);
     return;
   }
-  // Settle the ending turn while the runner still describes it: the compaction resets that
-  // state, and a system turn's own hold would keep the compaction out.
+  // Settle the ending turn while the runner still describes it: the compaction resets that state.
   try {
     turn.settle();
   } catch (err) {
     console.error(`[agent-compaction] settling the ending turn of ${sessionId} threw:`, getErrorMessage(err));
   }
-  if (runner.running || runner.systemTurnInProgress) {
+  if (runner.running || runner.sessionHold) {
     console.log(`[agent-compaction] ${sessionId}: queued work started; the compaction waits for its end`);
     return;
   }
@@ -160,6 +167,12 @@ export async function runRequestedCompaction(
     notStarted(deps, runner, request, "this session cannot start a turn of its own");
     return;
   }
+  // req 12, which a compaction the user asked for skips (req 13); an unknown size compacts.
+  const context = request.userAsked ? undefined : deps.getContextTokens(sessionId);
+  if (context !== undefined && context < AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS) {
+    skipUnderMinimum(deps, runner, request, context);
+    return;
+  }
 
   // req 9 — persisted, so it survives a restart, and taken by whichever turn comes next.
   if (request.instructions) parkNotice(deps, sessionId, buildInstructionsNotice(request.instructions));
@@ -176,7 +189,6 @@ export async function runRequestedCompaction(
       uploads: undefined,
       permissionMode: undefined,
       postTurn: undefined,
-      systemTurn: true,
       automatic: true,
       heldId: undefined,
       // A dispatch that fails in setup never reaches the compaction turn's own missed-card notice.
@@ -194,28 +206,36 @@ export async function runRequestedCompaction(
     return;
   }
   console.log(`[agent-compaction] compacting the context of ${sessionId}, as the agent asked (${handle.admitted})`);
-  // req 8 — right behind the compaction, so it runs next whether that completes, fails or is
-  // cut short. A started compaction has left the queue; a queued one is at its tail.
+  // req 8 — right behind the compaction, so it runs after it whether that completes, fails
+  // or is cut short. A started compaction has left the queue; a queued one is at its tail.
   if (request.note !== undefined) {
-    const entry = markCompactionContinuation(continuationEntry(deps, sessionId, request.note));
+    const entry = markCompactionContinuation(toQueuedMessage(continuationDispatch(deps, sessionId, request.note)));
     if (handle.admitted === "started") runner.messageQueue.unshift(entry);
     else runner.messageQueue.push(entry);
-    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+    runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
   }
 }
 
-function busyReason(runner: SessionRunnerInterface, turn: RequestedRestartTurn): string | null {
+/** Why a compaction cannot start on this runner now, or null. Shared with docs/333's idle compaction. */
+export function busyReason(
+  runner: SessionRunnerInterface,
+  opts: { pastAnswerHold?: boolean } = {},
+): string | null {
   if (runner.running) return "a turn is running";
   if (runner.mergeHold) return "a merge holds the session";
-  if (runner.systemTurnInProgress && !turn.ownsSystemHold()) return "another flow holds the session";
-  // docs/322 — the user answers first.
-  if (runner.awaitingUserAnswer || runner.answerHold) return "the agent waits for the user's answer";
-  return systemTurnBlockedByResidentWork(runner, true);
+  if (runner.sessionHold) return "another flow holds the session";
+  // docs/322 — the user answers first, except for an idle compaction (docs/333-idle-compaction req 12).
+  if (!opts.pastAnswerHold && (runner.awaitingUserAnswer || runner.answerHold)) {
+    return "the agent waits for the user's answer";
+  }
+  // A turn of the CLI's own could come between the compaction and its continuation.
+  const work = residentBackgroundWork(runner);
+  return work.length > 0 ? `the resident agent has background work in flight (${work.join(", ")})` : null;
 }
 
-function continuationEntry(deps: CompactionStepDeps, sessionId: string, note: string) {
+function continuationDispatch(deps: CompactionStepDeps, sessionId: string, note: string) {
   const text = buildContinuationPrompt(note);
-  return toQueuedMessage(prepareDispatch({
+  return prepareDispatch({
     text,
     agentInterface: undefined,
     execution: undefined,
@@ -225,7 +245,6 @@ function continuationEntry(deps: CompactionStepDeps, sessionId: string, note: st
     uploads: undefined,
     permissionMode: undefined,
     postTurn: undefined,
-    systemTurn: true,
     automatic: true,
     heldId: undefined,
     onTurnComplete: (outcome: TurnOutcome) => {
@@ -239,10 +258,38 @@ function continuationEntry(deps: CompactionStepDeps, sessionId: string, note: st
     deliveryId: undefined,
     dictated: undefined,
     resetMergedBranch: undefined,
-    // The context was just compacted; a merged session must not compact it again (docs/295).
+    // Compacted just now, or under the minimum (req 12): a merged session must not compact here.
     compactContext: false,
     silent: undefined,
-  }));
+  });
+}
+
+/**
+ * req 12 — nothing to compact and nothing to warn the user about. The agent learns it on its
+ * next turn, and a note still starts that turn (req 8).
+ */
+function skipUnderMinimum(
+  deps: CompactionStepDeps,
+  runner: SessionRunnerInterface,
+  request: PendingCompaction,
+  context: number,
+): void {
+  const { sessionId } = runner;
+  console.log(
+    `[agent-compaction] not compacting ${sessionId}: the context is ${context} tokens `
+    + `(minimum ${AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS})`,
+  );
+  parkNotice(deps, sessionId, `[System] ${fillPromptTokens(UNDER_MINIMUM, {
+    TOKENS: context.toLocaleString("en-US"),
+    MINIMUM: AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS.toLocaleString("en-US"),
+  })}`);
+  if (request.note === undefined) return;
+  try {
+    runner.dispatch(continuationDispatch(deps, sessionId, request.note));
+  } catch (err) {
+    console.error(`[agent-compaction] the continuation of ${sessionId} did not start:`, getErrorMessage(err));
+    parkNotice(deps, sessionId, `[System] ${buildContinuationPrompt(request.note)}`);
+  }
 }
 
 /** No compaction turn ran: tell the user, and leave the note for the next turn (req 6). */

@@ -146,6 +146,61 @@ exports:
   child that was killed by signal 9, print that it ran out of memory before
   you exit.
 
+### Your command's container is new each call; its network namespace may not be
+
+Each call starts a new container. What a call writes outside its mounts, what
+it leaves in `/tmp`, and its processes do not reach the next call; what it
+writes under `/project` and `/plugin-state` does, because those are mounts that
+outlive the container. The **network namespace** is different again: ShipIt
+keeps it for the session's next call, because building it is most of what a
+call costs to start. Two calls never use one namespace at the same time, and no
+process of an earlier call is left in it.
+
+Two things follow for a command you write:
+
+- **A command that listens on a fixed loopback port must be able to bind that
+  port again immediately**, as it must when you run it twice in a terminal. Set
+  `SO_REUSEADDR` or let the system choose the port.
+- **A call still costs a container start plus your program's own start.** When
+  an agent will call your command once for each of many items, let one call
+  accept all of them. `SHIPIT_PLUGIN_TIMING=1` on a call shows the two apart —
+  see [plugins.md → Plugin code does not run in your container](plugins.md#plugin-code-does-not-run-in-your-container).
+
+### Read stdin only when the call asks for it
+
+Your command's stdin is the caller's stdin, sent through ShipIt as it arrives.
+It is never a terminal. So `isatty(0)` cannot tell your command that input is
+on its way: it is false on every call.
+
+- **Read stdin when an argument asks for it** (`-`, `--stdin`), and not
+  otherwise. An agent's shell can give a call a stdin that stays open and
+  sends nothing. A command that reads stdin to its end on every call then
+  waits for an end that does not come, until its time limit.
+- **Read to the end of the input.** It can arrive slowly, and it can be larger
+  than one read.
+
+Output is not sent as it arrives. The caller sees what your command printed
+when it exits, so a long command shows nothing while it runs.
+
+### Your command can be killed at any moment
+
+ShipIt kills your command's container at its time limit (15 minutes), when
+its session is archived or deleted, and when its caller goes away before the
+command has its result. The last one is frequent: an agent's shell tool has a
+time limit for each call, and a call that hits it takes your command with it
+some seconds later.
+
+The kill is a SIGKILL to the whole container. No signal handler and no
+`finally` block runs, and the caller gets no output.
+
+- **Write state so that a kill leaves it usable.** Write a new file beside the
+  old one and rename it, or use a store that does this for you. Do not leave
+  the only copy half-written.
+- **Make a second run safe.** The caller sees a call that ended with no
+  result, and will often run the command again.
+- **Say in your skill how long a slow command takes**, so that an agent gives
+  the call enough time or runs it in the background.
+
 ### Your service does not choose its port
 
 An exported compose fragment **must not declare `ports:`**. A fragment that does
@@ -178,6 +233,50 @@ Two rules follow:
 The variable is **absent** when the consuming project named no port. That is not
 an error: it means nothing is previewing this service, so a worker or a database
 can simply ignore it.
+
+### Give the agent MCP tools from your service
+
+A service can carry an MCP server that ShipIt gives the agent, in the sessions of
+each project that uses your plugin. Name the service in your manifest:
+
+```yaml
+exports:
+  plugins:
+    verseshot:
+      compose: plugins/verseshot/docker-compose.yml
+      mcp:
+        service: verseshot # its name in your fragment, before a consumer's `as`
+        path: /mcp         # optional; /mcp is the default
+```
+
+- **Serve Streamable HTTP, stateless,** at `path`, on `SHIPIT_PLUGIN_PORT`,
+  bound to `0.0.0.0` — the same rules as your service's port above. It can be
+  the same server as your web UI. ShipIt sends no credentials: the server is on
+  the session's private network, as your service's API already is.
+- **The server has your plugin's name**, so its tools are
+  `mcp__verseshot__<tool>`, whatever alias a consumer imports the plugin under.
+  Your web UI can name it in a message to the agent (`window.shipit`, see
+  [agent-interface-sdk.md](agent-interface-sdk.md)) — for example "Use the
+  `verseshot` MCP server's `render` tool". So the name must be letters, digits,
+  `_` or `-`, and not `shipit` or `playwright`; another name drops the export,
+  and your repository's card says why.
+- **The consumer must give the service a port.** You cannot choose it (see
+  above), and without one ShipIt has no address for the server: the agent does
+  not get it, and the consumer's card names the key to set. Say this in your
+  README and your skill.
+- **Only tools reach the agent.** Resources, prompts and the server's
+  `instructions` do not, because ShipIt answers the agent before your service
+  is up. Put the guidance an agent needs in a skill.
+- **The agent can start first, and your service can restart.** ShipIt connects
+  when your service answers and again after a restart, and tells the agent when
+  the tool list changes. Do not depend on the agent having seen your tools at
+  any particular moment; [plugins.md](plugins.md) → A plugin's MCP server says
+  when they arrive.
+- **What a tool returns is untrusted input to the agent**, as your CLI's output
+  is. Return data, not instructions.
+
+Under `repo: self` you test it the same way: give the service a `port:` in your
+own `plugins.use` entry, and the server reaches your own agent.
 
 ### Build in `install`, and declare where the build lands — on both sides
 
@@ -413,6 +512,16 @@ is reachable from there either, so a server that imports a dependency from the
 repository root's `node_modules` finds nothing. The whole tree is mounted as
 well, at `/plugin`, for a service that would rather run from the root.
 
+**On a Docker Desktop host, your own session cannot mount a subdirectory of the
+repository.** The mount above is `plugins/web`, not the whole repository, so in
+a `repo: self` session ShipIt starts none of the repository's plugin services,
+and the repository's card in the Plugins tab gives the reason. (It withholds
+all of them because they may depend on each other.) A consumer is not affected,
+because a tracked plugin's files come from their own volume. To run the service
+in your own session there, remove the mount and use the same files under `/plugin`:
+`working_dir: /plugin/plugins/web`. That works for a consumer too, because
+`/plugin` is the whole tree there as well.
+
 ```yaml
 # docker-compose.yml
 services:
@@ -506,6 +615,8 @@ not for how a specific tool reacts.
 - No watcher, no polling, no dev server in the exported fragment.
 - No `ports:` in the exported fragment, and every server in it binds
   `SHIPIT_PLUGIN_PORT` on `0.0.0.0` rather than a port of its own.
+- An `mcp` server answers stateless Streamable HTTP at its `path`, and your
+  docs tell a consumer to give its service a port.
 - Every failure message names its precondition and is actionable by someone with
   no access to your repository.
 - The exported service's name cannot collide with a consumer's own service names

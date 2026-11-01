@@ -457,10 +457,10 @@ Environment notes, all of which cost time to discover:
 - **The index.** First query builds it and locks the database meanwhile; concurrent
   calls fail with `database is locked`. Warm it once before measuring. It lands at
   888 MB in `/workspace/.lemoncrow/workspace`, gitignored.
-- **Sub-agent spawns are capped at 3 per turn.** A 13-run experiment cannot execute in
-  one turn. A run that fails with "spawn cap reached" consumed nothing and must be
-  retried, never recorded as a result — the first attempt at this lost 12 of 13 runs
-  that way.
+- **A refused run is not a result.** A run that `shipit agent run` refuses consumed
+  nothing and must be retried, never recorded as a result — the first attempt at this
+  lost 12 of 13 runs to the cap of 3 spawns per turn that existed then (removed since:
+  the limit is now on runs in progress, docs/144-cross-agent-review).
 - **Control run.** Take a no-op agent run and subtract its `contextTokens` (47,858
   here) so fixed per-run overhead is not counted as task work.
 

@@ -5,13 +5,15 @@ import type { SessionListRow } from "./session.js";
  * docs/324-scheduled-sessions — when a schedule's runs come due (req 16). A
  * preset compiles to a cron expression (`schedule-timing.ts`); hours and
  * minutes are wall-clock times in the schedule's time zone, and `weekday`
- * counts from Sunday = 0, as cron does.
+ * counts from Sunday = 0, as cron does. `once` runs one time and does not
+ * repeat (req 34); its `date` is `YYYY-MM-DD` in the schedule's time zone.
  */
 export type ScheduleTiming =
   | { kind: "hourly"; minute: number }
   | { kind: "daily"; hour: number; minute: number }
   | { kind: "weekdays"; hour: number; minute: number }
   | { kind: "weekly"; weekday: number; hour: number; minute: number }
+  | { kind: "once"; date: string; hour: number; minute: number }
   | { kind: "cron"; expression: string };
 
 export interface Schedule {

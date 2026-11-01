@@ -1,4 +1,6 @@
 export const CONTAINER_WORKSPACE_DIR = "/workspace";
+/** The session's scratch dir (`<sessionDir>/scratch` on the host). */
+export const CONTAINER_PERSIST_DIR = "/persist";
 export const CONTAINER_SESSION_STATE_DIR = "/session-state";
 export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
 export const CONTAINER_CREDENTIALS_DIR = "/credentials";

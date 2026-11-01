@@ -7,7 +7,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sessionDir = path.join(root, "src/server/session");
 const outdir = path.join(root, "dist/mcp-bridges");
 
-const BRIDGES = ["mcp-shipit-bridge"];
+const BRIDGES = ["mcp-shipit-bridge", "mcp-service-proxy"];
 
 const t0 = performance.now();
 await build({

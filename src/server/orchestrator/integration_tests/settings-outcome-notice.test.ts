@@ -195,7 +195,7 @@ describe("a resolved settings proposal reaches the agent's next turn", () => {
 
     runner.dispatch(testDispatch({
       text: "CI is failing. Fix it.",
-      systemTurn: true,
+      automatic: true,
       onTurnComplete: (outcome) => { settled.push(outcome); },
     }));
     await waitForTurn(
@@ -225,7 +225,6 @@ describe("a resolved settings proposal reaches the agent's next turn", () => {
 
     runner.dispatch(testDispatch({
       text: "resolve the conflicts",
-      systemTurn: true,
       postTurn: "none",
       onTurnComplete: (outcome) => { settled.push(outcome); },
     }));

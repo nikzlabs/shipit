@@ -227,8 +227,9 @@ the runner never goes idle and **ShipIt cannot reclaim the container** — it ho
 a slot for hours while the session sits in the sidebar looking stuck, long after
 the PR merged. A human merge can take days; no `sleep` budget covers it.
 
-Arm an async watch and **end your turn** instead. ShipIt starts a *new* turn here
-when the PR merges:
+Arm an async watch and **end your turn** instead. ShipIt tells this session when
+the PR merges: with a *new* turn for its own PR, and with a notice in its inbox
+for a child's PR.
 
 ```sh
 shipit session notify-on-merge --self
@@ -236,7 +237,29 @@ shipit session notify-on-merge <child-id>
 ```
 
 Both return immediately (exit 0, "armed"). See [sessions.md](sessions.md) for
-what the wake-turn carries and how to chain several PRs from one session.
+what the wake-turn and the notice carry, and how to chain several PRs from one
+session.
+
+### How ShipIt syncs a branch
+
+ShipIt's Sync and its automatic updates never merge the base into a session
+branch. The PR menu's **Sync** item
+rebases an open PR's branch onto the base and force-pushes it; on a merged PR
+the same item resets the branch to the base. ShipIt also moves the branch on its
+own (read the current value with `shipit settings get <key>`):
+
+- **After a merge**, at the next turn, it resets the branch to the fresh base
+  and force-pushes (`advanced.autoResetMergedBranch`, on by default).
+- **On a conflict** with the base, it rebases the branch and gives you a turn
+  for the conflicts (`advanced.autoResolveConflicts`, off by default).
+
+Any such rewrite reconciles the Compose services and, when dependencies
+changed, re-runs `agent.install`, which stops and restarts the services that
+wait for it. An install whose inputs ShipIt cannot tell (a script or codegen
+step with no declared `install-inputs`) is not re-run; ShipIt posts a notice
+instead ([preview.md](preview.md) → Mid-session re-install). Sync is disabled while a turn runs or a
+rebase is in progress. A container restart copies the plugin skills into the
+session again ([plugins.md](plugins.md)).
 
 ### Work to do after a rebase concludes
 
@@ -262,6 +285,11 @@ conflict rounds appends rather than replaces.
 A rebase that does **not** conclude — aborted, refused, timed out — delivers
 nothing: the branch is unchanged, so there is nothing to follow up. Arming
 outside a rebase ShipIt is driving is refused for the same reason.
+
+Your agent process ends with the conflict-resolution turn, so a background job
+started in it stops there. The user can send a message into that turn as into
+any other; if they stop it, ShipIt aborts the rebase and the branch is
+unchanged.
 
 ### Images in a PR (not possible)
 
@@ -412,8 +440,30 @@ what restarted CI.
 - **The result always appears in this session's transcript**, whether it merged
   or the request ended. Do not poll for it and do not call `--auto` repeatedly to
   check; a second call only re-arms the same request.
-- **A merge and a turn never overlap.** ShipIt merges only while the session is
-  idle, and a message that arrives during the merge starts as soon as it is done.
+- **A merge and a turn never overlap: ShipIt merges only while the session is
+  idle.** Idle means all of these: no turn is running, no background command
+  and no sub-agent consult is still running, ShipIt has no work of its own in
+  progress on the branch (the commit and push after a turn, a rebase), and no
+  message is queued. A message that arrives during the merge starts as soon as
+  it is done.
+- **So do not wait for the merge — the wait is what holds it back.** A `sleep`
+  or a poll loop in the turn keeps the turn running. The same command started
+  in the background keeps the session busy after the turn ends, for as long as
+  your CLI reports it (ShipIt stops counting a background command one hour
+  after the list of them last changed). When it finishes, its completion
+  normally starts a new turn, and the merge waits for that turn too: a
+  background `sleep 1200` to "check later" delays the merge by twenty minutes.
+  Arm the request, run `shipit session notify-on-merge --self`, and end the
+  turn. A background command that was already running when you armed — a dev
+  server you started — holds the merge the same way; the answer to `--auto`
+  names it. Stop it if it is not necessary.
+- **A request that waits on a session that is not idle says so.** After two
+  minutes of that with no turn running, or ten minutes of a turn that still
+  runs, the transcript gets one notice for the request, naming what holds it.
+  The request stays armed and merges once the session is idle and the checks
+  have passed. If the turn needs the merge and
+  the session cannot become idle, `gh pr merge` without `--auto` merges inside
+  the turn once the checks are green.
 - The request survives a restart of ShipIt.
 
 In a **Sandbox** session `--auto` arms GitHub's own merge-when-green instead, as

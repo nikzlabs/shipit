@@ -162,6 +162,24 @@ describe("parseModelList", () => {
     expect(getModel(OPUS6)?.label).toBe("Opus 6");
   });
 
+  it("keeps a long-prompt tier, and drops a row whose tier is malformed (docs/329-tiered-model-pricing)", () => {
+    const longPrompt = { aboveTokens: 200_000, input: 10, output: 37.5, cacheRead: 1, cacheWrite: 12.5 };
+    const rows = [
+      { ...NEW_MODEL, price: { ...NEW_MODEL.price, longPrompt } },
+      { ...NEW_MODEL, id: "no-limit", price: { ...NEW_MODEL.price, longPrompt: { ...longPrompt, aboveTokens: 0 } } },
+      { ...NEW_MODEL, id: "bad-rate", price: { ...NEW_MODEL.price, longPrompt: { ...longPrompt, output: -1 } } },
+      { ...NEW_MODEL, id: "not-a-tier", price: { ...NEW_MODEL.price, longPrompt: 2 } },
+    ];
+    const result = parseModelList(withAnthropicSubRows(rows));
+    expect(result?.dropped).toEqual([
+      "anthropic:sub model no-limit: bad price",
+      "anthropic:sub model bad-rate: bad price",
+      "anthropic:sub model not-a-tier: bad price",
+    ]);
+    applyModelList(result?.doc);
+    expect(getModel(OPUS6)?.price.longPrompt).toEqual(longPrompt);
+  });
+
   it("narrows harnesses to the ones this build has, never widening a row", () => {
     const doc = parsed(withAnthropicSubRows([{ ...NEW_MODEL, harnesses: ["claude", "future-cli"] }]));
     const row = doc.services.anthropic?.sub?.models.find((m) => m.id === "claude-opus-6");

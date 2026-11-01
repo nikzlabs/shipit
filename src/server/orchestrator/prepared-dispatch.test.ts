@@ -22,7 +22,6 @@ const FULL_INIT: AgentDispatchInit = {
   uploads: [{ path: "/uploads/a.png", type: "upload" }],
   permissionMode: "plan",
   postTurn: "none",
-  systemTurn: true,
   automatic: true,
   heldId: 7,
   onTurnComplete: () => {},
@@ -66,8 +65,8 @@ describe("PreparedDispatch brand (docs/240 Fix A)", () => {
   });
 
   it("drops undefined fields rather than materializing them as present-but-undefined", () => {
-    const opts = prepareDispatch({ ...FULL_INIT, systemTurn: undefined, activity: undefined });
-    expect("systemTurn" in opts).toBe(false);
+    const opts = prepareDispatch({ ...FULL_INIT, automatic: undefined, activity: undefined });
+    expect("automatic" in opts).toBe(false);
     expect("activity" in opts).toBe(false);
     expect("text" in opts).toBe(true);
   });
@@ -97,11 +96,11 @@ describe("PreparedDispatch brand (docs/240 Fix A)", () => {
     const prepared: PreparedDispatch = queuedMessageToDispatchOptions({
       text: "drained",
       execution: "dispatched",
-      systemTurn: true,
+      automatic: true,
     });
     runner.dispatch(prepared);
     expect(runner.queueLength).toBe(1);
-    expect(runner.messageQueue[0]!.systemTurn).toBe(true);
+    expect(runner.messageQueue[0]!.automatic).toBe(true);
     runner.dispose({ force: true });
   });
 

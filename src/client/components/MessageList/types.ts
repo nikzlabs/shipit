@@ -17,6 +17,7 @@ import type {
   ScheduleNotesAccessCard as ScheduleNotesAccessCardData,
   SelfMergeWatchCard as SelfMergeWatchCardData,
   AiReviewCard,
+  PermissionUnanswered,
 } from "../../../server/shared/types.js";
 import type { ReleaseStatusSummary } from "../../../server/shared/types/release-types.js";
 import type { AgentInterfaceProvenance } from "../../../server/shared/agent-interface-sdk/protocol.js";
@@ -172,8 +173,9 @@ export interface ChatMessage {
     fromSessionId: string;
     fromTitle: string;
     fromBranch?: string;
-    relation: "child" | "sibling";
-    severity: "fyi" | "warn" | "blocker";
+    relation: "child" | "sibling" | "parent" | "proposed";
+    /** A report has one; a message from another session has none. */
+    severity?: "fyi" | "warn" | "blocker";
     subject?: string;
     body: string;
     createdAt: string;
@@ -233,7 +235,7 @@ export interface ChatMessage {
   voiceNote?: {
     id: string;
     headline: string;
-    kind: "authored" | "ask" | "plan";
+    kind: "authored" | "ask" | "plan" | "permission";
     createdAt: string;
   };
 
@@ -269,6 +271,7 @@ export interface ChatMessage {
     agentId?: string;
     createdAt?: string;
     remembered?: boolean;
+    unanswered?: PermissionUnanswered;
   };
 
   egressPrompt?: {

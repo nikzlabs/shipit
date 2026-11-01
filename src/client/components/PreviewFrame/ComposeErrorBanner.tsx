@@ -4,7 +4,7 @@ import { Button } from "../ui/button.js";
 
 export function getComposeErrorHint(error: string): string | null {
   if (error.includes("address pools have been fully subnetted")) {
-    return "Your Docker host has run out of network address space. Run \"docker network prune\" to remove unused networks, then retry. To permanently increase the limit, add {\"default-address-pools\": [{\"base\": \"172.16.0.0/12\", \"size\": 24}]} to /etc/docker/daemon.json and restart Docker.";
+    return "Your Docker host has run out of network address space. Run \"docker network prune\" to remove unused networks, then retry. To permanently increase the limit, add {\"default-address-pools\": [{\"base\": \"172.16.0.0/12\", \"size\": 24}]} to the Docker daemon configuration and restart Docker. On Docker Desktop, the configuration is in Settings → Docker Engine. On Docker Engine for Linux, it is the file /etc/docker/daemon.json.";
   }
   if (error.includes("port is already allocated") || error.includes("address already in use")) {
     return "A port required by this service is already in use. Stop the conflicting process or change the port mapping in shipit.yaml, then retry.";

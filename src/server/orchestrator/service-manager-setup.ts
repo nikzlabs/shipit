@@ -23,7 +23,8 @@ import { clearActivationState } from "./services/plugin-activation.js";
 import { collectPluginCredentialDeclarations } from "./plugin-credentials.js";
 import type { PluginComposeService } from "./plugin-compose.js";
 import { serializeStackOp } from "./stack-op-queue.js";
-import { workspaceVolumeDaemonPath } from "./compose-persist.js";
+import { releaseSessionNetworkQueued } from "./session-network-release.js";
+import { dockerDesktopCheck, workspaceVolumeDaemonPath } from "./compose-persist.js";
 import type { DockerSocketGrant } from "./compose-generator.js";
 import type { EgressPolicy } from "./egress-firewall-install.js";
 import { ConfinedCompose, composeHelperDaemonPath } from "./compose-helper.js";
@@ -36,7 +37,8 @@ import type { ProjectComposeAccess } from "./services/plugin-services.js";
  */
 export function sessionNetworkMissing(err: unknown, networkName: string): boolean {
   const msg = err instanceof Error ? err.message : String(err);
-  return msg.includes(`network ${networkName} not found`) || /no such network/i.test(msg);
+  return msg.includes(`network ${networkName} not found`)
+    || (/no such network/i.test(msg) && msg.includes(networkName));
 }
 
 export function handleStackError(
@@ -166,6 +168,21 @@ function isContainerRunner(
 
 export type WorkerInstallDecision = "skipped" | "started";
 
+/**
+ * Whether `mgr` is still the session's registered manager. Read it in the stack queue, immediately
+ * before a `start()` or `reconcile()` that waited: `start()` clears a manager's disposal, so one
+ * that was taken out and stopped in the meantime would start a stack that nothing stops (docs/091).
+ */
+function ownsStack(
+  serviceManagers: Map<string, ServiceManager>,
+  sessionId: string,
+  mgr: ServiceManager,
+): boolean {
+  if (serviceManagers.get(sessionId) === mgr) return true;
+  console.log(`[compose:${sessionId}] its manager no longer has the session — not starting the stack`);
+  return false;
+}
+
 export function adoptExistingServiceManager(
   runner: SessionRunnerInterface,
   mgr: ServiceManager,
@@ -255,10 +272,13 @@ export function adoptExistingServiceManager(
         }
         if (containmentChanged) {
           await policyTransition;
-          await deps.resetSessionNetwork?.();
+          // Disposal resolves the readiness wait too, and another manager can have the network by now.
+          if (serviceManagers.get(runner.sessionId) === mgr) await deps.resetSessionNetwork?.();
         }
         if (containmentChanged || overlayChanged || wasPreStartedWarm) {
-          await serializeStackOp(runner.sessionId, () => mgr.reconcile());
+          await serializeStackOp(runner.sessionId, async () => {
+            if (ownsStack(serviceManagers, runner.sessionId, mgr)) await mgr.reconcile();
+          });
         }
         try {
           await containerManager.connectToNetwork(runner.sessionId, networkName);
@@ -282,8 +302,10 @@ export function adoptExistingServiceManager(
   } else if (containmentChanged || wasPreStartedWarm) {
     void (async () => {
       await policyTransition;
-      await deps.resetSessionNetwork?.();
-      await serializeStackOp(runner.sessionId, () => mgr.reconcile());
+      if (serviceManagers.get(runner.sessionId) === mgr) await deps.resetSessionNetwork?.();
+      await serializeStackOp(runner.sessionId, async () => {
+        if (ownsStack(serviceManagers, runner.sessionId, mgr)) await mgr.reconcile();
+      });
     })().catch((error: unknown) => {
       mgr.emit("stack_error", error instanceof Error ? error : new Error(getErrorMessage(error)));
     });
@@ -341,7 +363,7 @@ export type ServiceManagerBuildDeps = Pick<
   | "serviceEnvDir"
   | "composeHelperConfig"
   | "logStore"
->;
+> & Partial<Pick<ServiceSetupDeps, "serviceManagers">>;
 
 /** Where the confined Compose containers find ShipIt's files on the Docker host (docs/318). */
 export interface ComposeHelperConfig {
@@ -418,12 +440,18 @@ export interface SessionNetworkJoiner {
  * purpose: a failed agent join must not cost the orchestrator its own, or the session runs
  * healthy services behind a preview nothing can route to — and only the agent's attachment is
  * repaired afterwards, by the poller's heal.
+ *
+ * `networkExpected: false` is a join that follows no `up`. Compose creates the network with the
+ * first service, so its absence is not reported there; every other error is.
  */
 export async function joinSessionNetworkEndpoints(
   containerManager: SessionNetworkJoiner,
   sessionId: string,
   networkName: string,
+  opts: { networkExpected: boolean } = { networkExpected: true },
 ): Promise<void> {
+  const notCreatedYet = (err: unknown): boolean =>
+    !opts.networkExpected && sessionNetworkMissing(err, networkName);
   const [agentJoin] = await Promise.allSettled([
     containerManager.connectToNetwork(sessionId, networkName),
     // The preview proxy needs the orchestrator on this network too.
@@ -434,7 +462,7 @@ export async function joinSessionNetworkEndpoints(
         await docker.getNetwork(networkName).connect({ Container: orchestratorId });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes("already exists")) {
+        if (!msg.includes("already exists") && !notCreatedYet(err)) {
           console.warn(`[compose] Failed to connect orchestrator to ${networkName}:`, msg);
         }
       }
@@ -442,6 +470,7 @@ export async function joinSessionNetworkEndpoints(
   ]);
   if (agentJoin.status === "rejected") {
     const reason: unknown = agentJoin.reason;
+    if (notCreatedYet(reason)) return;
     throw reason instanceof Error ? reason : new Error(String(reason));
   }
 }
@@ -483,10 +512,16 @@ export function buildServiceManager(args: {
     ...(shipitConfig.compose ? {} : { noProjectCompose: true }),
     workspaceVolume: wsVolume,
     workspaceSubpath: wsSubpath,
-    ...(daemonPath
-      ? { persistDevicePath: daemonPath, resolveWorkspaceDevice: () => daemonPath(workspaceDir) }
+    ...(daemonPath && containerManager
+      ? {
+          persistDevicePath: daemonPath,
+          resolveWorkspaceDevice: () => daemonPath(workspaceDir),
+          isDockerDesktop: dockerDesktopCheck(containerManager.getDockerClient()),
+        }
       : {}),
     stackName: process.env.DOCKER_STACK,
+    // The Engine API source for status, in place of spawned Compose CLI queries (docs/332).
+    ...(containerManager ? { docker: containerManager.getDockerClient() } : {}),
     opsSession: session?.kind === "ops",
     dockerSocketGrant: () => dockerSocketGrantFor(deps.sessionManager.get(sessionId), deps.repoStore),
     ...(containerManager ? { sessionGpu: () => containerManager.gpuDecision(sessionId) } : {}),
@@ -498,8 +533,15 @@ export function buildServiceManager(args: {
     confinedCompose: helper.confined,
     ...(logStore ? { logStore } : {}),
     networkJoinFn: containerManager
-      ? (networkName: string) => joinSessionNetworkEndpoints(containerManager, sessionId, networkName)
+      ? (networkName: string, opts: { networkExpected: boolean }) =>
+          joinSessionNetworkEndpoints(containerManager, sessionId, networkName, opts)
       : undefined,
+    networkReleaseFn: containerManager
+      ? () => releaseSessionNetworkQueued(
+          containerManager.getDockerClient(), sessionId, () => deps.serviceManagers?.has(sessionId) ?? false,
+        )
+      : undefined,
+    stackOwnedFn: () => deps.serviceManagers?.has(sessionId) ?? false,
     networkHealFn: containerManager
       ? async (networkName: string) => {
           await containerManager.ensureConnectedToSessionNetwork(sessionId, networkName);
@@ -675,8 +717,14 @@ export function setupServiceManager(
     else decisionListeners.push(fn);
   };
   if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
+    // Read before adoption clears it: "started" on a warm stack means the gate stops its services.
+    const warmStack = serviceManagers.get(runner.sessionId)?.preStartedWarm === true;
     installPromise = runner.runInstall(installCommands, {
       onWorkerDecision: (decision) => {
+        console.log(
+          `[timing] install-decision for ${runner.sessionId} decision=${decision} ` +
+            `warm-stack=${warmStack ? "yes" : "no"} took=${Date.now() - installStartedAt}ms`,
+        );
         observedDecision = decision;
         for (const fn of decisionListeners) fn(decision);
       },
@@ -830,12 +878,13 @@ export function setupServiceManager(
     await applyOverlayDepDirs(runner, mgr, { containerManager, session, workspaceDir, broadcastLog });
     // Resolve and start under one stack operation so activation cannot reconcile between them.
     await serializeStackOp(runner.sessionId, async () => {
-      await resolvePluginServicesInto(runner.sessionId, workspaceDir, mgr, deps);
+      await resolvePluginServicesInto(runner, workspaceDir, mgr, deps);
       // Readiness waits can outlive the runner; start() would revive an orphaned manager.
       if (runner instanceof ContainerSessionRunner && runner.disposed) {
         console.log(`[compose:${runner.sessionId}] runner disposed before compose start — skipping`);
         return;
       }
+      if (!ownsStack(serviceManagers, runner.sessionId, mgr)) return;
       try {
         await mgr.start();
         console.log(`[compose:${runner.sessionId}] Compose stack started`);
@@ -902,9 +951,10 @@ async function refreshPluginServices(
   try {
     await serializeStackOp(runner.sessionId, async () => {
       const { changed, count } = await resolvePluginServicesInto(
-        runner.sessionId, workspaceDir, mgr, deps,
+        runner, workspaceDir, mgr, deps,
       );
       if (!changed) return;
+      if (!ownsStack(deps.serviceManagers, runner.sessionId, mgr)) return;
       console.log(
         `[plugins:${runner.sessionId}] plugin services changed (${count}) — reconciling`,
       );
@@ -917,15 +967,19 @@ async function refreshPluginServices(
 
 /** Caller must hold the non-reentrant stack operation through resolution and start/reconcile. */
 async function resolvePluginServicesInto(
-  sessionId: string,
+  runner: SessionRunnerInterface,
   workspaceDir: string,
   mgr: ServiceManager,
   deps: Pick<ServiceSetupDeps, "resolvePluginServices">,
 ): Promise<{ changed: boolean; count: number }> {
+  const { sessionId } = runner;
   if (!deps.resolvePluginServices) return { changed: false, count: 0 };
   try {
     const services = await deps.resolvePluginServices(sessionId, workspaceDir);
-    return { changed: mgr.setPluginServices(services), count: services.length };
+    const changed = mgr.setPluginServices(services);
+    // docs/327 — also after a shipit.yaml edit, which reaches here with the plugins unchanged.
+    void runner.syncServiceMcp?.();
+    return { changed, count: services.length };
   } catch (err) {
     console.error(`[plugins:${sessionId}] service resolution failed:`, getErrorMessage(err));
     return { changed: false, count: 0 };
@@ -1028,10 +1082,10 @@ export function applyShipitConfigChange(
   }
   void serializeStackOp(runner.sessionId, async () => {
     // Recheck name collisions against the edited project file before generating its override.
-    if ((await resolvePluginServicesInto(runner.sessionId, workspaceDir, mgr, deps)).changed) {
+    if ((await resolvePluginServicesInto(runner, workspaceDir, mgr, deps)).changed) {
       runner.emitMessage({ type: "plugin_repos_updated", sessionId: runner.sessionId });
     }
-    await mgr.reconcile();
+    if (ownsStack(serviceManagers, runner.sessionId, mgr)) await mgr.reconcile();
   }).catch((err: unknown) => {
     const errMsg = getErrorMessage(err);
     console.error(`[compose:${runner.sessionId}] Reconcile after config change failed:`, errMsg);

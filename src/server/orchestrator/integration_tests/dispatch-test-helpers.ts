@@ -18,7 +18,6 @@ export function testDispatch(
     uploads: opts.uploads,
     permissionMode: opts.permissionMode,
     postTurn: opts.postTurn,
-    systemTurn: opts.systemTurn,
     automatic: opts.automatic,
     ciAutoFix: opts.ciAutoFix,
     heldId: opts.heldId,
@@ -28,6 +27,13 @@ export function testDispatch(
     silent: opts.silent,
     deliveryId: opts.deliveryId,
     dictated: opts.dictated,
+    bestEffortSteer: opts.bestEffortSteer,
+    unattended: opts.unattended,
+    promptShown: opts.promptShown,
+    clientRequestId: opts.clientRequestId,
+    sendOrder: opts.sendOrder,
+    steeredDispatch: opts.steeredDispatch,
+    uploadPaths: opts.uploadPaths,
   });
 }
 

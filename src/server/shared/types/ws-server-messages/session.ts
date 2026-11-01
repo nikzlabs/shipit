@@ -22,12 +22,14 @@ export interface WsSessionRenamed {
   session: SessionListRow;
 }
 
-/** The open session's status card and goal: sent when it attaches and on each change. */
+/** The open session's status card, goal and compaction choice: sent when it attaches and on each change. */
 export interface WsSessionDetails {
   type: "session_details";
   sessionId: string;
   sessionStatus: SessionStatus | null;
   agentGoal: AgentGoal | null;
+  /** docs/295-compact-context-on-merge req 5. Absent means on. */
+  compactAfterMergeOff?: boolean;
 }
 
 export type RescuePhase =

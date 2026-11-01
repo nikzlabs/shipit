@@ -13,6 +13,7 @@ import { useFileStore } from "../stores/file-store.js";
 import { useFileReviewControls } from "../hooks/use-file-review-controls.js";
 import { kindFromPreviewType, supportsSourceToggle } from "../utils/file-content-kind.js";
 import { isEditableFilePath, type FilePreviewType } from "../utils/file-preview-type.js";
+import { isPersistPath, sessionFileUrlPath } from "../utils/session-file-path.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import { formatBytes } from "../utils/format-bytes.js";
 
@@ -50,6 +51,7 @@ export interface FilePreviewModalProps {
 
 // Encode path segments without hiding route separators.
 function fileDownloadHref(sessionId: string, filePath: string): string {
+  if (isPersistPath(filePath)) return `/api/sessions/${sessionId}/files/download/${sessionFileUrlPath(filePath)}`;
   const relative = filePath.startsWith("/") ? filePath.slice(1) : filePath;
   const encoded = relative.split("/").map(encodeURIComponent).join("/");
   return `/api/sessions/${sessionId}/files/download/${encoded}`;

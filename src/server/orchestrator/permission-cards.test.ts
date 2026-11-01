@@ -64,6 +64,32 @@ describe("settlePermissionCard", () => {
     expect(chatHistoryManager.updatePermissionCard).toHaveBeenCalledWith("s1", "p1", { phase: "denied" });
   });
 
+  it("carries the reason of an unanswered card to the row and to viewers", () => {
+    const { runner, deps, chatHistoryManager, emitted } = setup({ running: false, inProgressRows: false, ids: ["p1"] });
+
+    settlePermissionCard(runner, "s1", deps, "p1", "denied", undefined, { waitedMs: 1_800_000 });
+
+    expect(chatHistoryManager.updatePermissionCard).toHaveBeenCalledWith("s1", "p1", {
+      phase: "denied",
+      unanswered: { waitedMs: 1_800_000 },
+    });
+    expect(emitted).toEqual([{
+      type: "permission_resolved",
+      sessionId: "s1",
+      requestId: "p1",
+      phase: "denied",
+      unanswered: { waitedMs: 1_800_000 },
+    }]);
+  });
+
+  it("puts the reason on the recorded card while the turn owns it", () => {
+    const { runner, deps } = setup({ running: true, inProgressRows: true, ids: ["p1"] });
+
+    settlePermissionCard(runner, "s1", deps, "p1", "denied", undefined, {});
+
+    expect(runner.recordedCards[0]?.message.permissionPrompt).toMatchObject({ phase: "denied", unanswered: {} });
+  });
+
   it("clears attention only when the session's last request settles", () => {
     const { runner, deps, attention } = setup({ running: false, inProgressRows: false, ids: ["p1", "p2"] });
 

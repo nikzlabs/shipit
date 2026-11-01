@@ -1,3 +1,8 @@
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { GLIBC_TUNABLES_ENV, GPU_GRAPHICS_GLIBC_TUNABLES } from "../../shared/gpu-graphics-env.js";
+import { BAKED_PLAYWRIGHT_BROWSERS_DIR } from "../../shared/playwright-browsers.js";
+
 // Auto-named screenshots land here and return image blocks; explicit filenames
 // return links and resolve relative to the MCP client's workspace, not this directory.
 // playwright-screenshot.ts reads the full-resolution original from this path.
@@ -8,9 +13,41 @@ export const PLAYWRIGHT_MCP_COMMAND = "sh";
 /** The binary we exec below; browser-reclaim.ts identifies our own server by it. */
 export const PLAYWRIGHT_MCP_BIN = "playwright-mcp";
 
+/** The image's link to DirectX, which Mesa opens by name. It resolves only in a GPU container on WSL2. */
+const DIRECTX_LINK = "/usr/lib/libd3d12.so";
+
+/** Chromium's flags for WebGL on the GPU. The server takes browser flags from a file only. */
+const GPU_CONFIG_PATH = fileURLToPath(new URL("./playwright-mcp-gpu.json", import.meta.url));
+
+const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
+
+/** docs/325-session-gpu-access req 8, 10. A container keeps its GPU state and its mounts for life. */
+export function builtInBrowserUsesGpu(
+  env: NodeJS.ProcessEnv,
+  exists: (path: string) => boolean = existsSync,
+): boolean {
+  return env.SHIPIT_GPU === "granted" && exists(DIRECTX_LINK);
+}
+
+/**
+ * Also the screenshot limit. A screenshot takes about seven frames, so a WebGL page
+ * drawn in software at one frame per 1–2 s took up to 16 s; the default is 5 s (planning#709).
+ */
+const ACTION_TIMEOUT_MS = 20_000;
+
 // --isolated keeps writable profiles out of the read-only browser store.
 // Chromium supports Linux ARM64. cd preserves compatibility with older MCP builds.
-export const PLAYWRIGHT_MCP_ARGS: readonly string[] = [
-  "-c",
-  `mkdir -p ${PLAYWRIGHT_OUTPUT_DIR} && cd ${PLAYWRIGHT_OUTPUT_DIR} && exec ${PLAYWRIGHT_MCP_BIN} --isolated --browser chromium --headless --no-sandbox --output-dir ${PLAYWRIGHT_OUTPUT_DIR}`,
-];
+export function playwrightMcpArgs(gpu: boolean): readonly string[] {
+  const server = `${PLAYWRIGHT_MCP_BIN} --isolated --browser chromium --headless --no-sandbox --output-dir ${PLAYWRIGHT_OUTPUT_DIR} --timeout-action ${ACTION_TIMEOUT_MS}`;
+  // The image's own store, never the session's writable one, which a project's
+  // `playwright install` or `uninstall` changes (docs/335-project-playwright-browsers).
+  // Exported here, not inherited: Codex gives an MCP server only the variables its config names.
+  const env = [`PLAYWRIGHT_BROWSERS_PATH=${BAKED_PLAYWRIGHT_BROWSERS_DIR}`];
+  // Pinned to Direct3D, a GPU fault ends in Chromium's own software renderer, as with no GPU.
+  // Not pinned, Mesa draws on the CPU and gives a third kind of picture.
+  if (gpu) env.push("GALLIUM_DRIVER=d3d12", `${GLIBC_TUNABLES_ENV}=${shellQuote(GPU_GRAPHICS_GLIBC_TUNABLES)}`);
+  const start = gpu ? `exec ${server} --config ${shellQuote(GPU_CONFIG_PATH)}` : `exec ${server}`;
+  return ["-c", `mkdir -p ${PLAYWRIGHT_OUTPUT_DIR} && cd ${PLAYWRIGHT_OUTPUT_DIR} && export ${env.join(" ")} && ${start}`];
+}
+
+export const PLAYWRIGHT_MCP_ARGS: readonly string[] = playwrightMcpArgs(builtInBrowserUsesGpu(process.env));

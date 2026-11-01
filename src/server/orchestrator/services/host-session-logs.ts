@@ -73,7 +73,7 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
   },
   {
     producer: "startup-tasks: container exited",
-    pattern: /^Session container exited unexpectedly(?: \(exit -?\d+\))?\.$/,
+    pattern: /^Session container exited unexpectedly(?: \(exit -?\d+\)| \(exit 0\): it was stopped from outside ShipIt, for example by a host or Docker restart or a manual `docker stop`)?\.$/,
   },
   {
     producer: "turn-executor: agent exit code",
@@ -200,7 +200,7 @@ export interface HostSessionLogResult {
   logsRetained: boolean;
 }
 
-function resolveTarget(sessionManager: SessionManager, target: string): SessionInfo {
+export function resolveHostSessionTarget(sessionManager: SessionManager, target: string): SessionInfo {
   const trimmed = target.trim();
   if (!trimmed) {
     throw new ServiceError(400, "A session id is required.");
@@ -275,7 +275,7 @@ export function queryHostSessionLogs(
   target: string,
   query: HostSessionLogQuery = {},
 ): HostSessionLogResult {
-  const session = resolveTarget(sessionManager, target);
+  const session = resolveHostSessionTarget(sessionManager, target);
   const nowMs = query.nowMs ?? Date.now();
   const sinceMs = query.since !== undefined ? parseTimeBound(query.since, "--since", nowMs) : undefined;
   const untilMs = query.until !== undefined ? parseTimeBound(query.until, "--until", nowMs) : undefined;

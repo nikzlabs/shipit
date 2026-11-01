@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -120,6 +121,7 @@ describe("getTemplate", () => {
         "prompts/verify-ops-access.md",
         "prompts/remediate-shipit-bug.md",
         "prompts/read-session-logs.md",
+        "prompts/read-session-transcript.md",
       ]),
     );
     expect(ops.files["prompts/remediate-shipit-bug.md"]).toContain("shipit source status");
@@ -129,6 +131,13 @@ describe("getTemplate", () => {
     expect(ops.files["prompts/diagnose-stuck-session.md"]).toContain("shipit session logs");
     expect(ops.files["prompts/trace-a-pr.md"]).toContain("shipit session logs");
     expect(ops.files["README.md"]).toContain("shipit session logs");
+    const pointToTranscriptRecipe = ["README.md", "prompts/trace-a-pr.md", "prompts/read-session-logs.md"];
+    for (const file of [...pointToTranscriptRecipe, "prompts/read-session-transcript.md"]) {
+      expect(ops.files[file], file).toContain("shipit session transcript");
+    }
+    for (const file of pointToTranscriptRecipe) {
+      expect(ops.files[file], file).toContain("prompts/read-session-transcript.md");
+    }
     expect(ops.files["docker-compose.yml"]).toContain("docker-socket-proxy");
     expect(ops.files["docker-compose.yml"]).toContain(`image: ${TRUSTED_OPS_PROXY_IMAGE}\n`);
     expect(ops.files["docker-compose.yml"]).toContain("x-shipit-preview: auto");
@@ -170,6 +179,74 @@ describe("getTemplate", () => {
       expect.arrayContaining(["typescript", "@types/react", "@types/node"]),
     );
     expect(tsconfig.include).toContain(".next/types/**/*.ts");
+  });
+});
+
+// Each of these passed review and then misled an agent on a real host (docs/128).
+describe("ops recipes run as written on any install", () => {
+  const texts: Record<string, string> = {
+    ...getTemplate(OPS_TEMPLATE_ID)!.files,
+    "shipit-docs/ops-session.md": fs.readFileSync(new URL("../shipit-docs/ops-session.md", import.meta.url), "utf-8"),
+    "prompts/ops-session.md": fs.readFileSync(new URL("./prompts/ops-session.md", import.meta.url), "utf-8"),
+  };
+
+  it("names no orchestrator container, because the name comes from the install's Compose project", () => {
+    for (const [file, text] of Object.entries(texts)) expect(text, file).not.toMatch(/\bshipit(-\w+)?-shipit-1\b/);
+  });
+
+  // The orchestrator's output is in the journal only with Docker's journald logging driver, which
+  // no stack sets, and its warnings and errors are on stderr.
+  it("reads ShipIt's own lines from the orchestrator's log, with stderr, and not from the journal", () => {
+    const greps = Object.entries(texts).flatMap(([file, text]) =>
+      text.split("\n").filter((line) => /\|\s*grep\b/.test(line)).map((line) => ({ file, line })));
+    const journal = greps.filter(({ line }) => /\bjournalctl\b/.test(line));
+    const logs = greps.filter(({ line }) => /\bdocker logs\b/.test(line));
+    expect(journal.length).toBeGreaterThan(0);
+    expect(logs.length).toBeGreaterThan(0);
+    for (const { file, line } of journal) expect(line, file).not.toMatch(/LOOP DETECTED|<session-id>/);
+    for (const { file, line } of logs) expect(line, file).toMatch(/\s2>&1\s*\|/);
+  });
+
+  it("gives every `docker events` call a window that ends and is not empty", () => {
+    // Docker reads a bare duration as that long before now.
+    const secondsAgo = (value: string | undefined): number | undefined => {
+      const m = /^(\d+)([smh])$/.exec(value ?? "");
+      return m ? Number(m[1]) * { s: 1, m: 60, h: 3600 }[m[2] as "s" | "m" | "h"] : undefined;
+    };
+    // Up to the end of the command: a pipe, a closing backtick or a trailing comment.
+    const calls = Object.entries(texts).flatMap(([file, text]) =>
+      [...text.matchAll(/docker events\b[^\n`|#]*/g)].map(([call]) => ({ file, call })));
+    const windowed = calls.filter(({ call }) => /--(since|until)\b/.test(call));
+    expect(windowed.length).toBeGreaterThan(0);
+    for (const { file, call } of windowed) {
+      const since = secondsAgo(/--since\s+(\S+)/.exec(call)?.[1]);
+      const until = secondsAgo(/--until\s+(\S+)/.exec(call)?.[1]);
+      expect(until, `${file}: \`${call}\` never returns`).toBeDefined();
+      expect(since, `${file}: \`${call}\` covers no time`).toBeGreaterThan(until!);
+    }
+  });
+
+  // docs/305-ssh-hosts req 6: an ops session can hold SSH grants, so a "no SSH" line contradicts them.
+  it("never tells the agent it has no SSH, because an ops session can be granted destinations", () => {
+    for (const [file, text] of Object.entries(texts)) expect(text, file).not.toMatch(/\bno SSH\b/i);
+  });
+
+  it("checks for leaked host directories by mount point, not by any text on the line", () => {
+    const awk = /mount \| awk '([^']+)'/.exec(texts["prompts/verify-ops-access.md"])?.[1];
+    expect(awk, "the leak check of verify-ops-access.md").toBeDefined();
+    const leaked = [
+      "/dev/sda1 on /root type ext4 (ro)",
+      "/dev/sda1 on /home/operator type ext4 (ro)",
+      "/dev/sda1 on /var/lib/docker type ext4 (ro)",
+    ];
+    const harmless = [
+      // Docker Desktop: the unanchored pattern matched /run/rootfs.upper.
+      "overlay on /usr/sbin/docker-init type overlay (ro,lowerdir=/tmp/docker-desktop-root-ro,upperdir=/run/rootfs.upper)",
+      "overlay on / type overlay (rw,lowerdir=/var/lib/docker/overlay2/l/ABC,upperdir=/var/lib/docker/overlay2/x/diff)",
+      "/dev/sdb on /var/log/journal type ext4 (ro)",
+    ];
+    const out = execFileSync("awk", [awk!], { input: [...leaked, ...harmless].join("\n"), encoding: "utf-8" });
+    expect(out.trim().split("\n")).toEqual(leaked);
   });
 });
 

@@ -217,6 +217,39 @@ describe("Integration: scheduled runs", () => {
     expect(runSessions(id)).toHaveLength(2);
   });
 
+  it("runs a once schedule one time, at its date and time, and then has no next run (req 34)", { timeout: 15_000 }, async () => {
+    const once = { kind: "once", date: "2026-10-08", hour: 9, minute: 0 };
+    const passed = await app.inject({
+      method: "POST",
+      url: "/api/schedules",
+      payload: { name: "One-off", timing: { ...once, date: "2026-10-06" }, timeZone: "UTC", spec: SPEC },
+    });
+    expect(passed.statusCode).toBe(400);
+    expect(passed.json()).toMatchObject({ error: "2026-10-06 09:00 has already passed in UTC." });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/schedules",
+      payload: { name: "One-off", timing: once, timeZone: "UTC", spec: SPEC },
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    const { schedule } = res.json() as { schedule: ScheduleView };
+    expect(schedule.nextRuns).toEqual(["2026-10-08T09:00:00.000Z"]);
+
+    await app.scheduleRunner.runPass(at("2026-10-08T08:59:00Z"));
+    expect(runSessions(schedule.id)).toHaveLength(0);
+    await startRunningRun(schedule.id, "2026-10-08T09:00:30Z");
+    agents[0]!.finish();
+
+    await app.scheduleRunner.runPass(at("2026-10-09T09:00:30Z"));
+    await app.scheduleRunner.runPass(at("2027-10-08T09:00:30Z"));
+    expect(runSessions(schedule.id)).toHaveLength(1);
+    expect(await runsOf(schedule.id)).toHaveLength(1);
+    vi.setSystemTime(at("2026-10-08T09:01:00Z"));
+    const after = await app.inject({ method: "GET", url: `/api/schedules/${schedule.id}` });
+    expect((after.json() as { schedule: ScheduleView }).schedule).toMatchObject({ enabled: true, nextRuns: [] });
+  });
+
   it("fails the start when the first turn is refused for quota, and marks the schedule (req 18)", { timeout: 15_000 }, async () => {
     // An API key never fails over to another credential, so its refusal ends the turn.
     const keyed = {

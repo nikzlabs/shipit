@@ -55,6 +55,12 @@ export interface MarkerMatchOptions {
    * content hash therefore reinstalls on every start, which is the safe direction.
    */
   requireDepsHash?: boolean;
+  /**
+   * False when lifecycle scripts may read files the hash does not cover (`contentKeyDescribesTree`
+   * in `deps-hash.ts`): a matching hash then cannot stand in for a different commit, as with a
+   * `postinstall` codegen step whose schema moved on the default branch (docs/288).
+   */
+  contentKeyDescribesTree?: boolean;
 }
 
 export function markerMatches(
@@ -64,11 +70,12 @@ export function markerMatches(
 ): boolean {
   if (marker.runtimeKey !== current.runtimeKey) return false;
   if (!sameCommands(marker.installCommands, current.installCommands)) return false;
-  if (opts.requireDepsHash) return depsHashMatches(marker.depsHash, current.depsHash);
-  return (
-    marker.sourceCommit === current.sourceCommit ||
-    depsHashMatches(marker.depsHash, current.depsHash)
-  );
+  const sameCommit = marker.sourceCommit === current.sourceCommit;
+  const contentKeyed = opts.contentKeyDescribesTree ?? true;
+  if (opts.requireDepsHash) {
+    return depsHashMatches(marker.depsHash, current.depsHash) && (contentKeyed || sameCommit);
+  }
+  return sameCommit || (contentKeyed && depsHashMatches(marker.depsHash, current.depsHash));
 }
 
 function depsHashMatches(a: string | null, b: string | null): boolean {

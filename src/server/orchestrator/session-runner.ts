@@ -1,10 +1,10 @@
-import { isCompactCommand } from "../shared/compact-command.js";
 import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import type { BillingMode } from "../shared/catalogue/types.js";
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, TerminalProcess, AgentRunParams, SessionInfo, SessionMessageOrigin } from "../shared/types.js";
-import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
+import type { WsServerMessage, WsQueueRow, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
+import type { SessionServiceMcp } from "./service-mcp.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { DependencyGap } from "./dependency-staleness.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
@@ -12,8 +12,10 @@ import type { PersistedMessage, ResolvedBugReport } from "./chat-history.js";
 import type { CardOutcomeNotice } from "./services/card-outcome-notice.js";
 import type { RepoSessionOutcomeNotice } from "./services/repo-session-outcome-notice.js";
 import type { SessionMessageOutcomeNotice } from "./services/session-message-outcome-notice.js";
+import type { InboxNotice } from "./services/session-inbox-notice.js";
 import type { RoleStandingInstructions } from "./services/session-role.js";
 import type { RequestedRestartTurn } from "./services/agent-restart-request.js";
+import type { StandDownCause } from "./services/quota-continuation.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { UnreadableWorkspace, CommitHookFailure } from "../shared/git.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
@@ -30,10 +32,13 @@ export { runDispatchedTurn };
 
 import {
   automaticTurnHeldForAnswer,
+  isSilentCompaction,
   readAnswerHold,
-  systemTurnBlockedByResidentWork,
+  turnBlockedByPendingCommit,
 } from "./turn-admission.js";
-import { trySteerDispatch } from "./dispatch-steering.js";
+import type { SessionHold } from "./session-hold.js";
+import { retireResident } from "./resident-spawn-guard.js";
+import { deliverWaitingMessages, trySteerDispatch, userMessageWaits } from "./dispatch-steering.js";
 import { resetVoiceNoteTurnState } from "./voice/voice-note-router.js";
 import {
   createCommittedBodyIds,
@@ -47,18 +52,18 @@ import {
   type PreparedDispatch,
 } from "./prepared-dispatch.js";
 import { takeRunnableQueuedTurn } from "./queue-drain.js";
+import { nextSendOrder, queueEntryId, queueSnapshot } from "./queue-identity.js";
+import { returnLateEntry, sentBeforeStop } from "./queue-return.js";
 import {
   forgetHeldEntries,
-  forgetHeldTurn,
   holdTurn,
   withoutHeldEntries,
 } from "./held-turns.js";
 import {
   createTurnSettlement,
+  settleDispatchSetupFailure,
   settleDroppedQueueEntries,
-  turnDropped,
-  turnErrored,
-  turnInterrupted,
+  settleWhenRunnerLetsGo,
   turnRefused,
   TURN_STEERED,
   type TurnEnd,
@@ -66,7 +71,7 @@ import {
   type TurnOutcome,
 } from "./turn-settlement.js";
 import { PostTurnHold } from "./post-turn-hold.js";
-import { beginTurnSetup } from "./turn-stop-request.js";
+import { beginTurnSetup, currentTurnPhase, endOwnClaim, setSteerRefused } from "./turn-stop-request.js";
 export {
   prepareDispatch,
   queuedMessageToDispatchOptions,
@@ -74,6 +79,7 @@ export {
   type AgentDispatchInit,
 } from "./prepared-dispatch.js";
 export type { TurnHandle, TurnOutcome, TurnOutcomeStatus } from "./turn-settlement.js";
+export { DISPATCH_SETUP_FAILURE } from "./turn-settlement.js";
 
 export interface ToolResultEntry {
   toolUseId: string;
@@ -105,6 +111,8 @@ export interface ChatMessageGroup {
   toolUse: ClaudeContentBlockToolUse[];
   toolResults?: ToolResultEntry[];
   subagentEvents?: SubagentEvent[];
+  /** docs/007 req 5 — the CLI's id of the latest message that fed this group. */
+  agentMessageId?: string;
 }
 
 export interface SteeredMessage {
@@ -121,6 +129,14 @@ export interface SteeredMessage {
   /** In-memory replay-ack key. Without an ack at turn end, this steer is re-queued. */
   assembledPrompt?: string;
   delivered?: boolean;
+  /** Without an ack, this steer is removed and NOT re-queued (`bestEffortSteer`). */
+  bestEffort?: boolean;
+  /** planning#691 — the bubble's id, which a re-queued steer keeps. */
+  clientRequestId?: string;
+  /** planning#691 — see `requeueInSendOrder`. */
+  sendOrder?: number;
+  /** docs/330-stop-returns-queued-messages — see `QueuedMessage.steeredDispatch`. */
+  steeredDispatch?: boolean;
 }
 
 // Add side-channel cards through emitChatCard so they persist at their transcript position.
@@ -141,7 +157,6 @@ export interface QueuedMessage {
   uploads?: UploadRef[];
   permissionMode?: PermissionMode;
   postTurn?: "commit-push" | "none";
-  systemTurn?: boolean;
   automatic?: boolean;
   ciAutoFix?: boolean;
   heldId?: number;
@@ -151,6 +166,20 @@ export interface QueuedMessage {
   resetMergedBranch?: boolean;
   compactContext?: boolean;
   silent?: boolean;
+  bestEffortSteer?: boolean;
+  unattended?: boolean;
+  promptShown?: boolean;
+  /** planning#691 — the bubble's id; see `queueEntryId`. */
+  clientRequestId?: string;
+  /** planning#691 — see `requeueInSendOrder`. Not saved with a held turn: it is per process. */
+  sendOrder?: number;
+  /**
+   * docs/330-stop-returns-queued-messages — a dispatch that was steered and put back. It is
+   * `interactive` because its bubble exists, but it is not a message that the user sent.
+   */
+  steeredDispatch?: boolean;
+  /** The uploads of a steer that was put back; its `images` and `files` hold their content. */
+  uploadPaths?: string[];
 }
 
 export interface AgentDispatchOptions {
@@ -165,8 +194,6 @@ export interface AgentDispatchOptions {
   permissionMode?: PermissionMode;
   /** None leaves commit, push, PR flow and drain to the owning driver, such as rebase. */
   postTurn?: "commit-push" | "none";
-  /** Blocks live steering into this turn. */
-  systemTurn?: boolean;
   /**
    * docs/322 — not started by this session's user: ShipIt's automation or another
    * session. Held while the agent waits for the user's answer; any other turn clears that.
@@ -188,7 +215,36 @@ export interface AgentDispatchOptions {
   compactContext?: boolean;
   /** Suppress the user bubble and row for a ShipIt-initiated compaction turn. */
   silent?: boolean;
-  /** docs/303 — ShipIt's own follow-up asking for the status update the last turn skipped. */
+  /**
+   * docs/328-session-message-inbox — a steer of this dispatch that the CLI does not take is
+   * dropped, not put in the queue: its sender tells again by its own rule.
+   */
+  bestEffortSteer?: boolean;
+  /**
+   * ShipIt started this turn by itself; the docs/235 one-shot turn note reads it. `automatic`
+   * cannot say it: a wake that is not automatic exists (docs/328's turn for a message the user
+   * sent).
+   */
+  unattended?: boolean;
+  /**
+   * docs/306-quota-continuation — an earlier attempt of the same wake put this prompt in the
+   * transcript, so this one adds no row and no echo.
+   */
+  promptShown?: boolean;
+  /**
+   * planning#691 — the id of the sender's bubble for this message, so that every viewer
+   * matches the queue row, the steer and the echo to that one bubble.
+   */
+  clientRequestId?: string;
+  /**
+   * planning#691 — when ShipIt accepted the message. Taken at the dispatch when absent, and
+   * kept across a drain, so that a Stop can tell what was sent before it (docs/330).
+   */
+  sendOrder?: number;
+  /** docs/330-stop-returns-queued-messages — see `QueuedMessage.steeredDispatch`. */
+  steeredDispatch?: boolean;
+  /** See `QueuedMessage.uploadPaths`. */
+  uploadPaths?: string[];
 }
 
 export const REPOSITORY_UNTRUSTED_CODE = "repository_untrusted" as const;
@@ -213,33 +269,49 @@ export class AgentTurnAdmissionError extends Error {
  *
  * Covers admission only. A refusing caller must also set `postTurn: "none"`, or pre-turn
  * compaction can re-queue it after it was admitted (`dispatched-turn.ts`).
+ *
+ * `"steer-or-refuse"` is never queued either, but a running turn that can take a steer
+ * gets the text (docs/328-session-message-inbox).
+ *
+ * `"queue"` is for work that needs a turn of its own: it waits behind a running turn and is
+ * never steered into it (docs/329-user-steers-every-turn). With no admission, a dispatch is
+ * steered when the running turn can take it, and queued otherwise.
  */
 export interface DispatchAdmission {
-  whenBusy: "queue" | "refuse";
+  whenBusy: "queue" | "refuse" | "steer-or-refuse";
+  /**
+   * The step of the flow that holds the session: admitted only while this is the hold that
+   * is set. Such a step must refuse, since nothing drains the queue under its own hold. It
+   * starts on a process of its own: the gate retires an idle resident as it admits the step,
+   * which could not tell its result from that of a turn the CLI starts by itself.
+   */
+  underHold?: SessionHold;
 }
-
-/**
- * Prefix of the only `errored` outcome that means the prompt never reached the agent. Every
- * other `errored` can describe a turn the agent ran and then failed, so a consumer deciding
- * whether to re-deliver must tell the two apart rather than reading the status alone.
- */
-export const DISPATCH_SETUP_FAILURE = "dispatched turn failed to start";
 
 
 export function dispatchOnRunner(
   runner: SessionRunnerInterface,
   deps: SystemTurnDeps | null,
-  opts: PreparedDispatch,
+  accepted: PreparedDispatch,
   admission?: DispatchAdmission,
 ): TurnHandle {
   // Admission must precede all state changes, persistence, preparation and process creation.
   runner.assertCanDispatch();
   const settlement = createTurnSettlement();
+  // Before any gate: a Stop tells what was sent before it by this order (docs/330).
+  const opts: PreparedDispatch = accepted.sendOrder === undefined
+    ? { ...accepted, sendOrder: nextSendOrder() }
+    : accepted;
+  if (sentBeforeStop(runner, opts.sendOrder)) {
+    settlement.noteAdmission("refused");
+    returnLateEntry(runner, toQueuedMessage(withSettlement(opts, settlement)));
+    return settlement;
+  }
 
   // The single exit for every gate below, so a refusing caller cannot be queued by one
   // of them — including a gate added later.
   const enqueueOrRefuse = (reason: string): TurnHandle => {
-    if (admission?.whenBusy === "refuse") {
+    if (admission && admission.whenBusy !== "queue") {
       settlement.noteAdmission("refused");
       console.warn(`[dispatch] refused the dispatch for ${runner.sessionId} — ${reason}`);
       // Settles either way: the throw is the consumer's, not a failure of the dispatch.
@@ -260,12 +332,17 @@ export function dispatchOnRunner(
       return settlement;
     }
     const position = runner.enqueue(entry);
-    // A queued system dispatch looks delivered to its caller; say that no turn started.
+    // A queued dispatch looks delivered to its caller; say that no turn started.
     console.log(
-      `[dispatch] queued the ${opts.systemTurn ? "system " : ""}dispatch for ${runner.sessionId} `
-      + `at position ${position} — ${reason}`,
+      `[dispatch] queued the dispatch for ${runner.sessionId} at position ${position} — ${reason}`,
     );
-    runner.emitMessage({ type: "message_queued", text: opts.text, position });
+    runner.emitMessage({
+      type: "message_queued",
+      sessionId: runner.sessionId,
+      id: queueEntryId(entry),
+      text: opts.text,
+      position,
+    });
     return settlement;
   };
 
@@ -273,8 +350,13 @@ export function dispatchOnRunner(
     // docs/322 — a turn that is ending on a question is not one to steer automatic work into.
     const endingOnQuestion = opts.automatic === true
       && (runner.awaitingUserAnswer || runner.answerHold);
-    // A refusing caller wants its own turn or nothing; steering delivers into someone else's.
-    if (admission?.whenBusy !== "refuse" && !endingOnQuestion) {
+    // A caller that named `refuse` or `queue` wants its own turn; steering delivers into someone else's.
+    const maySteer = admission === undefined || admission.whenBusy === "steer-or-refuse";
+    // docs/329-user-steers-every-turn — a message of the user's does not pass an earlier one
+    // that still waits: it joins the queue, and the delivery gives both in order.
+    const behindUserMessage = opts.execution === "interactive" && opts.automatic !== true
+      && userMessageWaits(runner);
+    if (maySteer && !endingOnQuestion && !behindUserMessage) {
       // Test steering before attaching settlement: a completion callback makes a dispatch unsteerable.
       if (deps && trySteerDispatch(runner, opts, deps)) {
         settlement.noteAdmission("steered");
@@ -282,87 +364,61 @@ export function dispatchOnRunner(
         return settlement;
       }
     }
-    return enqueueOrRefuse("another turn is already running on this session");
+    const waiting = enqueueOrRefuse("another turn is already running on this session");
+    if (deps && behindUserMessage) {
+      // A refusal stopped the delivery for this turn; the user's new message tries one time more.
+      setSteerRefused(runner, false);
+      void deliverWaitingMessages(runner, deps).catch((err: unknown) => {
+        console.error(`[dispatch] delivering the waiting messages of ${runner.sessionId} failed:`, err);
+      });
+    }
+    return waiting;
   }
   if (!deps) return enqueueOrRefuse("this session's runner has no system-turn dependencies wired");
 
-  // A system driver can own the tree between turns; only its own resolution step may enter.
-  if (runner.systemTurnInProgress && !(opts.systemTurn && opts.postTurn === "none")) {
-    return enqueueOrRefuse("a system turn is in progress on this session");
+  // A flow can own the tree between turns; only its own step may enter, and only while the
+  // flow still holds the session.
+  const step = admission?.underHold;
+  if (step ? step !== runner.sessionHold : runner.sessionHold !== null) {
+    return enqueueOrRefuse(
+      step
+        ? "the flow that started this step no longer holds the session"
+        : "ShipIt is working on this session's branch or container",
+    );
   }
 
   if (runner.mergeHold) return enqueueOrRefuse("a merge is being held for this session");
 
-  const answerHeld = automaticTurnHeldForAnswer(runner, opts.automatic);
+  // `running` is already false while the finished turn's edits are still outside git.
+  const uncommitted = step ? null : turnBlockedByPendingCommit(runner);
+  if (uncommitted) return enqueueOrRefuse(uncommitted);
+
+  const answerHeld = isSilentCompaction(opts) ? null : automaticTurnHeldForAnswer(runner, opts.automatic);
   if (answerHeld) return enqueueOrRefuse(answerHeld);
 
-  // System turns replace the resident process, which would destroy its background work.
-  const residentWorkBlock = systemTurnBlockedByResidentWork(runner, opts.systemTurn);
-  if (residentWorkBlock) return enqueueOrRefuse(residentWorkBlock);
-
+  // Only once admitted: a refused step must not end the process of a turn it did not start.
+  if (step) retireResident(runner);
   // Claim synchronously so another message or delivery retry cannot enter during async setup.
-  if (opts.systemTurn) runner.systemTurnInProgress = true;
   runner.running = true;
+  const claim = currentTurnPhase(runner);
   if (opts.deliveryId !== undefined) runner.activeDeliveryId = opts.deliveryId;
-  const chained = withSettlement(opts, settlement);
-  // Latch this turn's result: queue drain can replace runner state before settlement.
-  // A turn that produced a result is interrupted, never dropped as if it had not run.
-  let sawTurnResult = false;
-  const ownIsCompact = isCompactCommand(opts.text);
-  const onTurnResult = ({ compact }: { compact: boolean }): void => {
-    if (compact && !ownIsCompact) return;
-    if (runner.activeDeliveryId === opts.deliveryId) sawTurnResult = true;
-  };
-  const settleAsDropped = (reason: string): void => {
-    if (settlement.isSettled) return;
-    if (sawTurnResult) {
-      console.warn(
-        `[dispatch] settling the dispatched turn for ${runner.sessionId} as interrupted — ${reason}`
-        + " (the turn had already produced its result)",
-      );
-      chained.onTurnComplete?.(
-        turnInterrupted(`${reason} — after the turn produced its result`),
-      );
-      return;
-    }
-    console.warn(`[dispatch] settling the dispatched turn for ${runner.sessionId} as dropped — ${reason}`);
-    chained.onTurnComplete?.(turnDropped(reason));
-  };
-  const onRunnerDisposed = (): void => settleAsDropped("runner disposed mid-turn");
-  const onTurnAbandoned = (): void =>
-    settleAsDropped("turn abandoned — worker reported no agent running");
-  runner.on("turn_result", onTurnResult);
-  runner.on("disposed", onRunnerDisposed);
-  runner.on("turn_abandoned", onTurnAbandoned);
-  void (async () => {
-    await settlement.settled;
-    runner.off("turn_result", onTurnResult);
-    runner.off("disposed", onRunnerDisposed);
-    runner.off("turn_abandoned", onTurnAbandoned);
-  })();
+  const chained = settleWhenRunnerLetsGo(runner, withSettlement(opts, settlement));
   void runner.runDispatchedTurn(chained).catch((err: unknown) => {
-    // Setup can fail before the executor owns settlement or cleanup.
-    const detail = err instanceof Error ? err.message : String(err);
     console.error(
       `[dispatch] dispatched turn for ${runner.sessionId} failed during setup:`,
       err,
     );
-    if (opts.systemTurn) runner.systemTurnInProgress = false;
-    runner.running = false;
-    // Told it errored, the caller owns any retry; a saved copy would run it a second time.
-    forgetHeldTurn(runner.answerHoldStore, opts);
+    const own = endOwnClaim(runner, claim);
     if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
       runner.activeDeliveryId = undefined;
     }
-    // Notify callback consumers too, but preserve an outcome the executor already settled.
-    if (!settlement.isSettled) {
-      chained.onTurnComplete?.(turnErrored(`${DISPATCH_SETUP_FAILURE}: ${detail}`));
-    }
-    if (runner.queueLength > 0) {
+    settleDispatchSetupFailure(runner, chained, err);
+    // A turn of the CLI's own that took the claim drains the queue when it ends.
+    if (own && runner.queueLength > 0) {
       // The shared take, so a held entry at the head cannot strand the user's behind it.
       const next = takeRunnableQueuedTurn(runner);
       if (next) {
-        runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+        runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
         dispatchOnRunner(runner, deps, queuedMessageToDispatchOptions(next));
       }
     }
@@ -381,7 +437,6 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.uploads !== undefined) queued.uploads = opts.uploads;
   if (opts.permissionMode !== undefined) queued.permissionMode = opts.permissionMode;
   if (opts.postTurn !== undefined) queued.postTurn = opts.postTurn;
-  if (opts.systemTurn !== undefined) queued.systemTurn = opts.systemTurn;
   if (opts.automatic !== undefined) queued.automatic = opts.automatic;
   if (opts.ciAutoFix !== undefined) queued.ciAutoFix = opts.ciAutoFix;
   if (opts.heldId !== undefined) queued.heldId = opts.heldId;
@@ -391,6 +446,13 @@ export function toQueuedMessage(opts: PreparedDispatch): QueuedMessage {
   if (opts.resetMergedBranch !== undefined) queued.resetMergedBranch = opts.resetMergedBranch;
   if (opts.compactContext !== undefined) queued.compactContext = opts.compactContext;
   if (opts.silent !== undefined) queued.silent = opts.silent;
+  if (opts.bestEffortSteer !== undefined) queued.bestEffortSteer = opts.bestEffortSteer;
+  if (opts.unattended !== undefined) queued.unattended = opts.unattended;
+  if (opts.promptShown !== undefined) queued.promptShown = opts.promptShown;
+  if (opts.clientRequestId !== undefined) queued.clientRequestId = opts.clientRequestId;
+  if (opts.sendOrder !== undefined) queued.sendOrder = opts.sendOrder;
+  if (opts.steeredDispatch !== undefined) queued.steeredDispatch = opts.steeredDispatch;
+  if (opts.uploadPaths !== undefined) queued.uploadPaths = opts.uploadPaths;
   return queued;
 }
 
@@ -481,6 +543,8 @@ export interface SystemTurnDeps {
   repoSessionOutcomeNotice?: (sessionId: string) => RepoSessionOutcomeNotice | null;
   /** At-least-once, like `cardOutcomeNotices` (docs/314-session-message-proposal req 14). */
   sessionMessageOutcomeNotice?: (sessionId: string) => SessionMessageOutcomeNotice | null;
+  /** At-least-once, like `cardOutcomeNotices` (docs/328-session-message-inbox). */
+  inboxNotice?: (sessionId: string) => InboxNotice | null;
   /**
    * Consumes the role's first-turn instructions; subsequent calls return an empty string.
    * The returned `repark` hands the take back when the turn never reaches an agent.
@@ -505,23 +569,33 @@ export interface SystemTurnDeps {
       /** The route of the session's previous own turn, kept when no resident process remains. */
       previousRouteId?: string;
       requireResidentRoute?: boolean;
-      /** This turn's own user text, already persisted; a replay armed here must not carry it. */
-      ownUserText?: string;
     },
   ) => Promise<{ turnRoute?: { kind: ProviderRouteKind; id: string } } | undefined>;
   needsAccountFailover?: (sessionId: string, agentId: AgentId) => boolean;
   /**
-   * A quota refusal stopped a turn the CLI started on its own. Reports whether another
-   * credential can continue the work now; when none can, the session is recorded so it is
-   * resumed once one is free (docs/306-quota-continuation).
+   * A quota refusal, or a sign-in ShipIt had to renew, stopped a turn the CLI started on
+   * its own. Reports whether a credential can continue the work now; when none can, the
+   * session is recorded so it is resumed once one is free (docs/306-quota-continuation).
    */
-  recordQuotaStandDown?: (args: {
+  recordStandDown?: (args: {
     sessionId: string;
     agentId: AgentId;
     benchedRouteId?: string;
+    cause?: StandDownCause;
   }) => { continues: boolean };
   /** Start the continuation turn. Runs after the stood-down turn's terminal sequence. */
-  continueAfterQuotaStandDown?: (sessionId: string) => Promise<void>;
+  continueAfterStandDown?: (sessionId: string) => Promise<void>;
+  /**
+   * docs/235-agent-self-wake-liveness §9 — these jobs still ran when a one-shot turn's
+   * process ended. Runs last in that turn's terminal sequence, because it can start a turn.
+   */
+  reportStoppedBackgroundJobs?: (report: {
+    sessionId: string;
+    jobs: readonly string[];
+    deliveryId?: string | undefined;
+    /** False when the process was displaced: its work can be uncommitted, so start no turn. */
+    mayWake: boolean;
+  }) => Promise<unknown>;
   /** Told after `last_turn_outcome` is written; a scheduled run's first turn is watched here. */
   onTurnEnd?: (end: TurnEnd) => void;
   recoverResidentRoute?: (sessionId: string, agentId: AgentId) => { kind: ProviderRouteKind; id: string } | undefined;
@@ -575,16 +649,7 @@ export function resetRunnerTurnState(runner: SessionRunnerInterface): void {
   runner.wasInterrupted = false;
   runner.pendingCommitLink = null;
   clearCommittedBodyIds(runner.committedBodyIds);
-  resetSubAgentSpawnBudget(runner);
   resetVoiceNoteTurnState(runner);
-}
-
-// Human live steering refills this budget without clearing the running turn's transcript.
-// Agent-reachable steers must not let the agent refill its own budget.
-export function resetSubAgentSpawnBudget(
-  runner: Pick<SessionRunnerInterface, "subAgentSpawnsThisTurn">,
-): void {
-  runner.subAgentSpawnsThisTurn = 0;
 }
 
 // An idle turn can still have a resident CLI reading or rotating credentials.
@@ -593,6 +658,13 @@ export function sessionHasLiveAgent(
   sessionId: string,
 ): boolean {
   return (registry?.get(sessionId)?.getAgent() ?? null) !== null;
+}
+
+// The browser's "Agent running": `active_runners` and the background work of `session_attention`.
+export function isAgentWorking(
+  runner: Pick<SessionRunnerInterface, "running" | "backgroundWorkDescriptions"> | undefined,
+): boolean {
+  return !!runner && (runner.running || runner.backgroundWorkDescriptions.length > 0);
 }
 
 export interface SessionRunnerEvents {
@@ -616,15 +688,9 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   readonly sessionDir: string;
 
   running: boolean;
-  /** A system driver owns the turn or the interval between its turns; suppress live steering. */
-  systemTurnInProgress: boolean;
-  /**
-   * Identifies the CURRENT hold on systemTurnInProgress: every write of `true` mints a
-   * new value. A turn captures it when it takes the hold and releases only on a match,
-   * so it cannot release a hold that changed hands while it ran (docs/304).
-   */
-  readonly systemHoldSeq: number;
-  /** Separate from systemTurnInProgress so a turn's cleanup cannot release an in-flight merge. */
+  /** Written only by `takeSessionHold` and the hold's own `release` (session-hold.ts). */
+  sessionHold: SessionHold | null;
+  /** Separate from the session hold, which a rebase or a restart owns. */
   mergeHold: boolean;
   /** docs/322 — the agent waits for the user's answer, so automatic turns are held. */
   readonly answerHold: boolean;
@@ -652,8 +718,9 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   endPostTurnWork(): void;
   /** From a turn's end until its local commit settles. Narrower than the lease, which a push can hold for minutes. */
   readonly turnCommitPending: boolean;
-  beginTurnCommit(): void;
-  endTurnCommit(): void;
+  /** Returns the hold to pass back to `endTurnCommit`, so an expired holder ends nothing. */
+  beginTurnCommit(): number;
+  endTurnCommit(hold: number): void;
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void;
   clearBackgroundTasks(): void;
   /** Actual resident process mode, distinct from the adapter's static steering capability. */
@@ -678,8 +745,6 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /** Defer linking until final chat rows exist; an early agent_result can precede final text. */
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null;
 
-  subAgentSpawnsThisTurn: number;
-
   /** Caller enforces authorization, credentials and budget; this leaves the main agent slot intact. */
   spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult>;
 
@@ -691,7 +756,7 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   enqueue(msg: QueuedMessage): number;
   dequeue(): QueuedMessage | undefined;
   clearQueue(): void;
-  getQueueSnapshot(): { text: string; position: number }[];
+  getQueueSnapshot(): WsQueueRow[];
 
   activeDeliveryId: string | undefined;
   hasDelivery(deliveryId: string): boolean;
@@ -739,8 +804,18 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   notifyWorkspaceRewritten?(rewrite?: string): void;
   /** Re-materialize plugin skills in the workspace (docs/262-plugins). */
   preparePlugins?(): Promise<void>;
+  /** docs/327 — the session's declared MCP servers; null when shipit.yaml cannot be read. */
+  serviceMcp?(): SessionServiceMcp | null;
+  /** docs/327 — gives a resident agent the servers that were declared after it started. */
+  syncServiceMcp?(): Promise<void>;
   readonly dependencyGap?: DependencyGap | null;
   resumeInFlightTurn?(): Promise<boolean>;
+  /** planning#700 — take over the worker's idle resident process; call before the spawn guards. */
+  attachIdleResident?(): Promise<boolean>;
+  /** planning#700 — no agent here, and the worker holds a process the next turn can take over, or is not read yet. */
+  readonly residentToAttach?: boolean;
+  /** The worker and the install, which a fresh agent process waits for before it starts. */
+  whenReadyForAgent?(): Promise<void>;
 
   setSystemTurnDeps(deps: SystemTurnDeps): void;
   assertCanDispatch(): void;
@@ -766,15 +841,14 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private agent: AgentProcess | null = null;
   private _agentId: AgentId;
   private _isRunning = false;
-  private _systemTurnInProgress = false;
-  private _systemHoldSeq = 0;
+  sessionHold: SessionHold | null = null;
   private _mergeHold = false;
   private _wasInterrupted = false;
   turnEpoch = 0;
   private _lastTurnErrored = false;
   private _guardedUnavailable = false;
   readonly awaitingPermissionIds = new Set<string>();
-  private _backgroundTasks = new BackgroundTaskTracker();
+  private _backgroundTasks = new BackgroundTaskTracker(() => this.clearBackgroundTasks());
   private _isStreamingActive = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _appliedSpawnIdentity: string | undefined = undefined;
@@ -802,7 +876,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _detectedPorts: number[] = [];
   private _disposed = false;
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
-  private _subAgentSpawnsThisTurn = 0;
   private _subAgentHandles = new Map<SubAgentRunHandle, AgentId>();
   private _lastAnnouncedWork = "[]";
   private _postTurnHold = new PostTurnHold();
@@ -826,13 +899,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     if (v && !this._isRunning) beginTurnSetup(this);
     this._isRunning = v;
   }
-  get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
-  set systemTurnInProgress(v: boolean) {
-    // Every acquisition is a new hold, including one taken while the flag is already set.
-    if (v) this._systemHoldSeq += 1;
-    this._systemTurnInProgress = v;
-  }
-  get systemHoldSeq(): number { return this._systemHoldSeq; }
   get mergeHold(): boolean { return this._mergeHold; }
   set mergeHold(v: boolean) { this._mergeHold = v; }
   get answerHold(): boolean { return readAnswerHold(this._systemTurnDeps, this.sessionId); }
@@ -872,14 +938,18 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     if (!this._postTurnHold.active) this.emit("work_released");
   }
   get turnCommitPending(): boolean { return this._turnCommitHold.active; }
-  beginTurnCommit(): void { this._turnCommitHold.begin(); }
-  endTurnCommit(): void { this._turnCommitHold.end(); }
+  beginTurnCommit(): number { return this._turnCommitHold.begin(); }
+  endTurnCommit(hold: number): void { this._turnCommitHold.end(hold); }
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
     this._backgroundTasks.set(tasks);
     this.announceBackgroundWork();
   }
   clearBackgroundTasks(): void {
-    this._backgroundTasks.clear();
+    // The SSE announcement updates the sidebar only; the open chat's row needs this message.
+    if (this._backgroundTasks.clear()) {
+      const descriptions = this.backgroundWorkDescriptions;
+      this.emitMessage({ type: "background_tasks", sessionId: this.sessionId, count: descriptions.length, descriptions });
+    }
     this.announceBackgroundWork();
   }
   private announceBackgroundWork(): void {
@@ -914,8 +984,6 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set awaitingUserAnswer(v: boolean) { this._awaitingUserAnswer = v; }
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
-  get subAgentSpawnsThisTurn(): number { return this._subAgentSpawnsThisTurn; }
-  set subAgentSpawnsThisTurn(n: number) { this._subAgentSpawnsThisTurn = n; }
 
   async spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult> {
     const factory = this._systemTurnDeps?.agentFactory;
@@ -932,6 +1000,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
       ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
       ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
+      ...(req.sandbox ? { sandbox: true } : {}),
     };
     const handle = runAgentToCompletion(agent, runOpts, Date.now());
     this._subAgentHandles.set(handle, req.agentId);
@@ -939,7 +1008,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     const prev = process.env.SHIPIT_AGENT_DEPTH;
     try {
       process.env.SHIPIT_AGENT_DEPTH = String(req.depth + 1);
-      agent.run(buildSubAgentRunParams(runOpts));
+      handle.start(() => { agent.run(buildSubAgentRunParams(runOpts)); });
       if (prev === undefined) Reflect.deleteProperty(process.env, "SHIPIT_AGENT_DEPTH");
       else process.env.SHIPIT_AGENT_DEPTH = prev;
       return await handle.promise;
@@ -969,6 +1038,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     if (this._messageQueue.length >= SessionRunner.MAX_QUEUE_SIZE) {
       throw new Error(`Message queue is full (max ${SessionRunner.MAX_QUEUE_SIZE})`);
     }
+    msg.sendOrder ??= nextSendOrder();
     this._messageQueue.push(msg);
     return this._messageQueue.length;
   }
@@ -982,8 +1052,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     settleDroppedQueueEntries(this._messageQueue, "queue cleared");
     this._messageQueue.length = 0;
   }
-  getQueueSnapshot(): { text: string; position: number }[] {
-    return this._messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 }));
+  getQueueSnapshot(): WsQueueRow[] {
+    return queueSnapshot(this._messageQueue);
   }
 
   getTerminal(): TerminalProcess | null { return this._terminal; }

@@ -632,17 +632,15 @@ one non-npm branch, gated on `contains antigravity $selected`:
   the command; the files it wrote are exactly these), and that a symlinked
   skill directory inside the plugin is followed. Cleanup is `rmSync` on the
   throwaway root. **Why a throwaway root at all, given ShipIt already
-  scopes homes:** a same-harness `shipit agent run` gets a provisioned
-  `homeDir` of its own (`services/sub-agent.ts`, verified at source), but
-  that is the only case: a **cross-harness** run — an Antigravity reviewer
-  spawned from a Claude session — borrows the session's credential subtree,
-  so two such runs, or a run and a later turn, would share one
-  `config/mcp_config.json`; and in **local mode** (dogfood,
-  `RUNTIME_MODE=local`) a spawn's `HOME` is the account root itself, so a
-  turn and a brokered run collide the same way — the exact race docs/274
-  hit. The throwaway root makes `config/` per-process in both cases; the
-  durable link is what keeps the token, conversations and the MCP schema
-  cache shared. Built unconditionally (one code path), and cheap.
+  scopes homes:** in a session container every brokered run gets a
+  provisioned `homeDir` of its own (`services/sub-agent.ts`, verified at
+  source), but the session's own turns share one home, and in **local mode**
+  (dogfood, `RUNTIME_MODE=local`) a spawn's `HOME` is the account root
+  itself, so a turn and a brokered run would share one
+  `config/mcp_config.json` — the exact race docs/274 hit. The throwaway root
+  makes `config/` per-process in both cases; the durable link is what keeps
+  the token, conversations and the MCP schema cache with the home the spawn
+  was given. Built unconditionally (one code path), and cheap.
 - **Event mapping** (`mapEvent`): `init` → `agent_init`; `agent_response`
   deltas → `agent_assistant` text; a `tool` step ACTIVE → tool_use (name +
   normalized input), DONE → `agent_tool_result` (`tool_info.output`);

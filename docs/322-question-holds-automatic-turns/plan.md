@@ -71,14 +71,16 @@ question.
    gate shares, so automatic work stopped by a running turn — the question
    winding down, a CLI turn being stopped — is saved too, not queued in memory. While a turn runs, automatic work is not steered into it
    once the turn has asked (`runner.awaitingUserAnswer`), so it queues instead.
-   An interrupted interactive turn discards its queue — the Stop button's
-   meaning. A question also interrupts the CLI, and used to discard the queue
-   the same way, dropping even a reply the user typed as the card appeared. The
-   interactive drain now discards only after a stop; after a question it goes on
-   to the take below, which runs the user's own entry and holds the automatic
-   ones (req 3, 6). A Stop the user presses as the question lands still
-   discards: `noteUserStop` (`turn-stop-request.ts`) tells it from the
-   question's own interrupt.
+   A Stop empties the queue — the Stop button's meaning. A question also
+   interrupts the CLI, and used to discard the queue the same way, dropping
+   even a reply the user typed as the card appeared. A question's own
+   interrupt leaves the queue alone: the drain goes on to the take below,
+   which runs the user's own entry and holds the automatic ones (req 3, 6). A
+   Stop the user presses as the question lands still empties the queue.
+   Changed 2026-10-12 by `docs/330-stop-returns-queued-messages`: the Stop
+   empties the queue itself (`interruptAgentTurn`), which a question's
+   interrupt does not go through, so no drain tells the two apart any more;
+   and a message of the user's goes back into the input box.
 2. **Queue take** (`takeRunnableQueuedTurn`): while the mark is set, every
    automatic entry in the queue — one that queued behind the asking turn — is
    saved and leaves the queue, and the first entry the user queued is taken.
@@ -134,7 +136,9 @@ as the process, as its caller does.
 - A runner that goes away while they are back in its queue does not settle them
   (`withoutHeldEntries`); their rows bring them back at the next user turn. A
   Stop, or cancelling one from the queue, discards it with its row
-  (`forgetHeldEntries`).
+  (`forgetHeldEntries`) and settles it as dropped
+  (`docs/330-stop-returns-queued-messages`: a cancelled entry was not settled
+  before).
 - After a restart the callback is gone. A merge notice gets its settlement back
   from `rebindDelivery` when it is restored, so the watch is marked delivered and
   its retry loop does not send it again. merge-watch counts a saved delivery as

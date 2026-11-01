@@ -694,19 +694,23 @@ describe("createPluginInstallRunner", () => {
   });
 
   it("stops a running install when its session goes away", async () => {
-    const { docker, containers } = fakeDocker({ exit: "hang" });
+    let started!: () => void;
+    const containerStarted = new Promise<void>((resolve) => { started = resolve; });
+    const { docker, containers } = fakeDocker({ exit: "hang", onStart: () => started() });
     let gone = false;
     const run = createPluginInstallRunner({
       docker, image: "worker:test", sessionId: "s1", stateDir, timeoutMs: 60_000,
     });
     const running = run({ ...job([exportWith("probe", "sleep 9999")]), isCancelled: () => gone });
-    // Let the wait loop take at least one poll slice.
-    await new Promise((r) => setTimeout(r, 30));
+    // The runner also checks before it creates a container; leaving before the start
+    // would exercise that check instead of stopping a running install.
+    await Promise.race([containerStarted, running]);
     gone = true;
 
     const result = await running;
     expect(result.ok).toBe(false);
-    expect(result.reason).toContain("session went away");
+    expect(result.reason).toContain("was stopped because the session went away");
+    expect(containers).toHaveLength(1);
     expect(containers[0]!.killed).toBe(true);
   });
 

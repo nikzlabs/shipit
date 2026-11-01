@@ -18,11 +18,8 @@ import type { PresentStore } from "./present-store.js";
 import type { InProgressPersister } from "./chat-card-persistence.js";
 import type { SessionRunnerFactory, SessionRunnerRegistry } from "./session-runner.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
-import {
-  COMPOSE_HELPER_IMAGE_ENV,
-  resolveComposeHelperImage,
-  setComposeHelperImage,
-} from "./compose-helper.js";
+import { warnIfAddressPoolIsSmall } from "./docker-address-pool.js";
+import { COMPOSE_HELPER_IMAGE_ENV, pinComposeHelperImage } from "./compose-helper.js";
 import { preservePartialTurnOnWorkerLoss } from "./startup-tasks.js";
 import { workerGet } from "./worker-http.js";
 import { isOverlayEnabled } from "./overlay-session.js";
@@ -36,7 +33,7 @@ import type { MergeWatchManager } from "./merge-watch.js";
 import { applyMergedPrIssueRefs, type MergedPrInfo } from "./issue-lifecycle.js";
 import { getErrorMessage } from "./validation.js";
 import type { LogStore } from "./log-store.js";
-import { fetchCIFailureLogs, buildCIFixPrompt, autoFixDispatch } from "./services/github.js";
+import { fetchCIFailureLogs, buildCIFixPrompt, dispatchAutoFix } from "./services/github.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
 import { announceResetStateOnMerge } from "./services/pre-turn-reset.js";
@@ -105,6 +102,8 @@ export type { WarmPoolDeps } from "./warm-pool-manager.js";
 export {
   createWarmPreviewStarter,
   preStartWarmPreview,
+  warmPreviewState,
+  warmPreviewWanted,
   isRecentlyUsedRepo,
   WARM_PREVIEW_RECENCY_DAYS,
 } from "./warm-preview.js";
@@ -175,6 +174,9 @@ export async function setupContainerManager(
       stateDir: setupDeps.stateDir,
       credentialsVolume: process.env.CREDENTIALS_VOLUME,
       stackName: process.env.DOCKER_STACK,
+      // Set here as well as in setDockerProxy: an ops session does not use that proxy, so its
+      // image must not depend on the proxy having started.
+      dockerImageName: process.env.SESSION_WORKER_DOCKER_IMAGE,
       ...(setupDeps.resolveEgressConfig ? { resolveEgressConfig: setupDeps.resolveEgressConfig } : {}),
       ...(setupDeps.gpuAccess ? { gpuAccess: setupDeps.gpuAccess } : {}),
     });
@@ -185,10 +187,9 @@ export async function setupContainerManager(
       // and refuse a non-loopback binding where they cannot.
       await initLocalBlock(containerManager.getDockerClient());
       await assertLoopbackOnlyWithoutBlock(containerManager.getDockerClient());
-      const helperImage = await resolveComposeHelperImage(
+      const helperImage = await pinComposeHelperImage(
         containerManager.getDockerClient(), process.env[COMPOSE_HELPER_IMAGE_ENV],
       );
-      setComposeHelperImage(helperImage);
       if (helperImage.status === "ready") {
         console.log(`[server] Compose helper image ${helperImage.name} pinned to ${helperImage.id}`);
       } else {
@@ -251,6 +252,13 @@ export async function setupContainerManager(
       );
       await containerManager.startHealthMonitor();
       console.log("[server] Docker container mode enabled");
+      void warnIfAddressPoolIsSmall(containerManager.getDockerClient());
+      if (!process.env.SESSION_WORKER_DOCKER_IMAGE) {
+        console.warn(
+          "[server] SESSION_WORKER_DOCKER_IMAGE is not set — ops sessions and Docker-access sessions "
+          + "will run the base worker image, which has no docker CLI and no journalctl",
+        );
+      }
     } else {
       throw new Error("Docker is not available (is /var/run/docker.sock mounted?)");
     }
@@ -929,7 +937,7 @@ export function createPrStatusPoller(
       console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — dispatching a fix turn for ${checkLabel}`);
 
       // Settlement also resolves on disposal; onTurnComplete alone can wait forever.
-      const outcome = await runner.dispatch(autoFixDispatch(prompt)).settled;
+      const outcome = await dispatchAutoFix(runner, prompt).settled;
       const detail = outcome.detail ? ` (${outcome.detail})` : "";
       console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — fix turn settled as ${outcome.status}${detail}`);
       return autoFixResultForOutcome(outcome);
@@ -1124,8 +1132,8 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         const opts = { repairLeakedSubtrees: !hasLiveAgent?.(session.id) };
         // An unmarked subtree may belong to another account; update only its existing flat token.
         const wrote = marked !== undefined
-          ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId, undefined, undefined, opts)
-          : repushAgentToken(credentialsDir, session.id, agentId, undefined, undefined, opts);
+          ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId, opts)
+          : repushAgentToken(credentialsDir, session.id, agentId, opts);
         if (wrote) healed++;
       } catch (err) {
         console.error(`[auth] A3 token re-push failed for session ${session.id}:`, err);

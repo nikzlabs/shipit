@@ -5,7 +5,7 @@ import {
   launchEgressResolver,
   EGRESS_RESOLVER_LABEL,
 } from "./egress-dns-install.js";
-import { DOCKER_EMBEDDED_DNS } from "./egress-dns.js";
+import { DOCKER_EMBEDDED_DNS, publicDnsDomains } from "./egress-dns.js";
 
 export interface ReloadEgressOpts {
   docker: Docker;
@@ -71,19 +71,29 @@ function envValue(env: string[], key: string): string | undefined {
  * Which of an agent's sidecars name ShipIt differently from this process. Each
  * keeps the names it was started with, so after ShipIt is recreated a kept agent
  * could not find it by name (planning#626). A resolver from before agents could
- * look up their Compose services by name is stale too. A missing sidecar is not.
+ * look up their Compose services by name is stale too, and so is one that sends a
+ * service name to the public upstream (#3166). A missing sidecar is not.
  */
 export async function staleEgressSidecars(
   docker: Docker,
-  opts: { sessionId: string; agentContainerId: string; internalNames?: string[]; decisionUrl?: string },
+  opts: {
+    sessionId: string;
+    agentContainerId: string;
+    internalNames?: string[];
+    /** The allowlist a resolver started now would be built from. */
+    allowlist?: readonly string[];
+    decisionUrl?: string;
+  },
 ): Promise<{ resolver: boolean; proxy: boolean }> {
   let resolver = false;
   if (opts.internalNames) {
+    const publicDomains = new Set(publicDnsDomains(opts.allowlist ?? []));
     for (const env of await sidecarEnvs(docker, `${EGRESS_RESOLVER_LABEL}=${opts.sessionId}`, opts.agentContainerId)) {
       const config = Buffer.from(envValue(env, "EGRESS_DNSMASQ_CONFIG_B64") ?? "", "base64").toString("utf-8");
       const forwarded = new Set(config.split("\n"));
       if (opts.internalNames.some((name) => !forwarded.has(`server=/${name}/${DOCKER_EMBEDDED_DNS}`))) resolver = true;
       if (!forwarded.has(`server=//${DOCKER_EMBEDDED_DNS}`)) resolver = true;
+      if (opts.allowlist && [...forwarded].some((line) => shadowsServiceName(line, publicDomains))) resolver = true;
     }
   }
   let proxy = false;
@@ -93,6 +103,12 @@ export async function staleEgressSidecars(
     }
   }
   return { resolver, proxy };
+}
+
+// A single-label route to a public upstream that the current allowlist does not ask for, as `.dev` would.
+function shadowsServiceName(line: string, publicDomains: ReadonlySet<string>): boolean {
+  const match = /^server=\/([^./]+)\/(.+)$/.exec(line);
+  return match !== null && match[2] !== DOCKER_EMBEDDED_DNS && !publicDomains.has(match[1]);
 }
 
 export async function reloadEgressSidecars(opts: ReloadEgressOpts): Promise<void> {

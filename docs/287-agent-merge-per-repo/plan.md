@@ -404,11 +404,23 @@ start while its settlement is unresolved.
 *It must be retryable.* A transient GitHub or authentication failure must not
 strand a row until the next process restart. Reconciliation therefore runs from
 three triggers, all cheap and all inside this feature: once at startup, at the end
-of any turn on that session, and when the session is next activated. No polling
-integration is required, because a direct claim never waits for anything external
-— it is created inside a turn and resolved as soon as that turn is over.
+of any turn on that session, and when the session is next activated. The
+end-of-turn trigger runs at `idle` and again when the turn's post-turn hold comes
+off (`work_released`): `idle` fires inside that hold, where the no-active-turn
+test reads the session as busy and stands down, so the second call is the one
+that settles a claim when an ordinary turn ends (#3296). One settler per session
+runs at a time (`beginSettlement` on the claim store): two reconciliations would
+each force the pull request's merge effects. The merge route holds the same
+guard from its claim until its request resolves, because a turn can end while
+GitHub has not answered and a reconciliation then would read the merge as open;
+the `docs/288-agent-merge-arming` executor holds it while it settles. This feature
+adds no polling of its own, because a direct claim is created inside a turn and
+resolved by its own request, or — when that answer is lost — by the reconciliation
+after the turn.
 (`docs/288-agent-merge-arming` adds rows that *do* wait, and with them the
-polling-supervisor and global-gate work that keeps them reachable.)
+polling-supervisor and global-gate work that keeps them reachable. Its 20-second
+executor pass also reconciles every claim, and is the retry when the end-of-turn
+call stands down: background work still running, or the guard held.)
 
 ### Settlement
 
@@ -426,9 +438,11 @@ request in which repository. Settlement then runs **one canonical
 terminal-promotion operation, addressed by pull-request number**, supplied with
 the complete pull-request facts it needs — the promotion that builds the
 persisted card needs URL, title, body, base, branch and diff statistics; the
-notification needs URL, title and branch; the reset anchor needs the head SHA;
-the issue lifecycle needs the body. The merge response carries none of that, so
-settlement fetches those facts for that number before promoting. It is the same
+notification needs URL, title and branch; the issue lifecycle needs the body. The
+merge response carries none of that, so settlement fetches those facts for that
+number before promoting. The reset anchor is the one fact it does not take from
+that read: it is `expected_sha`, the commit the merge call pinned, because a head
+read after the merge can be empty or name another commit. It is the same
 operation `verifyMissingPr` reaches on detection, and it leaves `merged_at`, the
 merged snapshot, `mergedHeadSha` and reset eligibility exactly as a detected
 merge does — which is what requirement 11 asks for.

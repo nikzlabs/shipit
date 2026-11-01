@@ -40,6 +40,16 @@ export function derivePlanHeadline(input: Record<string, unknown>): string {
     : "I've drafted a plan — want to review it?";
 }
 
+const COMMAND_TOOLS = new Set(["Bash", "PowerShell", "Monitor", "shell"]);
+const FILE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"]);
+
+export function derivePermissionHeadline(toolName: string): string {
+  const action = COMMAND_TOOLS.has(toolName)
+    ? "to run a command"
+    : FILE_TOOLS.has(toolName) ? "to change a file" : "for my next step";
+  return `I need your approval ${action} — approve or deny it on screen.`;
+}
+
 export function observeVoiceNotes(
   runner: SessionRunnerInterface,
   toolBlocks: ClaudeContentBlockToolUse[],

@@ -17,6 +17,11 @@ description: A session create whose response is lost is reported honestly and ca
 5. The other agent-shim commands that share this failure mode must be
    identified, with the cost of a retry stated per command, so the ones worth
    fixing can be chosen rather than all of them changed.
+6. When the connection fails after a command's request was sent, ShipIt must
+   not send that request again on its own. The one exception is a request that
+   carries a key which makes the repeat safe (req 2). This applies to every
+   request that is not a read. Reaching ShipIt through its second address when
+   the first one is stale must keep working.
 
 ## Resolved questions
 
@@ -38,3 +43,9 @@ description: A session create whose response is lost is reported honestly and ca
   within the window collapse into one. The requirement that loses is the
   narrower one — a deliberate identical duplicate inside ten minutes — and it
   stays reachable by varying the title.
+- 2026-10-10 — *The retry on the second host name was left open here. Is it to
+  be removed?* Yes. The user approved the follow-up of nikzlabs/shipit#3143
+  (planning#680): the worker's client must stop sending a request again after
+  the request was sent, so that a plugin command or another call that is not
+  idempotent cannot run twice, and the fallback for a stale `SHIPIT_HOST` must
+  keep working. This is req 6.

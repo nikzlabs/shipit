@@ -1,4 +1,5 @@
 import { perSessionCredentialsDir } from "./session-credentials-scaffold.js";
+import { isOpenCodeHarness } from "../shared/opencode-harness.js";
 import type { AgentId } from "../shared/types/agent-types.js";
 import type { AgentProcess, SessionInfo } from "../shared/types.js";
 import type { AgentHomeResolver } from "../shared/agent-home.js";
@@ -24,8 +25,8 @@ export function resolveLocalAgentHome(
   deps: LocalAgentHomeDeps,
 ): string | undefined {
   const session = deps.sessionManager.get(sessionId);
-  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-  if (agentId === "opencode" && session?.agentId === "opencode") return perSessionCredentialsDir(deps.credentialsDir, sessionId);
+  // OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  if (isOpenCodeHarness(agentId) && session?.agentId === agentId) return perSessionCredentialsDir(deps.credentialsDir, sessionId);
 
   // Keep the turn's selected route. Reserved routes use environment credentials and the global home.
   const turnRoute = deps.getTurnRoute?.(sessionId);

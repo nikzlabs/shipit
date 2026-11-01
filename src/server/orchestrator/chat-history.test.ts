@@ -18,6 +18,7 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   parentCommitHash: "def456",
   uploadPaths: ["/uploads/x.png"],
   clientRequestId: "req-1",
+  agentMessageId: "msg-1",
   notice: true,
   noticeLevel: "warn",
   rolledBack: true,
@@ -380,6 +381,18 @@ describe("ChatHistoryManager", () => {
     };
     mgr.append("sess-1", msg);
     expect(mgr.load("sess-1")[0].compaction).toEqual(msg.compaction);
+  });
+
+  it("returns the session's newest compaction card (docs/295 req 15)", () => {
+    const mgr = new ChatHistoryManager(dbManager);
+    expect(mgr.latestCompactionCard("sess-1")).toBeUndefined();
+
+    mgr.append("sess-1", { role: "assistant", text: "", compaction: { id: "c-1", createdAt: "2026-06-06T00:00:00.000Z", postTokens: 9 } });
+    mgr.append("sess-1", { role: "assistant", text: "work" });
+    mgr.append("sess-1", { role: "assistant", text: "", compaction: { id: "c-2", createdAt: "2026-06-07T00:00:00.000Z" } });
+    mgr.append("sess-2", { role: "assistant", text: "", compaction: { id: "other", createdAt: "2026-06-08T00:00:00.000Z" } });
+
+    expect(mgr.latestCompactionCard("sess-1")?.id).toBe("c-2");
   });
 
   it("persists a voice-note card so it survives a reload (docs/163)", () => {
@@ -935,6 +948,18 @@ describe("ChatHistoryManager", () => {
       expect(mgr.load("sess-1")[0].permissionPrompt?.phase).toBe("denied");
     });
 
+    it("keeps the reason of a card that nobody answered after a reload (docs/193-sensitive-file-permission req 8)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", pendingCard("perm-1"));
+
+      mgr.updatePermissionCard("sess-1", "perm-1", { phase: "denied", unanswered: { waitedMs: 1_800_000 } });
+
+      const card = new ChatHistoryManager(dbManager).load("sess-1")[0].permissionPrompt;
+      expect(card?.phase).toBe("denied");
+      expect(card?.unanswered).toEqual({ waitedMs: 1_800_000 });
+      expect(card?.toolName).toBe("Write");
+    });
+
     it("returns false when no permission card matches the given id", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", pendingCard("perm-1"));
@@ -1084,6 +1109,22 @@ describe("ChatHistoryManager", () => {
           `add it to EVERY_OPTIONAL_FIELD_MESSAGE and wire its column + toRow/fromRow so it survives a reload.`,
       ).toBeDefined();
     }
+  });
+
+  describe("recordUserMessageAgentId (docs/007 req 5)", () => {
+    it("stamps the user row it names, and a retry's echo replaces the first", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "user", text: "same text" });
+      const prompt = mgr.append("sess-1", { role: "user", text: "same text" });
+      const reply = mgr.append("sess-1", { role: "assistant", text: "reply" });
+
+      mgr.recordUserMessageAgentId("sess-1", prompt, "failed-attempt");
+      mgr.recordUserMessageAgentId("sess-1", prompt, "kept-attempt");
+      mgr.recordUserMessageAgentId("sess-1", reply, "not-a-prompt");
+      mgr.recordUserMessageAgentId("other-session", prompt, "elsewhere");
+
+      expect(mgr.load("sess-1").map((m) => m.agentMessageId)).toEqual([undefined, "kept-attempt", undefined]);
+    });
   });
 
   describe("settings proposal card persistence (docs/299-agent-settings-access)", () => {
@@ -1356,6 +1397,41 @@ describe("ChatHistoryManager", () => {
       mgr.append("sess-1", checklist("a1"));
       expect(mgr.updateActionChecklistCard("sess-1", "missing", { submittedAt: "x" })).toBe(false);
       expect(mgr.findActionChecklistCard("sess-1", "missing")).toBeNull();
+    });
+  });
+
+  describe("self merge-watch arm card end (docs/239)", () => {
+    const armCard = (watchId: string, prNumber: number): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      selfMergeWatch: {
+        cardId: `card-${watchId}`,
+        watchId,
+        prNumber,
+        prUrl: `https://github.com/o/r/pull/${prNumber}`,
+        createdAt: "2026-10-10T00:00:00.000Z",
+      },
+    });
+
+    it("stores the end inside the existing card JSON, on the card of that arming only", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", armCard("w1", 43));
+      mgr.append("sess-1", armCard("w2", 44));
+      // An older row reads as still armed, which is the correct default.
+      expect(mgr.findSelfMergeWatchCard("sess-1", "w1")?.ended).toBeUndefined();
+
+      expect(mgr.updateSelfMergeWatchCard("sess-1", "w1", { ended: "replaced" })).toBe(true);
+      const cards = mgr.load("sess-1").map((m) => m.selfMergeWatch);
+      expect(cards.map((c) => c?.ended)).toEqual(["replaced", undefined]);
+      expect(cards[0]?.prNumber).toBe(43);
+    });
+
+    it("does not reach a card of another session, and reports a missing card", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", armCard("w1", 43));
+      expect(mgr.updateSelfMergeWatchCard("sess-2", "w1", { ended: "cancelled" })).toBe(false);
+      expect(mgr.findSelfMergeWatchCard("sess-1", "missing")).toBeNull();
+      expect(mgr.load("sess-1")[0].selfMergeWatch?.ended).toBeUndefined();
     });
   });
 

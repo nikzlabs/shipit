@@ -713,6 +713,12 @@ html, body {
   color: #111;
 }
 
+/* The current match in a row that draws no <mark> — see `search-target.ts`. */
+::highlight(shipit-search-current) {
+  background-color: rgba(250, 204, 21, 0.8);
+  color: #111;
+}
+
 .prose :where(ul, ol) > li::marker {
   color: currentColor;
 }

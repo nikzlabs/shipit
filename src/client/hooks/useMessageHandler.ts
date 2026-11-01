@@ -9,6 +9,18 @@ import {
   type HandlerContext,
 } from "./message-handlers/index.js";
 
+/** A bubble drawn before the HTTP history load is wiped by it, so these wait for it. */
+const WAITS_FOR_HISTORY: ReadonlySet<WsServerMessage["type"]> = new Set<WsServerMessage["type"]>([
+  "agent_event",
+  "sub_agent_spawn",
+  "turn_snapshot",
+  "system_user_message",
+  // planning#691 — they add or move a user bubble too.
+  "message_steered",
+  "message_queued",
+  "queue_updated",
+]);
+
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
   drainMessages: () => MessageEvent[];
@@ -61,14 +73,7 @@ export function useMessageHandler(params: {
       } catch {
         continue;
       }
-
-      // is wiped by the load that follows — the very "my message never showed
-
-      if (
-        (data.type === "agent_event" || data.type === "sub_agent_spawn" || data.type === "turn_snapshot"
-          || data.type === "system_user_message") &&
-        !useSessionStore.getState().historyLoaded
-      ) {
+      if (WAITS_FOR_HISTORY.has(data.type) && !useSessionStore.getState().historyLoaded) {
         pendingAgentEventsRef.current.push(data);
         continue;
       }

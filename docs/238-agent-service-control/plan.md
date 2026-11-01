@@ -126,6 +126,11 @@ It resolves through `ServiceManager.snapshotLogs` (durable log store first,
 `docker compose logs --tail` as the fallback) with ANSI stripped, exactly like
 the HTTP route. The route is unchanged and still works.
 
+`--lines N` (`?lines=N` on the route) keeps the last N lines whichever source
+answers: the store, Docker, or the in-memory buffer behind a failed Docker read.
+With no value, the store path returns its whole retained snapshot (the Logs
+drawer reads the same one) and the fallback asks Docker for 2000 lines.
+
 ### Follow-up: a started service the agent could not reach (#2044)
 
 A manual service started successfully — its own logs showed it compiling and

@@ -6,13 +6,22 @@ import type {
   AgentEvent,
   AgentId,
 } from "./agents/agent-process.js";
-import type { PermissionMode, ServiceRouting, WorkerAgentKillBody, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
-import type { AgentGoalCommand, WorkerAgentGoalBody } from "../shared/types/agent-types.js";
-import { toolResultIds, type PermissionBroker } from "./permission-broker.js";
+import type { PermissionMode, PermissionSubagent, ServiceRouting, WorkerAgentKillBody, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
+import type {
+  AgentBackgroundTasksEvent,
+  AgentGoalCommand,
+  WorkerAgentGoalBody,
+  WorkerResidentSpawn,
+  WorkerServiceMcpBody,
+  WorkerServiceMcpResult,
+} from "../shared/types/agent-types.js";
+import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
+import { SubagentCallTracker, toolResultIds, type PermissionBroker } from "./permission-broker.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { reportedPermissionMode } from "../shared/cli-permission-mode.js";
 import { adoptModelList } from "../shared/catalogue/model-list.js";
 import { restoreFullResolutionScreenshots } from "./playwright-screenshot.js";
 import { reclaimStillRenderingBrowsers } from "./agents/browser-reclaim.js";
@@ -24,6 +33,7 @@ import {
 import {
   runAgentToCompletion,
   buildSubAgentRunParams,
+  describeSubAgentFailure,
   type SubAgentRunHandle,
 } from "../shared/sub-agent-run.js";
 
@@ -56,6 +66,9 @@ export interface AgentControllerDeps {
 // there, and one applied after the caller gave up would run twice.
 const MESSAGE_START_WAIT_MS = 5_000;
 
+// Long against a local pipe, short against a card that a person reads.
+const TOOL_CALL_SEEN_WAIT_MS = 250;
+
 export class AgentController {
   private agent: AgentProcess | null = null;
 
@@ -63,10 +76,25 @@ export class AgentController {
   // agent instead of failing the turn with "No agent running".
   private pendingStart: Promise<void> | null = null;
 
-  private residentSpawn: { runToken?: string; streaming: boolean } | null = null;
+  private residentSpawn: {
+    runToken?: string;
+    streaming: boolean;
+    spawn?: Omit<WorkerResidentSpawn, "serviceMcpServers">;
+  } | null = null;
+
+  /** docs/327 — the declared MCP servers the running agent process holds. */
+  private liveServiceMcp: ServiceMcpServer[] = [];
+
+  // Undefined is ShipIt's Auto mode, as on the wire.
+  private permissionMode: PermissionMode | undefined;
 
   // Delivery identity belongs to the turn, not the resident process that can outlive it.
   private turnDeliveryId: string | undefined;
+  // The id of a prompt that went in behind a turn the CLI started; the next turn takes it.
+  private pendingDeliveryId: string | undefined;
+  // docs/333-idle-compaction — turn-scoped like the delivery id, so a restarted orchestrator
+  // adopts a silent compaction as the maintenance it is.
+  private turnSilentCompaction = false;
 
   // docs/303 req 15 — likewise turn-scoped: a restarted orchestrator reads it back from
   // /agent/status, so the adopted turn settles as the nudge it is and is not nudged twice.
@@ -76,8 +104,10 @@ export class AgentController {
   // Set while the active turn is one the CLI started on its own (planning#639).
   private ownTurn: "heard" | "unheard" | undefined;
 
-  private backgroundTaskCount = 0;
+  private backgroundTasks: AgentBackgroundTasksEvent["tasks"] = [];
   private selfWakeActive = false;
+
+  private readonly toolCalls = new SubagentCallTracker();
 
   private reclaimInFlight = false;
   private reclaimPending = false;
@@ -93,16 +123,31 @@ export class AgentController {
     return this.agent?.agentId;
   }
 
+  // docs/193-sensitive-file-permission req 9 — ShipIt's Auto mode runs the Claude CLI in its
+  // "default" mode, which still asks for sensitive files and symlinks out of the workspace.
+  get approvesEveryCall(): boolean {
+    return this.agent?.agentId === "claude"
+      && (this.permissionMode === undefined || this.permissionMode === "auto");
+  }
+
+  async subagentCaller(toolUseId: string): Promise<PermissionSubagent | undefined> {
+    await this.toolCalls.whenOpened(toolUseId, TOOL_CALL_SEEN_WAIT_MS);
+    return this.toolCalls.callerOf(toolUseId);
+  }
+
   registerRoutes(app: FastifyInstance): void {
     app.post<{ Body: WorkerAgentStartBody }>("/agent/start", async (request, reply) => {
       if (this.agent || this.pendingStart) {
         return reply.code(409).send({ error: "Agent already running" });
       }
 
-      const { agentId, params, runToken, deliveryId } = request.body;
-      if (!agentId || !params) {
+      const { agentId, runToken, deliveryId, spawnIdentity } = request.body;
+      if (!agentId || !request.body.params) {
         return reply.code(400).send({ error: "agentId and params are required" });
       }
+      const params = this.deps.mcpConfig.withServiceMcpServers(request.body.params);
+      // Unchanged params mean the proxy bundle is missing and the agent got no entry.
+      this.liveServiceMcp = params === request.body.params ? [] : (params.serviceMcpServers ?? []);
       adoptModelList(request.body.modelList);
 
       let startSettled!: () => void;
@@ -117,9 +162,24 @@ export class AgentController {
         // Capture turn identity and replay position before the adapter emits anything.
         this.beginTurn();
         this.turnDeliveryId = deliveryId;
-        this.residentSpawn = { runToken, streaming: params.useStreaming === true };
+        this.turnSilentCompaction = request.body.silentCompaction === true;
+        this.residentSpawn = {
+          runToken,
+          streaming: params.useStreaming === true,
+          // From the params: what the process really got, whatever the orchestrator recorded.
+          ...(typeof spawnIdentity === "string" && spawnIdentity
+            ? {
+                spawn: {
+                  spawnIdentity,
+                  sessionStatusCard: params.sessionStatusCard === true,
+                  ...(params.permissionMode !== undefined ? { permissionMode: params.permissionMode } : {}),
+                },
+              }
+            : {}),
+        };
         const agent = this.deps.agentFactory(agentId);
         this.agent = agent;
+        this.permissionMode = params.permissionMode;
         this.wireAgentEvents(agent, runToken);
         agent.setPermissionRequester?.((input) => this.deps.permissionBroker.request(input));
         const mcpWrite = this.deps.mcpConfig.invokeAgentMcpWriter(agent, params);
@@ -189,10 +249,10 @@ export class AgentController {
       return { cancelled: true };
     });
 
-    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; serviceRouting?: ServiceRouting; homeDir?: string; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number; toolsOff?: boolean; credentialSecret?: string; modelList?: unknown } }>(
+    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; serviceRouting?: ServiceRouting; homeDir?: string; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number; toolsOff?: boolean; sandbox?: boolean; credentialSecret?: string; modelList?: unknown } }>(
       "/agent/spawn",
       async (request, reply) => {
-        const { agentId, prompt, spawnId, depth, model, serviceRouting, homeDir, reasoningEffort, timeoutMs, maxOutputChars, toolsOff, credentialSecret } = request.body ?? {};
+        const { agentId, prompt, spawnId, depth, model, serviceRouting, homeDir, reasoningEffort, timeoutMs, maxOutputChars, toolsOff, sandbox, credentialSecret } = request.body ?? {};
         if (!agentId || typeof prompt !== "string" || !spawnId) {
           console.warn("[sub-agent] worker rejected spawn: agentId, prompt, and spawnId are required");
           return reply.code(400).send({ error: "agentId, prompt, and spawnId are required" });
@@ -225,6 +285,7 @@ export class AgentController {
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(maxOutputChars !== undefined ? { maxOutputChars } : {}),
           ...(toolsOff !== undefined ? { toolsOff } : {}),
+          ...(sandbox === true ? { sandbox: true } : {}),
         };
         const handle = runAgentToCompletion(agent, runOpts, Date.now());
         this.spawnedAgents.set(spawnId, handle);
@@ -238,13 +299,14 @@ export class AgentController {
             ? { [serviceRouting.credentialSourceEnv]: credentialSecret }
             : {};
           this.withTemporaryEnv({ SHIPIT_AGENT_DEPTH: childDepth, ...routedCredential }, () => {
-            agent.run(buildSubAgentRunParams(runOpts));
+            handle.start(() => { agent.run(buildSubAgentRunParams(runOpts)); });
           });
           const result = await handle.promise;
+          const reason = describeSubAgentFailure(result);
           console.log(
             `[sub-agent] worker done spawn=${spawnId} status=${result.status} `
             + `durationMs=${result.durationMs} outputChars=${result.text.length} `
-            + `truncated=${result.truncated}`,
+            + `truncated=${result.truncated}${reason ? ` reason=${JSON.stringify(reason)}` : ""}`,
           );
           return result;
         } catch (err) {
@@ -293,11 +355,31 @@ export class AgentController {
           return reply.code(400).send({ error: `Invalid mode: ${JSON.stringify(raw)}` });
         }
         this.agent.setPermissionMode(mode);
+        this.notePermissionMode(mode);
         return { success: true };
       },
     );
 
-    app.post<{ Body: { text: string } }>(
+    // docs/327 — a plugin's version can go live while a resident agent runs.
+    app.post<{ Body: WorkerServiceMcpBody }>("/agent/service-mcp", async (request): Promise<WorkerServiceMcpResult> => {
+      await this.pendingStart;
+      const agent = this.agent;
+      if (!agent) return { live: null };
+      const desired = request.body?.serviceMcpServers ?? [];
+      const held = this.liveServiceMcp;
+      const keepsAll = held.every((h) => desired.some((d) => d.name === h.name && d.url === h.url));
+      // Only additions go to a running process; a changed or removed server needs a new one.
+      if (keepsAll && desired.length > held.length) {
+        const entries = this.deps.mcpConfig.serviceMcpEntries(desired);
+        // The agent can have ended during the wait; its set must not go to the next one.
+        if (entries && await agent.setLiveMcpServers?.(entries) && this.agent === agent) {
+          this.liveServiceMcp = desired;
+        }
+      }
+      return { live: this.liveServiceMcp };
+    });
+
+    app.post<{ Body: { text: string; deliveryId?: string; silentCompaction?: boolean } }>(
       "/agent/message",
       async (request, reply) => {
         if (!(await this.startSettledWithin(this.deps.messageStartWaitMs ?? MESSAGE_START_WAIT_MS))) {
@@ -318,7 +400,19 @@ export class AgentController {
           `[steer-worker] /agent/message → agent.sendUserMessage (bytes=${text.length}, text=${snippet})`,
         );
         // Preserve the replay anchor when steering an active turn.
-        if (!this.turnActive) this.beginTurn();
+        const startsTurn = !this.turnActive;
+        if (startsTurn) this.beginTurn();
+        // A turn's own prompt names its delivery, as /agent/start does; a steer names none.
+        // Behind a turn the CLI started, the id waits for the turn that runs the prompt.
+        const deliveryId = request.body?.deliveryId;
+        if (typeof deliveryId === "string" && deliveryId) {
+          if (startsTurn) this.turnDeliveryId = deliveryId;
+          else this.pendingDeliveryId = deliveryId;
+        }
+        // Only the turn this message starts. Behind a turn the CLI started, a compaction can
+        // run without an event that marks its start here, so a mark kept for it would land
+        // on whichever turn begins next.
+        if (startsTurn) this.turnSilentCompaction = request.body?.silentCompaction === true;
         this.agent.sendUserMessage(text);
         return { success: true };
       },
@@ -367,7 +461,11 @@ export class AgentController {
       oldestSseSeq: this.deps.oldestSseSeq?.() ?? 0,
       turnActive: this.turnActive,
       turnStartSseSeq: this.turnStartSseSeq,
-      backgroundTaskCount: this.backgroundTaskCount,
+      ...(this.residentSpawn?.spawn
+        ? { resident: { ...this.residentSpawn.spawn, serviceMcpServers: this.liveServiceMcp } }
+        : {}),
+      backgroundTaskCount: this.backgroundTasks.length,
+      backgroundTasks: this.backgroundTasks,
       selfWakeActive: this.selfWakeActive,
       ...(this.ownTurn !== undefined ? { ownTurn: this.ownTurn } : {}),
       terminalActive: this.deps.otherWorkerLiveness?.().terminalActive ?? false,
@@ -375,6 +473,7 @@ export class AgentController {
       pendingPermissionIds: this.deps.permissionBroker.unansweredIds,
       ...(this.residentSpawn?.runToken !== undefined ? { runToken: this.residentSpawn.runToken } : {}),
       ...(this.turnDeliveryId !== undefined ? { deliveryId: this.turnDeliveryId } : {}),
+      ...(this.turnSilentCompaction ? { silentCompaction: true } : {}),
       ...(this.agent ? { agentId: this.agent.agentId } : {}),
       ...(this.residentSpawn
         ? { streaming: this.residentSpawn.streaming || this.agent?.isStreaming === true }
@@ -399,6 +498,11 @@ export class AgentController {
   private beginTurn(): void {
     this.turnActive = true;
     this.turnStartSseSeq = this.deps.latestSseSeq();
+    this.turnSilentCompaction = false;
+    if (this.pendingDeliveryId !== undefined) {
+      this.turnDeliveryId = this.pendingDeliveryId;
+      this.pendingDeliveryId = undefined;
+    }
   }
 
   private beginOwnTurn(): void {
@@ -424,12 +528,28 @@ export class AgentController {
     return getAgentCapabilities(agent.agentId)?.startsOwnTurns ?? false;
   }
 
+  // planning#700 — a restarted orchestrator restores it, so it follows the CLI's own changes too.
+  private notePermissionMode(mode: PermissionMode | undefined): void {
+    this.permissionMode = mode;
+    // A card opened in Plan or Guarded mode must not hold its call once Auto applies.
+    if (this.approvesEveryCall) {
+      const broker = this.deps.permissionBroker;
+      for (const id of broker.unansweredIds) broker.resolve(id, { behavior: "allow" });
+    }
+    const resident = this.residentSpawn;
+    if (!resident?.spawn) return;
+    const { permissionMode: _previous, ...rest } = resident.spawn;
+    resident.spawn = mode !== undefined ? { ...rest, permissionMode: mode } : rest;
+  }
+
   // Clear process state here: late done events fail the identity guard after a kill.
   private vacateSlot(): void {
     this.agent = null;
     this.residentSpawn = null;
+    this.pendingDeliveryId = undefined;
     this.endTurn();
-    this.backgroundTaskCount = 0;
+    this.backgroundTasks = [];
+    this.toolCalls.clear();
   }
 
   private endTurn(): void {
@@ -438,6 +558,7 @@ export class AgentController {
     // Background tasks can outlive a turn; retain their count until the process ends.
     this.selfWakeActive = false;
     this.turnDeliveryId = undefined;
+    this.turnSilentCompaction = false;
     this.reclaimBrowsers();
   }
 
@@ -477,7 +598,7 @@ export class AgentController {
    * before calling us, and the turn it schedules sets `turnActive` before it dispatches.
    */
   private browsersAreUnattended(): boolean {
-    return !this.turnActive && this.spawnedAgents.size === 0 && this.backgroundTaskCount === 0;
+    return !this.turnActive && this.spawnedAgents.size === 0 && this.backgroundTasks.length === 0;
   }
 
   stop(): void {
@@ -523,8 +644,15 @@ export class AgentController {
         for (const id of toolResultIds(event.content)) this.deps.permissionBroker.endToolUse(id);
       }
       if (this.agent !== agent) return;
+      // After the guard: a replaced process's late events must not enter its successor's calls.
+      if (event.type === "agent_assistant") this.toolCalls.opened(event.content, event.parentToolUseId);
+      else if (event.type === "agent_tool_result") {
+        for (const id of toolResultIds(event.content)) this.toolCalls.closed(id);
+      }
+      const reported = reportedPermissionMode(event);
+      if (reported) this.notePermissionMode(reported.mode);
       if (event.type === "agent_result") this.endTurn();
-      else if (event.type === "agent_background_tasks") this.backgroundTaskCount = event.tasks.length;
+      else if (event.type === "agent_background_tasks") this.backgroundTasks = event.tasks;
       else if (event.type === "agent_self_wake") this.selfWakeActive = true;
     });
 

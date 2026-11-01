@@ -110,6 +110,13 @@ describe("buildAgentResolverConfigB64", () => {
     for (const name of sessionInternalNames()) expect(lines).toContain(`server=/${name}/127.0.0.11`);
   });
 
+  // #3166: an MCP server at http://api:8000 puts `api` in the allowlist.
+  it("leaves an allowlisted Compose service name to Docker DNS", () => {
+    const lines = decode(buildAgentResolverConfigB64({ extraHosts: ["api", "API."] }));
+    expect(lines).toContain("server=//127.0.0.11");
+    expect(lines.some((l) => l.startsWith("server=/api/") || l.startsWith("ipset=/api/"))).toBe(false);
+  });
+
   it("keeps the docker-socket-proxy name for an ops session", () => {
     expect(decode(buildAgentResolverConfigB64({ opsSession: true })))
       .toContain(`server=/${OPS_DOCKER_PROXY_DNS_NAME}/127.0.0.11`);

@@ -7,6 +7,7 @@ import type { DeclaredTracker } from "./declared-tracker.js";
 import { declaredTrackerKey } from "./declared-tracker.js";
 import type { PluginExport, PluginReposConfig } from "./plugin-repos.js";
 import { EMPTY_PLUGIN_REPOS, parsePluginExports, parsePluginRepos } from "./plugin-repos.js";
+import { mcpServerNameError, parseServiceMcpPath } from "./service-mcp.js";
 
 export interface AgentConfig {
   install: string[];
@@ -58,6 +59,14 @@ export interface LfsHostConfig {
   credential: string;
 }
 
+/** docs/327 — an MCP server on one of the project's own Compose services. */
+export interface ProjectMcpServer {
+  name: string;
+  service: string;
+  port: number;
+  path: string;
+}
+
 export interface ShipitConfig {
   version?: number;
   agent: AgentConfig;
@@ -68,6 +77,7 @@ export interface ShipitConfig {
   issues: IssuesConfig;
   plugins: PluginReposConfig;
   pluginExports: PluginExport[];
+  mcp: ProjectMcpServer[];
   warnings: string[];
 }
 
@@ -96,6 +106,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "plugins",
   "exports",
   "lfs",
+  "mcp",
 ]);
 const KNOWN_AGENT_KEYS = new Set(["install", "dep-dirs", "install-inputs"]);
 
@@ -130,6 +141,7 @@ export function parseShipitConfig(doc: unknown): ShipitConfig {
       issues: { trackers: [] },
       plugins: { ...EMPTY_PLUGIN_REPOS },
       pluginExports: [],
+      mcp: [],
       warnings,
     };
   }
@@ -176,11 +188,65 @@ export function parseShipitConfig(doc: unknown): ShipitConfig {
 
   const lfs = parseLfsHostConfig(raw.lfs, warnings);
 
+  const mcp = parseProjectMcp(raw.mcp, warnings);
+
   return {
-    version, agent, compose, release, issues, plugins, pluginExports, hostMounts,
+    version, agent, compose, release, issues, plugins, pluginExports, hostMounts, mcp,
     ...(lfs ? { lfs } : {}),
     warnings,
   };
+}
+
+const KNOWN_PROJECT_MCP_KEYS = new Set(["service", "port", "path"]);
+const COMPOSE_SERVICE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
+/** An invalid entry warns and is skipped; the rest of the file still applies. */
+function parseProjectMcp(raw: unknown, warnings: string[]): ProjectMcpServer[] {
+  if (raw === undefined || raw === null) return [];
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    warnings.push("`mcp` must be a mapping of server name → `{ service, port, path }`; ignoring it.");
+    return [];
+  }
+  const servers: ProjectMcpServer[] = [];
+  for (const [name, entry] of Object.entries(raw as Record<string, unknown>)) {
+    const skip = (reason: string): void => {
+      warnings.push(`Ignoring \`mcp.${name}\` in shipit.yaml: ${reason}.`);
+    };
+    const nameError = mcpServerNameError(name);
+    if (nameError) {
+      skip(`the server's name ${nameError}`);
+      continue;
+    }
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      skip("each server must be a mapping with `service:` and `port:`");
+      continue;
+    }
+    const obj = entry as Record<string, unknown>;
+    for (const key of Object.keys(obj)) {
+      if (!KNOWN_PROJECT_MCP_KEYS.has(key)) warnings.push(`Unknown key \`mcp.${name}.${key}\` in shipit.yaml.`);
+    }
+    const service = typeof obj.service === "string" ? obj.service.trim() : "";
+    if (!COMPOSE_SERVICE_NAME_RE.test(service)) {
+      skip("`service` must name one of the project's Compose services");
+      continue;
+    }
+    const { port } = obj;
+    if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65_535) {
+      skip("`port` must be the port the service serves the MCP server on, a whole number between 1 and 65535");
+      continue;
+    }
+    const path = parseServiceMcpPath(obj.path, `mcp.${name}.path`);
+    if (typeof path === "object") {
+      skip(path.error);
+      continue;
+    }
+    if (servers.some((s) => s.name.toLowerCase() === name.toLowerCase())) {
+      skip("another server already has that name");
+      continue;
+    }
+    servers.push({ name, service, port, path });
+  }
+  return servers;
 }
 
 const KNOWN_LFS_KEYS = new Set(["host", "credential"]);
@@ -645,6 +711,7 @@ export function resolveShipitConfig(dir: string): ShipitConfig {
       issues: { trackers: [] },
       plugins: { ...EMPTY_PLUGIN_REPOS },
       pluginExports: [],
+      mcp: [],
       warnings: [],
     };
   }
@@ -658,6 +725,7 @@ export function resolveShipitConfig(dir: string): ShipitConfig {
       issues: { trackers: [] },
       plugins: { ...EMPTY_PLUGIN_REPOS },
       pluginExports: [],
+      mcp: [],
       warnings: [],
     };
   }

@@ -45,11 +45,14 @@ req 5).
 
 ## The filter is on content, not on the producer
 
-`/shipit-docs/ops-session.md` states that there is no subcommand returning
-another session's chat history, prompts, queued messages, assistant output,
-secrets, or workspace files, and that none will be added. This change was
-weighed against that statement rather than around it — and the first attempt
-failed that test.
+`/shipit-docs/ops-session.md` stated, when this was built, that there is no
+subcommand returning another session's chat history, prompts, queued messages,
+assistant output, secrets, or workspace files, and that none will be added. This
+change was weighed against that statement rather than around it — and the first
+attempt failed that test. (The operator reversed that statement for the chat on
+2026-10-10: `docs/326-ops-session-transcript`. The filter below is unchanged:
+the log stream is a different store from the chat, and no ops command reads
+more of it than the templated lines.)
 
 **What was tried first, and why it was wrong.** The durable agent channel is a
 mixed stream: one `agent.jsonl` per session carries the agent CLI's own

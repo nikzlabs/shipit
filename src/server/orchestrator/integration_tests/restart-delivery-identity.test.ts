@@ -6,9 +6,11 @@ import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { UsageManager } from "../usage.js";
 import { MergeWatchManager } from "../merge-watch.js";
+import { storeOnlyInbox } from "../session-inbox-test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, SystemTurnDeps } from "../session-runner.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
+import { testDispatch } from "./dispatch-test-helpers.js";
 import type {
   AgentProcess,
   AgentProcessEvents,
@@ -37,13 +39,14 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
   runCalled = false;
   lastParams: AgentRunParams | null = null;
   readonly isStreaming = false;
+  readonly messages: string[] = [];
 
   run(params: AgentRunParams): void {
     this.runCalled = true;
     this.lastParams = params;
   }
   writeStdin(): void {}
-  sendUserMessage(): void {}
+  sendUserMessage(text: string): void { this.messages.push(text); }
   interrupt(): void {}
   kill(): void {}
   writeMcpConfig(): { mcpConfigPath?: string; runtimeEnv?: Record<string, string>; cleanup?: () => void } {
@@ -96,6 +99,7 @@ describe("Integration: durable delivery identity across a restart (planning#266)
   let manager: MergeWatchManager;
   let registry: SessionRunnerRegistry;
   let currentRunner: ContainerSessionRunner | null;
+  let inbox: ReturnType<typeof storeOnlyInbox>;
 
   beforeEach(async () => {
     lastAgent = null as unknown as FakeWorkerAgent;
@@ -129,10 +133,12 @@ describe("Integration: durable delivery identity across a restart (planning#266)
       dispose: () => { currentRunner = null; },
     } as unknown as SessionRunnerRegistry;
 
+    inbox = storeOnlyInbox(dbManager);
     manager = new MergeWatchManager({
       sessionManager,
       runnerRegistry: registry,
       chatHistoryManager,
+      sessionInbox: inbox.sessionInbox,
       defaultAgentId: "claude",
     });
   });
@@ -145,7 +151,7 @@ describe("Integration: durable delivery identity across a restart (planning#266)
     await new Promise((r) => setTimeout(r, 50));
   });
 
-  function makeRunner(): ContainerSessionRunner {
+  function makeRunner(opts: { steering?: boolean } = {}): ContainerSessionRunner {
     const runner = new ContainerSessionRunner({
       sessionId: WOKEN_ID,
       sessionDir: "/tmp/woken-session",
@@ -160,6 +166,7 @@ describe("Integration: durable delivery identity across a restart (planning#266)
       scheduleAutoPush: () => {},
       buildRunParams: async (_sessionId, _agentId, prompt) => ({ prompt, cwd: "/workspace" }),
       rebindDelivery: (deliveryId) => manager.rebindDelivery(deliveryId),
+      ...(opts.steering ? { steerInputs: () => ({ liveSteering: true, steeringCapable: true }) } : {}),
       listenerDeps: {
         sessionManager,
         chatHistoryManager,
@@ -175,18 +182,28 @@ describe("Integration: durable delivery identity across a restart (planning#266)
     return runner;
   }
 
+  function watchOf(kind: "child" | "self") {
+    return kind === "self"
+      ? sessionManager.getSelfMergeWatch(WOKEN_ID)
+      : sessionManager.getMergeWatch(CHILD_ID);
+  }
+
   function seedDispatchedWatch(kind: "child" | "self"): void {
     const watchedId = kind === "self" ? WOKEN_ID : CHILD_ID;
-    sessionManager.setMergeWatch(watchedId, {
+    const delivery = {
       parentSessionId: WOKEN_ID,
-      ...(kind === "self" ? { kind: "self" as const, watchId: "watch-abc", prNumber: 7 } : {}),
-      state: "merge-observed",
+      state: "merge-observed" as const,
       registeredAt: "t0",
       observedAt: "t1",
       deliveryAttempts: 1,
       lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
       deliveryId: DELIVERY_ID,
-    });
+    };
+    if (kind === "self") {
+      sessionManager.setSelfMergeWatch(WOKEN_ID, { ...delivery, kind: "self", watchId: "watch-abc", prNumber: 7 });
+    } else {
+      sessionManager.setMergeWatch(CHILD_ID, delivery);
+    }
     sessionManager.setPrStatus(watchedId, mergedPrStatus(watchedId));
     manager.setPrStatusLookup((id) => sessionManager.getPrStatus(id) ?? undefined);
   }
@@ -240,10 +257,121 @@ describe("Integration: durable delivery identity across a restart (planning#266)
     expect(done.deliveryId).toBeUndefined();
   });
 
+  // docs/329-user-steers-every-turn — a wake no longer spawns a process of its own, so its
+  // identity must travel with the message that starts its turn on the resident one.
+  describe("a wake that enters a resident process", () => {
+    async function startResidentProcess(): Promise<void> {
+      const res = await fetch(`${workerUrl}/agent/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agentId: "claude",
+          runToken: "resident-token",
+          params: { prompt: "the user's earlier message", cwd: "/workspace", useStreaming: true },
+        }),
+      });
+      expect(res.status).toBe(200);
+      await waitFor(() => lastAgent?.runCalled, 2000, "worker started the resident process");
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+    }
+
+    const postMessage = (body: Record<string, string>) =>
+      fetch(`${workerUrl}/agent/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    const status = async () =>
+      (await (await fetch(`${workerUrl}/agent/status`)).json()) as WorkerAgentStatus;
+
+    it("the worker records the delivery of a turn's own prompt, and a steer leaves it alone", async () => {
+      await startResidentProcess();
+      expect((await status()).deliveryId).toBeUndefined();
+
+      expect((await postMessage({ text: "Your PR #7 merged.", deliveryId: DELIVERY_ID })).status).toBe(200);
+      const live = await status();
+      expect(live.turnActive).toBe(true);
+      expect(live.deliveryId).toBe(DELIVERY_ID);
+
+      expect((await postMessage({ text: "use the other branch" })).status).toBe(200);
+      expect((await status()).deliveryId).toBe(DELIVERY_ID);
+
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+      expect((await status()).deliveryId).toBeUndefined();
+    });
+
+    it("behind a turn the CLI started, the delivery waits for the turn that runs the prompt", async () => {
+      await startResidentProcess();
+      lastAgent.emit("event", { type: "agent_self_wake", taskId: "t1", status: "completed" });
+      expect((await status()).turnActive).toBe(true);
+
+      expect((await postMessage({ text: "Your PR #7 merged.", deliveryId: DELIVERY_ID })).status).toBe(200);
+      // The turn in flight is the CLI's own: a restart must not settle the wake on its result.
+      expect((await status()).deliveryId).toBeUndefined();
+
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+      expect((await status()).deliveryId).toBeUndefined();
+
+      lastAgent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Resetting the branch" }] });
+      const own = await status();
+      expect(own.turnActive).toBe(true);
+      expect(own.deliveryId).toBe(DELIVERY_ID);
+
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+      expect((await status()).deliveryId).toBeUndefined();
+    });
+
+    it("the orchestrator sends the delivery with the prompt when the turn reuses the resident process", async () => {
+      const runner = makeRunner({ steering: true });
+      runner.dispatch(testDispatch({ text: "the user's earlier message" }));
+      await waitFor(() => lastAgent?.runCalled, 2000, "first turn started");
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+      await waitFor(() => !runner.running, 2000, "first turn ended");
+      expect(spawnCount).toBe(1);
+
+      const outcomes: string[] = [];
+      runner.dispatch(testDispatch({
+        text: "Your PR #7 merged.",
+        deliveryId: DELIVERY_ID,
+        onTurnComplete: (o) => outcomes.push(o.status),
+      }));
+
+      await waitFor(() => lastAgent.messages.length === 1, 2000, "the wake reached the resident process");
+      expect(spawnCount).toBe(1);
+      expect((await status()).deliveryId).toBe(DELIVERY_ID);
+
+      // No process exit: the turn settles at the result of its own prompt.
+      lastAgent.emit("event", { type: "agent_user_replay", text: lastAgent.messages[0]! });
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+      await waitFor(() => outcomes.length === 1, 2000, "the wake settled");
+      expect(outcomes).toEqual(["completed"]);
+    });
+
+    it("a restart during that turn yields ONE turn, and the watch settles at the result with no process exit", async () => {
+      seedDispatchedWatch("self");
+      await startResidentProcess();
+      expect((await postMessage({ text: "Your PR #7 merged.", deliveryId: DELIVERY_ID })).status).toBe(200);
+      lastAgent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "MIDTURN_TEXT" }] });
+      chatHistoryManager.append(WOKEN_ID, { role: "user", text: "wake" });
+
+      expect(await restartSweep()).toBe(true);
+      expect(spawnCount).toBe(1);
+      expect(watchOf("self")?.state).toBe("merge-observed");
+
+      await waitFor(() => runners[0].accumulatedText.includes("MIDTURN_TEXT"), 3000, "replay");
+      lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+
+      await waitFor(() => watchOf("self")?.state === "delivered", 3000, "watch delivered at the result");
+      expect(watchOf("self")?.deliveryAttempts).toBe(1);
+    });
+  });
+
+  // A parent's watch on a child ("child") has a wake turn only when an older ShipIt started it:
+  // the notice is stored in the parent's inbox now (docs/328-session-message-inbox req 6).
   for (const kind of ["child", "self"] as const) {
     describe(`kind: "${kind}"`, () => {
       it("a restart during a watch-originated turn yields ONE turn, and the watch settles from the adopted turn", async () => {
-        const watchedId = kind === "self" ? WOKEN_ID : CHILD_ID;
         seedDispatchedWatch(kind);
         await startPreRestartWakeTurn();
         expect(spawnCount).toBe(1);
@@ -253,40 +381,57 @@ describe("Integration: durable delivery identity across a restart (planning#266)
 
         expect(spawnCount).toBe(1);
         expect(runners[0].queueLength).toBe(0);
-        expect(sessionManager.getMergeWatch(watchedId)?.state).toBe("merge-observed");
+        expect(watchOf(kind)?.state).toBe("merge-observed");
 
         await waitFor(() => runners[0].accumulatedText.includes("MIDTURN_TEXT"), 3000, "replay");
         lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
         lastAgent.emit("done", 0);
         await waitFor(
-          () => sessionManager.getMergeWatch(watchedId)?.state === "delivered",
+          () => watchOf(kind)?.state === "delivered",
           3000,
           "watch delivered from the adopted turn",
         );
-        expect(sessionManager.getMergeWatch(watchedId)?.deliveryAttempts).toBe(1);
-      });
-
-      it("a restart where the worker turn genuinely died redispatches exactly once", async () => {
-        const watchedId = kind === "self" ? WOKEN_ID : CHILD_ID;
-        seedDispatchedWatch(kind);
-        const status = await (await fetch(`${workerUrl}/agent/status`)).json() as WorkerAgentStatus;
-        expect(status.turnActive).toBe(false);
-        expect(status.deliveryId).toBeUndefined();
-
-        const adopted = await restartSweep();
-        expect(adopted).toBe(false);
-
-        await waitFor(() => spawnCount === 1, 3000, "redispatched wake turn");
-        const watch = sessionManager.getMergeWatch(watchedId);
-        expect(watch?.deliveryAttempts).toBe(2);
-        expect(watch?.deliveryId).not.toBe(DELIVERY_ID);
-
-        await manager.reconcilePending();
-        await manager.retryStalledDeliveries();
-        expect(spawnCount).toBe(1);
+        expect(watchOf(kind)?.deliveryAttempts).toBe(1);
+        // The adopted turn told the agent: nothing goes to its inbox as well.
+        expect(inbox.store.all(WOKEN_ID)).toHaveLength(0);
       });
     });
   }
+
+  it("self: a restart where the worker turn genuinely died redispatches exactly once", async () => {
+    seedDispatchedWatch("self");
+    const status = await (await fetch(`${workerUrl}/agent/status`)).json() as WorkerAgentStatus;
+    expect(status.turnActive).toBe(false);
+    expect(status.deliveryId).toBeUndefined();
+
+    const adopted = await restartSweep();
+    expect(adopted).toBe(false);
+
+    await waitFor(() => spawnCount === 1, 3000, "redispatched wake turn");
+    const watch = watchOf("self");
+    expect(watch?.deliveryAttempts).toBe(2);
+    expect(watch?.deliveryId).not.toBe(DELIVERY_ID);
+
+    await manager.reconcilePending();
+    await manager.retryStalledDeliveries();
+    expect(spawnCount).toBe(1);
+  });
+
+  it("child: a restart where the worker turn genuinely died stores the notice, and starts no turn", async () => {
+    seedDispatchedWatch("child");
+
+    const adopted = await restartSweep();
+    expect(adopted).toBe(false);
+
+    expect(watchOf("child")?.state).toBe("delivered");
+    expect(inbox.store.all(WOKEN_ID).map((m) => m.body)).toEqual([expect.stringContaining("Child PR #7 merged")]);
+    expect(inbox.told).toEqual([WOKEN_ID]);
+
+    await manager.reconcilePending();
+    await manager.retryStalledDeliveries();
+    expect(inbox.store.all(WOKEN_ID)).toHaveLength(1);
+    expect(spawnCount).toBe(0);
+  });
 
   it("liveness comes from the runner, not from any marker the manager set: a fresh manager reaches the same verdict", async () => {
     seedDispatchedWatch("child");
@@ -298,6 +443,7 @@ describe("Integration: durable delivery identity across a restart (planning#266)
       sessionManager,
       runnerRegistry: registry,
       chatHistoryManager,
+      sessionInbox: inbox.sessionInbox,
       defaultAgentId: "claude",
     });
     fresh.setPrStatusLookup((id) => sessionManager.getPrStatus(id) ?? undefined);
@@ -306,6 +452,9 @@ describe("Integration: durable delivery identity across a restart (planning#266)
 
     expect(spawnCount).toBe(1);
     expect(sessionManager.getMergeWatch(CHILD_ID)?.deliveryAttempts).toBe(1);
+    // The turn is live, so the fresh manager did not store its notice beside it.
+    expect(sessionManager.getMergeWatch(CHILD_ID)?.state).toBe("merge-observed");
+    expect(inbox.store.all(WOKEN_ID)).toHaveLength(0);
   });
 
   it("rebindDelivery only matches a live, non-terminal watch", async () => {

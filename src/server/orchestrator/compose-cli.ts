@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +7,7 @@ import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 import { COMPOSE_PROJECT_LABEL, composeProjectName } from "./compose-stack-reaper.js";
 import { composeStateDirForWorkspace } from "./session-state-dir.js";
 import type { ConfinedComposeApi } from "./compose-helper.js";
+import { killProcessTree } from "../shared/kill-child.js";
 
 export interface ComposeOutputSink {
   (chunk: string): void;
@@ -14,13 +15,15 @@ export interface ComposeOutputSink {
   flush?(): void;
 }
 
+/** `signal` ends the command: the process is killed, and the promise rejects. */
 export type ComposeRunner = (
   args: string[],
   cwd: string,
   onOutput?: ComposeOutputSink,
+  signal?: AbortSignal,
 ) => Promise<void>;
 
-export type ComposeQuery = (args: string[], cwd: string) => Promise<string>;
+export type ComposeQuery = (args: string[], cwd: string, signal?: AbortSignal) => Promise<string>;
 
 export interface ComposeCliOptions {
   sessionId: string;
@@ -92,7 +95,7 @@ export class ComposeCli {
   private readonly composeStateDirOption?: string;
   private modelFreeDirPath: string | null = null;
 
-  constructor(opts: ComposeCliOptions) {
+  constructor(private readonly opts: ComposeCliOptions) {
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
     this.confined = opts.confined;
@@ -101,6 +104,18 @@ export class ComposeCli {
     this.onTopologyChange = opts.onTopologyChange;
     this.rejoinFn = opts.rejoinSessionNetwork;
     this.composeStateDirOption = opts.composeStateDir;
+  }
+
+  /**
+   * The same commands, each killed when `signal` aborts. For a caller that holds the session's
+   * stack queue, which has no timeout of its own. `build` and `up` have no such stop.
+   */
+  bounded(signal: AbortSignal): ComposeCli {
+    return new ComposeCli({
+      ...this.opts,
+      composeRunner: (args, cwd, onOutput) => this.runner(args, cwd, onOutput, signal),
+      composeQuery: (args, cwd) => this.query(args, cwd, signal),
+    });
   }
 
   /** Runs every time, for the services `up` starts, so an edited Dockerfile or context is picked up. */
@@ -507,10 +522,26 @@ export function composeSpawnEnv(
 
 const MAX_ERROR_STDERR = 8_000;
 
+// `docker compose` is a plugin process under `docker`, and both hold the pipes, so the kill is of
+// the tree, and by force after a grace period. A killed command rejects as any failed one does.
+function killOnAbort(proc: ChildProcess, signal: AbortSignal | undefined): void {
+  if (!signal) return;
+  const kill = (): void => {
+    killProcessTree(proc, "SIGTERM", { label: "compose" });
+    // A process that the tree walk does not find can hold the pipes after `docker` has gone.
+    proc.stdout?.destroy();
+    proc.stderr?.destroy();
+  };
+  if (signal.aborted) kill();
+  else signal.addEventListener("abort", kill, { once: true });
+  proc.once("close", () => signal.removeEventListener("abort", kill));
+}
+
 export function defaultComposeRunner(
   args: string[],
   cwd: string,
   onOutput?: ComposeOutputSink,
+  signal?: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn("docker", args, {
@@ -518,6 +549,7 @@ export function defaultComposeRunner(
       stdio: ["ignore", "pipe", "pipe"],
       env: composeSpawnEnv(),
     });
+    killOnAbort(proc, signal);
 
     let stderr = "";
     // Drain both pipes even without a sink, or a full pipe can block the process.
@@ -543,13 +575,14 @@ export function defaultComposeRunner(
   });
 }
 
-function defaultComposeQuery(args: string[], cwd: string): Promise<string> {
+function defaultComposeQuery(args: string[], cwd: string, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn("docker", args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: composeSpawnEnv(),
     });
+    killOnAbort(proc, signal);
 
     let stdout = "";
     let stderr = "";

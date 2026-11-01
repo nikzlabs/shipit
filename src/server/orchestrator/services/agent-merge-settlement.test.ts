@@ -339,6 +339,28 @@ describe("reconcileAgentMergeClaims", () => {
     expect(p.promoteMergedPrByNumber).not.toHaveBeenCalled();
   });
 
+  it("does not settle one session twice when two triggers overlap", async () => {
+    claimOne();
+    let overlapping: Promise<void> | undefined;
+    let started = false;
+    const p = poller(facts(), {
+      onFetch: () => {
+        if (started) return;
+        started = true;
+        overlapping = reconcileAgentMergeClaims(deps({ prStatusPoller: p }));
+      },
+    });
+
+    await reconcileAgentMergeClaims(deps({ prStatusPoller: p }));
+    await overlapping;
+    expect(p.promoteMergedPrByNumber).toHaveBeenCalledTimes(1);
+    expect(claims.get(SESSION)).toBeNull();
+
+    claimOne();
+    await reconcileAgentMergeClaims(deps({ prStatusPoller: p }));
+    expect(p.promoteMergedPrByNumber).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps going when one claim throws", async () => {
     claimOne();
     const p = {
@@ -356,6 +378,47 @@ describe("reconcileAgentMergeClaims", () => {
     await reconcileAgentMergeClaims(deps({ prStatusPoller: p }), { sessionId: "someone-else" });
     expect(p.promoteMergedPrByNumber).not.toHaveBeenCalled();
     expect(claims.get(SESSION)).not.toBeNull();
+  });
+});
+
+describe("reconciling a `settling` claim", () => {
+  it.each<[string, string | null]>([
+    ["no head", null],
+    ["a different head", "head-after-the-merge"],
+  ])("records the merge when GitHub reports %s", async (_label, headSha) => {
+    claimOne();
+    claims.markSettling(SESSION, "sha-head");
+    const p = poller(facts({ head_sha: headSha }));
+    await reconcileAgentMergeClaims(deps({ prStatusPoller: p }));
+
+    expect(claims.get(SESSION)).toBeNull();
+    expect(p.promoted).toHaveLength(1);
+    expect(p.promoteMergedPrByNumber).toHaveBeenCalledWith(
+      expect.objectContaining({ mergedHeadSha: "sha-head" }),
+    );
+    expect(notices().join("\n")).toContain("Merged pull request #7");
+  });
+
+  it("records the merge after the session moved to another pull request", async () => {
+    claimOne();
+    claims.markSettling(SESSION, "sha-head");
+    sessions.recordPrProvenance(SESSION, 9, REPO_ID);
+    await reconcileAgentMergeClaims(deps({ prStatusPoller: poller(facts({ head_sha: null })) }));
+
+    expect(claims.get(SESSION)).toBeNull();
+    expect(notices().join("\n")).toContain("Merged pull request #7 in acme/shipit");
+  });
+
+  it("records it without a GitHub read when the session moved on", async () => {
+    claimOne();
+    claims.markSettling(SESSION, "sha-head");
+    sessions.recordPrProvenance(SESSION, 9, REPO_ID);
+    const p = poller(facts({ merged_at: null, state: "open" }));
+    await reconcileAgentMergeClaims(deps({ prStatusPoller: p }));
+
+    expect(p.readPrByNumber).not.toHaveBeenCalled();
+    expect(claims.get(SESSION)).toBeNull();
+    expect(notices().join("\n")).toContain("Merged pull request #7 in acme/shipit");
   });
 });
 

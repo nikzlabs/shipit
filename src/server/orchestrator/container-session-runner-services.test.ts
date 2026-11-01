@@ -229,16 +229,28 @@ describe("handleServiceRequest — logs", () => {
     expect(result).toEqual({ name: "web", logs: "ready in 300ms" });
   });
 
-  it("defaults the tail length when none is given", async () => {
+  it("leaves the tail length to the manager when none is given", async () => {
     const mgr = makeManager({ services: [svc("web")], logs: "x" });
     await request(mgr, "logs", "web");
-    expect(mgr.calls).toContain("logs:web:2000");
+    expect(mgr.calls).toContain("logs:web:undefined");
   });
 
   it("rejects an unknown service rather than returning empty logs", async () => {
     const mgr = makeManager({ services: [svc("web")] });
     const { error } = await request(mgr, "logs", "nope");
     expect(error).toBe("Unknown service: nope");
+  });
+
+  it("names the failed project-file read when the service is not registered", async () => {
+    const mgr = makeManager({
+      services: [],
+      projectComposeFailure: { kind: "malformed", message: "ShipIt could not start its Compose helper container" },
+    });
+    const { error } = await request(mgr, "logs", "plan");
+    expect(error).toBe(
+      "ShipIt has no service \"plan\", and its last read of this session's Compose file failed: "
+      + "ShipIt could not start its Compose helper container",
+    );
   });
 });
 

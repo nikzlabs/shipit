@@ -1,8 +1,9 @@
 # shipit.yaml Reference
 
 Place `shipit.yaml` at the workspace root (`/workspace/shipit.yaml`) to
-configure the agent container, install commands, the compose file path, and the
-issue trackers the repository declares.
+configure the agent container, install commands, the compose file path, the
+issue trackers the repository declares, and MCP servers on the project's own
+services.
 
 ShipIt reads a compose file only when `shipit.yaml` names it in the `compose`
 key. It does not auto-detect `docker-compose.yml` or `compose.yml`, so a project
@@ -114,6 +115,16 @@ sizing is fully automatic.
   `install-inputs` below). So a new commit that only edits source or docs — but
   not `package.json`/the lockfile — still skips install. A different runtime or a
   changed `install` always re-runs (a warm dependency cache keeps it fast).
+- **A matching stamp is not enough if the restored tree is not whole.** The stamp
+  records an install that once succeeded; it says nothing about the directories
+  now. So the install also re-runs when a declared directory is empty, or when an
+  npm `node_modules` (one with a `package-lock.json` beside it) is incomplete:
+  it holds locked packages but no `.package-lock.json`, the record npm deletes
+  first and writes last, which is what an npm run killed part-way leaves; or that
+  record lists packages that are not on disk. The install log names the
+  directory and why. An install that failed or was stopped part-way also runs
+  again on the next start, even when a published dependency base matches the
+  commit.
 - **A skipped install guarantees `dep-dirs`, and nothing else it wrote.** The
   stamp can match a checkout that never ran the install — a workspace reclaimed
   for disk and re-cloned, or a session that mounted an already-published
@@ -171,7 +182,9 @@ sizing is fully automatic.
     `--package-lock=false`, `--package-lock-only`.
   - **A `npm ci` that died part-way** — `npm ci` empties the directory first and
     writes its record only at the end, so a half-extracted tree carries no
-    record. The empty check still covers it when the directory is left empty.
+    record. The empty check still covers it when the directory is left empty,
+    and the next start does not trust it: a matching stamp over such a tree
+    re-runs the install (see above).
 
   Within the comparison itself: a tree holding *more* than the lockfile asks for
   is fine, dev dependencies are required only when the tree already records some
@@ -509,6 +522,51 @@ Declaring the host opens no network access. Your session reaches it only if the
 user allows it (and the storage host its server redirects downloads to) in the
 egress settings. ShipIt's own push and pull are not affected.
 
+### `mcp` (optional)
+
+Gives the agent an MCP server that runs on one of this project's own Compose
+services, in this project's sessions only.
+
+```yaml
+mcp:
+  verseshotdev:      # the server's name in the agent
+    service: api     # a service in this project's compose file
+    port: 8787       # the port the service serves the MCP server on
+    path: /mcp       # optional; /mcp is the default
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| *key* | string | required | The server's name: letters, digits, `_` and `-`. Its tools are `mcp__<name>__<tool>`. |
+| `service` | string | required | The Compose service, by the name the session network resolves |
+| `port` | number | required | The service's port for the server. Written here, not read from `ports:`, so a service with only `expose:` can carry a server too |
+| `path` | string | `/mcp` | The URL path the server answers on |
+
+The service serves Streamable HTTP (stateless) at
+`http://<service>:<port><path>`. ShipIt sends no credentials: the service is on
+the session's private network.
+
+- **It is not an account MCP server.** It uses none of the account's
+  `mcp.servers` slots, and the sessions of other projects do not get it. If an
+  account server has the same name, this project's sessions get this one.
+- **The name wins over a plugin's.** A plugin's MCP server takes the plugin's
+  name; if this project declares that name too, the project's server is given
+  and the plugin's card reports its own as not given
+  ([plugins.md](plugins.md) → A plugin's MCP server).
+- **The service can start after the agent.** ShipIt gives the agent a small
+  proxy that answers at once and connects when the service answers, and again
+  after a restart. Nobody restarts the agent for it. An agent process that
+  lives across turns (Claude, by default) gets the tools as soon as the service
+  answers; an agent that starts a new process each turn gets them at the first
+  turn that starts while the service answers. The details are in
+  [plugins.md](plugins.md) → A plugin's MCP server, and are the same for a
+  project's server.
+- **Only tools** reach the agent: not the server's resources, prompts or
+  `instructions`.
+- An invalid entry (a name with a dot, `shipit` or `playwright`, no `port`, a
+  `path` that does not start with `/`) is skipped with a warning; the rest of
+  the file still applies.
+
 ## Config resolution
 
 1. **shipit.yaml with `compose`** — use the referenced compose file
@@ -585,6 +643,8 @@ worker, which writes `.shipit/.install-done` until it is recreated.)
 - An invalid `shipit.yaml` (YAML syntax error, bad `compose:` shape) leaves the
   running stack alone and reports the error rather than tearing the preview down
   mid-edit.
+- A changed `mcp` block reaches the agent at its next turn: ShipIt starts a
+  new agent process, which continues the same conversation.
 - Changes to lockfiles are debounced (30s cooldown) to avoid install loops.
 - Resource changes take effect on the next session container creation (not live).
 

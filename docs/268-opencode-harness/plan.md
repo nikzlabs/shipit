@@ -170,9 +170,31 @@ can be set because nothing routes through the fetched registry.
   subset for the shipit bridge is the adapter's own list (recipe: hardcoded
   per adapter).
 - System prompt: config `instructions` array pointing at the rendered
-  system-prompt file (byte-stable per prompt-architecture rules).
+  system-prompt file (byte-stable content and path; see below).
 - No steering, no compaction trigger, no permission broker (`--auto` inside
   the container sandbox — same trust envelope as Claude's bypass mode).
+
+### Stable instruction paths (planning#701)
+
+OpenCode 1.18.34 includes `Instructions from: <absolute path>` in model input
+(`session/instruction.ts` upstream). A per-turn timestamp in that path defeats
+the provider's prefix cache even when the file content is unchanged.
+
+`turn-files.ts` derives the path from the resolved agent home, workspace, and
+prompt content. It stays identical across new adapter instances and the first
+resume, when the CLI session id first becomes available. Different workspaces,
+scoped homes, and prompt revisions get separate paths. Concurrent readers of
+identical instructions share a reference-counted file without rewriting it.
+Publication uses an atomic rename, so even replacement of a stale file exposes
+complete content. Consults currently pass no system prompt
+(`shared/sub-agent-run.ts:buildSubAgentRunParams`) and acquire no instruction file.
+
+The per-run config file has a unique path; OpenCode does not include that path
+in model input. Cleanup releases both files on CLI close, including the
+transient compaction server's close, or immediately when setup fails before
+spawn. Neither `kill()` nor compaction's HTTP settlement removes a live
+process's files. Guards: `turn-files.test.ts`, through the real adapter with
+fake child processes.
 
 ## Auth scope (req 5)
 
@@ -621,22 +643,16 @@ carries the signal the stream cannot.
 - Fast upstream churn (releases every few days): version bumps are routine
   deliberate edits; `OPENCODE_DISABLE_AUTOUPDATE` stays set so the pinned
   binary never self-replaces.
-- **OpenCode 2.0 is in beta** — full fact sheet, the load-bearing run-mode
-  unknown, and the adoption shape now live in
-  [docs/269-opencode-v2](../269-opencode-v2/plan.md) (tracked as
-  planning#411); the summary below is kept for this doc's own review trail.
-  (Checked 2026-08-16: `opencode.ai/v2/docs`.)
-  It is NOT a routine bump on this integration's line: it ships as a
-  different npm package (`@opencode-ai/cli@beta`, currently version
-  `0.0.0-next-*` with multiple builds per day) installing a SEPARATE
-  `opencode2` binary that coexists with v1, and upstream states its APIs,
-  configuration and plugin surface may still change. Its declared breaking
-  changes (new plugin API, new server API/clients, TUI config move) do not
-  touch this adapter's `run`-mode surface, and the v1 stable line
-  (`opencode-ai`, `latest` = 1.18.x) remains the released product — so this
-  integration stays on v1. When 2.0 stabilizes: adopting it means a new
-  catalogue binary + installer package (a deliberate migration, not a
-  Renovate bump), and its new server API is the natural target for the
-  attach-to-server adapter shape docs/266 deferred as its own design task.
+- **OpenCode 2 is released** (npm `@opencode/cli`, 2.0.0 on 2026-09-11;
+  checked 2026-10-27) and v1 is now maintenance-only. This integration stays
+  on v1 and stays intact: v2 becomes its own harness beside it, not a bump of
+  this one — [docs/269-opencode-v2](../269-opencode-v2/plan.md) (planning#411)
+  holds the fact sheet, the API-stability verdict and the requirements. Two
+  v2 facts can reach this harness: `@opencode/cli` also declares an `opencode`
+  bin, which takes over the `node_modules/.bin/opencode` link this harness
+  resolves whenever both are installed (measured; `install-agent-clis.sh` now
+  re-points it at v1 and fails the build if `opencode` still reports 2.x), and
+  v2 defaults to this harness's data root and migrates it (the `opencode2`
+  harness runs under its own `~/.local/share/opencode2`).
 - The post-error hang and stdout buffering (findings above) are upstream bugs
   worked around, not fixed; re-test on every version bump.

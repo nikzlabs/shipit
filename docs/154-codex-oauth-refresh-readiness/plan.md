@@ -1,5 +1,6 @@
 ---
-description: Codex shares the same architectural OAuth-refresh vulnerability as Claude (per-session credentials, copied auth.json files, single shared NAT egress). It refreshes less often than Claude, but current Codex issue reports confirm copied auth.json refresh-token invalidation is real enough to justify orchestrator-owned refresh.
+issue: planning#687
+description: Codex shares the same architectural OAuth-refresh vulnerability as Claude (per-session credentials, copied auth.json files, single shared NAT egress). The orchestrator owns the refresh: one on-demand call to the Codex CLI 45 minutes before expiry, a harvest of session rotations, and a "needs sign-in" verdict only for a rejected grant.
 ---
 
 # 154 — Codex OAuth refresh readiness
@@ -102,7 +103,9 @@ then repush the rotated token into pinned sessions.
 ## What changes from docs/153
 
 Same scheduler / single-flight / per-account isolation / file-state delta
-detection / debug-log classification. The Codex-specific pieces:
+detection / debug-log classification. The Codex-specific pieces follow. Items 3
+and 5 are the first design; "On-demand refresh, real rejections, harvest"
+below replaced them in 2026-10.
 
 The terminal source-state semantics do not change: an existing account with a
 missing or unparseable `auth.json` is marked `auth_failed` through the same
@@ -127,7 +130,7 @@ JWT `exp` from `tokens.access_token` / `tokens.id_token`, `last_refresh` ISO
 timestamp). The Claude refresher reads `claudeAiOauth.expiresAt` directly;
 the Codex refresher would call `readCodexTokenFreshness(file)` instead.
 
-### 3. CLI commands
+### 3. CLI commands (first design, replaced in 2026-10)
 
 The Claude refresher uses:
 
@@ -154,7 +157,7 @@ The orchestrator's Dockerfile installs `codex` at the same level as `claude`
 `HOME=<accountRoot>` so the CLI reads/writes the *account's*
 `/credentials/provider-accounts/codex/<accountId>/.codex/auth.json` directly.
 
-### 5. Failure classification
+### 5. Failure classification (first design, replaced in 2026-10)
 
 Codex's CLI debug output is unknown. Whatever 429-shaped and
 `invalid_grant`-shaped signals it emits, the classifier needs to recognize.
@@ -195,29 +198,354 @@ clear until both implementations exist.
 - Claude refresher implementation: `src/server/orchestrator/agents/claude/oauth-refresher.ts`
 - Codex refresher implementation: `src/server/orchestrator/agents/codex/oauth-refresher.ts`
 - Codex sync code (already in place):
-  - `readCodexTokenFreshness` in `src/server/orchestrator/session-credentials.ts`
+  - `readCodexTokenFreshness` in `src/server/orchestrator/token-sync-manager.ts`
   - `syncProviderAccountTokenIn` / `syncProviderAccountTokenBack` /
     `repushProviderAccountToken` — already account-aware for Codex
 - Codex CLI install: `docker/agent-cli/package.json`
 
 ## Implemented notes
 
-The Codex refresher now mirrors docs/153's scheduler/single-flight/backoff
-shape and is wired in `src/server/orchestrator/index.ts` beside the Claude
-refresher. It runs only in containerized runtime, iterates Codex provider
+The Codex refresher mirrors docs/153's scheduler/single-flight/backoff shape
+and is wired in `src/server/orchestrator/bootstrap-managers.ts` beside the
+Claude refresher. It runs only in containerized runtime, iterates Codex provider
 accounts, refreshes with `HOME=<accountRoot>`, repushes rotated account tokens
 to pinned Codex sessions, and emits:
 
 - `codex_account_unauthenticated` / `codex_account_authenticated`
-- unified `agent_auth_failed` with `{ agentId: "codex", reason: "revoked" }`
+- unified `agent_auth_failed` with `{ loginId: "openai-chatgpt", accountId, reason }`
 
-The implementation session's shell did not have `codex` on `PATH`, but the
-pinned binary was available under `/opt/agent-cli/.../bin/codex` and was checked
-directly. The chosen commands are present in `codex-cli 0.133.0`:
+The first implementation used two commands, `codex login status` (Tier 1) and
+`codex exec --skip-git-repo-check "ok"` (Tier 2), and matched `invalid_grant` in
+their output. The next section says why that did not work and what replaced it.
 
-- Tier 1: `codex login status`
-- Tier 2: `codex exec --skip-git-repo-check "ok"`
+## On-demand refresh, real rejections, harvest (2026-10 fix)
 
-Unlike Claude, the Codex refresher does not append Claude-specific
-`--debug api --debug-file ...` flags. Failure classification is based on
-captured stdout/stderr plus the authoritative auth-file freshness delta.
+An audit against the docs/153 fixes measured Codex CLI 0.159.2 offline, with
+synthetic tokens and a local stand-in for `auth.openai.com` and `chatgpt.com`.
+Nothing reached OpenAI, and **no real grant was tested against the real OAuth
+server**:
+
+| The CLI was given | What it did |
+|---|---|
+| `codex login status`; any token, also an expired one | no request to the token host |
+| `codex exec … ok`; 30, 20, 10 or 5.3 minutes left on the access token's JWT `exp` | a model call, no refresh |
+| the same; 4.3 or 3 minutes left, or an expired token | `POST auth.openai.com/oauth/token`, an ordinary `refresh_token` grant, before the model call |
+| the same; `last_refresh` 9 or 30 days old, `exp` far away | no refresh: the age of `last_refresh` has no effect |
+| the model API answers 401 | the same refresh, then the call again |
+| the token host answers 200 | rewrites `$CODEX_HOME/auth.json` in place, with a new `last_refresh` |
+| the token host answers 401 `refresh_token_reused`, `refresh_token_invalidated` or `refresh_token_expired`, 400 `invalid_grant`, 429 or 500 | leaves `auth.json` unchanged. It does not blank the file, as the Claude CLI does |
+| `codex exec`, and the token host answers 429 or 500 | 52 to 74 token requests in one run |
+| `codex app-server`: `initialize`, then `account/read {"refreshToken": true}` | one refresh request at any time before expiry, no model call, about 0.25 s; the file is written before the answer |
+| the same, and `auth.json` was replaced after the CLI read it | no request: the CLI reads the file again first, and keeps the newer credential |
+
+The refresh tokens are single-use: `refresh_token_reused` is what the CLI is
+told when another copy of the credential spent the grant first.
+
+What followed from that for the first implementation:
+
+- **No tick could rotate before the last 5 minutes.** The ticks came at about
+  T-45, -44, -39, -24 and -9 minutes. Tier 1 never refreshes. Tier 2 was a full
+  model call each time and did not refresh either. The next tick was after
+  expiry, so the last 5 minutes belonged to the session CLIs, which race each
+  other for a single-use grant. Inside the 45 minutes each turn start also ran
+  both tiers.
+- **A rejected grant was never reported.** The CLI prints "your refresh token
+  was already used / was revoked / has expired" and none of the phrases the
+  refresher matched, so the account stayed "ready" and the tick was repeated every
+  15 minutes with no end. The `429` test was a substring test over all output, and
+  a log timestamp such as `17:20:52.178429Z` satisfied it.
+- **No harvest.** A session rotation that did not get to the source (the
+  write-back watches are in memory, and an orchestrator restart drops them) left
+  the source with a spent grant.
+- **A forced heal could not succeed on a healthy source.** It needed a changed
+  token, and the probes could not rotate a token with time left. After a
+  session's 401 with a stale copy, the turn ended with an authentication error.
+
+### What a tick does now
+
+1. **Harvest before spend** (`harvestSessionRotations`), as in docs/153
+   "Rotations between turns: harvest before spend": for each per-session subtree
+   whose account marker names this account and whose `auth.json` physically
+   resolves inside the subtree, a copy that is ahead of the source is published
+   through `syncProviderAccountTokenBack` (`sessionOwnRoute: true`). A harvest is
+   the rotation: the tick ends `harvested_session` on the normal success path,
+   and the repush carries the token to the other pinned sessions.
+2. **Missing source** → `missing_credentials`, unchanged.
+3. **A grant that is known rejected** (see below) → `revoked`, and no CLI.
+4. **Outside the 45-minute margin and not forced** → `noop`, and no CLI. The old
+   Tier 1 "status probe" is gone; it proved nothing.
+5. **One on-demand refresh** (`refreshOnDemand`): `codex app-server`, then
+   `initialize`, `initialized` and `account/read {"refreshToken": true}`
+   (`CODEX_REFRESH_MESSAGES`). The CLI's `HOME` and working directory are the
+   account root, with an explicit `CODEX_HOME=<accountRoot>/.codex` and without
+   `CODEX_API_KEY`: an inherited `CODEX_HOME` makes the CLI ignore `HOME`, and
+   with `CODEX_API_KEY` the CLI's model calls use the key. When the answer
+   arrives the refresher closes the CLI's input and waits for the CLI's pipes to
+   close before it reads the file and the log: the line that names a refusal can
+   arrive after the exit. It waits 30 s for the answer and 5 s for the end, and
+   then kills the process tree. Only the ids of the answers are read: they carry
+   the account's email, and none is kept.
+6. **Success** is the file: the source holds tokens, and its freshness advanced
+   or the tokens are new → `rotated`.
+
+The account root, and not a private copy as for Claude: the Codex CLI leaves a
+refused credential in place, so there is nothing to protect the source from, and
+a copy would add the window in which a rotation exists only in the copy.
+
+### A rejected grant
+
+Only the token host's answer to the refresh counts
+(`classifyCodexRefreshOutput`). The refresher reads the CLI's line
+`Failed to refresh token status=<status> … error_code: Some("<code>")`, after
+it removed the color codes that split `status=401` and the timestamp at the
+start of each line. Each line is read alone. Only spaces and tabs can stand
+before the timestamp that is removed: a rule that crossed lines read a run of
+blank lines once per line, and on the refresher's path (the strip runs at the
+CLI's end and again in the classifier) 128 000 newlines took about 20 s on the
+orchestrator's main thread, now about 10 ms. Blank lines before a timestamp now
+stay; neither the classifier nor the summary reads a blank line. Other
+whitespace before a timestamp (`\v`, a no-break space) now keeps the timestamp
+in the reason; the classifier reads no timestamp. In CR LF text
+the old rule also removed the LF before each timestamp line, so the classifier
+read a phrase and a code from two lines as one line. CLI 0.159.2 writes LF only.
+Four codes are a rejected
+grant: `refresh_token_reused`, `refresh_token_invalidated`,
+`refresh_token_expired` and `invalid_grant`. Another 401 from the token host
+(`invalid_client`, or no code), a 401 from the model API, a timeout, a 429 and a
+500 are not. The messages that `codex exec` prints for the first three codes
+are accepted too.
+
+- `refresh_token_invalidated` and `refresh_token_expired`: the server judged the
+  grant itself. The tick reports `revoked` at once.
+- `refresh_token_reused` and `invalid_grant`: another copy can hold the
+  successor. The tick waits 5 s (`LATE_ROTATION_WAIT_MS`), because the session
+  CLI that won the grant writes its rotation only after the server answered it,
+  and then harvests again. A session rotation found there ends the tick
+  `harvested_session`.
+- For every rejection: if the source holds another credential by then (a
+  sign-in, or a rotation that the write-back watch published), the tick concludes
+  nothing and a new tick runs at once.
+- Otherwise the outcome is `revoked`, and the refresher remembers the rejected
+  credential (`rejectedIdentity`, a hash of its two tokens, in memory). The CLI
+  leaves that credential in the file with its expiry in the future, so without
+  the memory the next tick would read it as healthy and report the account
+  signed in again, and each forced heal would spend the dead grant again. A new
+  sign-in or a session's rotation changes the source's tokens, and the memory no
+  longer applies. If an outside writer puts the rejected file back while a
+  refresh of the new credential runs, the tick does not read it as a rotation,
+  and the memory stays.
+
+### Failures that can pass, and what the log says
+
+A 429 is read from the refresh's status only. `rate_limited` and
+`unknown_failure` keep their sentences and now end with `reason="…"`: at most
+three lines of the CLI's stderr, each capped, redacted by
+`summarizeRefreshFailure` (docs/153, "Say what failed"), after an email
+address in them was replaced with `[email]`. The summary replaces an address
+too (since 2026-10-12); the refresher keeps its own replacement, because
+`classifyCodexRefreshOutput` reads the same text and its answers must not
+move (`status=429@example.com` is no 429). `reason` in the result is that same
+text; it used to be the first 200 raw characters of the output. `[timeout]`,
+`[no-reply]` (the CLI ended before it answered) and `[rpc-error]` (the CLI
+refused `account/read`; only the error's number is kept, because its text comes
+from the CLI and can name the account) name what the refresher itself saw, as
+do `[spawn-failed]` and `[error]`. A CLI that did not start reads `[error]
+spawn codex ENOENT`: the shared summary drops the CLI's lines that say `ENOENT`
+and keeps the refresher's own notes (docs/153, "Outcomes and logs"). Node gives
+that error for a missing binary and also for a missing account root, which is
+the CLI's working directory.
+`rotated_tier1` and `rotated_tier2` are gone: the outcomes are `rotated`,
+`harvested_session`, `noop`, `rate_limited`, `revoked (<code>)`,
+`unknown_failure` and `missing_credentials`.
+
+### The revoked line, and the account's row (2026-10-13)
+
+Two fixes of the Claude refresher (docs/153-orchestrator-owned-claude-oauth-refresh, "The
+revoked line" and "A sign-in is not the harvest's to complete") were missing here. Both
+gaps were present in this refresher.
+
+**The line.** `revoked (<code>) — emitting auth_required` was the whole line. It keeps
+that sentence, and the first line for a rejected grant continues with what ran:
+
+```
+… — emitting auth_required trigger=scheduled verdict=token_host_code refresh=0.2s,exit=0 expires_in=40m reason="…"
+```
+
+- `trigger`: `scheduled` (the expiry timer), `backoff_retry`, `turn_start`, `forced_heal` (a
+  session reported an auth failure) or `nudge` (`refreshNow`: a completed sign-in, or an
+  auth-required report). A caller that joins a tick in flight is reported under the
+  trigger that started it.
+- `verdict`: `token_host_code`, the token host's answer to this tick's refresh, as the
+  CLI's line gave it.
+- `refresh`: the run time of `codex app-server`, then `timeout` if the refresher killed it
+  (no answer in 30 s, or no end within 5 s of the answer), then `exit=<code or signal>`,
+  or `no_exit` when the CLI did not start or did not end within the grace after the kill.
+- `expires_in`: what the source token had left, in minutes, negative when it is expired.
+  It is the value that the refresher schedules by (`readCodexTokenFreshness`). For a
+  file whose expiry cannot be read that is the time of the last refresh, so the number
+  is negative.
+- `reason`: the redacted summary that the other failure lines carry. The account's
+  tokens are JWTs, and the summary removes a JWT whole since 2026-10-13: before, it
+  removed each long run, so a short segment stayed (docs/153, "Say what failed"). The
+  code is in the parentheses, and the reason can lose it: a line is cut at 96
+  characters, and the summary reads `refresh_token_invalidated` (25 characters) as a
+  long token.
+
+Each later tick on the same grant logs the sentence with `trigger=… verdict=known_rejected`
+and nothing more, so `grep 'revoked (' | grep -v known_rejected` gives the first line, as
+for Claude.
+
+**The row.** The refresher announced an account once and then stayed silent until a
+success (`emittedUnauthenticated`).
+
+- *It reports again when the row reads `ready`.* A completed sign-in sets the row
+  `ready` (`wireEventHandlers`), and so does a cancelled one that finds a credential
+  file (`ProviderAccountManager.cancelAccountAuth`), with no word to the refresher. Only
+  a tick clears the announcement: a success, or a healthy source. In containerized mode
+  such a tick follows a completed sign-in. In local mode it does not (`refreshNow` with
+  no account does nothing there, while `ensureFresh` still runs ticks), so the
+  announcement of an earlier rejection stayed set, and a later rejection of the new
+  credential changed nothing: the row stayed `ready` over a dead credential. That is the
+  one path found for this refresher. The path that the Claude fix was made for, a
+  sign-in reported complete over the rejected credential, is not known here, because
+  the Codex sign-in is complete only when its login CLI ends. The rule costs one read of
+  the row, and it holds for every writer of the row.
+- *A tick that finds the source missing while the row reads `authenticating` reports
+  nothing* (`missing_credentials — waiting for auth_complete sign_in=in_progress`).
+  `codex login --device-auth` first revokes the account's refresh token
+  (`POST /oauth/revoke` to the token host) and keeps `auth.json` until that request has
+  an answer, at most 10 s when none comes. Then it removes the file, before it asks for a
+  device code, so the source is missing while the sign-in waits for the user (measured
+  offline on CLI 0.160.1, 2026-10-15; probe check (g)). A reconnect therefore asks the
+  token host to end the old grant, which the sessions' copies of the source share. The first measurement
+  (2026-10-13) used a file without JWT-shaped tokens, which the CLI removes at once and
+  does not revoke. A nudge
+  ticks every account (each Codex `auth_required` report sends one). For an account
+  that the refresher had not announced before, its `agent_auth_failed` event closed the
+  sign-in that the user was in and set the row `auth_failed` while the login CLI still
+  ran. The sign-in reports its own outcome.
+
+### Turn start and forced heal
+
+- A **turn start** (`ensureFresh`) returns at once for a token outside the
+  margin. Inside the margin it runs (or joins) a tick, which is the one request
+  the schedule would send. It never runs one while a backoff is in force: the
+  schedule owns that retry, and the answer is then only whether the token is
+  still valid. A grant that is known rejected gives `false` without a CLI.
+- A **forced heal** (a session's 401) runs a tick whatever the expiry says, or
+  joins the tick in flight. Its own tick is one on-demand refresh; a tick that
+  it joins can be one that had nothing to do. The heal fails for a rejected
+  grant (whatever its expiry says, and also when the source holds a
+  known-rejected credential again at the end), for a source that is missing or
+  cannot be read, for an expired token, and for a file that holds no token.
+  Every other result heals: `recoverAuth` (`turn-executor.ts`) then pushes the
+  source credential to the session and runs an ordinary turn again, once. An
+  adopted turn gets the push and ends with no second run.
+- **No verdict heals too** (decided 2026-10-12; before, it did not). A forced
+  refresh that got no answer (a 429, a 5xx, a timeout, a CLI that did not start)
+  ends `rate_limited` or `unknown_failure`, and the heal succeeds. For a token
+  outside the 45-minute margin the log says `<outcome> on a forced refresh — no
+  verdict on the token, expiry schedule kept reason="…"`, and no failure is
+  counted. Inside the margin the failure is counted and backs off as one of the
+  schedule's does, and its sentence gets `, forced refresh: no verdict on the
+  token` in front of the reason. The reason for the rule: "not healed" told the
+  user that a healthy account must sign in again (or lost the turn, with one
+  account), also when the session only held a stale copy. "Healed" costs at
+  most one more attempt, because `recoverAuth` allows one. The Claude refresher
+  has the same rule (docs/153, Known limits).
+
+### Validation
+
+`node --import tsx scripts/probe-codex-refresh.mjs` runs the installed binary
+with synthetic tokens, an isolated home and working directory, and a local TLS
+recorder that never forwards traffic. It runs the refresher's own tick
+(`CodexOAuthRefresher`) against the binary, and checks what the refresher
+depends on: the call rotates a token at the start of the margin and one that has
+days left, with one grant and no model call; each of the three refusal codes
+ends `revoked` and leaves the file as it was; a 429 and a 500 end `rate_limited`
+and `unknown_failure` after one request; a credential published during the call
+is kept; a session's own CLI (`codex exec`) refreshes only inside its
+5-minute window; and `codex login --device-auth` revokes the old refresh token and
+keeps `auth.json` until the answer, then removes the file before it asks for a
+device code and keeps it removed while it waits (the recorder answers the revoke
+after 1 s and never answers the device-code request). 18 checks, about 18 s, exit 1
+on a failure. CI runs it as the
+job `codex-refresh-probe` (`.github/workflows/ci.yml`) on a pull request that
+changes `docker/agent-cli/package.json`, its lockfile or `install-agent-clis.sh`,
+the probe, the refresher or the workflow, and on every push to `main`. The job
+installs the CLI with the images' own `install-agent-clis.sh`
+(`SHIPIT_HARNESSES=codex`), gets no secret, and is not a required check.
+
+### Known limits
+
+- **Not tested against the real token host.** That the server answers a spent
+  grant with 401 and `refresh_token_reused` comes from the CLI's own handling of
+  that answer, not from a real request.
+- **The refresh depends on CLI behaviors that the CLI does not document as a
+  contract**: `account/read` with `refreshToken`, the status line's format, and
+  that a refused credential stays in the file. A CLI that stops printing the
+  status line makes a rejected grant read as `unknown_failure` again. The probe
+  checks all three on every change to the pin; a red run blocks a merge only if
+  the branch protection names the job.
+- **The CLI runs in the account root.** A CLI version that destroyed the file on
+  a refusal would destroy the account's only copy; the probe checks that it does
+  not. `app-server` also writes its own state files into the account's `.codex`,
+  and at its start it asks `chatgpt.com` for model and plugin lists with the
+  account's token.
+- **A forced heal spends one refresh request** unless a harvest or a known
+  rejection ends its tick first, also when the source's token was rotated a
+  moment ago. Forced heals of one account share a tick while it runs, and run
+  one after the other otherwise. A forced heal that joins a tick in flight
+  sends no request of its own, and none at all if that tick had nothing to do.
+- **A forced heal that joins a tick gets that tick's log line.** If the tick
+  was not forced and fails, its sentence does not say "forced" or "no verdict",
+  although the heal succeeds by the same rule.
+- **A forced heal with no verdict can be wrong.** The refresher cannot tell a
+  session's stale copy from a dead source when the token host does not answer.
+  If the source is dead, the second run fails as the first did and the user
+  sees the sign-in. That run is the turn's one recovery, so with more than one
+  account this turn does not move to the next account. Under a 429 from the
+  token host, the session's Codex CLI can send its own refresh requests again
+  in the second run (measured offline: 52 to 74 requests in one `codex exec`
+  run on a 429 or a 500).
+- **The harvest orders credentials by the access token's `exp`**, as the
+  write-back does (`readCodexTokenFreshness`). A session rotation whose `exp` is
+  not later than the source's is not seen as newer. The refresher's own rotation
+  does not have this limit: new tokens in the source are a rotation.
+- **The late harvest waits 5 s, not until a session's rotation is on disk**, as
+  in docs/153 Known limits.
+- **A CLI that survives the kill is not waited for.** After a timeout the
+  process tree is killed, and 5 s later the tick goes on without the exit, as in
+  the Claude refresher. Such a CLI can still write the file after the tick read
+  it.
+- **A session rotation that the write-back watch missed is found at the next
+  tick**: at the start of the margin, at a forced heal, or at a sign-in nudge.
+  Until then a session that copies the source gets a spent grant, and its 401
+  is what brings the tick.
+- **Whether a resident `codex app-server` refreshes with no turn in progress**
+  was not measured. For Claude this was seen in production.
+- **A sign-in keeps the old credential for one request.** The login CLI removes
+  `auth.json` only after its revoke has an answer: one round trip to the token host,
+  and up to 10 s when none comes. In that window the source is present while the row
+  reads `authenticating`, so the stand-down above does not apply. A tick in that window
+  that sends a refresh (inside the 45-minute margin, or forced) sends a grant that is
+  being revoked. If the token host refuses it, the file still holds that credential at
+  the verdict, and the account is not already announced, the refresher reports it: the
+  `agent_auth_failed` event closes the sign-in that the user is in and sets the row
+  `auth_failed` while the login CLI still runs. The sign-in starts no tick itself.
+
+### Key files (2026-10)
+
+- `src/server/orchestrator/agents/codex/oauth-refresher.ts` — `refreshOnDemand`,
+  `classifyCodexRefreshOutput`, `harvestSessionRotations`, `rejectedIdentity`,
+  `retryNotBefore`, `ensureFresh`; since 2026-10-13 `RefreshRun`, the detail in
+  `handleRevoked`, and `accountStatus` in `emitUnauthenticated` and `executeTick`.
+- `src/server/orchestrator/agents/codex/oauth-refresher.test.ts` — the fake
+  speaks the app-server's side of the exchange; refusals use the CLI's real
+  lines. The rig's account row follows the refresher's events, as the orchestrator
+  wires it.
+- `scripts/probe-codex-refresh.mjs`, and the `codex-refresh-probe` job in
+  `.github/workflows/ci.yml`.
+- `src/server/orchestrator/agents/claude/oauth-refresher.ts` —
+  `summarizeRefreshFailure`, shared for the redacted reason; `describeCliRun` and
+  `TickTrigger`, shared for the revoked line.

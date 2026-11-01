@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { PrStatusSummary } from "../shared/types.js";
+import Fastify from "fastify";
+import type { PrStatusSummary, SessionInfo } from "../shared/types.js";
+import type { ApiDeps } from "./api-routes.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 
@@ -13,6 +15,7 @@ vi.mock("./chat-card-persistence.js", () => ({ emitChatCard, emitNoticePostTurn 
 import {
   presentExplicitResetSuccess,
   recordManualResetAgentNotice,
+  registerGitRoutes,
   reportSyncFailure,
 } from "./api-routes-git.js";
 import { markSyncFailureExplained } from "./services/rebase-driver.js";
@@ -201,14 +204,14 @@ describe("reportSyncFailure", () => {
   it("explains an untracked-overwrite failure and says the branch is unchanged", async () => {
     const { notice } = await report(new Error(gitStderr), false);
     expect(notice).toMatch(/^Sync with `main` failed: a commit being replayed adds files/);
-    expect(notice).toContain("Your branch was not changed by ShipIt.");
+    expect(notice).toContain("The rebase did not change your branch.");
     expect(notice).not.toContain("Permission denied");
   });
 
   it("says the workspace is still mid-rebase when the abort did not take, in the notice and the banner", async () => {
     const { emitMessage, notice } = await report(new Error(gitStderr), true);
     expect(notice).toContain("still mid-rebase");
-    expect(notice).not.toContain("was not changed");
+    expect(notice).not.toContain("did not change your branch");
     const banner = emitMessage.mock.calls.find(([m]) => (m as { type: string }).type === "rebase_aborted")?.[0] as
       { reason: string } | undefined;
     expect(banner?.reason).toContain("still mid-rebase");
@@ -217,12 +220,36 @@ describe("reportSyncFailure", () => {
   it("does not call the branch unchanged when git cannot say whether a rebase is in progress", async () => {
     const { notice } = await report(new Error(gitStderr), null);
     expect(notice).toContain("could not check whether the rebase was aborted");
-    expect(notice).not.toContain("was not changed");
+    expect(notice).not.toContain("did not change your branch");
   });
 
   it("adds no second notice for a failure the driver already explained", async () => {
     const { emitMessage, notice } = await report(markSyncFailureExplained(new Error("interrupted")), false);
     expect(notice).toBeUndefined();
     expect(emitMessage).toHaveBeenCalledWith({ type: "rebase_aborted", sessionId: "session-1", reason: "interrupted" });
+  });
+});
+
+describe("GET /api/sessions/:id/branch/destructive-git-guard (planning#694)", () => {
+  it("answers for the session in the path, and gives no answer for one it does not know", async () => {
+    const rows: Record<string, Partial<SessionInfo>> = {
+      merged: { id: "merged", mergedAt: "2026-10-13T00:00:00.000Z", mergedHeadSha: "a1f3c9d0" },
+      plain: { id: "plain" },
+    };
+    const app = Fastify({ logger: false });
+    await registerGitRoutes(app, {
+      sessionManager: { get: (id: string) => rows[id] },
+      createGitManager: () => { throw new Error("this route reads no git"); },
+    } as unknown as ApiDeps);
+    const read = (id: string) =>
+      app.inject({ method: "GET", url: `/api/sessions/${id}/branch/destructive-git-guard` });
+
+    expect((await read("merged")).json()).toEqual({ guarded: true });
+    expect((await read("plain")).json()).toEqual({ guarded: false });
+    const unknown = await read("other");
+    expect(unknown.statusCode).toBe(404);
+    expect(unknown.json()).not.toHaveProperty("guarded");
+
+    await app.close();
   });
 });

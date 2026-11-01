@@ -91,10 +91,24 @@ re-enters where it left off.
 
 `previewPaths` deliberately survives `preview-store.reset()`. That reset is the
 *session-scoped* one — `resetSessionState()` calls it when the route leaves a
-session for home or `/{slug}/new`, which on desktop is the same moment
-`AppLayout` unmounts the right panel and with it the whole pool. Clearing there
-would erase the map at exactly the moment it has to be read back. Only
+session for home or `/{slug}/new`. Going home on desktop unmounts the right
+panel and with it the whole pool, so clearing there would erase the map at
+exactly the moment it has to be read back. `/{slug}/new`, and every route on
+mobile, keep the panel mounted: the pool survives while `reset()` drops every
+session's preview snapshot, so the next return to a retained slot starts with
+no service rows (see "A missing row is a gap" below). Only
 `clearPreviewPaths()`, called from `fullResetAllStores`, empties it.
+
+The URL and the session store do not change in one commit. React Router renders
+a navigation as a transition, after the store writes beside it, so
+`handleNewSessionForRepo` (store cleared, then `navigate`) commits once with the
+old `/session/:id` URL and no session; Back is a popstate the store follows from
+an effect. On desktop, a missing session used to mean the home screen, so that
+one commit unmounted the panel and the pool, and every return from a new-session
+page reloaded the preview. `homeScreenShown` (`ContentPanels.tsx`) therefore
+never shows the home screen while the URL names a session.
+`PreviewFrame/new-session-round-trip.test.tsx` drives both paths through the
+real router.
 
 The path is authored by the previewed page, so it is untrusted:
 `sanitizePreviewPath` requires a same-document absolute path and caps its
@@ -233,6 +247,14 @@ found by adversarial review rather than by the first pass.
   the window before `service_list` lands, and surrendering the port there drops
   the pane onto `status.port`, reintroducing the fallback through the back door.
   The waiting predicate is keyed on the remembered name for the same reason.
+  But a gap is not an outage either. A return to a session whose snapshot is
+  missing — after `/{slug}/new`, after the mobile session list, or a session
+  left before its list landed — has no row until `service_list` arrives.
+  Treating that as down hid the retained iframe and then reloaded it on every
+  such return. So only an outage the server reported (`serviceDown`: a
+  non-running row now, or one seen earlier for this slot) hides the iframe and
+  leads to the recovery reload below; a gap with no outage seen re-shows the
+  slot at once, and the row's arrival is not a recovery.
 - **The pane must not create a slot for a port that answers nothing.**
   `usePreviewSlot` returns early while waiting. Without that it would create the
   slot anyway — a connecting page parked behind the overlay, and a created slot
@@ -241,13 +263,17 @@ found by adversarial review rather than by the first pass.
 - **The wait must end on a live page — and only for the slot that waited.** The
   slot is deliberately retained through the outage, so promoting it would
   re-show the document from before the service went down; `PreviewFrame` bumps
-  `refreshKey` on the recovery edge, reusing the toolbar-refresh path. That edge
-  is recorded as the waiting **slot key**, never a bare boolean: a key carries
-  the session, and switching from a waiting session A straight to a running
-  session B reads as "was waiting, isn't now" — reloading B's retained iframe
-  and destroying exactly the in-page state the pool exists to keep. The edge is
-  also `running` rather than "no longer waiting", so a row that blinks out of
-  the list is not mistaken for a recovery.
+  `refreshKey` on the recovery edge, reusing the toolbar-refresh path. The
+  outage is marked on the **slot** (`IframeSlot.outage`), never as a bare
+  boolean: a slot carries the session, and switching from a waiting session A
+  straight to a running session B reads as "was waiting, isn't now" — reloading
+  B's retained iframe and destroying exactly the in-page state the pool exists
+  to keep. The edge is also `running` rather than "no longer waiting", so a row
+  that blinks out of the list is not mistaken for a recovery. The mark lives
+  until that recovery, through a switch away and a missing snapshot, and keeps
+  the stale document hidden meanwhile; a slot dropped and rebuilt in the
+  meantime (planning#394, planning#496) starts unmarked, so it is not loaded
+  twice.
 - **The wait must be escapable, and must not lie.** The toolbar's port list is
   built from `detectedPorts`, which holds running ports only, so the parked
   service has no row of its own — and with a single other service up, the

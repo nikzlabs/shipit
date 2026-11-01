@@ -94,6 +94,76 @@ describe("BackgroundTaskTracker", () => {
     expect(t.count(true)).toBe(0);
   });
 
+  it("says whether a clear dropped a list, so the owner announces only a real change", () => {
+    const t = new BackgroundTaskTracker();
+    expect(t.clear()).toBe(false);
+    t.set([task("a")]);
+    expect(t.clear()).toBe(true);
+    expect(t.clear()).toBe(false);
+  });
+
+  // planning#710 — the decay changed no state, so an open chat kept "Waiting for:" after it.
+  describe("expiry callback", () => {
+    it("runs once when an unchanged list reaches the TTL, with the list still held", () => {
+      vi.useFakeTimers();
+      try {
+        let held: number[] = [];
+        const t: BackgroundTaskTracker = new BackgroundTaskTracker(() => { held.push(t.count(true)); });
+        t.set([task("a")]);
+        vi.advanceTimersByTime(BACKGROUND_TASK_TTL_MS - 1);
+        expect(held).toEqual([]);
+        vi.advanceTimersByTime(1);
+        // The count has decayed; the list is still there for the owner's clear to report.
+        expect(held).toEqual([0]);
+        expect(t.clear()).toBe(true);
+        held = [];
+        vi.advanceTimersByTime(BACKGROUND_TASK_TTL_MS);
+        expect(held).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps one timer, restarted by each list update", () => {
+      vi.useFakeTimers();
+      try {
+        const onExpire = vi.fn();
+        const t = new BackgroundTaskTracker(onExpire);
+        t.set([task("a")]);
+        vi.advanceTimersByTime(59 * 60_000);
+        t.set([task("a"), task("b")]);
+        t.set([task("a")]);
+        expect(vi.getTimerCount()).toBe(1);
+        vi.advanceTimersByTime(59 * 60_000);
+        expect(onExpire).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(60_000);
+        expect(onExpire).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("arms nothing while the list is empty", () => {
+      vi.useFakeTimers();
+      try {
+        const onExpire = vi.fn();
+        const t = new BackgroundTaskTracker(onExpire);
+        t.set([]);
+        expect(vi.getTimerCount()).toBe(0);
+        t.set([task("a")]);
+        t.set([]);
+        expect(vi.getTimerCount()).toBe(0);
+        t.set([task("a")]);
+        t.clear();
+        expect(vi.getTimerCount()).toBe(0);
+        vi.advanceTimersByTime(BACKGROUND_TASK_TTL_MS);
+        expect(onExpire).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("falls back to the task id when the backend gave no description", () => {
     const t = new BackgroundTaskTracker();
     t.set([task("abc123", undefined)]);

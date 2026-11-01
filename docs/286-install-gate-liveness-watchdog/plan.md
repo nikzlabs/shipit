@@ -95,6 +95,11 @@ Two halves, matching the two halves of the problem.
 `afterPoll` hook — the cadence that already exists, and that already knows about
 the gate through `isGated`.
 
+Since docs/332-event-driven-service-status that cadence is gone. The hook still
+calls the watchdog, and while any service is held the manager asks the poller for
+one follow-up a settle window out (`ServicePoller.requestFollowUp`), so the
+repeated look this watchdog needs exists exactly while the gate is held.
+
 The watchdog is written against the **state**, not against a route. The wedge is
 decidable without knowing what failed: services sit in `gatedServices` while
 nothing that could open the gate is in flight, and nothing polls a held service,
@@ -162,10 +167,9 @@ watchdog is a new route into it, so it is fixed here.
   `_installRunning` true, and firing there would start services against a
   half-written dependency tree — the docs/137 race the gate exists to remove.
   That layer is docs/283's `awaitInstallCompletion`, deliberately independent.
-- **A wedge that the poller never observes.** Recovery is one settle window
-  after the first successful `docker compose ps`, and the poller is armed at the
-  END of `start()` — so a `start()` that throws before that point leaves no
-  heartbeat to run this. That is the existing `stack_error` path, which is
+- **A wedge that no refresh ever observes.** Recovery is one settle window after
+  the first successful listing, and the poller is armed at the END of `start()` —
+  so a `start()` that throws before that point leaves nothing to run this. That is the existing `stack_error` path, which is
   visible.
 
 #### Why the poll heartbeat, and not its own timer

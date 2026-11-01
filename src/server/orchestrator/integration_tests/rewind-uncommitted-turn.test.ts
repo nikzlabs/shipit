@@ -100,6 +100,7 @@ describe("Integration: rewind while the finished turn is not committed yet", () 
     chatHistoryManager.append(sessionId, {
       role: "assistant",
       text: "added tracked.txt",
+      agentMessageId: "msg-turn-1",
       commitHash: commitHash ?? undefined,
       parentCommitHash: initial ?? undefined,
     });
@@ -117,6 +118,7 @@ describe("Integration: rewind while the finished turn is not committed yet", () 
       type: "assistant",
       message: { content: [{ type: "text", text: "Edited tracked.txt" }] },
       session_id: "agent-sid",
+      uuid: "msg-edited",
     });
     claude.emit("event", { type: "result", subtype: "success", session_id: "agent-sid" });
     claude.emit("done", 0);

@@ -848,15 +848,16 @@ describe("AuthManager / fresh-credential completion gate", () => {
   let tmp: string;
   const CRED_REL = path.join(".claude", ".credentials.json");
 
-  const STALE_MTIME = 1_000_000_000_000;
-  const FRESH_MTIME = 2_000_000_000_000;
+  const STALE = "stale";
+  const FRESH = "fresh";
 
-  function writeCred(mtimeMs: number): void {
+  function writeCred(name: string, extra: Record<string, unknown> = {}): void {
     const credPath = path.join(tmp, CRED_REL);
     fs.mkdirSync(path.dirname(credPath), { recursive: true });
-    fs.writeFileSync(credPath, "{}");
-    const when = new Date(mtimeMs);
-    fs.utimesSync(credPath, when, when);
+    fs.writeFileSync(credPath, JSON.stringify({
+      claudeAiOauth: { accessToken: `access-${name}`, refreshToken: `refresh-${name}`, expiresAt: 2_000_000_000_000 },
+      ...extra,
+    }));
   }
 
   function track(mgr: AuthManager): { complete: number; failed: { reason?: string }[] } {
@@ -881,7 +882,7 @@ describe("AuthManager / fresh-credential completion gate", () => {
   });
 
   it("poll does NOT complete on a pre-existing stale file, and leaves the CLI alive", () => {
-    writeCred(STALE_MTIME);
+    writeCred(STALE);
     const mgr = new AuthManager();
     const seen = track(mgr);
     mgr.startOAuthFlow({ accountId: "acct-stale", credentialDir: tmp });
@@ -892,7 +893,7 @@ describe("AuthManager / fresh-credential completion gate", () => {
     expect(seen.failed).toHaveLength(0);
     expect(ptyHoisted.killed).toBe(0);
 
-    writeCred(FRESH_MTIME);
+    writeCred(FRESH);
     vi.advanceTimersByTime(500);
     expect(seen.complete).toBe(1);
     expect(ptyHoisted.killed).toBe(1);
@@ -907,13 +908,13 @@ describe("AuthManager / fresh-credential completion gate", () => {
     vi.advanceTimersByTime(500);
     expect(seen.complete).toBe(0);
 
-    writeCred(FRESH_MTIME);
+    writeCred(FRESH);
     vi.advanceTimersByTime(500);
     expect(seen.complete).toBe(1);
   });
 
   it("poll times out (failed) when no fresh write ever lands, despite a stale file", () => {
-    writeCred(STALE_MTIME);
+    writeCred(STALE);
     const mgr = new AuthManager();
     const seen = track(mgr);
     mgr.startOAuthFlow({ accountId: "acct-timeout", credentialDir: tmp });
@@ -926,7 +927,7 @@ describe("AuthManager / fresh-credential completion gate", () => {
   });
 
   it("exit handler reports failure on a stale file (no fresh write)", () => {
-    writeCred(STALE_MTIME);
+    writeCred(STALE);
     const mgr = new AuthManager();
     const seen = track(mgr);
     mgr.startOAuthFlow({ accountId: "acct-exit-stale", credentialDir: tmp });
@@ -940,30 +941,82 @@ describe("AuthManager / fresh-credential completion gate", () => {
   });
 
   it("exit handler reports success when the CLI wrote fresh credentials", () => {
-    writeCred(STALE_MTIME);
+    writeCred(STALE);
     const mgr = new AuthManager();
     const seen = track(mgr);
     mgr.startOAuthFlow({ accountId: "acct-exit-fresh", credentialDir: tmp });
 
-    writeCred(FRESH_MTIME);
+    writeCred(FRESH);
     for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 0 });
 
     expect(seen.complete).toBe(1);
     expect(seen.failed).toHaveLength(0);
+  });
+
+  it("does not take a credential that another writer put there before the code for the sign-in's result", () => {
+    const mgr = new AuthManager();
+    const seen = track(mgr);
+    mgr.startOAuthFlow({ accountId: "acct-hijack", credentialDir: tmp });
+    // The refresher's harvest refilled the emptied source with the account's old credential.
+    writeCred("other-writer");
+    mgr.sendCode("auth-code-xyz");
+
+    vi.advanceTimersByTime(1_000);
+    expect(seen.complete).toBe(0);
+    expect(ptyHoisted.killed).toBe(0);
+
+    // Another CLI rewrites the file's other keys: the same credential, a newer mtime.
+    writeCred("other-writer", { mcpOAuth: { server: "changed" } });
+    vi.advanceTimersByTime(500);
+    expect(seen.complete).toBe(0);
+    expect(ptyHoisted.killed).toBe(0);
+
+    writeCred(FRESH);
+    vi.advanceTimersByTime(500);
+    expect(seen.complete).toBe(1);
+    expect(ptyHoisted.killed).toBe(1);
+  });
+
+  it("does not complete on a credential file that holds no access token", () => {
+    const mgr = new AuthManager();
+    const seen = track(mgr);
+    mgr.startOAuthFlow({ accountId: "acct-blank", credentialDir: tmp });
+    mgr.sendCode("auth-code-xyz");
+
+    fs.mkdirSync(path.join(tmp, ".claude"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, CRED_REL),
+      JSON.stringify({ claudeAiOauth: { accessToken: "", refreshToken: "", expiresAt: 0 } }),
+    );
+    vi.advanceTimersByTime(500);
+
+    expect(seen.complete).toBe(0);
+    expect(ptyHoisted.killed).toBe(0);
+  });
+
+  it("a second code does not hide the credential that the CLI wrote after the first", () => {
+    const mgr = new AuthManager();
+    const seen = track(mgr);
+    mgr.startOAuthFlow({ accountId: "acct-two-codes", credentialDir: tmp });
+    mgr.sendCode("auth-code-one");
+
+    writeCred(FRESH);
+    mgr.sendCode("auth-code-two");
+    vi.advanceTimersByTime(500);
+
+    expect(seen.complete).toBe(1);
   });
 });
 
 describe("AuthManager / one terminal outcome per flow", () => {
   let tmp: string;
   const CRED_REL = path.join(".claude", ".credentials.json");
-  const FRESH_MTIME = 2_000_000_000_000;
-
-  function writeCred(mtimeMs: number): void {
+  function writeCred(): void {
     const credPath = path.join(tmp, CRED_REL);
     fs.mkdirSync(path.dirname(credPath), { recursive: true });
-    fs.writeFileSync(credPath, "{}");
-    const when = new Date(mtimeMs);
-    fs.utimesSync(credPath, when, when);
+    fs.writeFileSync(credPath, JSON.stringify({
+      claudeAiOauth: { accessToken: "access-fresh", refreshToken: "refresh-fresh", expiresAt: 2_000_000_000_000 },
+    }));
   }
 
   function trackScoped(mgr: AuthManager): { complete: (string | null)[]; failed: (string | null)[] } {
@@ -993,7 +1046,7 @@ describe("AuthManager / one terminal outcome per flow", () => {
     mgr.startOAuthFlow({ accountId: "acct-once", credentialDir: tmp });
     mgr.sendCode("auth-code-xyz");
 
-    writeCred(FRESH_MTIME);
+    writeCred();
     vi.advanceTimersByTime(500);
     expect(seen.complete).toEqual(["acct-once"]);
 
@@ -1008,7 +1061,7 @@ describe("AuthManager / one terminal outcome per flow", () => {
     mgr.startOAuthFlow({ accountId: "acct-once-gone", credentialDir: tmp });
     mgr.sendCode("auth-code-xyz");
 
-    writeCred(FRESH_MTIME);
+    writeCred();
     vi.advanceTimersByTime(500);
     expect(seen.complete).toEqual(["acct-once-gone"]);
 
@@ -1041,7 +1094,7 @@ describe("AuthManager / one terminal outcome per flow", () => {
     expect(seen.complete).toEqual([]);
 
     mgr.sendCode("auth-code-xyz");
-    writeCred(FRESH_MTIME);
+    writeCred();
     vi.advanceTimersByTime(500);
     expect(seen.complete).toEqual(["acct-second"]);
   });

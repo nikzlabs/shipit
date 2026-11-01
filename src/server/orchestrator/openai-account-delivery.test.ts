@@ -9,6 +9,7 @@ import {
 } from "./openai-account-delivery.js";
 import {
   managedOpenCodeDataHome,
+  openCodeAccountHome,
   readOpenCodeAccount,
   openCodeAccountFile,
 } from "../shared/opencode-account.js";
@@ -16,7 +17,10 @@ import {
 const roots: string[] = [];
 const consumers: string[] = [];
 afterEach(() => {
-  for (const p of consumers.splice(0)) revokeOpenCodeAccount(p);
+  for (const p of consumers.splice(0)) {
+    revokeOpenCodeAccount(p);
+    revokeOpenCodeAccount(p, undefined, "opencode2");
+  }
   for (const p of roots.splice(0))
     {fs.rmSync(p, { recursive: true, force: true });}
 });
@@ -135,4 +139,34 @@ it("keeps the consumer during a partial or expired source rewrite", async () => 
       next,
     ),
   );
+});
+
+it("projects OpenCode 2's token into its own directory and never into OpenCode 1's root (docs/269 req 2)", async () => {
+  const src = root();
+  const dest = root();
+  consumers.push(dest);
+  source(src, "a", "first");
+  const home = provisionOpenCodeAccount(src, dest, "route-a", undefined, "opencode2");
+  expect(home).toBe(path.join(dest, ".local/share/opencode2/shipit-account"));
+  expect(home).toBe(openCodeAccountHome(dest, "opencode2"));
+  expect(fs.existsSync(path.join(dest, ".local/share/opencode"))).toBe(false);
+  const next = source(src, "a", "renewed");
+  await vi.waitFor(() => expect(readOpenCodeAccount(home, "route-a").access).toBe(next));
+  revokeOpenCodeAccount(dest, undefined, "opencode2");
+  expect(fs.existsSync(openCodeAccountFile(home))).toBe(false);
+});
+
+it("restores an OpenCode 2 binding after restart", async () => {
+  const src = root();
+  const dest = root();
+  consumers.push(dest);
+  source(src, "a", "first");
+  const home = provisionOpenCodeAccount(src, dest, "route-a", undefined, "opencode2");
+  const marker = fs.readFileSync(path.join(home, ".shipit-openai-account.json"));
+  revokeOpenCodeAccount(dest, undefined, "opencode2");
+  fs.writeFileSync(path.join(home, ".shipit-openai-account.json"), marker);
+  restoreOpenCodeAccount(dest, () => src);
+  const next = source(src, "a", "renewed");
+  await vi.waitFor(() => expect(readOpenCodeAccount(home).access).toBe(next));
+  revokeOpenCodeAccount(dest, undefined, "opencode2");
 });

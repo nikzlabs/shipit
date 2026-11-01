@@ -13,7 +13,7 @@ function instructions(dockerfile: string): string {
 
 const WORKER_IMAGES = ["Dockerfile.session-worker.prod", "Dockerfile.session-worker.dev"];
 
-/** docs/325-session-gpu-access req 7: the image's half of what `gpuGraphicsBinds` mounts. */
+/** docs/325-session-gpu-access req 7, 9: the image's half of what `gpuGraphicsBinds` mounts. */
 describe("the worker images carry what drawing with a WSL2 GPU needs", () => {
   it.each(WORKER_IMAGES)("%s links DirectX from a mounted directory into the loader's path", (dockerfile) => {
     const targets = /ln -s ((?:\S+ )+)\/usr\/lib\/$/m.exec(instructions(dockerfile))?.[1].trim().split(" ") ?? [];
@@ -24,5 +24,9 @@ describe("the worker images carry what drawing with a WSL2 GPU needs", () => {
 
   it.each(WORKER_IMAGES)("%s installs the X display Chrome needs to reach Mesa", (dockerfile) => {
     expect(instructions(dockerfile)).toMatch(/apt-get install[^\n]*\bxvfb\b[^\n]*\bxauth\b/);
+  });
+
+  it.each(WORKER_IMAGES)("%s installs the EGL library Chrome needs to reach Mesa with no display", (dockerfile) => {
+    expect(instructions(dockerfile)).toMatch(/apt-get install[^\n]*\blibegl1\b/);
   });
 });

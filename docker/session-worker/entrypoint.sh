@@ -144,6 +144,10 @@ if ! gosu "${UID_GID}:${WORKER_GID}" mkdir -p /credentials/.local/share/opencode
   echo "[shipit] warning: could not prepare /credentials/.local/share/opencode for UID ${UID_GID}; OpenCode will fail to start (EEXIST on the dangling ~/.local/share/opencode symlink)" >&2
 fi
 
+if ! gosu "${UID_GID}:${WORKER_GID}" mkdir -p /credentials/.local/share/opencode2 2>/dev/null; then
+  echo "[shipit] warning: could not prepare /credentials/.local/share/opencode2 for UID ${UID_GID}; OpenCode 2 will fail to start (dangling ~/.local/share/opencode2 symlink)" >&2
+fi
+
 if ! gosu "${UID_GID}:${WORKER_GID}" mkdir -p /credentials/.grok 2>/dev/null; then
   echo "[shipit] warning: could not prepare /credentials/.grok for UID ${UID_GID}; Grok turns will fail (dangling ~/.grok symlink)" >&2
 fi
@@ -176,6 +180,7 @@ if [ "${SHIPIT_READONLY_HOME:-0}" = "1" ]; then
     ln -sfn /credentials/.codex       /home/shipit/.codex
     mkdir -p /home/shipit/.local/share
     ln -sfn /credentials/.local/share/opencode /home/shipit/.local/share/opencode
+    ln -sfn /credentials/.local/share/opencode2 /home/shipit/.local/share/opencode2
     ln -sfn /credentials/.grok        /home/shipit/.grok
     ln -sfn /credentials/.gemini      /home/shipit/.gemini
     ln -sfn /credentials/.ssh         /home/shipit/.ssh

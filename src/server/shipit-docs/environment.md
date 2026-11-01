@@ -38,7 +38,11 @@ What this means in practice:
 - **Persistent scratch:** `/persist` is a writable, non-git directory that
   **survives container restarts** (like `/workspace`, but never committed). Put
   files here that should outlive the container without entering the repo — see
-  the filesystem layout below.
+  the filesystem layout below. The user sees its contents in the **Files** tab,
+  under a `/persist` heading below the workspace tree. The Files tab and chat
+  attachments do not follow a symlink out of the file's own root, so a link in
+  `/workspace` that points into `/persist` does not open there — point the user
+  at the real `/persist/…` path instead.
 - **Read-only data:** `/uploads` is mounted **read-only** (docs/172 Gap 6) —
   you can read the user's attached files but not modify or delete them. If you
   need to transform an upload, copy it into `/workspace` or `/persist` first.
@@ -62,10 +66,12 @@ What this means in practice:
 | `/workspace` | Project root. This is the git repo. Your working directory. |
 | `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts and checkout reclaim, but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). It is kept while the session is in use. After the session is archived or finished, ShipIt deletes it when a retention period ends — see [What survives what](#what-survives-what). A Compose service can mount it too: the `persist` volume in [compose.md](compose.md). |
 | `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. It has the same retention period as `/persist`. |
-| `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Write-protected (see below). |
-| `/dep-cache` | Shared download cache across sessions for the same repo: yarn's cache and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). |
+| `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode`, `~/.local/share/opencode2` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Claude's credential and settings files here are write-protected (see below). |
+| `/dep-cache` | Shared download cache across sessions for the same repo: yarn's cache and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). Also the place for a lock between those sessions — see [A lock shared by the repo's sessions](#a-lock-shared-by-the-repos-sessions). |
 | `/workspace/.pnpm-store` | **This session's own pnpm store.** Not shared with any other session — see [The pnpm store is yours alone](#the-pnpm-store-is-yours-alone). |
 | `/session-state/npm-cache` | **`npm_config_cache` points here** — your session's own npm cache. Private to this session. |
+| `/session-state/playwright-browsers` | **`PLAYWRIGHT_BROWSERS_PATH` points here** — browser builds for the project's Playwright. Private to this session, writable, and kept across container restarts. See [Playwright](#playwright). |
+| `/opt/playwright-browsers` | The image's browser builds. **Read-only.** |
 | `/home/shipit` | Your home directory. Agent credentials (via symlink), npm global prefix, and caches live here. |
 
 ### The npm cache is split
@@ -158,30 +164,95 @@ some real work rather than finish instantly, and expect a native package to be c
 downloaded in this session; that is the design, not a cache miss. Nothing about it needs
 configuring, and every `pnpm` command still behaves normally.
 
+### A lock shared by the repo's sessions
+
+`/dep-cache` is one directory on the host, mounted into every session of the same repo, so a
+lock file in it is a lock all of those sessions see. Use it when only one session of the repo
+may do something at a time — a test run against a shared external account, a deploy to one
+target, a heavy run the project wants to run alone:
+
+```bash
+flock -o -w 300 /dep-cache/deploy.lock ./scripts/deploy.sh
+```
+
+- **Always pass `-o`.** Without it the command inherits the lock, and so does anything it
+  leaves running — a Gradle or Turbo daemon, a `&` child — which then holds the lock after the
+  command exits and blocks every other session indefinitely.
+- **Always pass `-w <seconds>`.** The wait counts against your shell tool's foreground limit
+  (10 minutes for Claude's Bash tool), so leave room for the command itself, or run the line as
+  a background job (what that does and does not guarantee is under *Session container
+  lifecycle* below). On timeout `flock` exits 1 without running the command.
+- **Never delete or replace the lock file.** Every session of the repo can delete files in
+  `/dep-cache`, and a new file is a new lock: the next session takes it while the old holder is
+  still running, and both commands run at once.
+- **It binds only sessions of this repo that use the same file name.** Other repos' sessions
+  have their own `/dep-cache`, and a command run without `flock` is not stopped. "This repo"
+  means the same remote URL, as written: one repository added once over SSH and once over HTTPS
+  gets two folders, and so two locks.
+- **No mount, no lock.** A sandbox session has no shared directory; its `/dep-cache` is a plain
+  directory inside the container. `mountpoint -q /dep-cache` tells you which you have.
+
+The kernel releases the lock when the process holding it exits, including when ShipIt removes
+the container, so a stopped session never leaves a stale lock behind.
+
 ### Write-protected paths
 
-The Claude agent runs under an explicit permission policy (`/etc/shipit/managed-settings.json`). Editing under `/workspace` and elsewhere is unrestricted, but the file-edit tools (Edit/Write/MultiEdit/NotebookEdit) are **denied** on a few infrastructure paths:
+The Claude agent runs under an explicit permission policy (`/etc/shipit/managed-settings.json`). Editing is otherwise unrestricted, but the file-edit tools (Edit/Write/NotebookEdit) are **denied** on a few infrastructure paths:
 
 - `/etc/shipit/**` — ShipIt's managed settings and hooks (the agent must not rewrite its own permission policy).
-- The OAuth / CLI-config credential files: `~/.claude/.credentials.json`, `~/.claude/auth.json`, `~/.claude.json`, `~/.claude/settings*.json` (and the same files under `/credentials/.claude`, which `~/.claude` symlinks to).
+- The OAuth / CLI-config credential files: `~/.claude/.credentials.json`, `~/.claude/credentials.json`, `~/.claude/auth.json`, `~/.claude/settings*.json`, `~/.claude.json` — and the same files under `/credentials/`, which `~/.claude` and `~/.claude.json` link to.
 
-These are infrastructure, not your project — you should never need to write to them. An attempt is refused with a permission error rather than silently succeeding.
+These are infrastructure, not your project — you should never need to write to them. An attempt is refused with a permission error rather than silently succeeding. A shell command whose target the CLI can read, such as `echo … > ~/.claude/auth.json`, is refused too.
+
+These rules guard against an accidental write. They are not a wall: a shell command whose target the CLI cannot read, such as `sh -c '…'`, is not refused.
 
 Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restricted — the deny list targets the specific credential files, not the whole `~/.claude` tree, precisely so memory updates keep working. Confidentiality of the credentials (reads, exfil) is handled at the network/credential layer, not by these file-edit rules.
+
+### Writes that wait for the user's approval
+
+**In Auto mode the Claude agent never waits here:** ShipIt allows each such request at once and shows no card. A deny rule above still refuses. The rest of this section is about Plan and Guarded mode.
+
+Some writes are neither allowed nor refused: the agent CLI asks, and ShipIt shows the user an approve/deny card. **The call returns nothing until the user answers.** With no user at the screen it waits: the Claude CLI ends an unanswered request after 30 minutes, and the call's result says that the MCP tool `permission_prompt` sent no response. Nobody denied it. ShipIt then puts a `[ShipIt]` line at the start of your next turn that names the call and says it did not run. So know what asks before you plan around it, most of all for work you give to subagents.
+
+For the Claude agent (measured with Claude Code 2.1.293 and 2.1.300, in the CLI's `default` mode, which ShipIt now answers with allow in Auto mode):
+
+| Write | Card? |
+|---|---|
+| An ordinary file under `/workspace`, by Write, Edit, or a shell command | No |
+| `/persist` or `/tmp` by its **real path**, by Write, Edit, or a shell command | No |
+| Through a **symlink in `/workspace` that points into `/persist`** | No |
+| `rm -rf` of an ordinary folder in `/workspace`, `/tmp` or `/persist`, also with a glob, a variable or `cd`; and `git config --global` | No |
+| Through a symlink in `/workspace` that points to **another place outside `/workspace`** (measured with `/tmp`), by Write, Edit, or a shell command whose target the CLI can read (`>`, `cp`, `mv`, `mkdir`, `touch`, `tee`, `sed -i`) | **Yes** |
+| A path with a **`.claude` segment** — for example `.claude/skills/<name>/SKILL.md`, also through a `.claude/skills` symlink, or a `.claude` folder in `/tmp` — by Write, Edit, `mkdir`, `ln -s` or `rm -rf` | **Yes** |
+| `rm -rf <dir>/.git` | **Yes** |
+| A file the CLI treats as sensitive, for example `.env`, `.npmrc`, `.gitconfig` or `.bashrc`, also when a shell command writes or deletes it (`rm -f ~/.gitconfig`, `echo … >> .bashrc`) | **Yes** |
+
+So a scratch directory that you move to `/persist` and link back into the workspace stays writable through the link. For any other place outside the workspace, use the real path, not a symlink in the workspace.
+
+For the `.claude`, `.git` and `.gitconfig` requests, an allow rule that names the path did not remove the request in any case that was measured, so do not expect a setting to remove them. Use a form that does not ask:
+
+- **Skills:** keep a Claude skill's files in `.agents/skills/<name>/`, with `.claude/skills` a symlink to `../.agents/skills`, and edit them at the `.agents/skills/` path. A write through `.claude/skills/` asks, and so does making that symlink, one time (see `/shipit-docs/skills.md`).
+- **Git config:** for a scratch repository, use `git -C <dir> config …` or `git config --file <path> …`. `git config --global` changes this session's own git config (`$GIT_CONFIG_GLOBAL`). Do not write or delete a `.gitconfig` file by its path.
+- **Cleanup:** to remove a scratch clone, remove its folder, not its `.git` folder.
+
+When a **background subagent** makes a call that asks, you get no result and no error from it. After two minutes ShipIt puts a `[ShipIt]` line in your running turn that lists the calls that wait. You can stop that subagent, or get its work done in a way that needs no approval. The line needs a turn of yours that runs and the user's live steering setting to be on: if your turn ended while you waited for the subagents, the line comes in your next turn when the call still waits then. A call of your own that asks keeps you inside the call until it has an answer, and so does a call of a subagent that you did not start in the background.
+
+This section is about the Claude agent. The other harnesses were not measured.
 
 ## Installed tools
 
 - **Node.js** (with npm; `pnpm` and `yarn` are available via corepack — it reads the repo's `packageManager` field and fetches the pinned version). The container bakes Node 24, but **a repo's own Node pin wins** — see [Node version](#node-version) below.
 - **git**, **git-lfs**, **curl** (see [Git LFS](#git-lfs) below)
 - **python3**, **make**, **g++** (for native npm addons)
-- **Agent CLIs** — the harnesses this install selected (`claude` / Claude Code, `codex` / Codex and `opencode` / OpenCode are installed by default; `grok` / Grok Build and `antigravity` / Antigravity are available but off by default, and an install can narrow or widen the set) are installed; ShipIt invokes whichever the user selected for the session
+- **Agent CLIs** — the harnesses this install selected (`claude` / Claude Code, `codex` / Codex and `opencode` / OpenCode are installed by default; `opencode2` / OpenCode 2, `grok` / Grok Build and `antigravity` / Antigravity are available but off by default, and an install can narrow or widen the set) are installed; ShipIt invokes whichever the user selected for the session. With both OpenCode harnesses installed, `opencode` is OpenCode 1 and `opencode2` is OpenCode 2.
 
   Codex authentication has two modes — they are not interchangeable:
 
   - **ChatGPT subscription** (preferred). The user signs in with `Sign in with ChatGPT` in the UI; the credentials are written to `~/.codex/auth.json` (a symlink onto the credentials volume). Bills against their ChatGPT plan / Codex credits.
   - **OpenCode with ChatGPT** reuses the same connected OpenAI account and quota. The image keeps the Codex CLI as a login and renewal dependency even when only the OpenCode harness is selected. This does not add Codex to the session picker. It gives OpenCode only an access token, account identity, and expiry; Codex's account machinery owns renewal. Managed OpenCode runs use a private XDG data root under `HOME/.local/share/opencode/shipit-data`. Terminal OpenCode logins do not configure this route. Use ShipIt's account settings and model selection; do not copy auth files. Existing conversation state is migrated automatically.
+  - **OpenCode 2 with ChatGPT** uses the same connected account the same way. OpenCode 2 keeps everything under its own root, `HOME/.local/share/opencode2` — data in `shipit-data`, state in `shipit-state`, config in `shipit-config` — and never reads OpenCode 1's. Each turn ShipIt starts a private `opencode2 serve` and imports the access token into its database. A bare `opencode2` in the terminal uses the CLI's default root, which is OpenCode 1's, and migrates it: do not run it for the user's work.
   - **`OPENAI_API_KEY` env var**. Bills against their OpenAI Platform account. ShipIt only injects this into the agent process when no ChatGPT login is present — when both are configured, the env var is stripped so the user isn't double-billed.
-- **Playwright** with headless Chrome (available via browser tools)
+- **Playwright** — the built-in browser behind your browser tools, and the Chromium builds of the current stable Playwright release for a project's own tests. See [Playwright](#playwright) below.
 - **Android build toolchain** — JDK 17 (`JAVA_HOME=/opt/java`), the Android SDK (`ANDROID_SDK_ROOT=/opt/android-sdk` — `sdkmanager`, `adb`, platforms 34/35, build-tools), and Gradle 8.7. Always present, so any Android/Gradle repo builds, lints, and runs JVM/snapshot tests with no per-repo setup (no `shipit.yaml` Android fields). See [android.md](android.md).
 
 ## Node version
@@ -219,6 +290,66 @@ never silently ignored — if `node -v` surprises you, that panel says why.
 Changing `.nvmrc` mid-session does not re-provision; the pin is resolved once at
 container start. To pick up a new pin, restart the agent container — see
 [Restarting your agent container](#restarting-your-agent-container).
+
+## Playwright
+
+The image has Chromium builds for two Playwright versions:
+
+- **The built-in browser's build.** Your browser tools use it. It comes from a
+  pre-release of Playwright, so no project uses it, and nothing a project does
+  can change or remove it.
+- **A stable Playwright release's build** — Chromium and the headless shell.
+  ShipIt pins that release and moves the pin to a newer stable release once
+  that release is at least seven days old and a person merges the update. So
+  the covered release can trail the newest one. A project on the covered
+  release runs `npx playwright test` with no setup step.
+
+Read the covered release — do not assume it — and the build your project needs:
+
+```bash
+node -p 'require("/opt/agent-cli/node_modules/playwright-stable/package.json").version'
+npx playwright install --dry-run chromium   # "Install location" names the build the project needs
+ls "$PLAYWRIGHT_BROWSERS_PATH"               # the builds this session has
+```
+
+Patch releases of one minor release usually use the same build, so a project on
+`1.N.0` often matches a covered `1.N.1`. The build number is what decides.
+
+**`PLAYWRIGHT_BROWSERS_PATH` is `/session-state/playwright-browsers`.** That
+directory is this session's own: it is writable, and it stays across container
+restarts. At each container start ShipIt links every build of the image into
+it, so Playwright finds them there, and you can install more.
+
+**A project on another Playwright version** stops at launch with
+`Executable doesn't exist at /session-state/playwright-browsers/…`. Do what
+that message says:
+
+```bash
+npx playwright install chromium                  # Chromium and the headless shell
+npx playwright install chromium-headless-shell   # headless runs only: about 110 MB to download
+```
+
+The build goes into the same directory and stays there for this session. A new
+session does not have it. For a project that stays on another version, put the
+command in `agent.install` ([shipit-yaml.md](shipit-yaml.md)), or tell the user
+that an upgrade of `@playwright/test` to the covered release removes the
+download. Do not upgrade it yourself only for this reason.
+
+The download comes from `cdn.playwright.dev`. Some builds, such as `ffmpeg` and
+those of older releases, also try `playwright.download.prss.microsoft.com`. If
+the download fails with `ENOTFOUND`, `EAI_AGAIN` or another DNS error, read the
+session's egress allowlist with `shipit settings list`. If the host is not in
+it, propose it with `shipit settings propose` (see [settings.md](settings.md)).
+
+Two things not to do:
+
+- **Do not point `PLAYWRIGHT_BROWSERS_PATH` at `/opt/playwright-browsers`.** That
+  is the image's read-only store. `playwright install` there waits about ten
+  minutes for a lock it cannot take, and then fails.
+- **Do not run `npx playwright uninstall --all` to clean up.** It removes the
+  links to the image's builds from this session's directory, until the next
+  container start puts them back. Plain `npx playwright uninstall` keeps them.
+  The built-in browser does not use that directory in either case.
 
 ## Automatic behaviors
 
@@ -512,6 +643,34 @@ no durability guarantee and belong in `docker-compose.yml`.
   window for everything still outstanding. Treat it as cover for a build or a
   test run, never as a guarantee your job runs to completion. Nothing about it
   survives eviction once that does happen.
+- **A `run_in_background` job outlives your message only on a resident agent
+  process.** With the `advanced.liveSteering` setting on
+  (`shipit settings get advanced.liveSteering`) and a harness whose process
+  stays up between turns, a turn runs on a resident process: you can end the
+  message, and the end of the job starts a new turn for you. That holds for a
+  turn the user typed and for a turn ShipIt started — the wake after
+  `notify-on-merge --self`, a finished consult, a CI fix, a rebase follow-up,
+  the turn after `shipit session restart` — and the user can send a message
+  into either. A message that the user sent while the turn started normally
+  reaches you in that turn, after the turn's own prompt. Otherwise the process
+  exits about five seconds after your
+  message ends. A job that is still running then is stopped before it finishes,
+  and **no completion notice comes for it**. Do not count on those seconds.
+  Where your harness would start a turn for a finished job, a turn that ShipIt
+  started on a process that exits begins with a `[System]` line that says so; a
+  turn the user typed carries no such line. The process of the turn that
+  resolves the conflicts of a rebase always ends with that turn, before
+  ShipIt continues the rebase; its prompt says so, and it carries no such line
+  either. On these
+  turns, run the work in the foreground and wait for it in the same message;
+  split work that is longer than one tool call allows, or declare it as a
+  Compose service. If you leave a job running, ShipIt normally starts
+  one turn that names the jobs. It starts none if that turn leaves a job running
+  too, or if another turn or a credential change took the agent process before
+  it exited: then you get the note with a later turn, and the user normally gets
+  a notice in the transcript. A backgrounded `shipit agent run` is the
+  exception, because the consult runs on ShipIt's side and its result starts a
+  turn of its own ([agent.md](agent.md)).
 - **`/workspace` (the git repo) and `/persist` (non-git scratch) persist** —
   both are host-backed and re-mounted onto the new container. In-memory state,
   processes, and files written *elsewhere* (outside `/workspace`, `/persist`,
@@ -593,7 +752,8 @@ shipit session restart --note "check that node -v prints 22, then run the tests"
 That records the request; ShipIt restarts the agent container **after your
 turn ends**, so the turn that asked is not cut off. The preview services keep
 running. ShipIt then starts a new turn on the new container with your note, so
-write in it what to check or do next. Say in your reply what you restart and
+write in it what to check or do next. A message the user sent during the
+restart runs first, and your note's turn comes after it. Say in your reply what you restart and
 why. See [sessions.md](sessions.md) → `shipit session restart`.
 
 You cannot ask for **Restart all** (it also stops and restarts the Compose
@@ -667,23 +827,45 @@ On a WSL2 host, ShipIt also mounts the host's DirectX libraries
 a `granted` container, read-only. Mesa's OpenGL needs both to draw on the GPU,
 through its Direct3D 12 driver. Without them it draws on the CPU (`llvmpipe`).
 
-A Chrome **you start yourself** — a Playwright or Puppeteer script, a test run,
-a benchmark — must start with both of these. When one is missing, WebGL can
-run on SwiftShader, Chrome's own software renderer, and Chrome says nothing. So
-read the renderer in the page before you call a result GPU-drawn:
+**The built-in browser** — the one behind `browser_navigate` and the
+screenshots — draws WebGL on the GPU in such a container. No setting turns that
+on or off. It uses the GPU for WebGL only: its picture of a page that has no
+WebGL is the same as in a session with no GPU. Its picture of WebGL content is
+not the same, because the GPU and a software renderer do not give identical
+pixels. So:
 
-- **An X display.** Chrome reaches Mesa through GLX and this container has no
-  display, so start the command under `xvfb-run -a`. Full Chrome, headless or
-  headed, and the headless shell all work there.
-- **The flags `--use-angle=gl --ignore-gpu-blocklist`.** The first selects
-  Mesa; headless Chrome stays on SwiftShader without it, and headed Chrome
-  selects Mesa by itself. The second matters when Mesa is on the CPU: without
-  it Chrome then gives no WebGL context, or goes back to SwiftShader, and you
-  cannot read why. Give both each time.
+- When a result depends on the renderer — a benchmark, a screenshot that you
+  commit or compare — read the renderer in the page (below) and say which one
+  it was.
+- For a software picture of WebGL content in a GPU session, start your own
+  headless Chrome with none of the flags below: it then draws on SwiftShader.
+  For the built-in browser, the only switch is GPU access itself, and that is
+  the user's.
+- When the built-in browser reports `SwiftShader` in a `granted` container, the
+  GPU path did not start and the browser went back to software. See the causes
+  below.
+
+A Chrome **you start yourself** — a Playwright or Puppeteer script, a test run,
+a benchmark — reaches the GPU in one of these two ways. When a part is missing,
+headless Chrome draws WebGL on SwiftShader, Chrome's own software renderer, and
+says nothing. So read the renderer in the page before you call a result
+GPU-drawn:
+
+- **With no display: `--use-angle=gl-egl --ignore-gpu-blocklist`.** Headless
+  Chrome and the headless shell reach Mesa through EGL. This is the usual way.
+- **On an X display: `xvfb-run -a` and `--use-angle=gl --ignore-gpu-blocklist`.**
+  For headed Chrome, or a tool that needs a display. Chrome reaches Mesa
+  through GLX there. Headed Chrome selects Mesa by itself, so it draws on the
+  GPU with no flag; headless Chrome needs `--use-angle=gl`. With no display,
+  `--use-angle=gl` stays on SwiftShader.
+
+`--ignore-gpu-blocklist` matters when Mesa is on the CPU: without it Chrome
+then gives no WebGL context, or goes back to SwiftShader, and you cannot read
+why. Give it each time.
 
 ```bash
-# In the script: chromium.launch({ args: ["--use-angle=gl", "--ignore-gpu-blocklist"] })
-xvfb-run -a node render-check.mjs
+# In the script: chromium.launch({ args: ["--use-angle=gl-egl", "--ignore-gpu-blocklist"] })
+node render-check.mjs
 ```
 
 Read the renderer in the page:
@@ -697,8 +879,24 @@ gl.getParameter(gl.getExtension("WEBGL_debug_renderer_info").UNMASKED_RENDERER_W
 |---|---|
 | `D3D12 (…)` with the card's name | Chrome draws on the GPU. If it names another adapter of the machine, an integrated one for example, set `MESA_D3D12_DEFAULT_ADAPTER_NAME=NVIDIA`. |
 | `llvmpipe` | Chrome uses Mesa, but Mesa draws on the CPU. See the causes below. |
-| `SwiftShader` | Chrome does not use Mesa. The usual cause is that the display or a flag is missing. |
+| `SwiftShader` | Chrome does not use Mesa. For your own Chrome, the usual cause is that a flag or the display is missing. With `--use-angle=gl-egl`, and for the built-in browser, see the causes below. |
 | nothing — `getContext` returns `null` | Chrome gave no WebGL. If nothing in the script turns WebGL off, the usual cause is that Mesa draws on the CPU and `--ignore-gpu-blocklist` is missing. Add the flag, then follow the `llvmpipe` row. |
+
+`GALLIUM_DRIVER=d3d12` in a browser's environment makes Mesa use the GPU or
+nothing: a GPU fault then ends in SwiftShader, not in `llvmpipe`. The built-in
+browser starts with it, so it reports the card or SwiftShader, never
+`llvmpipe`.
+
+When the built-in browser reports `SwiftShader` in a `granted` container, or
+your own Chrome does with `--use-angle=gl-egl`, find the cause in this order:
+
+1. **`libEGL.so.1` is not in the image** (`/sbin/ldconfig -p | grep libEGL`
+   prints nothing; give the full path, because not every shell has `/sbin` in
+   its `PATH`). The container is older than this feature. A restart of the
+   container gets the new image (see "Restarting your agent container" above).
+2. **Mesa could not use the GPU.** Start your own Chrome with
+   `--use-angle=gl-egl --ignore-gpu-blocklist` and no `GALLIUM_DRIVER`. It then
+   reports `llvmpipe`; follow the list below.
 
 When the renderer is `llvmpipe`, find which part is missing, in this order:
 
@@ -717,12 +915,110 @@ When the renderer is `llvmpipe`, find which part is missing, in this order:
 4. **All of these are in place.** Mesa could not start the card's driver. Run a
    Mesa program with `LD_DEBUG=files` to see which file it could not open.
 
+**A reload does not skip the shader compile on the GPU.** Mesa's Direct3D 12
+driver gives Chrome no program binary to keep. So Chrome links each WebGL
+program again on each load, and the first draw of each program has a cost of
+its own, which also comes back on each load. Measured on one host (an RTX
+4090, Mesa 22.3.6) with 200 three.js programs: on average 22 to 37 ms to link
+a program on a first load, 16 to 22 ms on a reload with the same shaders, and
+35 to 44 ms for its first draw. The browser's GPU process used about one CPU
+core for this. Two later browsers, which ran while other processes used the
+CPUs of the host, took about 1.5 times as long. The cause was not examined.
+The test page got no animation frame during the link when it asked for
+`LINK_STATUS` of each program immediately. A page that animates got few frames
+during the link, even when it waited on `COMPLETION_STATUS_KHR` between
+frames: when it drew into its canvas in each frame, it got about one frame for
+each group of programs that it sent. With groups of 25 to 100 programs, the
+longest gap was 0.5 to 2.3 s. With groups of 1, it got 29 to 41 frames each
+second, and the link took 4.9 to 7.7 s, against 3.3 to 4.6 s with groups of 25
+to 100. Only a page that
+drew nothing in its frames got about 60 frames each second during the link,
+and only with 128 programs or fewer sent at one time. During the first draws,
+the page got one frame for each group of draws: 16 to 25 frames each second
+with one new program for each frame.
+The cache variables of Mesa, `--disable-gpu-program-cache` and Mesa 25.0.7 did
+not remove the link or the first-draw cost of a reload. Another card, host or
+page can give other numbers. So when you measure a page load on the GPU, time
+the link and the first draws separately, measure a warm load before you
+expect it to be faster, and record the load on the host with each run. Do not
+expect a page to keep its animation while it compiles on this route: measure
+its frames during the link and the first draws.
+In a sample of the browser's GPU process, the first draws were the compiler of
+the card's driver. In a Mesa program with no browser, that driver and DirectX
+asked for no cache file while they compiled 20 programs, so no cache of theirs
+was found that a directory could turn on. The variable of the next paragraph
+did not remove the link or the first draws (one browser each way).
+
+**Some uploads of texture and buffer data are slow without one variable in
+the browser's environment, and ShipIt sets it.** Mesa copies each upload into
+memory that Direct3D 12 maps for the card. For a copy of about 2 KiB to
+512 KiB, the `memcpy` of the image's C library (glibc 2.36) uses the CPU
+instruction `rep movsb`. On one host (a Ryzen 9 5950X, an RTX 4090, Mesa
+22.3.6) that instruction wrote this memory at 7 MB each second, and the other
+paths of `memcpy` wrote it at 300 MB each second. One layer of 256 × 256 RGBA8
+pixels is one copy of 256 KiB. So a WebGL 2 texture array of 145 such layers
+(36 MB) took 8.3 to 11.9 s to upload, against 0.07 s on SwiftShader.
+`GLIBC_TUNABLES=glibc.cpu.x86_rep_movsb_threshold=0x40000000` keeps `memcpy`
+off that instruction, and the same upload then took 0.26 to 0.30 s. ShipIt
+puts this variable into the environment of each container that has the two
+mounts, and the built-in browser starts with it. A browser that you start
+inherits it, with these conditions:
+
+- **The container has it.** `echo $GLIBC_TUNABLES` prints the value. A
+  container that was created before ShipIt had this remedy does not have it; a
+  restart of the container gets it (see "Restarting your agent container"
+  above).
+- **The start of the browser keeps the environment.** Playwright's
+  `launch({ env })` gives the browser only the variables of `env`, so write
+  `env: { ...process.env, MY_VARIABLE: "…" }`. A command that sets its own
+  `GLIBC_TUNABLES` replaces ShipIt's value: put both tunables into the one
+  variable, with a colon between them.
+- **To see what a running browser has,** read the environment of its main
+  process: `tr '\0' '\n' < /proc/<pid>/environ | grep GLIBC_TUNABLES`. The
+  main process is the child of the program that started the browser:
+  `ps -o pid,args --ppid <pid of that program>`. For the built-in browser,
+  that program is the `playwright-mcp` server. Each process of the browser,
+  the GPU process too, had the main process's environment.
+- **To find the GPU process itself** (for a CPU reading or a sampler), look in
+  that browser's process tree for the process whose `/proc/<pid>/maps` has the
+  renderer's library: `libd3d12.so` on the card, `libvk_swiftshader.so` on
+  SwiftShader. Do not look for `--type=gpu-process` on a command line. When
+  `GLIBC_TUNABLES` is in the browser's environment, also with an empty value,
+  each process that Chromium forks from a zygote keeps the zygote's command
+  line, `--type=zygote`: the GPU process, and the renderers too. So with
+  ShipIt's value in place, no process shows `--type=gpu-process`. The same
+  Chromium with no `GLIBC_TUNABLES` shows the types. The probable cause: the
+  C library moves that variable's text away from the command line in memory,
+  and Chromium then does not write the type over the command line.
+
+Without the variable, these uploads were slow on that host, each of 36 MB when
+no size is given: the texture array in one call (11.9 s) and in one call for
+each layer (14.0 s), 145 separate 2D textures of 256 × 256 pixels (7.3 s), 145
+`DYNAMIC_DRAW` buffers of 256 KiB (4.9 s), and one 2D texture of 1100 × 1100
+pixels, 4.6 MB (0.67 s). With the variable they took 0.03 to 0.35 s. One 2D
+texture of 4096 × 2320 pixels (0.39 s) and 145 `STATIC_DRAW` buffers of 256 KiB
+(0.17 s) were not slow without it. Mesa 25.0.7 has the same slow copy.
+
+What stayed with the variable on that host, and how to measure an upload:
+
+- **An upload cost about 3.5 ms for each MB,** because the card's memory took
+  300 MB each second. Chromium sent the data of a texture array to its GPU
+  process in parts of less than 16 MiB. With Mesa 22.3.6, when the first part
+  did not fill the texture level, the browser first made one upload of its own
+  for the full level. So a texture array of 16 MiB or more was copied two
+  times.
+- **`gl.finish()` does not wait for an upload.** Chromium makes it a flush. For
+  a texture array of 32 layers with no variable, `gl.finish()` returned after
+  14 ms, and a `readPixels` after it returned after 1.1 s. So time an upload to
+  the answer of a call that returns a value from the GPU process, `readPixels`
+  for example.
+- **The time of an upload shows at the next call that waits for the GPU
+  process,** whatever that call asks. A long time around another call can be
+  the upload before it.
+
 What this does not cover:
 
 - **WebGPU.** It needs Vulkan, and this image has no Vulkan driver for the card.
-- **The browser tools.** `browser_navigate` and the screenshots use ShipIt's
-  built-in browser, which draws in software. To look at a page on the GPU, start
-  your own Chrome as above and take the screenshot from that script.
 - **Other containers.** Compose services and containers you start through Docker
   get the GPU for CUDA, but not these two directories.
 - **A native Linux host.** There the GPU is for CUDA only.
@@ -731,6 +1027,11 @@ With the mounts in place, every OpenGL program that uses Mesa in this container
 draws on the GPU, not only Chrome. Set `LIBGL_ALWAYS_SOFTWARE=1` for a run that
 must draw on the CPU — a pixel comparison against software-rendered snapshots,
 for example: the GPU and the CPU do not give identical pixels.
+
+In a session with no GPU, the built-in browser and a Chrome with default flags
+draw on SwiftShader. A Chrome that you start with `--use-angle=gl-egl` gets
+Mesa on the CPU there (`llvmpipe`), and no WebGL context when
+`--ignore-gpu-blocklist` is absent.
 
 This was measured on Docker Desktop with the WSL 2 backend. Docker Engine with
 the NVIDIA Container Toolkit in WSL2 is not yet measured.
@@ -763,3 +1064,21 @@ A host that cannot run ShipIt's egress sidecar cannot apply this block. There
 ShipIt listens only on loopback, and contained sessions do not start. A Compose
 service given the Docker socket controls this machine, so none of this holds
 for it ([compose.md](compose.md)).
+
+### When a command loses its connection to ShipIt
+
+A `shipit` or `gh` command reaches ShipIt through this container's worker. When
+a command that changes something ends with
+`The connection to the orchestrator failed after the request was sent (…)`,
+ShipIt may have done the work. The worker did not send that request a second
+time. Check the result first — the pull request, the issue, the comment — and
+run the command again only when the work is not there.
+
+Do the same after any other failure to reach ShipIt (a 502, 503 or 504,
+`Could not reach orchestrator`, `Could not reach the ShipIt session worker`):
+the message of a whole command does not say that nothing was done.
+`shipit session create` has its own rules for this
+([sessions.md](sessions.md), "When a spawn fails to answer"). A plugin's
+command is stopped when its call loses the connection, and it can have done a
+part of its work ([plugins.md](plugins.md), "A call that ends before its
+command does stops the command").

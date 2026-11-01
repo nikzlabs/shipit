@@ -14,6 +14,8 @@ import {
   listWorktrees,
   getChatHistory,
   spawnChildSession,
+  SpawnRepositoryUntrustedError,
+  discardSpawnedChild,
   parseSpawnTarget,
   listSpawnedChildren,
   getSpawnedChild,
@@ -36,6 +38,8 @@ import {
 } from "./services/index.js";
 import type { AgentId } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
+import { AgentTurnAdmissionError } from "./session-runner.js";
+import type { SessionInbox } from "./services/session-inbox.js";
 
 // Bump when row decoding, selection, wire projection, or payload assembly changes
 // without a data write; transcriptRevision cannot invalidate those cached responses.
@@ -70,6 +74,8 @@ export async function registerSessionSpawnRoutes(
     chatHistoryManager: deps.chatHistoryManager,
     usageManager: deps.usageManager,
   };
+
+  const discardChild = (childId: string): Promise<void> => discardSpawnedChild(deps, childId);
 
   // Collapses a retry of a spawn whose response was lost. docs/306-spawn-retry-safety.
   const spawnClaims = new SpawnClaims<SpawnOutcome>();
@@ -276,6 +282,7 @@ export async function registerSessionSpawnRoutes(
           deps.credentialStore,
           deps.providerAccountManager,
           graduationDeps,
+          discardChild,
         );
         const parentRunner = body.detached ? undefined : deps.runnerRegistry.get(request.params.parentId);
         if (parentRunner) {
@@ -286,12 +293,18 @@ export async function registerSessionSpawnRoutes(
             spawnedAt: result.session.createdAt,
             ...(shipitFixMeta ? { shipitFix: shipitFixMeta } : {}),
           };
-          emitChatCard(
-            parentRunner,
-            { type: "session_spawned", sessionId: request.params.parentId, ...spawnedSession },
-            { role: "assistant", text: "", spawnedSession },
-            { chatHistoryManager: deps.chatHistoryManager, sessionId: request.params.parentId },
-          );
+          // The child exists and has its prompt. A card that cannot be recorded must not turn
+          // that into "failed": the caller's retry would then create a second child.
+          try {
+            emitChatCard(
+              parentRunner,
+              { type: "session_spawned", sessionId: request.params.parentId, ...spawnedSession },
+              { role: "assistant", text: "", spawnedSession },
+              { chatHistoryManager: deps.chatHistoryManager, sessionId: request.params.parentId },
+            );
+          } catch (err) {
+            console.error(`[spawn] Could not record the spawned card for ${result.sessionId}:`, err);
+          }
         }
 
         recordSpawnInvocation({
@@ -318,10 +331,16 @@ export async function registerSessionSpawnRoutes(
         // can report the session as created rather than as newly created.
         return deduplicated ? { ...result, deduplicated: true } : result;
       } catch (err) {
-        const statusCode = err instanceof ServiceError ? err.statusCode : 500;
-        const errorMessage = err instanceof ServiceError
+        // The check before the claim makes the dispatch refusal unreachable unless trust changed
+        // in between; it keeps its status and code instead of reading as a server fault.
+        const refused = err instanceof ServiceError || err instanceof AgentTurnAdmissionError;
+        const statusCode = refused ? err.statusCode : 500;
+        const errorMessage = refused
           ? err.message
           : `Failed to spawn child session: ${getErrorMessage(err)}`;
+        const code = err instanceof SpawnRepositoryUntrustedError || err instanceof AgentTurnAdmissionError
+          ? err.code
+          : undefined;
 
         const parentRunner = body.detached ? undefined : deps.runnerRegistry.get(request.params.parentId);
         if (parentRunner) {
@@ -356,7 +375,7 @@ export async function registerSessionSpawnRoutes(
           errorMessage,
         });
 
-        reply.code(statusCode).send({ error: errorMessage });
+        reply.code(statusCode).send({ error: errorMessage, ...(code ? { code } : {}) });
       }
     },
   );
@@ -448,18 +467,17 @@ export async function registerSessionSpawnRoutes(
     async (request, reply) => {
       try {
         const result = await sendChildMessage(
-          sessionManager,
-          deps.runnerRegistry,
+          {
+            sessionManager,
+            runnerRegistry: deps.runnerRegistry,
+            chatHistoryManager: deps.chatHistoryManager,
+            sessionInbox: requireSessionInbox(deps),
+          },
           request.params.parentId,
           request.params.childId,
           request.body?.text ?? "",
-          deps.defaultAgentId,
-          deps.credentialsDir,
-          deps.credentialStore,
-          deps.providerAccountManager,
-          deps.containerManager,
         );
-        return { queuePosition: result.queuePosition, enqueued: result.enqueued };
+        return result;
       } catch (err) {
         if (err instanceof ResolvedChildMessageError) {
           reply.code(409).send({
@@ -498,12 +516,22 @@ export async function registerSessionSpawnRoutes(
             console.error(`[merge-watch] register-time check failed for ${request.params.childId}:`, err);
           });
         }
-        return { armed: true, state: result.state, alreadyArmed: result.alreadyArmed };
+        return {
+          armed: true,
+          state: result.state,
+          alreadyArmed: result.alreadyArmed,
+          ...(result.skipsPr !== undefined ? { skipsPr: result.skipsPr } : {}),
+        };
       } catch (err) {
+        const { parentId, childId } = request.params;
         if (err instanceof ServiceError) {
+          console.warn(
+            `[merge-watch] refused parent ${parentId}'s watch on ${childId}: ${err.statusCode} ${err.message}`,
+          );
           reply.code(err.statusCode).send({ error: err.message });
           return;
         }
+        console.error(`[merge-watch] arming parent ${parentId}'s watch on ${childId} failed:`, err);
         reply.code(500).send({ error: `Failed to register merge watch: ${getErrorMessage(err)}` });
       }
     },
@@ -527,10 +555,13 @@ export async function registerSessionSpawnRoutes(
         );
         return { armed: true, ...result };
       } catch (err) {
+        const { sessionId } = request.params;
         if (err instanceof ServiceError) {
+          console.warn(`[merge-watch] refused the self-watch of ${sessionId}: ${err.statusCode} ${err.message}`);
           reply.code(err.statusCode).send({ error: err.message });
           return;
         }
+        console.error(`[merge-watch] arming the self-watch of ${sessionId} failed:`, err);
         reply.code(500).send({ error: `Failed to arm self merge-watch: ${getErrorMessage(err)}` });
       }
     },
@@ -575,7 +606,7 @@ export async function registerSessionSpawnRoutes(
   );
 
   // docs/324-agent-requested-compaction — records the request only; it runs after the turn.
-  app.post<{ Params: { sessionId: string }; Body: { instructions?: string; note?: string } }>(
+  app.post<{ Params: { sessionId: string }; Body: { instructions?: string; note?: string; userAsked?: boolean } }>(
     "/api/sessions/:sessionId/compact-after-turn",
     { config: { containerAccessible: true } },
     async (request, reply) => {
@@ -611,6 +642,8 @@ export async function registerSessionSpawnRoutes(
         return cancelSelfMergeWatch(
           {
             sessionManager,
+            runnerRegistry: deps.runnerRegistry,
+            chatHistoryManager: deps.chatHistoryManager,
             ...(deps.mergeWatchManager ? { mergeWatchManager: deps.mergeWatchManager } : {}),
           },
           request.params.sessionId,
@@ -661,11 +694,7 @@ export async function registerSessionSpawnRoutes(
             sessionManager,
             runnerRegistry: deps.runnerRegistry,
             chatHistoryManager: deps.chatHistoryManager,
-            defaultAgentId: deps.defaultAgentId,
-            credentialsDir: deps.credentialsDir,
-            credentialStore: deps.credentialStore,
-            providerAccountManager: deps.providerAccountManager,
-            containerManager: deps.containerManager,
+            sessionInbox: requireSessionInbox(deps),
           },
           request.params.sessionId,
           {
@@ -685,4 +714,31 @@ export async function registerSessionSpawnRoutes(
       }
     },
   );
+
+  // docs/328-session-message-inbox — the calling session's own inbox, never another's.
+  app.post<{ Params: { sessionId: string }; Body: { all?: boolean } }>(
+    "/api/sessions/:sessionId/inbox/read",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      try {
+        if (!sessionManager.get(request.params.sessionId)) throw new ServiceError(404, "Session not found");
+        const all = request.body?.all === true;
+        return {
+          all,
+          messages: requireSessionInbox(deps).read(request.params.sessionId, { all }),
+        };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to read the inbox: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+}
+
+function requireSessionInbox(deps: ApiDeps): SessionInbox {
+  if (!deps.sessionInbox) throw new ServiceError(503, "Session messages are not available on this ShipIt instance.");
+  return deps.sessionInbox;
 }

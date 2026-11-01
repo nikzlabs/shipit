@@ -78,10 +78,10 @@ export function startTokenWriteBackWatch(opts: StartTokenWriteBackWatchOptions):
       // Ignore unrelated rewrites before sync-back's credential-tree chown.
       if (!sessionTokenIsAheadOfSource(credentialsDir, sessionId, agentId, accountId)) return;
       if (accountId) {
-        // The pre-spawn route owns this watch; an active borrow still blocks write-back.
+        // The pre-spawn route owns this watch, so a lost marker is repaired.
         syncProviderAccountTokenBack(credentialsDir, sessionId, agentId, accountId, { sessionOwnRoute: true });
       } else {
-        syncAgentTokenBack(credentialsDir, sessionId, agentId, { sessionOwnRoute: true });
+        syncAgentTokenBack(credentialsDir, sessionId, agentId);
       }
       console.log(
         `[token-publish] published mid-turn ${agentId} token rotation from ${sessionId}${accountId ? ` (account ${accountId})` : ""}`,

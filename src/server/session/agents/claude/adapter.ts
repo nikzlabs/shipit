@@ -26,7 +26,9 @@ import type {
   AgentMcpWriteResult,
   AgentProcess,
   AgentProcessEvents,
+  AgentRequestUsage,
   AgentRunParams,
+  McpServerConfig,
 } from "../agent-process.js";
 import {
   GOAL_CONTROL_TIMEOUT_MS,
@@ -36,6 +38,7 @@ import {
   localGoalAnswer,
   runClaudeGoalControl,
 } from "./claude-goal.js";
+import { closesTaskNoticeWithoutTurn } from "./task-notice.js";
 import type { AgentHomeResolver } from "../../../shared/agent-home.js";
 import { resolveAgentHome } from "../../../shared/agent-home.js";
 import type { McpServerStatus } from "../../../shared/types/mcp-types.js";
@@ -99,6 +102,16 @@ export class ClaudeAdapter
   // GLM supplies only message_delta usage. The latest positive reading wins.
   private latestCallContextTokens: number | undefined;
 
+  /**
+   * This turn's top-level calls by `message.id`, for prompt-length pricing
+   * (docs/329-tiered-model-pricing). A call's output is not final on its
+   * events, so only the prompt side is listed.
+   */
+  private readonly turnCalls = new Map<string, ClaudeUsageIteration>();
+
+  // docs/333-idle-compaction — main thread only: subagents write 5-minute entries by default.
+  private turnCacheWrites = { fiveMinute: false, oneHour: false };
+
   private selectedModel: string | undefined;
 
   readonly capabilities: AgentCapabilities = {
@@ -127,11 +140,14 @@ export class ClaudeAdapter
   private inner: ClaudeProcess | StreamingClaudeProcess;
   private _isStreaming = false;
   private _permissionPromptTool: string | undefined;
+  /** The MCP server names in the CLI's `--allowedTools`, which is fixed at spawn. */
+  private allowedMcpNames = new Set<string>();
 
   // docs/297 — a goal control process resumes the live session id, so it must
   // not run beside a turn; and it runs where the turn ran. Tracks the CLI's own
   // turns too, not just the ones ShipIt dispatched — see `indicatesTurnActivity`.
   private turnLive = false;
+  private spawnPromptUnread = false;
   private lastCwd: string | undefined;
   private spawnHomeOverride: string | undefined;
   private pendingGoal: PendingGoal | null = null;
@@ -159,6 +175,7 @@ export class ClaudeAdapter
       // An answer to a command ShipIt injected belongs to that command, not the
       // transcript: the user typed no message and no turn ran.
       if (this.consumeGoalAnswer(raw)) return;
+      if (this.dropsStaleNoticeResult(raw)) return;
 
       if (indicatesTurnActivity(raw)) this.turnLive = true;
 
@@ -181,6 +198,7 @@ export class ClaudeAdapter
 
     proc.on("done", (code: number) => {
       this.turnLive = false;
+      this.spawnPromptUnread = false;
       this.failPendingGoal(new Error("the Claude CLI ended before answering the goal command"));
       this.emit("done", code);
     });
@@ -198,6 +216,24 @@ export class ClaudeAdapter
     });
   }
 
+  /**
+   * Only until the spawn prompt's own turn shows. Before that, every layer above already
+   * counts this prompt's turn as running, so the notice started none of its own and its
+   * result would end the prompt's turn before the CLI has read the prompt. Afterwards a
+   * notice can have marked an idle session busy, and only its result clears that.
+   */
+  private dropsStaleNoticeResult(raw: ClaudeEvent): boolean {
+    if (!this.spawnPromptUnread) return false;
+    if (closesTaskNoticeWithoutTurn(raw)) {
+      console.log("[claude-adapter] dropped the zero-turn result of a task notice the previous process left");
+      return true;
+    }
+    if (raw.type === "result" || raw.type === "assistant" || raw.type === "stream_event" || raw.type === "user") {
+      this.spawnPromptUnread = false;
+    }
+    return false;
+  }
+
   private recordCallContext(usage: ClaudeUsageIteration | undefined): void {
     if (!usage) return;
     const contextTokens =
@@ -205,6 +241,42 @@ export class ClaudeAdapter
       (usage.cache_read_input_tokens ?? 0) +
       (usage.cache_creation_input_tokens ?? 0);
     if (contextTokens > 0) this.latestCallContextTokens = contextTokens;
+  }
+
+  private recordCacheWrites(usage: ClaudeUsageIteration | undefined): void {
+    const writes = usage?.cache_creation;
+    if ((writes?.ephemeral_5m_input_tokens ?? 0) > 0) this.turnCacheWrites.fiveMinute = true;
+    if ((writes?.ephemeral_1h_input_tokens ?? 0) > 0) this.turnCacheWrites.oneHour = true;
+  }
+
+  // The CLI's own rule: one 5-minute write makes the turn's cache a 5-minute one.
+  private takeTurnCacheTtl(): "5m" | "1h" | undefined {
+    const { fiveMinute, oneHour } = this.turnCacheWrites;
+    this.turnCacheWrites = { fiveMinute: false, oneHour: false };
+    return fiveMinute ? "5m" : oneHour ? "1h" : undefined;
+  }
+
+  private recordCall(id: string | undefined, usage: ClaudeUsageIteration | undefined): void {
+    if (!id || !usage) return;
+    const seen = this.turnCalls.get(id);
+    // A call's events repeat one usage; a snapshot can still read zero, so keep the largest.
+    const max = (field: keyof Omit<ClaudeUsageIteration, "type" | "cache_creation">) =>
+      Math.max(seen?.[field] ?? 0, usage[field] ?? 0);
+    this.turnCalls.set(id, {
+      input_tokens: max("input_tokens"),
+      cache_read_input_tokens: max("cache_read_input_tokens"),
+      cache_creation_input_tokens: max("cache_creation_input_tokens"),
+    });
+  }
+
+  private takeTurnRequests(): AgentRequestUsage[] | undefined {
+    const requests = [...this.turnCalls.values()].map((u) => ({
+      input: u.input_tokens ?? 0,
+      cacheRead: u.cache_read_input_tokens ?? 0,
+      cacheWrite: u.cache_creation_input_tokens ?? 0,
+    }));
+    this.turnCalls.clear();
+    return requests.length > 0 ? requests : undefined;
   }
 
   private mapEvent(raw: ClaudeEvent): AgentEvent | null {
@@ -280,22 +352,33 @@ export class ClaudeAdapter
         return null;
 
       case "assistant":
-        if (!raw.parent_tool_use_id) this.recordCallContext(raw.message.usage);
+        if (!raw.parent_tool_use_id) {
+          this.recordCallContext(raw.message.usage);
+          this.recordCall(raw.message.id, raw.message.usage);
+          this.recordCacheWrites(raw.message.usage);
+        }
         return {
           type: "agent_assistant",
           content: raw.message.content,
           parentToolUseId: raw.parent_tool_use_id,
+          ...(raw.is_api_error_message === true ? { synthetic: true } : {}),
+          ...(raw.uuid ? { messageId: raw.uuid } : {}),
         };
 
       case "user":
         // Replay acknowledges delivery; the user message is already rendered.
         if (raw.isReplay) {
-          return { type: "agent_user_replay", text: textFromUserContent(raw.message.content) };
+          return {
+            type: "agent_user_replay",
+            text: textFromUserContent(raw.message.content),
+            ...(raw.uuid ? { messageId: raw.uuid } : {}),
+          };
         }
         return {
           type: "agent_tool_result",
           content: raw.message.content,
           parentToolUseId: raw.parent_tool_use_id,
+          ...(raw.uuid ? { messageId: raw.uuid } : {}),
         };
 
       case "result": {
@@ -315,6 +398,8 @@ export class ClaudeAdapter
           contextTokens = this.latestCallContextTokens;
         }
         this.latestCallContextTokens = undefined;
+        const requests = this.takeTurnRequests();
+        const cacheTtl = this.takeTurnCacheTtl();
         const modelUsage = raw.modelUsage;
         let contextWindow: number | undefined;
         if (modelUsage) {
@@ -342,7 +427,9 @@ export class ClaudeAdapter
               }
             : undefined,
           contextTokens,
+          ...(requests ? { requests } : {}),
           contextWindow,
+          ...(cacheTtl ? { cacheTtl } : {}),
           durationMs: raw.duration_ms,
           error: errored ? raw.result : undefined,
           permissionDenials: raw.permission_denials?.length
@@ -352,6 +439,8 @@ export class ClaudeAdapter
                 toolInput: d.tool_input,
               }))
             : undefined,
+          ...(raw.num_turns !== undefined ? { numTurns: raw.num_turns } : {}),
+          ...(raw.origin?.kind ? { origin: raw.origin.kind } : {}),
         };
       }
 
@@ -381,6 +470,8 @@ export class ClaudeAdapter
   run(params: AgentRunParams): void {
     // An abnormal prior turn may have left usage without a result to clear it.
     this.latestCallContextTokens = undefined;
+    this.turnCalls.clear();
+    this.turnCacheWrites = { fiveMinute: false, oneHour: false };
     this.turnLive = true;
     this.lastCwd = params.cwd;
     this.spawnHomeOverride = params.homeDir;
@@ -397,17 +488,22 @@ export class ClaudeAdapter
     }
 
     this.selectedModel = params.model;
+    this.spawnPromptUnread = true;
+    // docs/327 — a candidate name has no server yet; its glob matches nothing until one arrives.
+    this.allowedMcpNames = new Set([
+      ...(params.mcpServers ?? []).filter((s) => s.enabled).map((s) => s.name),
+      ...(params.serviceMcpCandidates ?? []),
+    ]);
     this.inner.run({
       prompt: params.prompt,
       sessionId: params.sessionId,
+      resumeAt: params.resumeAt,
       systemPrompt: params.systemPrompt,
       images: params.images,
       cwd: params.cwd,
       permissionMode: params.permissionMode,
       mcpConfigPath: params.mcpConfigPath,
-      mcpServerNames: params.mcpServers
-        ?.filter((s) => s.enabled)
-        .map((s) => s.name),
+      mcpServerNames: [...this.allowedMcpNames],
       model: params.model,
       serviceRouting: params.serviceRouting,
       homeDir: params.homeDir,
@@ -569,6 +665,19 @@ export class ClaudeAdapter
     console.warn(
       "[claude-adapter] compact() called on non-streaming inner — no resident process to compact (the orchestrator should have spawned a /compact turn instead)",
     );
+  }
+
+  async setLiveMcpServers(servers: McpServerConfig[]): Promise<boolean> {
+    if (!(this.inner instanceof StreamingClaudeProcess)) return false;
+    // A server outside the allowlist would work only through a permission card per call.
+    if (servers.some((s) => !this.allowedMcpNames.has(s.name))) return false;
+    const live: Record<string, unknown> = {};
+    for (const server of servers) {
+      const { resolved } = resolveMcpServer(server);
+      if (!resolved) return false;
+      live[server.name] = resolved;
+    }
+    return this.inner.setMcpServers(live);
   }
 
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult {

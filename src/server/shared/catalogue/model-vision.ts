@@ -13,6 +13,8 @@ export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
   // Anthropic Sonnet 5.5 model page, 2026-09-29.
   "claude-sonnet-5.5": "yes",
   "claude-haiku-4.5": "yes",
+  // Anthropic Haiku 5.5 model page, 2026-10-12.
+  "claude-haiku-5.5": "yes",
   "claude-fable-5": "yes",
   "claude-fable-5.1": "yes",
 
@@ -23,16 +25,6 @@ export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
   // OpenAI model pages, 2026-09-22.
   "gpt-6-sol": "yes",
   "gpt-6-luna": "yes",
-  "gpt-5.6-sol": "yes",
-  "gpt-5.6-terra": "yes",
-  "gpt-5.6-luna": "yes",
-  "gpt-5.5": "yes",
-  "gpt-5.4": "yes",
-  "gpt-5.4-mini": "yes",
-  "gpt-5.3-codex": "yes",
-  // Neither gateway carries Spark; sibling capabilities are not evidence for it.
-  "gpt-5.3-codex-spark": "unverified",
-  "gpt-5.2": "yes",
 
   "deepseek-v4-flash": "no",
   "glm-5.2": "no",

@@ -25,6 +25,12 @@ export interface IframeSlot {
    * ownership change.
    */
   service?: string;
+  /**
+   * The slot's service was reported not running and has not recovered since,
+   * so the retained document is stale: `PreviewFrame` keeps it hidden and
+   * reloads it on recovery. Lives on the slot so a dropped slot takes it along.
+   */
+  outage?: boolean;
 }
 
 export interface IframePool {

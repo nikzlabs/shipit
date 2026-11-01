@@ -11,7 +11,7 @@ import { useSessionStore } from "../../../stores/session-store.js";
 import { MarkdownContent } from "../../message-markdown.js";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../../ui/dialog.js";
 
-const SUB_AGENT_DISPLAY_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode", grok: "Grok Build", antigravity: "Antigravity" };
+const SUB_AGENT_DISPLAY_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode", opencode2: "OpenCode 2", grok: "Grok Build", antigravity: "Antigravity" };
 
 /**
  * docs/261 phase 4 (req 9) — what the consult ran on, as the card says it.
@@ -97,6 +97,15 @@ function RunAttribution({ text }: { text: string | null }) {
   );
 }
 
+function StatusDetail({ text }: { text: string | undefined }) {
+  if (!text) return null;
+  return (
+    <div className="mt-1 text-xs text-(--color-text-secondary)" data-testid="sub-agent-consult-status-detail">
+      {text}
+    </div>
+  );
+}
+
 function statusVerb(status: SubAgentConsultCardData["status"]): string {
   return (
     status === "pending" ? "Asking"
@@ -148,11 +157,7 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
       >
         {summary}
         <RunAttribution text={attribution} />
-        {card.statusDetail && (
-          <div className="mt-1 text-xs text-(--color-text-secondary)" data-testid="sub-agent-consult-status-detail">
-            {card.statusDetail}
-          </div>
-        )}
+        <StatusDetail text={card.statusDetail} />
       </div>
     );
   }
@@ -173,6 +178,7 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
           />
         </div>
         <RunAttribution text={attribution} />
+        <StatusDetail text={card.statusDetail} />
         <div className="mt-1 truncate text-xs text-(--color-text-secondary)" data-testid="sub-agent-consult-preview">
           {previewLine(output)}
         </div>

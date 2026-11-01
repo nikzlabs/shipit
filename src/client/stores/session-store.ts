@@ -2,8 +2,12 @@ import { create } from "zustand";
 import { saveDraftMessage } from "../utils/local-storage.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { SessionCapabilities, SessionListRow, SessionStatus, TurnUsage, RescuePhase, WsRewindPreview, AgentId, ContainerFreshness, SessionSecretBlock, IssueRef } from "../../server/shared/types.js";
+import type { SessionCapabilities, SessionListRow, SessionStatus, TurnUsage, RescuePhase, WsRewindPreview, WsReturnedQueueMessage, AgentId, ContainerFreshness, SessionSecretBlock, IssueRef } from "../../server/shared/types.js";
 import type { AgentGoal } from "../../server/shared/types/agent-types.js";
+import {
+  AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS,
+  latestContextTokens,
+} from "../../server/shared/compaction-threshold.js";
 import { reuseUnchangedRows } from "../utils/session-rows.js";
 import { useUiStore } from "./ui-store.js";
 
@@ -25,11 +29,14 @@ export interface SubAgentSpawnChip {
  * `requestId` and `bubble` are set on a **predicted** entry only — one this
  * browser added at send time because a compaction is about to run ahead of the
  * message (`utils/predicted-queue.ts`). A server-authoritative entry carries
- * neither, which is what tells the two apart.
+ * neither, which is what tells the two apart. It carries `id` instead: the
+ * `clientRequestId` of the message's bubble, which for a predicted entry is its
+ * `requestId`.
  */
 export interface QueuedMessageEntry {
   text: string;
   position: number;
+  id?: string;
   requestId?: string;
   bubble?: ChatMessage;
 }
@@ -46,6 +53,8 @@ export interface RescueState {
 export interface SessionDetails {
   sessionStatus: SessionStatus | null;
   agentGoal: AgentGoal | null;
+  /** docs/295-compact-context-on-merge req 5 — the server's saved choice. Absent means on. */
+  compactAfterMergeOff?: boolean;
 }
 
 export interface RewindRecovery {
@@ -79,6 +88,8 @@ interface SessionState {
   sessions: SessionListRow[];
   /** By session id; not on the rows, which every tab receives again on each change. */
   sessionDetails: Record<string, SessionDetails>;
+  /** docs/295-compact-context-on-merge req 5 — a compaction choice clicked and not yet saved, by session. */
+  pendingCompactAfterMerge: Record<string, boolean>;
   /**
    * docs/252 phase 4 — how many times the server has answered a selection change
    * for a session, keyed by session id.
@@ -151,6 +162,13 @@ interface SessionState {
 
   quoteReplyText: string | undefined;
 
+  /**
+   * docs/330-stop-returns-queued-messages — the messages that a Stop took out of the queue,
+   * until the composer of their session has them. Scoped by `sessionId`: the composer of
+   * another session must not take them.
+   */
+  returnedToComposer: { sessionId: string; messages: WsReturnedQueueMessage[] } | undefined;
+
   historyLoaded: boolean;
 
   rescueState: RescueState | null;
@@ -206,6 +224,8 @@ interface SessionState {
   bumpModelSelectionEcho: (sessionId: string) => void;
 
   setAutoFixCiPaused: (sessionId: string, paused: boolean) => Promise<void>;
+  /** docs/295-compact-context-on-merge reqs 5, 16 — the post-merge compaction, kept for the session. */
+  setCompactAfterMerge: (sessionId: string, enabled: boolean) => Promise<void>;
 
   setPinned: (sessionId: string, pinned: boolean) => Promise<void>;
 
@@ -251,6 +271,9 @@ interface SessionState {
   setPendingIssueRef: (pending: { sessionId: string; ref: IssueRef } | undefined) => void;
 
   setQuoteReplyText: (text: string | undefined) => void;
+  setReturnedToComposer: (
+    returned: { sessionId: string; messages: WsReturnedQueueMessage[] } | undefined,
+  ) => void;
 
   appendTurnUsage: (sessionId: string, turn: TurnUsage) => void;
 
@@ -296,6 +319,7 @@ const initialResettableState = {
   prefillText: undefined as string | undefined,
   pendingIssueRef: undefined as { sessionId: string; ref: IssueRef } | undefined,
   quoteReplyText: undefined as string | undefined,
+  returnedToComposer: undefined as { sessionId: string; messages: WsReturnedQueueMessage[] } | undefined,
   historyLoaded: false,
   rescueState: null as RescueState | null,
   recoveryActionError: null as string | null,
@@ -310,9 +334,57 @@ const initialResettableState = {
 
 const initialTurnUsage: Record<string, TurnUsage[]> = {};
 
+/**
+ * docs/295-compact-context-on-merge reqs 5, 16 — what the composer box and the PR menu switch
+ * show: the user's last click until its write settles, then the server's value.
+ */
+export function compactAfterMergeEnabled(
+  state: Pick<SessionState, "pendingCompactAfterMerge" | "sessionDetails">,
+  sessionId: string,
+): boolean {
+  return state.pendingCompactAfterMerge[sessionId] ?? !state.sessionDetails[sessionId]?.compactAfterMergeOff;
+}
+
+/**
+ * docs/295-compact-context-on-merge req 15 — read with the server's own function: the last turn
+ * that read a size, or a compaction card newer than it. An unknown size is not under.
+ */
+export function contextUnderCompactionMinimum(
+  state: Pick<SessionState, "sessionId" | "turnUsage" | "messages">,
+  sessionId: string,
+): boolean {
+  // The store holds only the transcript of the session on screen.
+  const messages = state.sessionId === sessionId ? state.messages : [];
+  let lastCompaction: ChatMessage["compaction"];
+  for (let i = messages.length - 1; i >= 0 && !lastCompaction; i--) lastCompaction = messages[i].compaction;
+  const context = latestContextTokens(state.turnUsage[sessionId] ?? [], lastCompaction);
+  return context !== undefined && context < AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS;
+}
+
+// One session's writes go out one after another, so the saved choice is the last click.
+const compactAfterMergeWrites = new Map<string, Promise<void>>();
+
+async function postCompactAfterMerge(sessionId: string, enabled: boolean): Promise<string | undefined> {
+  const failed = "Failed to change the compaction after a merge";
+  try {
+    const res = await fetch(`/api/sessions/${sessionId}/pr/compact-after-merge`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (res.ok) return undefined;
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    return data.error ?? failed;
+  } catch (err) {
+    console.error("[session-store] Compact-after-merge toggle failed:", err);
+    return failed;
+  }
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   sessionId: undefined,
   ...initialResettableState,
+  pendingCompactAfterMerge: {},
   sessions: [] as SessionListRow[],
   modelSelectionEcho: {},
   activeRunnerSessions: new Set<string>(),
@@ -415,8 +487,38 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       console.error("[session-store] Auto-fix pause toggle failed:", err);
-      patch(prev);          
+      patch(prev);
     }
+  },
+
+  setCompactAfterMerge: (sessionId, enabled) => {
+    set((state) => ({ pendingCompactAfterMerge: { ...state.pendingCompactAfterMerge, [sessionId]: enabled } }));
+    const previous = compactAfterMergeWrites.get(sessionId);
+    let tail: Promise<void> | undefined = undefined;
+    tail = (async () => {
+      await previous;
+      const error = await postCompactAfterMerge(sessionId, enabled);
+      if (error) {
+        useUiStore.getState().setToast({ message: error });
+      } else {
+        // The response can beat the `session_details` that confirms it, also after a switch
+        // emptied `sessionDetails`; the next one replaces this entry whole.
+        set((state) => {
+          const details = state.sessionDetails[sessionId] ?? { sessionStatus: null, agentGoal: null };
+          return { sessionDetails: { ...state.sessionDetails, [sessionId]: { ...details, compactAfterMergeOff: !enabled } } };
+        });
+      }
+      if (compactAfterMergeWrites.get(sessionId) !== tail) return;
+      compactAfterMergeWrites.delete(sessionId);
+      set((state) => {
+        const pending = { ...state.pendingCompactAfterMerge };
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete pending[sessionId];
+        return { pendingCompactAfterMerge: pending };
+      });
+    })();
+    compactAfterMergeWrites.set(sessionId, tail);
+    return tail;
   },
 
   setPinned: async (sessionId, pinned) => {
@@ -637,6 +739,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setPendingIssueRef: (pendingIssueRef) => set({ pendingIssueRef }),
 
   setQuoteReplyText: (quoteReplyText) => set({ quoteReplyText }),
+
+  setReturnedToComposer: (returnedToComposer) => set({ returnedToComposer }),
 
   appendTurnUsage: (sessionId, turn) =>
     set((state) => ({

@@ -22,6 +22,32 @@ import {
 import { DatabaseManager } from "../../shared/database.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
 import type { CredentialStore } from "../credential-store.js";
+import { buildAccountFailoverNote } from "../account-failover-note.js";
+
+// The turn asks, so the answer that follows is the answer to it. Its process outlives the
+// interrupt, which is the case the handler's cleanup is for.
+async function askQuestion(claude: FakeClaudeProcess, toolUseId: string): Promise<void> {
+  claude.streamingInterrupt = true;
+  claude.emit("event", {
+    type: "assistant",
+    message: {
+      content: [{
+        type: "tool_use",
+        id: toolUseId,
+        name: "AskUserQuestion",
+        input: {
+          questions: [{
+            question: "Pick a backend",
+            header: "Backend",
+            options: [{ label: "Redis", description: "" }],
+            multiSelect: false,
+          }],
+        },
+      }],
+    },
+  });
+  await new Promise((r) => setTimeout(r, 30));
+}
 
 describe("Integration: AskUserQuestion / answer_question flow", () => {
   let app: FastifyInstance;
@@ -83,6 +109,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     client.send({ type: "send_message", text: "Ask me something" });
     const firstClaude = await waitForClaude(() => lastClaude);
+    await askQuestion(firstClaude, "tool-1");
 
     client.send({ type: "answer_question", toolUseId: "tool-1", answers: { "0": "Redis" } });
     await waitForClaude(() => lastClaude, firstClaude);
@@ -213,6 +240,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     client.send({ type: "send_message", text: "test" });
     const firstClaude = await waitForClaude(() => lastClaude);
+    await askQuestion(firstClaude, "tool-4");
 
     client.send({
       type: "answer_question",
@@ -237,6 +265,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     client.send({ type: "send_message", text: "test" });
     const firstClaude = await waitForClaude(() => lastClaude);
+    await askQuestion(firstClaude, "tool-4b");
 
     client.send({
       type: "answer_question",
@@ -636,7 +665,8 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     const quotaError = "You've hit Claude's 5h usage limit. It resets at 2099-01-01T00:00:00.000Z.";
     attempt1.emit("event", { type: "agent_result", error: quotaError, sessionId: "quota-sess" });
     const attempt2 = await waitForClaude(() => lastClaude, attempt1);
-    expect(attempt2.lastPrompt).toBe("Redis");
+    // The answer is an ordinary message, so the failover note goes in front (planning#712).
+    expect(attempt2.lastPrompt).toBe(`${buildAccountFailoverNote([])}\n\nRedis`);
 
     attempt2.emit("event", { type: "agent_result", error: quotaError, sessionId: "quota-sess" });
 

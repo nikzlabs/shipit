@@ -27,6 +27,15 @@ single-quoted heredoc, exactly like \`gh pr create --body-file -\`:
   $(git diff)
   EOF`;
 
+function truncationNote(status: string, outputLimitChars?: number): string {
+  if (outputLimitChars !== undefined) {
+    return `ShipIt cut the sub-agent's output at the output-size limit (${outputLimitChars.toLocaleString("en-US")} characters).`;
+  }
+  return status === "timeout"
+    ? "the run stopped at its time limit, so the sub-agent's output is not complete."
+    : "ShipIt cut the sub-agent's output at the output-size limit.";
+}
+
 function inheritedAgentDepth(): number {
   const raw = process.env.SHIPIT_AGENT_DEPTH;
   const n = raw ? Number.parseInt(raw, 10) : 0;
@@ -167,14 +176,17 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
   }
 
   if (status !== "success") {
-    deps.io.stderr(`shipit agent run: sub-agent ${status}${truncated ? " (output truncated)" : ""}.\n`);
-    deps.io.exit(1);
-    return;
+    deps.io.stderr(`shipit agent run: sub-agent ${status}.\n`);
+    const statusDetail = asString(res.body.statusDetail);
+    if (statusDetail) deps.io.stderr(`shipit agent run: ${statusDetail}\n`);
   }
   if (truncated) {
-    deps.io.stderr("shipit agent run: note — the sub-agent's output was truncated at the cost cap.\n");
+    const outputLimitChars = res.body.outputLimitChars;
+    deps.io.stderr(
+      `shipit agent run: note — ${truncationNote(status, typeof outputLimitChars === "number" ? outputLimitChars : undefined)}\n`,
+    );
   }
-  deps.io.exit(0);
+  deps.io.exit(status === "success" ? 0 : 1);
 }
 
 export async function handleAgentRoles(args: string[], deps: RunDeps): Promise<void> {
@@ -480,6 +492,9 @@ export async function handleAgentResult(args: string[], deps: RunDeps): Promise<
   // Keep platform explanations on stderr; stdout belongs to the consultant.
   const statusDetail = asString(lookup.body.statusDetail);
   if (statusDetail) deps.io.stderr(`shipit agent result: ${statusDetail}\n`);
+  if (lookup.body.truncated === true) {
+    deps.io.stderr(`shipit agent result: note — ${truncationNote(status)}\n`);
+  }
   if (lookup.lastTransportError) {
     deps.io.stderr(`shipit agent result: transport retried (${lookup.lastTransportError})\n`);
   }

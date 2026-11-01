@@ -18,15 +18,22 @@ function describeWorkerError(err: unknown, op: "start" | "stdin" | "interrupt"):
   return err instanceof Error ? err : new Error(String(err));
 }
 
+/** What the worker keeps for a turn and reports back to a restarted orchestrator. */
+export interface WorkerTurnIdentity {
+  deliveryId?: string;
+  silentCompaction?: boolean;
+}
+
 export interface ProxyAgentRunner {
   _startAgentViaProxy(
     agentId: AgentId,
     params: AgentRunParams,
     runToken?: string,
-    turn?: { deliveryId?: string },
+    turn?: WorkerTurnIdentity,
+    spawnIdentity?: string,
   ): Promise<void>;
   writeAgentStdin(data: string): Promise<void>;
-  sendAgentMessage(text: string): Promise<void>;
+  sendAgentMessage(text: string, turn?: WorkerTurnIdentity): Promise<void>;
   interruptAgentOnWorker(): Promise<void>;
   killAgentOnWorker(opts?: { victimRunToken?: string }): Promise<void>;
   setAgentPermissionModeOnWorker(mode: PermissionMode | undefined): Promise<void>;
@@ -65,7 +72,9 @@ export class ProxyAgentProcess extends EventEmitter<{
   /** Durable work identity, distinct from the spawn's runToken. */
   deliveryId: string | undefined;
 
-  /** docs/303 req 15 — reported back by the worker, so an adopted nudge stays a nudge. */
+  private silentCompaction = false;
+
+  private spawnIdentity: string | undefined;
 
   private runner: ProxyAgentRunner;
   private lastSubmission: Promise<unknown> | null = null;
@@ -82,11 +91,19 @@ export class ProxyAgentProcess extends EventEmitter<{
     this.deliveryId = deliveryId;
   }
 
+  markSilentCompaction(): void {
+    this.silentCompaction = true;
+  }
+
+  setSpawnIdentity(spawnIdentity: string): void {
+    this.spawnIdentity = spawnIdentity;
+  }
 
   run(params: AgentRunParams): void {
     const started = this.runner._startAgentViaProxy(this.agentId, params, this.runToken, {
       ...(this.deliveryId !== undefined ? { deliveryId: this.deliveryId } : {}),
-    });
+      ...(this.silentCompaction ? { silentCompaction: true } : {}),
+    }, this.spawnIdentity);
     // Tracked before the catch, so a caller awaiting it sees the rejection.
     this.lastSubmission = started;
     started.catch((err: unknown) => {
@@ -102,11 +119,17 @@ export class ProxyAgentProcess extends EventEmitter<{
 
   readonly isStreaming = false;
 
-  sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
+  sendUserMessage(text: string, opts?: { images?: unknown[]; deliveryId?: string; silentCompaction?: boolean }): void {
     console.log(
       `[steer-proxy] agentId=${this.agentId} → /agent/message (bytes=${text.length}, text=${JSON.stringify(text.slice(0, 80))})`,
     );
-    const accepted = this.runner.sendAgentMessage(text);
+    const turn: WorkerTurnIdentity = {
+      ...(opts?.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
+      ...(opts?.silentCompaction ? { silentCompaction: true } : {}),
+    };
+    const accepted = Object.keys(turn).length > 0
+      ? this.runner.sendAgentMessage(text, turn)
+      : this.runner.sendAgentMessage(text);
     this.lastSubmission = accepted;
     void this._logSubmission(accepted, text);
   }

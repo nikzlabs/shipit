@@ -73,4 +73,27 @@ describe("PostTurnHold", () => {
     hold.reset();
     expect(hold.active).toBe(false);
   });
+  // The holder that expired has no depth left to give back; an unowned `end` took it from
+  // whoever began afterwards.
+  it("ignores the end of a holder whose depth was written off as expired", () => {
+    const { hold, advance } = withClock();
+    const first = hold.begin();
+    advance(POST_TURN_HOLD_MAX_MS + 1);
+    const second = hold.begin();
+    hold.end(first);
+    expect(hold.active).toBe(true);
+    hold.end(second);
+    expect(hold.active).toBe(false);
+  });
+
+  it("still ends the hold of a holder that a later begin extended before it expired", () => {
+    const { hold, advance } = withClock();
+    const first = hold.begin();
+    advance(POST_TURN_HOLD_MAX_MS - 1);
+    const second = hold.begin();
+    hold.end(second);
+    expect(hold.active).toBe(true);
+    hold.end(first);
+    expect(hold.active).toBe(false);
+  });
 });

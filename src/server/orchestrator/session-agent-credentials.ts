@@ -1,4 +1,5 @@
 import { provisionOpenCodeAccount, revokeOpenCodeAccount } from "./openai-account-delivery.js";
+import { isOpenCodeHarness } from "../shared/opencode-harness.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
@@ -12,7 +13,6 @@ import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 import {
   AGENT_TOKEN_FILES,
   SUBTREE_STATE_SUBPATHS,
-  preserveBorrowedTokensBeforeWipe,
   syncSubAgentSpawnHomeTokenBack,
 } from "./token-sync-manager.js";
 import {
@@ -20,10 +20,8 @@ import {
   SHARED_CREDENTIAL_PATHS,
   SUB_AGENT_HOME_SUBDIR,
   agentCredentialDirs,
-  beginSubtreeBorrow,
   chownSessionCredentialsTree,
   copyCredentialPath,
-  endSubtreeBorrow,
   perSessionCredentialsDir,
   readSessionAccountMarker,
   writeSessionAccountMarker,
@@ -44,9 +42,9 @@ export function provisionProviderAccountCredentials(
   agentId: AgentId,
   accountId: string,
 ): void {
-  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-  if (agentId === "opencode") {
-    provisionOpenCodeAccount(providerAccountCredentialRoot(credentialsRoot, agentId, accountId), perSessionCredentialsDir(credentialsRoot, sessionId), accountId);
+  // OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  if (isOpenCodeHarness(agentId)) {
+    provisionOpenCodeAccount(providerAccountCredentialRoot(credentialsRoot, agentId, accountId), perSessionCredentialsDir(credentialsRoot, sessionId), accountId, undefined, agentId);
     chownSessionCredentialsTree(credentialsRoot, sessionId);
   } else {
     provisionAgentCredentialsFromRoot(
@@ -116,8 +114,8 @@ export function ensureSessionAccountCredentials(
 ): "match" | "provisioned" | "adopted" | "replaced" {
   const recorded = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
   if (recorded === accountId) {
-    // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-    if (agentId === "opencode") provisionOpenCodeAccount(providerAccountCredentialRoot(credentialsRoot, agentId, accountId), perSessionCredentialsDir(credentialsRoot, sessionId), accountId);
+    // OpenCode needs an access-only ChatGPT projection in a private XDG home.
+    if (isOpenCodeHarness(agentId)) provisionOpenCodeAccount(providerAccountCredentialRoot(credentialsRoot, agentId, accountId), perSessionCredentialsDir(credentialsRoot, sessionId), accountId, undefined, agentId);
     return "match";
   }
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
@@ -156,9 +154,9 @@ export function revokeSessionProviderCredentials(
   sessionId: string,
   agentId: AgentId,
 ): void {
-  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-  if (agentId === "opencode") {
-    revokeOpenCodeAccount(perSessionCredentialsDir(credentialsRoot, sessionId));
+  // OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  if (isOpenCodeHarness(agentId)) {
+    revokeOpenCodeAccount(perSessionCredentialsDir(credentialsRoot, sessionId), undefined, agentId);
     writeSessionAccountMarker(credentialsRoot, sessionId, agentId, null);
     return;
   }
@@ -238,6 +236,11 @@ export function ensureLocalWorkspaceTrust(
   LOCAL_WORKSPACE_TRUST[agentId]?.(home, workspaceDir);
 }
 
+// A source root's conversation state belongs to runs made in it, never to a session (planning#698).
+function copyProviderSubtree(sourceRoot: string, destRoot: string, rel: string): void {
+  copyCredentialPath(sourceRoot, destRoot, rel, SUBTREE_STATE_SUBPATHS[rel]);
+}
+
 function provisionAgentCredentialsFromRoot(
   credentialsRoot: string,
   sessionId: string,
@@ -256,7 +259,7 @@ function provisionAgentCredentialsFromRoot(
     if (replaceExistingProviderSubtree) {
       removeProviderSubtreeForReplacement(dir, rel);
     }
-    copyCredentialPath(sourceRoot, dir, rel);
+    copyProviderSubtree(sourceRoot, dir, rel);
   }
   // Create symlink targets even for key-only agents, before handing ownership to the worker.
   for (const rel of agentCredentialDirs(agentId)) {
@@ -270,61 +273,7 @@ function provisionAgentCredentialsFromRoot(
   chownSessionCredentialsTree(credentialsRoot, sessionId);
 }
 
-export function provisionSubAgentCredentials(
-  credentialsRoot: string,
-  sessionId: string,
-  subAgentId: AgentId,
-  /** The spawn taking the subtree; failover re-provisions under the same id. */
-  holderId: string,
-  accountId?: string,
-): void {
-  const sourceRoot = accountId
-    ? providerAccountCredentialRoot(credentialsRoot, subAgentId, accountId)
-    : credentialsRoot;
-  // Record the borrow before copying so concurrent token write-back cannot misattribute it.
-  beginSubtreeBorrow(credentialsRoot, sessionId, subAgentId, holderId);
-  provisionAgentCredentialsFromRoot(credentialsRoot, sessionId, subAgentId, sourceRoot, true);
-  writeSessionAccountMarker(credentialsRoot, sessionId, subAgentId, accountId ?? null);
-}
-
-export function releaseSubAgentCredentials(
-  credentialsRoot: string,
-  sessionId: string,
-  subAgentId: AgentId,
-  holderId: string,
-): string | undefined {
-  // Cross-harness consults share one subtree, so only the LAST holder may wipe
-  // it: an earlier release deletes the credentials of a consult still running.
-  const release = endSubtreeBorrow(sessionId, subAgentId, holderId);
-  if (!release.last) {
-    console.log(`[session-credentials] keep-credentials session=${sessionId} agent=${subAgentId} holder=${holderId}`);
-    return undefined;
-  }
-  // Preserve rotations while the marker still identifies their owner.
-  preserveBorrowedTokens(
-    credentialsRoot,
-    sessionId,
-    subAgentId,
-    readSessionAccountMarker(credentialsRoot, sessionId)[subAgentId],
-  );
-  removeSubAgentCredentials(credentialsRoot, sessionId, subAgentId);
-  return release.displaced;
-}
-
-function preserveBorrowedTokens(
-  credentialsRoot: string,
-  sessionId: string,
-  subAgentId: AgentId,
-  accountId: string | undefined,
-): void {
-  try {
-    preserveBorrowedTokensBeforeWipe(credentialsRoot, sessionId, subAgentId, accountId);
-  } catch (err) {
-    console.warn(`[session-credentials] borrow preservation failed for ${subAgentId}:`, err);
-  }
-}
-
-// Revocation and failover wipe credentials without ending the borrow or saving revoked tokens.
+// Sign-out sweep: an older build could leave a consult's credentials in the session's own subtree.
 export function removeSubAgentCredentials(
   credentialsRoot: string,
   sessionId: string,
@@ -378,7 +327,7 @@ function readSpawnHomeProvenance(home: string): SpawnHomeProvenance | null {
   }
 }
 
-// Same-harness background runs need separate homes so they cannot replace the live agent's tokens.
+// One home for each run: runs must not replace the live agent's tokens, or each other's CLI state.
 export function provisionSubAgentSpawnHome(
   credentialsRoot: string,
   sessionId: string,
@@ -392,12 +341,12 @@ export function provisionSubAgentSpawnHome(
   const home = subAgentSpawnHomeDir(credentialsRoot, sessionId, spawnId);
   fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(home, { recursive: true });
-  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-  for (const rel of subAgentId === "opencode" && accountId ? [] : AGENT_CREDENTIAL_PATHS[subAgentId]) {
-    copyCredentialPath(sourceRoot, home, rel);
+  // OpenCode needs an access-only ChatGPT projection in a private XDG home.
+  const projected = isOpenCodeHarness(subAgentId) && accountId !== undefined;
+  for (const rel of projected ? [] : AGENT_CREDENTIAL_PATHS[subAgentId]) {
+    copyProviderSubtree(sourceRoot, home, rel);
   }
-  // eslint-disable-next-line no-restricted-syntax -- OpenCode needs an access-only ChatGPT projection in a private XDG home.
-  if (subAgentId === "opencode" && accountId) provisionOpenCodeAccount(sourceRoot, home, accountId);
+  if (projected && isOpenCodeHarness(subAgentId)) provisionOpenCodeAccount(sourceRoot, home, accountId, undefined, subAgentId);
   // Record provenance only after copying; partial copies must never be published.
   fs.writeFileSync(
     path.join(home, SPAWN_HOME_PROVENANCE),
@@ -424,6 +373,7 @@ export function releaseSubAgentSpawnHome(
 
 function releaseSpawnHomeAt(credentialsRoot: string, sessionId: string, home: string): void {
   revokeOpenCodeAccount(home);
+  revokeOpenCodeAccount(home, undefined, "opencode2");
   const provenance = readSpawnHomeProvenance(home);
   let safeToDelete = true;
   if (provenance) {
@@ -454,6 +404,37 @@ function releaseSpawnHomeAt(credentialsRoot: string, sessionId: string, home: st
     fs.rmSync(home, { recursive: true, force: true });
   } catch {
     // Retry at the next container create.
+  }
+}
+
+// Revocation: no rotation is published before the delete. A spawn home sets no session
+// marker, so its provenance is the only record of the account it holds.
+export function removeSubAgentSpawnHomesOf(
+  credentialsRoot: string,
+  sessionId: string,
+  subAgentId: AgentId,
+  /** Only the homes provisioned from these accounts; every home of the agent when absent. */
+  accountIds?: ReadonlySet<string>,
+): void {
+  const dir = path.join(perSessionCredentialsDir(credentialsRoot, sessionId), SUB_AGENT_HOME_SUBDIR);
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const home = path.join(dir, entry);
+    const provenance = readSpawnHomeProvenance(home);
+    if (provenance?.agentId !== subAgentId) continue;
+    if (accountIds && !(provenance.accountId !== null && accountIds.has(provenance.accountId))) continue;
+    revokeOpenCodeAccount(home);
+    revokeOpenCodeAccount(home, undefined, "opencode2");
+    try {
+      fs.rmSync(home, { recursive: true, force: true });
+    } catch {
+      // Retry at the next container create.
+    }
   }
 }
 

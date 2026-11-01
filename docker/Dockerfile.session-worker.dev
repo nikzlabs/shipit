@@ -1,7 +1,7 @@
-FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
+FROM node:24-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 
 # Match FROM: dependency-cache keys use this ABI identity, not the full worker image.
-ARG BASE_IMAGE_DIGEST=sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
+ARG BASE_IMAGE_DIGEST=sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 ENV BASE_IMAGE_DIGEST=${BASE_IMAGE_DIGEST}
 
 RUN apt-get update && apt-get install -y acl git git-lfs curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap gosu openssh-client && rm -rf /var/lib/apt/lists/*
@@ -25,7 +25,7 @@ RUN corepack enable
 ARG BUILDER_PNPM_VERSION=12.4.1
 RUN npm install -g --prefix /opt/pnpm pnpm@${BUILDER_PNPM_VERSION}
 
-COPY --from=ghcr.io/astral-sh/uv:0.12.16@sha256:adc68cd785ca65ea25c0611043b0a00b4ea3a22e1b54102fc084406d888082ee /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.4@sha256:9f130421e930bfbdc563c00740466603f8723158e90297d07957c2294640262b /uv /uvx /usr/local/bin/
 
 ARG SHIPIT_HARNESSES=
 COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
@@ -34,10 +34,12 @@ RUN chmod 0755 /usr/local/bin/install-agent-clis
 RUN --mount=type=cache,target=/root/.npm install-agent-clis
 ENV PATH="/opt/agent-cli/node_modules/.bin:${PATH}"
 
+# Beside the MCP's own build, the pinned stable release's, for a project's Playwright (docs/335).
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN mkdir -p /opt/playwright-browsers \
  && playwright install-deps chromium \
  && HOME=/opt/playwright-browsers playwright-mcp install-browser chrome-for-testing \
+ && node /opt/agent-cli/node_modules/playwright-stable/cli.js install chromium \
  && chmod -R a+rX /opt/playwright-browsers
 
 RUN apt-get update && apt-get install -y openjdk-17-jdk-headless \
@@ -71,8 +73,9 @@ RUN curl -fsSL --retry 3 --retry-all-errors -o /tmp/gradle.zip "https://services
 ENV PATH="/opt/gradle/bin:${PATH}"
 
 # Mesa's D3D12 driver loads these two by bare name, and ShipIt mounts their directory only into a GPU
-# container on WSL2. Chrome reaches Mesa through an X display (docs/325-session-gpu-access req 7).
-RUN apt-get update && apt-get install -y xvfb xauth && rm -rf /var/lib/apt/lists/* \
+# container on WSL2. Chrome reaches Mesa through EGL with no display, or through GLX on an X display
+# (docs/325-session-gpu-access req 7, 9).
+RUN apt-get update && apt-get install -y xvfb xauth libegl1 && rm -rf /var/lib/apt/lists/* \
  && ln -s /usr/lib/wsl/lib/libd3d12.so /usr/lib/wsl/lib/libd3d12core.so /usr/lib/
 
 WORKDIR /app
@@ -106,10 +109,11 @@ RUN mkdir -p /workspace /credentials /home/shipit /home/shipit/.local/share \
  && ln -sf /credentials/.claude.json /home/shipit/.claude.json \
  && ln -s /credentials/.codex /home/shipit/.codex \
  && ln -s /credentials/.local/share/opencode /home/shipit/.local/share/opencode \
+ && ln -s /credentials/.local/share/opencode2 /home/shipit/.local/share/opencode2 \
  && ln -s /credentials/.grok /home/shipit/.grok \
  && ln -s /credentials/.gemini /home/shipit/.gemini \
  && ln -s /credentials/.ssh /home/shipit/.ssh \
- && chown -h shipit:shipit /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex /home/shipit/.local/share/opencode /home/shipit/.grok /home/shipit/.gemini /home/shipit/.ssh \
+ && chown -h shipit:shipit /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex /home/shipit/.local/share/opencode /home/shipit/.local/share/opencode2 /home/shipit/.grok /home/shipit/.gemini /home/shipit/.ssh \
  && chown shipit:shipit /home/shipit/.local /home/shipit/.local/share
 
 ENV HOME=/home/shipit

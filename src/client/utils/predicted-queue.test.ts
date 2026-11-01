@@ -45,18 +45,40 @@ const send = (text = "next slice", dispatch: () => boolean = () => true) =>
     dispatch,
   });
 
+/** The server names its queue entry by the send's request id. */
+const predictedId = (): string => {
+  const id = useSessionStore.getState().queuedMessages[0]?.requestId;
+  if (id === undefined) throw new Error("no predicted row");
+  return id;
+};
+
 beforeEach(() => {
-  usePrStore.setState({ resetEligibleBySession: {}, mergeContinueOptOutBySession: {} });
+  usePrStore.setState({
+    resetEligibleBySession: {}, compactionSpentBySession: {}, mergeContinueOptOutBySession: {},
+  });
   useSettingsStore.setState({ autoResetMergedBranch: true });
   useUiStore.setState({ agentList: [agent()], activeAgentId: "claude" });
-  useSessionStore.setState({ sessionId: "s1", messages: [], queuedMessages: [], isLoading: false });
+  useSessionStore.setState({
+    sessionId: "s1", messages: [], queuedMessages: [], isLoading: false,
+    sessionDetails: {}, pendingCompactAfterMerge: {}, turnUsage: {},
+  });
   localStorage.clear();
+});
+
+const usage = (contextTokens: number) => ({
+  inputTokens: 0, outputTokens: 0, costUsd: 0, timestamp: "2026-10-24T00:00:00.000Z", contextTokens,
 });
 
 describe("compactRunsBeforeTurn", () => {
   it("is true exactly when the composer offers a ticked compaction control", () => {
     offeringCompaction();
     expect(compactRunsBeforeTurn("s1", "next slice")).toBe(true);
+  });
+
+  it("is false once this merge's compaction is spent, though the reset is still offered", () => {
+    offeringCompaction();
+    usePrStore.setState({ compactionSpentBySession: { s1: true } });
+    expect(compactRunsBeforeTurn("s1", "next slice")).toBe(false);
   });
 
   it("is false when the session is not reset-eligible", () => {
@@ -77,10 +99,33 @@ describe("compactRunsBeforeTurn", () => {
     expect(compactRunsBeforeTurn("s1", "next slice")).toBe(false);
   });
 
-  it("is false once the user unticks the control, for that one message", () => {
+  it("is false once the user turns the compaction off for the session (docs/295 req 5)", () => {
     offeringCompaction();
-    usePrStore.getState().setMergeContinueOptOut("s1", "compact", true);
+    useSessionStore.setState({
+      sessionDetails: { s1: { sessionStatus: null, agentGoal: null, compactAfterMergeOff: true } },
+    });
     expect(compactRunsBeforeTurn("s1", "next slice")).toBe(false);
+  });
+
+  it("is false when the last reading is under 200K tokens, though the box is ticked (docs/295 req 15)", () => {
+    offeringCompaction();
+    useSessionStore.setState({ turnUsage: { s1: [usage(300_000), usage(199_999), usage(0)] } });
+    expect(compactRunsBeforeTurn("s1", "next slice")).toBe(false);
+    useSessionStore.setState({ turnUsage: { s1: [usage(200_000)] } });
+    expect(compactRunsBeforeTurn("s1", "next slice")).toBe(true);
+  });
+
+  it("reads a compaction newer than the last reading as the size, as the server does", () => {
+    offeringCompaction();
+    const card = (createdAt: string) => ({
+      role: "assistant" as const, text: "", compaction: { id: "c1", postTokens: 42_000, createdAt },
+    });
+    useSessionStore.setState({
+      turnUsage: { s1: [usage(300_000)] }, messages: [card("2026-10-24T01:00:00.000Z")],
+    });
+    expect(compactRunsBeforeTurn("s1", "next slice")).toBe(false);
+    useSessionStore.setState({ messages: [card("2026-10-23T23:00:00.000Z")] });
+    expect(compactRunsBeforeTurn("s1", "next slice")).toBe(true);
   });
 
   it("is false for the commands the server skips the whole hook for", () => {
@@ -132,11 +177,12 @@ describe("a send that a compaction will run ahead of", () => {
   it("is adopted by the server's own message_queued rather than duplicated", () => {
     offeringCompaction();
     send();
+    const id = predictedId();
     const c = ctx();
-    handleMessageQueued(c, { type: "message_queued", text: "next slice", position: 1 });
+    handleMessageQueued(c, { type: "message_queued", sessionId: "s1", id, text: "next slice", position: 1 });
 
     expect(useSessionStore.getState().queuedMessages).toEqual([
-      { text: "next slice", position: 1 },
+      { id, text: "next slice", position: 1 },
     ]);
     expect(useSessionStore.getState().messages).toEqual([]);
   });
@@ -150,9 +196,10 @@ describe("a send that a compaction will run ahead of", () => {
       activity: "Thinking...",
       dispatch: () => true,
     });
+    const id = predictedId();
     const c = ctx();
-    handleMessageQueued(c, { type: "message_queued", text: "look at this", position: 1 });
-    handleQueueUpdated(c, { type: "queue_updated", queue: [], dequeued: "look at this" });
+    handleMessageQueued(c, { type: "message_queued", sessionId: "s1", id, text: "look at this", position: 1 });
+    handleQueueUpdated(c, { type: "queue_updated", sessionId: "s1", queue: [], dequeued: { id, text: "look at this" } });
 
     // Without the bubble the prediction carried, the restore would invent a
     // bare `{role, text}` and the attachment would be gone from the transcript.
@@ -208,11 +255,12 @@ describe("a send that a compaction will run ahead of", () => {
   it("restores the message once when the server steers it into a running turn", () => {
     offeringCompaction();
     send();
-    handleMessageSteered(ctx(), { type: "message_steered", sessionId: "s1", text: "next slice" });
+    const id = predictedId();
+    handleMessageSteered(ctx(), { type: "message_steered", sessionId: "s1", clientRequestId: id, text: "next slice" });
 
     expect(useSessionStore.getState().queuedMessages).toEqual([]);
-    // Restoring it first is what lets the steer handler's own dedupe recognise
-    // it; without that the transcript would carry the message twice.
+    // Restoring it first is what lets the steer handler find it by its id;
+    // without that the transcript would carry the message twice.
     expect(useSessionStore.getState().messages).toMatchObject([
       { role: "user", text: "next slice" },
     ]);
@@ -234,12 +282,14 @@ describe("a send that a compaction will run ahead of", () => {
       activity: "Thinking...",
       dispatch: () => true,
     });
+    const id = predictedId();
     const c = ctx();
     handleQueueUpdated(c, {
       type: "queue_updated",
-      queue: [{ text: "look at this", position: 1 }],
+      sessionId: "s1",
+      queue: [{ id, text: "look at this", position: 1 }],
     });
-    handleQueueUpdated(c, { type: "queue_updated", queue: [], dequeued: "look at this" });
+    handleQueueUpdated(c, { type: "queue_updated", sessionId: "s1", queue: [], dequeued: { id, text: "look at this" } });
 
     expect(useSessionStore.getState().messages).toMatchObject([
       { role: "user", text: "look at this", uploadPaths: ["/uploads/shot.png"] },
@@ -251,7 +301,7 @@ describe("a send that a compaction will run ahead of", () => {
     send();
     // The server's answer to something else — a cancel, another tab's dequeue —
     // is not evidence that this send was refused.
-    handleQueueUpdated(ctx(), { type: "queue_updated", queue: [] });
+    handleQueueUpdated(ctx(), { type: "queue_updated", sessionId: "s1", queue: [] });
 
     expect(useSessionStore.getState().queuedMessages).toMatchObject([{ text: "next slice" }]);
   });

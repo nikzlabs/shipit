@@ -79,8 +79,10 @@ state in a single in-flight refresh.
 ### Delegate to the Claude CLI
 
 The orchestrator does **not** speak Anthropic's OAuth wire directly. We spawn `claude`
-as a child process and let the CLI handle the OAuth dance against the source credentials
-file. Rationale:
+as a child process and let the CLI handle the OAuth dance. Since 2026-10 the CLI runs
+against a **private copy** of the source credentials file, and the refresher installs the
+result into the source — see [Probe a private copy](#probe-a-private-copy-with-a-short-claimed-life-2026-10-fix).
+Rationale:
 
 - Anthropic owns the OAuth contract — endpoint URL, client_id, request shape, error
   handling, token rotation specifics. They keep the CLI working when they change those.
@@ -90,67 +92,87 @@ file. Rationale:
 - Less attack surface in our own code — no hand-rolled HTTP client, no client_id
   baked into ShipIt source, no schema assumptions to maintain.
 
-### Two-tier command, defensive
+### One command: a model call
 
-The CLI exposes `claude auth status --json` (Tier 1 — designed for scripted use, no
-prompt arg, no model, structurally cannot make a billable conversation API call). Open
-empirical question: whether `auth status` triggers an OAuth refresh when the access
-token is expired, or only reads stored state. We don't pre-commit to an answer — the
-refresher discovers it at runtime.
-
-If `auth status` doesn't rotate the token, the refresher falls back to the cheapest
-billable form:
+The probe is the cheapest billable form of an authenticated call:
 
 ```
 claude --print "ok" --model claude-haiku-4-5-20251001 --tools "" --no-session-persistence
 ```
 
 This forces Haiku (cheapest model), disables tool loop, suppresses session persistence,
-and uses a minimum-token prompt. Cost: <$0.001 per invocation, called roughly once per
-refresh cycle (~7h post-deploy) — single-digit cents/month.
+and uses a minimum-token prompt. Cost: <$0.001 per invocation, once per rotation
+(about every 7 h 15 min per account), which is what production paid already. The CLI
+refreshes before such a call **only when the credentials file says 5 minutes or less
+are left**, which is why the probe runs against a copy that claims a short life.
+
+Until 2026-10-13 a first command ran before it: `claude auth status --json` ("Tier 1":
+no prompt, no model, no cost), with the model call as "Tier 2". Tier 1 was taken for
+the path that rotates at no cost. It is not: it sends the refresh grant and exits
+before the token host can answer, and on a copy that it does not refresh it tests
+nothing. It is removed — see
+[Tier 1 does not present the grant](#tier-1-does-not-present-the-grant-2026-10-12-fix).
+The log still calls the probe `tier2` (`rotated_tier2`, `rejected_by=tier2`, `tier2=…`),
+because incidents are searched by those names.
 
 ### Refresh-tick state machine
 
 ```
-on scheduled tick (single-flight via in-process mutex):
-  before  := readSourceTokenState()
-  spawn `claude auth status --json` with HOME=<source-dir>, timeout 30s
-  after   := readSourceTokenState()
+on tick (single-flight via in-process mutex; `force` = a session reported a 401):
+  harvest: a pinned session holds a newer token → adopt it, repush, return HARVESTED_SESSION
+           (never into a source that is missing, and never the credential known rejected)
+  a rotation from an earlier tick is not in the source yet → install it; while it waits,
+                                                     no tick probes
+  before := source expiresAt                       (none → MISSING_CREDENTIALS)
+  the source's grant is already known rejected     → REVOKED, no CLI spawn
 
-  if after.expiresAt > before.expiresAt:
-    repushTokenToPinnedSessions("claude", accountId)
-    schedule next at after.expiresAt - safetyMargin
-    return SUCCESS_TIER1
+  if before > now + safetyMargin and not force:
+    schedule next at before - safetyMargin
+    return NOOP                                    (no CLI spawn)
 
-  if before.expiresAt > now + safetyMargin:
-    schedule next at before.expiresAt - safetyMargin
-    return NOOP
+  copy := private HOME holding a copy of the source credentials file
+          near expiry: the copy claims min(before, now + 60s), inside the CLI's window
+          forced on a healthy token: the copy keeps the real expiry
 
-  spawn `claude --print "ok" --model claude-haiku-4-5-20251001 ...` with HOME=<source-dir>, timeout 60s
-  after2 := readSourceTokenState()
+  spawn `claude --debug api --debug-file <f> --print "ok" --model claude-haiku-4-5-20251001 ...`
+        with HOME=<copy>, timeout 60s
+    while it runs, every 50 ms: the copy changed and holds a new token
+                              → install it into the source and repush at once
+  the copy holds a new token → install it (if not installed yet, or again over a blanked
+                               source), repush, return ROTATED (logged `rotated_tier2`)
 
-  if after2.expiresAt > before.expiresAt:
-    repushTokenToPinnedSessions("claude", accountId)
-    schedule next at after2.expiresAt - safetyMargin
-    return SUCCESS_TIER2
+  the new token cannot be written to the source, or the source cannot be read
+                                                   → keep the copy, short backoff
+  the source holds another token than the copy was made from → conclude nothing, tick again
+  invalid_grant (blanked copy, or named in the output):
+    harvest again; a session that spent the grant first → HARVESTED_SESSION
+    else remember the grant as rejected, emit "auth_required", schedule nothing → REVOKED
+  forced on a healthy token, no grant rejection found → NOOP
+  429-shaped signal → backoff (2m → 5m → 10m → 30m, cap 30m)          → RATE_LIMITED
+  source token still valid → short backoff, log the time left          → NOT_ROTATED
+  source token expired     → short backoff, log loudly                 → UNKNOWN_FAILURE
 
-  if recentExit had 429-shaped signal:
-    schedule next with exponential backoff (60s → 2m → 5m → 10m → 30m, cap 30m)
-    return RATE_LIMITED
-  if recentExit had invalid_grant signal:
-    emit "auth_required"
-    stop scheduling until next auth_complete
-    return REVOKED
-  schedule next with short backoff, log loudly
-  return UNKNOWN_FAILURE
+  a backoff that would step over the last chance is cut short to it: 7 minutes before
+  expiry (the CLI's 5-minute window, plus 2 minutes for the probe's timeout, its kill grace
+  and the late-rotation wait, which come to 70 s), the last moment to rotate ahead of the
+  sessions
+  the copy is deleted when the tick ends, unless it holds a rotation that is not installed
 ```
 
-`safetyMargin` = **30 minutes** (fixed, not env-tunable in v1). Refreshing well before
-the CLI's own "near expiry" heuristic ensures the source stays fresh, sessions sync in
-valid access tokens, and session-side refreshes are never triggered. The margin only
-governs *when during a healthy access-token lifetime* the tick fires — recovery from
-extended orchestrator downtime is independent (when start() runs against an already-
-expired source, a refresh tick is scheduled immediately).
+`safetyMargin` = **45 minutes** (fixed, not env-tunable). The margin is when the tick
+fires; it is the copy's short claimed life, not the margin, that makes the CLI refresh
+— the CLI's own "near expiry" rule is 5 minutes and no lead time changes it. Recovery
+from extended orchestrator downtime is independent (when start() runs against an
+already-expired source, a refresh tick is scheduled immediately).
+
+A **turn start** (`ensureFresh`) runs a tick only inside those last 7 minutes, when the
+token is expired, or when its grant is known rejected (that tick spawns nothing) — and
+never while a backoff is in force: the first turn start gets its attempt, and the ones
+after it leave the retry to the schedule. Under a 429 each further attempt is one more
+request to the endpoint that is already limiting. Earlier in the margin the schedule
+owns the retries: a turn start cannot do better than the schedule, and when each turn
+start ran its own tick it paid for a billable model call and about 5.5 s per turn, and
+re-armed the backoff from "now", which moved the scheduled retry later.
 
 ### Single-flight
 
@@ -167,11 +189,11 @@ account to "needs sign-in", broadcast `agent_auth_failed reason:revoked`, stop
 scheduling. That was wrong, and it was the cause of the "Claude logs out every day"
 symptom that persisted after this design shipped:
 
-- Once the access token is past expiry (a routine, recurring state — the tier-1-noop →
-  generic-backoff cadence regularly overshoots expiry by a few minutes), **every**
-  tier-2 run's first API attempt 401s, and `--debug api` captures that
+- Once the access token is past expiry (a routine, recurring state at that time — the
+  no-rotation → generic-backoff cadence regularly overshot expiry by a few minutes),
+  **every** probe's first API attempt 401s, and `--debug api` captures that
   `authentication_error` response verbatim *before* refresh-on-use fires.
-- If the refresh then fails *transiently* (OAuth endpoint 429, the 60s tier-2 timeout,
+- If the refresh then fails *transiently* (OAuth endpoint 429, the probe's 60 s timeout,
   a network blip), the tick ends with no rotation and a combined output full of 401
   phrases → misclassified as revoked → user signed out, schedule stopped.
 - The Codex refresher only ever matched `invalid_grant` / `invalid_refresh_token`,
@@ -179,11 +201,19 @@ symptom that persisted after this design shipped:
 
 `TERMINAL_AUTH_FAILURE_PATTERNS` is now narrowed to the `invalid_grant` family — the
 only signal where the OAuth server actually evaluated and rejected the refresh token.
-A genuine revocation still surfaces it in the debug capture, so detection is not lost;
-everything else (including expired-token 401s) falls through to `rate_limited` or
-`unknown_failure`, which back off and retry until the transient clears. Regression
-tests: `oauth-refresher.test.ts` ("401 … unknown_failure (NOT revoked)",
-"expired-token 401 + refresh 429 as rate_limited").
+Everything else (including expired-token 401s) falls through to `rate_limited`,
+`not_rotated` or `unknown_failure`, which back off and retry until the transient
+clears. Regression tests: `oauth-refresher.test.ts` ("401 … unknown_failure (NOT
+revoked)", "expired-token 401 + refresh 429 as rate_limited").
+
+**Where the `invalid_grant` signal comes from changed in 2026-10.** This section
+assumed that a genuine revocation names itself in the debug capture. CLI 2.1.284 does
+not: its capture says only `OAuth refresh failed (expected): Request failed with status
+code 400`. What the CLI does do on `invalid_grant`, and on nothing else, is blank the
+credentials file it runs against. The refresher therefore reads a **blanked probe
+copy** as `invalid_grant` (and still accepts the phrase in the output, for a CLI that
+prints it). Before the private copy, the same blanking hit the account's real file, and
+the revocation surfaced one tick later as `missing_credentials source=blanked`.
 
 ### Missing source credentials are terminal account state (2026-08 fix)
 
@@ -197,9 +227,9 @@ Anthropic subscription account; it never changes the billing mode to an API
 key. The already-failed turn is not replayed by this background transition.
 
 After account-scoped sign-in writes a healthy source, the `auth_complete` nudge
-rearms the schedule. A healthy tier-1 probe clears the latch even when the CLI
-does not rotate the new token, restores the row to `ready`, re-pushes the source
-to pinned sessions, and clears stale Settings and model-selector state.
+rearms the schedule. A tick that finds a healthy source clears the latch without a
+CLI run, restores the row to `ready`, re-pushes the source to pinned sessions, and
+clears stale Settings and model-selector state.
 
 ### Detecting refresh outcomes
 
@@ -312,18 +342,19 @@ not racing it.
 
 Because Anthropic's refresh tokens are **single-use**, one such rotation leaves
 the account root holding a grant the OAuth server has already spent. Every later
-tick is then doomed, and the tier-2 spend is not merely wasted: the CLI responds
+tick is then doomed, and the probe's spend is not merely wasted: the CLI responds
 to it by **blanking** the account's credentials file — same path, every token
 replaced with `""` and `expiresAt: 0` — which the next tick reads as
 `missing_credentials`, flipping the account to "needs sign-in". Roughly daily,
-per account.
+per account. (Since 2026-10 the CLI runs against a private copy, so what it
+blanks is the copy; the harvest stays, because it is what finds the live grant.)
 
 Production, 2026-08-21, account `acct_1a27edec…` (all times UTC):
 
 | | |
 |---|---|
 | 16:54 | `rotated_tier2`, propagated to 33 pinned sessions |
-| 00:09–00:30 | four scheduled tier-2 ticks, each `unknown_failure` (each a billable Haiku call, each logged with a count and nothing else) |
+| 00:09–00:30 | four scheduled ticks, each `unknown_failure` (each a billable Haiku call, each logged with a count and nothing else) |
 | 00:45 | `rate_limited` → 30 min backoff; token expires 00:54 with the source still holding refresh token R1 |
 | **01:09:04** | session `83fb0c58…` rewrites its own `.credentials.json` with a NEW refresh token R2 — **no turn running**, no log line for that session since 14:14 the previous day, its CLI process alive 17h46m. R1 is now dead upstream. |
 | 01:15:35 | the tick spends R1; the CLI blanks the account root file. Logged only as `unknown_failure failure_count=6`. |
@@ -341,18 +372,18 @@ Three changes, no new subsystem:
    Every tick begins by reconciling the source with the sessions that share it:
    for each per-session subtree whose docs/260 account **marker** names this
    account, if its copy is ahead of the source, publish it through the ordinary
-   `syncProviderAccountTokenBack` — guards, marker check and borrow refusal
-   intact, `sessionOwnRoute: true` on the same authority
+   `syncProviderAccountTokenBack` — guards and marker check intact,
+   `sessionOwnRoute: true` on the same authority
    `finalizeSessionAgentEnvironment` uses when it falls back to the marker. A
-   harvest **is** the rotation: it short-circuits both tiers and runs the normal
+   harvest **is** the rotation: no CLI runs, and the tick takes the normal
    success path, so the adopted token reaches every other pinned session via the
    docs/142 A3 repush. That repush is unconditional, which is safe here only
    because the harvest ran *first* — the source now holds the harvested token,
    so pushing it back onto the session it came from is byte-identical.
 
    Two conditions select a candidate, answering different questions. The
-   **marker**, because token bytes cannot say whose they are, so an unmarked
-   subtree or one lent to a sub-agent's account is never read. And
+   **marker**, because token bytes cannot say whose they are, so a subtree
+   with no marker, or with another account's marker, is never read. And
    **containment** — the token file must physically resolve inside its own
    subtree — because a leaked subtree-root symlink (`<sessionDir>/.claude` →
    `/credentials/provider-accounts/…`, the artifact `containerVisibleCredentialPath`
@@ -386,6 +417,37 @@ Three changes, no new subsystem:
    logged in full. `missing_credentials` additionally names
    `source=missing|blanked|unreadable`, because "the user signed out" and "we
    just destroyed a live account's credentials" were previously the same line.
+   An email address is replaced with `[email]`: the CLI knows the account's,
+   and the excerpt goes to the log. That rule runs after the token shapes,
+   because they can take a part of an address, and `[redacted]@example.com`
+   must not keep its host; the other order would leave the start of a long
+   token that stands in front of a host. Its local part is limited to 64
+   pieces: an open one takes quadratic time (128 000 characters with no
+   address: 51 ms, against about 37 s). A text of the form `name@1.2.3` or
+   `git@github.com:org/repo.git` also reads as an address. So does one with a
+   quoted local part (`"a person"@example.com`, since 2026-10-13). The Codex
+   refresher replaces an address before this summary as well, for its classifier
+   (docs/154).
+   A JWT (`eyJ…` and its segments after a dot) is redacted whole since 2026-10-13.
+   The rule for a long token takes a run of 24 characters or more, so a segment
+   shorter than that stayed in the reason; the Codex account's tokens are JWTs.
+   The rule starts only where no token character stands before `eyJ`: with a start
+   at each word boundary, 128 000 characters of `eyJ-eyJ-…` are read again from
+   each one.
+   A JSON value is redacted when its key (letters and `_`) holds `token`,
+   `secret`, `key`, `password`, `passwd` or `auth`, for a key of any length.
+   The rule finds the word in a lookahead, which does not backtrack. The earlier
+   form went back to each word in a run of letters: a quote before 128 000
+   characters of `tokentoken…` took 2.4 s on the orchestrator's main thread, now
+   0.3 ms. Two simpler fixes are also linear but redact less: a bound on the key
+   length misses long keys, and a rule that takes any key and then tests it
+   misses a key whose first quote also closes the value before it
+   (`"a": "b"token": "c"`). On 2 000 000 random
+   texts of keys and values, the new rule gives the same text as the old one.
+   What the refresher itself saw is a note in the same text, on a line of its
+   own that starts with a lower-case tag: `[error]` and `[spawn-failed]` (the
+   CLI did not start), `[timeout]`, `[probe-home-failed]`, `[private-run-open]`
+   and `[install-failed]`.
 
 **A blanked source is diagnosed, not repaired.** It parses as a credential, so
 the write-back's `unorderable` guard (planning#449) refuses to overwrite it, and
@@ -394,9 +456,10 @@ and then removed: a file this reader believes is empty may be a partial write or
 a shape it has not been taught, `expiresAt: 0` is a claim in the file rather
 than proof about the account, and there is no compare-and-swap — a repair that
 loses a race with a completing sign-in destroys a live credential, to avoid a
-reconnect the user is already doing. With harvest-before-spend in place the
-blanking has no known trigger left, so the trade is a destructive path against a
-state that should not recur.
+reconnect the user is already doing. Harvest-before-spend left the blanking one
+trigger: a session that spends the grant between the harvest and the probe. The
+2026-10 private copy closes it — the refresher's CLI no longer writes the source
+at all — so the trade is a destructive path against a state that should not recur.
 
 **A session's own copy is judged differently — and only a session's copy**
 (planning#495). The CLI blanks a session's `.claude/.credentials.json` too: it
@@ -426,6 +489,449 @@ and stays protected — which also matters on the cleanup paths, where an `absen
 reading skips the quarantine and the caller deletes the only copy. Guarded by
 `token-freshness-guard.test.ts`.
 
+### Probe a private copy with a short claimed life (2026-10 fix)
+
+Production, build `92a1fc92`, one shared account, 2026-10-10 and 2026-10-11: every
+token lifetime logged `unknown_failure failure_count=N — short backoff` five to ten
+times, and in 14.5 hours the refresher logged no `rotated_tier1`, `rotated_tier2` or
+`harvested_session`. Each token was rotated instead by a session's own CLI, 4.9 and
+about 1.3 minutes before expiry, after which other sessions on the account had their
+agents killed for auth recovery.
+
+This design assumed that an authenticated CLI call triggers refresh-on-use. Measured
+on CLI 2.1.284 — offline, with fabricated credentials and a local stand-in for the
+token host, so nothing reached Anthropic and **no real grant was tested against the
+real OAuth server**:
+
+| The CLI was given | What it did |
+|---|---|
+| `auth status --json`; the file says 45, 10 or 5.5 minutes are left | no request to the token host |
+| the same; the file says 4.5, 4 or 1 minute is left, or the token is expired | `POST /v1/oauth/token`, an ordinary `refresh_token` grant |
+| `--print ok …`; 10 minutes left | no refresh |
+| `--print ok …`; 4 or 1 minute left | the same refresh, before the API call |
+| `auth status --json --debug api --debug-file f` — the flags after the subcommand, as the refresher sent them | `error: unknown option '--debug'`, exit 1 |
+| `--debug api --debug-file f auth status --json` | runs, and writes the debug file |
+| the token host answers `invalid_grant` | blanks the credentials file it ran against; the debug capture says only `status code 400` |
+| the token host answers 200 | writes the new tokens and expiry to that file, other top-level keys (`mcpOAuth`) kept |
+
+So no probe could rotate before the last 5 minutes, Tier 1 never ran at all, and the
+generic backoff (ticks at about T-45, T-44, T-39, T-24 and T-9 minutes, the next one
+past expiry) left those 5 minutes to whichever resident session CLI called the API
+first. And because the CLI ran in the account root, a probe that lost that race blanked
+the account's real credentials.
+
+**The fix keeps the CLI as the only thing that speaks OAuth, and changes what it runs
+against.** `createProbeHome` builds a private `HOME` in the temp directory that holds a
+copy of the source credentials file and nothing else. Inside the 45-minute margin the
+copy claims `min(real expiry, now + 60 s)`, which is inside the CLI's own window, so
+the CLI does its ordinary refresh at once — 40 minutes before any session CLI would.
+It is the same code path a session's CLI runs when it rotates; only the trigger
+differs. A forced probe of a healthy token (a session's 401, more than 45 minutes
+left) keeps the copy's real expiry: it tests whether the token works, and rotates only
+if the CLI's own 401 handling does.
+
+`adoptProbeRotation` then reads the copy:
+
+- **New tokens** → the copy's `claudeAiOauth` replaces the source's, written by atomic
+  rename with the source's other keys kept, then the usual success path. New tokens are
+  a rotation whatever the copy says about their expiry; without a readable expiry they
+  are still installed, and the source then reads as `missing_credentials` with the live
+  tokens in it. A copy that cannot be read after a probe counts as a possible rotation,
+  because the CLI writes that file only to rotate or to blank it. A credential is identified by a
+  hash of its two tokens, never by the file: other orchestrator-side CLIs run in the
+  account root and rewrite its other keys, and that must not strand a spent grant.
+  What happens next depends on what the source holds by then (`readSourceFor`):
+  - *the credential the copy was made from* → install;
+  - *a blanked credential* → install. Another CLI in the account root lost the grant
+    to this probe and blanked the file; the copy holds that grant's live successor;
+  - *another credential, or no file* (a sign-in, a session's published rotation, a
+    sign-out) → the rotation is given up, so that the newer credential wins (one gap:
+    Known limits);
+  - *anything else* (a file that cannot be read or parsed, a failed write, a failed
+    cleanup) → nothing is proved, so the copy is **kept** (`pendingRotation`) and not
+    deleted with the tick. It is the only place the live grant exists. The next tick
+    installs it right after the harvest, and no tick probes while it waits: the
+    source's grant is spent, and a probe would only be rejected. A kept copy that can
+    no longer be read is still released by a sign-in or a sign-out.
+- **A blanked copy** → `invalid_grant`. The harvest runs once
+  more, because a session can spend the grant between the first harvest and the probe;
+  if it finds that session, the tick is `harvested_session`. It runs 5 s after the probe
+  ends (`LATE_ROTATION_WAIT_MS`), because the session's CLI writes its rotation only after
+  the server has answered it, and that can be after this probe's rejection. The tick
+  holds its single flight through the wait and spends no grant in it. Otherwise the outcome is
+  `revoked`, and the refresher remembers the rejected grant (`rejectedIdentity`, in
+  memory, compared against the source's current credential). That memory replaces what the
+  blanked source used to provide: no later tick or forced heal spends the dead grant
+  again, and a tick on the unchanged source cannot read it as healthy and flip the
+  account back to "ready". A new sign-in or a session's rotation changes the source's
+  token, and the memory no longer applies.
+
+Every verdict is about the token the copy was made from, or, once a rotation was
+installed while the CLI ran, about the installed one. If the source holds another
+token when the probes end (after the wait, on a rejection), and its expiry did not advance (which is the ordinary
+success test), the tick concludes nothing and a new tick runs at once — otherwise a
+rejected old grant would report a completed sign-in as revoked.
+
+After a timeout the CLI is killed, and the copy is read when the CLI has exited, so
+that a write under way lands before the copy is judged or deleted. An error from the
+kill is not an exit. If no exit comes within 5 s, the tick goes on without it.
+
+**Outcomes and logs.** `not_rotated` is new: no rotation, no `invalid_grant`, no 429,
+and the source token is **still valid**; its line carries `expires_in=<N>m`.
+`unknown_failure … — short backoff` keeps its sentence and now means the token is
+expired, or that its expiry cannot be read. With the short claimed life in place, `not_rotated` is the sign that the CLI
+stopped refreshing a near-expiry copy — the first thing to check after a CLI bump. In
+`reason="…"`, lines that contain `ENOENT` are dropped (the CLI logs each optional file
+it does not find), lines above debug level are preferred, and each of the three lines is capped
+separately, so that a long line cannot hide the last one. A refresher's own note is
+kept also when it says `ENOENT`: `reason="[error] spawn claude ENOENT"` is a CLI that
+did not start, and it used to read `reason="no CLI output"`. Node reports that error
+for a binary that is not on the `PATH`, for a missing interpreter and for a missing
+working directory (measured on Node 24). `[probe-home-failed] ENOENT` is a private
+copy that could not be made, for example because the temporary directory is missing.
+A note is known by its form only: a lower-case tag and a space at the start of a line.
+The CLI's level tags are upper case (`[DEBUG]`, `[ERROR]`; measured on 2.1.284, where
+no line of the debug log starts with a lower-case tag). The Codex refresher uses the
+same summary (docs/154). A forced probe of a token with more than 45 minutes left
+that finds no rotation and no rejection ends `noop`. It writes a line only when
+the CLI did not complete (it did not start, or it did not end before its
+timeout): `forced probe did not complete — no verdict on the token reason="…"`.
+`spawnCli` reports how the run ended, and the text is not searched for it. The line
+does not say that the token was not used: a CLI that hangs after its answer also
+times out. Debug timestamps are stripped
+before classification: one ending `.429Z` used to read as an HTTP 429 and select the
+rate-limit backoff.
+
+**The revoked line (2026-10-12).** `revoked (<reason>) — emitting auth_required` keeps its
+sentence, and the first line for a rejected grant now continues with what ran:
+
+```
+… — emitting auth_required trigger=scheduled verdict=blanked_copy rejected_by=tier2 tier2=2.4s,exit=1 expires_in=45m reason="…"
+```
+
+- `trigger`: `scheduled` (the expiry timer), `backoff_retry`, `turn_start`, `forced_heal` (a
+  session reported an auth failure), `nudge` (`refreshNow`: a completed sign-in, or an
+  auth-required report), and `private_run` for a naming run's rejection. A caller that
+  joins a tick in flight is reported under the trigger that started it.
+- `verdict`: `blanked_copy`, or `output_phrase` when the output names the rejection and no
+  copy was blanked. `rejected_by`: `tier2` (the probe), or `kept_copy` (a kept rotation
+  that read as blanked on a later tick).
+- `tier2`: the probe's run time, then `timeout` if it was killed, then
+  `exit=<code or signal>`, or `no_exit` when the CLI did not start or did not exit within
+  the kill grace.
+- `expires_in`: what the source token had left, negative when it is expired.
+- `reason`: the redacted excerpt that the other failure lines carry.
+
+Each later tick on the same grant logs the sentence with `trigger=… verdict=known_rejected`
+and nothing more, so `grep 'revoked (' | grep -v known_rejected` gives the first line.
+`rotated_tier2 new_expires_at=…` is the probe's rotation, and nothing follows the expiry.
+A kept rotation that a later tick installs logs `rotated_kept`.
+A naming run and a kept copy have no probe output, so their lines stop at `expires_in`.
+
+Lines from the builds of 2026-10-12 and 2026-10-13 also carry `tier1=…` before `tier2=…` (and
+`rotated_tier2 … tier1=…`): how the first command ended, or `not_run`. The field went with
+the command. It was not kept at a fixed `not_run`, because a field that cannot change tells
+the reader nothing and says that a first command still exists. `rotated_tier1` (a rotation
+by the first command, and until 2026-10-12 also a kept rotation) is no longer logged.
+
+The line has no count of the requests. By what was measured offline, the CLI sends the
+grant again only after 30 s without an answer (Known limits). So a `tier2` run of less
+than 30 s points to one request in that tick: the grant was dead before it, or a session's
+CLI spent it at the same moment (the late harvest looks for that). A run of 30 s or more
+can have sent it twice by itself. Before the tier 1 fix, no line could tell any of these
+from a grant that tier 1 had sent without waiting for the answer.
+
+**Validation.** `node --import tsx scripts/probe-claude-refresh.mjs` runs the installed
+binary with synthetic tokens, an isolated home and working directory, and a local TLS
+recorder that never forwards traffic. It uses the refresher's own command line and
+constants (`REFRESH_PROBE_COMMAND`, `CLI_REFRESH_WINDOW_MS`, `PROBE_REMAINING_MS`), and
+checks what the refresher depends on: the CLI accepts the command line and makes its
+model call, it sends no grant with 45 or 5.5 minutes left (a forced probe keeps the real
+expiry and must not spend a healthy token's grant), it refreshes with 4.5 minutes left
+and a copy that claims one minute and writes the result to it, **it waits for a token
+host that answers after 1.5 s** and sends the grant once, `invalid_grant` blanks the
+file, and a 429 or a 500 does not. Until 2026-10-12 the recorder answered every request
+at once, which no real host does, so a check that the first command of that time wrote a
+rotation could not fail. Since the early install (2026-10-12) it also checks that the
+rotation is in the copy before the CLI's model call, and the session-side behavior that
+the early install relies on: after a 401 for the model call the CLI repeats it with a
+token that reached its file instead of refreshing, and after a rejected refresh it takes
+one that arrived meanwhile instead of blanking the file. Info lines report whether a token
+pushed 300 ms and 1 s after the 401 is still taken. Since 2026-10-13 it checks the forced
+probe's own case too: after a 401 with no newer token in its file, the CLI refreshes once
+and writes the rotation. It does not check every row of the tables (the rejected flag
+order is history, not a dependency). 15 checks, about 13 s, exit 1 on a failure. CI runs
+it as the job
+`claude-refresh-probe` (`.github/workflows/ci.yml`) on a pull request that changes
+`docker/agent-cli/package.json`, its lockfile or `install-agent-clis.sh`, the probe, this
+refresher (whose command line the probe uses) or the workflow, and on every push to
+`main`. The job installs the pinned CLI with the images' own `install-agent-clis.sh`
+(`SHIPIT_HARNESSES=claude`): `npm ci --ignore-scripts` alone does not give a binary that
+runs ("claude native binary not installed"), so the `npm rebuild` of that one package is
+needed. It gets no secret, and its checkout keeps no token.
+
+**Options weighed and not taken:**
+
+- *Refresh the grant from the orchestrator directly* — see "Delegate to the Claude
+  CLI"; that rationale still holds.
+- *`claude auth login` with `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`.* The CLI supports it,
+  but that path asks the token host for `expires_in: 31536000` (one year). It is not an
+  ordinary rotation, and what the server does with it for a subscription grant is
+  unknown.
+- *Schedule ticks inside the CLI's 5-minute window.* The orchestrator would enter the
+  race it exists to prevent, once per lifetime, against every resident CLI.
+
+### Session naming in a private copy (2026-10)
+
+Session naming (`claude -p …`, `session-namer.ts`) was the last model call in the
+containerized orchestrator that ran with `HOME` at an account's credential root. Such
+a CLI refreshes the source itself inside the 5-minute window and blanks it on
+`invalid_grant`, so a naming run that lost the grant to a session's CLI blanked the
+account's only copy.
+
+On a Claude account route in the containerized orchestrator, naming now runs through
+`ClaudeOAuthRefresher.runInPrivateCopy`, reached through
+`ProviderAccountManager.claudeCredentialCopyRunner()` (attached at boot, so no route
+passes a new dependency). It makes the same private copy as a probe, but with the
+**real** expiry: naming should not rotate a token that the refresher would not, and it
+does not run unless the copy can be made — an unreadable source fails naming with
+`The Claude account's credentials could not be copied (<code>).`, never the file's
+text. `CLAUDE_CONFIG_DIR` is removed from that CLI's environment, because with it set
+the CLI ignores `HOME` and so the copy.
+
+When the run ends, the copy is judged by the probe's rules (`adoptProbeRotation`):
+
+- **New tokens** → installed in the source, then the ordinary success path (repush,
+  `refreshed`), logged as `rotated_private_run`. A failed install keeps the copy as
+  `pendingRotation`, and a tick is scheduled in 1 s to install it without a probe. If
+  a rotation is kept already, the new copy takes its place only where a tick would
+  give the kept one up: the source is gone or holds another credential. The kept copy
+  is then deleted. Otherwise the kept one stays, and the new copy is left on disk with
+  its path logged. Different seeds alone prove nothing: a run that started before a
+  sign-in can end after a newer run's rotation was kept.
+- **A blanked copy** → a rejected grant, as after a probe (`rejectedIdentity`,
+  `revoked`), if the source still holds the rejected credential. While another naming
+  run of the account is open, it can hold the grant's successor, so the rejection is
+  kept (`unjudgedRejection`) and judged when the last open run ends: again only if the
+  source still holds that credential, and only if no rotation kept from that same
+  credential (which holds its successor) waits. A rotation kept from an older
+  credential does not stop the verdict; the next tick gives it up. Where both
+  checks pass, the run that judges waits 5 s, as after a probe, checks again and only
+  then does the late harvest; it returns to its caller that much later. "Open" counts a
+  run until its CLI has ended (`openRuns`), not through this wait: a run that is only
+  waiting cannot hold a successor, and counting it would leave a rejection that ends
+  during the wait unjudged. A tick waits for both, so it does not probe in the wait.
+- **Anything else** → no verdict. The copy is deleted.
+
+A naming run and a probe would spend the same grant, so they do not overlap: a naming
+run waits for a tick in flight before it copies the source, and a tick waits for the
+open naming runs before it harvests or probes. Naming's CLI times out after 15 s; a
+tick waits at most 30 s. If a run is still open then, the tick harvests as usual but
+does not probe: the run can hold the grant's successor, and a probe would misjudge
+the grant as revoked. The tick ends `not_rotated` (`[private-run-open]`) and retries
+on the generic backoff. Naming runs do not wait for each other.
+
+Local mode attaches no runner, so naming there still runs in the account root with
+its environment unchanged: the refresher does not run in local mode, and the turn
+CLIs share that root anyway.
+
+### Tier 1 does not present the grant (2026-10-12 fix)
+
+Production, build `930f5eea` (UTC): `acct_1219…` logged `rotated_tier2` at 14:24:57, and
+35 s later `acct_1a27…`, signed in 7 h 15 min before, logged `revoked (invalid_grant)`.
+Its scheduled tick fired at 14:25:20 and the probes took about 2.9 s. Turns on that
+account got good answers until less than 40 s before the tick; the first session auth
+failure came 14 s after the verdict. Nothing else on the host is known to have touched
+the grant.
+
+Measured on CLI 2.1.284, offline as in "Validation" (synthetic tokens, a local recorder;
+nothing reached the real token host). The probe script and the end-to-end run gave the
+same results on 2.1.293, the version that `main` pinned that day:
+
+| A copy that claims 60 s, and the token host… | Tier 1 (`auth status --json`) | Tier 2 (`--print ok …`) |
+|---|---|---|
+| answers at once | writes the rotation | writes the rotation |
+| answers 25 ms or more after the request | exits about 0.2 s after its start, exit code 0, copy `unchanged`, no line about a refresh in the debug capture | waits (8 s tested), writes the rotation, one request |
+| is reached only after 40 ms of connection set-up | exits before the request is sent | waits, writes the rotation |
+| does not answer | the same exit, the same `unchanged` | gives up after 30 s, **sends the same refresh token again**, ends at about 60 s |
+
+So on a copy inside the CLI's window, Tier 1 sends the grant and does not wait. When
+its request reaches the host and the answer comes after the exit, the grant is spent
+and its successor is lost; the refresher then read `unchanged` and Tier 2 sent the same
+refresh token about 0.3 s later. Run through `ClaudeOAuthRefresher` against a recorder
+that spends a refresh token on first use, that sequence logged `revoked` for a grant
+with 40 minutes left; with a slow connection it logged `rotated_tier2`. Both of the
+production lines, from one mechanism, with no timeout or kill.
+
+**The fix of 2026-10-12:** Tier 1 did not run on a copy that claimed 5.5 minutes or less
+(the CLI's window, plus the 30 s that Tier 1 could run). That is every near-expiry tick,
+because its copy claims 60 s. Tier 2 was the only tier that sent the grant there, and it
+waits for the answer.
+
+**Tier 1 is removed (2026-10-13).** After that fix it ran only on a forced probe of a
+healthy token (a session's 401, more than 45 minutes left), where the copy keeps its real
+expiry. Verified in the code of that day (`runTier1` in `executeTick`: the copy had to
+claim more than 5.5 minutes, and a near-expiry copy claims one), and with the probe script
+on CLI 2.1.293: on such a copy `auth status --json` sends no token request, also when the
+API answers 401 to it. So it could not rotate, could not find a rejected grant and could
+not test the token; it added a run of up to 35 s (its 30 s timeout and the 5 s kill grace)
+before the command that does all three.
+The refresher now runs one command (`REFRESH_PROBE_COMMAND`, `runProbe`), for a near-expiry
+tick and for a forced probe alike. What changed in the log is in "The revoked line".
+
+**Not known**, and not tested, because that needs the real token host: whether it
+completes a rotation whose client has gone, and whether it revokes the whole grant
+(access token included) on a replayed refresh token. So the incident is consistent with
+this mechanism and not proven to be it.
+
+### A sign-in is not the harvest's to complete (2026-10-12 fix)
+
+Production, build `930f5eea`, account `acct_1a27…` (UTC). The account's grant had been
+rejected at 14:25:28 (what invalidated it is not known). The operator started a new sign-in:
+
+| | |
+|---|---|
+| 14:46:54 | the sign-in starts and removes the account's `.credentials.json`; the row is `authenticating` |
+| 14:47:00 | a new session's first turn is routed to that account, which has no token, and fails over |
+| 14:47:04 | a tick's harvest finds a session subtree that still holds the pushed copy of the rejected credential, reads the missing source as "behind", and copies it in: `harvested … was=none`, then `harvested_session`. It is pushed to 38 sessions, the account reads `ready`, and the memory of the rejected grant is cleared |
+| 14:47:16 | the reinstalled grant is probed again: `revoked` |
+| 14:47:24 | the operator's code reaches the login CLI. The first poll, 300 ms later, finds a credential file newer than the baseline (the harvest's write), reports the sign-in complete and kills the login CLI before it has exchanged the code |
+| 14:47:25 | `revoked` again, but the account was announced once already, so the row stays `ready` |
+
+The account read `ready` with a dead credential, and the operator's code was never used.
+Four rules, each where the fault was:
+
+1. **A missing account source is not refilled from a replica**
+   (`token-sync-manager.ts`). A source is missing while a sign-in runs and after a
+   sign-out, and a replica then holds exactly the credential that was removed.
+   `sessionTokenIsAheadOfSource` no longer reads a replica as ahead of a missing account
+   source, and `syncProviderAccountTokenBack` and `syncSubAgentSpawnHomeTokenBack` refuse
+   the copy (`write-back=refused … reason=source-absent`). So the harvest, the mid-turn
+   publication, the turn-end write-back and a sub-agent's write-back all stop there, for
+   every harness. It is the rule a probe's rotation already had ("the source is gone →
+   the rotation is given up"). The flat (pre-account) root keeps the old behavior.
+2. **The harvest does not adopt the credential that is known rejected**
+   (`harvestSessionRotations`). A session's copy with those tokens is a pushed copy, not a
+   rotation, whatever its expiry says against the source.
+3. **A sign-in's result is a credential that the login CLI wrote** (`auth-manager.ts`).
+   "Fresh" was "a file with a newer mtime than at the start". It is now a credential with
+   an access token whose tokens differ from the baseline, and the baseline is taken again
+   when the first code is submitted: the login CLI cannot write before it has a code, so
+   what is on disk at that moment is another writer's. Tokens, not mtime, because other
+   CLIs rewrite the file's other keys.
+4. **An `authenticating` account is routed to only while it holds a credential**
+   (`ProviderAccountManager.selectAccountForTurn`, asked through the login's
+   `isConfigured`). Claude's sign-in removes the credential at its start. Codex's
+   removes it after one request: `codex login --device-auth` first revokes the old
+   refresh token at the token host, keeps `auth.json` until that request has an answer
+   (at most 10 s without one), and removes it before it asks for a device code
+   (measured offline on CLI 0.160.1, 2026-10-15; docs/154-codex-oauth-refresh-readiness,
+   "The revoked line, and the account's row"). A sign-in that keeps the old credential
+   stays routable.
+
+And the announcement: `emitUnauthenticated` was latched after the first report. It now
+reports again when the account's row reads `ready`, because a sign-in's completion sets
+the row `ready` without a word to the refresher. In the other direction, a tick that
+finds the source missing while the row reads `authenticating` reports nothing
+(`missing_credentials … sign_in=in_progress`): the `agent_auth_failed` event would close
+the sign-in that the user is in, and with rule 1 no harvest hides that state any more.
+
+### Install the rotation while the probe runs (2026-10-12 fix)
+
+Production, build `a28f165b`, 2026-10-12 (UTC). Session `83d3273c…` was mid-turn. The
+refresher's probe got a new token at 05:43:21.7 (the logged `new_expires_at` is exactly
+8 h later). At 05:43:23.5 the session's CLI reported an auth failure and ShipIt killed
+its agent for the docs/179 heal. The refresher logged `rotated_tier2` at 05:43:26.88
+and propagated the token to 19 pinned sessions at 05:43:27.16, and the heal then ran the
+turn again — after its kill had stopped whatever the agent was doing. The session's old
+token was valid until 06:28, so the 401 was not an expiry. On 2026-10-11 a session CLI's
+own rotation at 07:20:22 was followed by another session's auth kill less than a second
+later (that path is in Known limits).
+
+Two facts explain it:
+
+1. *Inferred, not provable from ShipIt's source:* a refresh ends the previous access
+   token at once, so a session that still holds it gets a 401 on its next request.
+2. *Verified in `runProbes` (now `runProbe`):* the refresher installed a rotation only after the probe's
+   CLI **exited**. The CLI refreshes before its API call, so the Haiku request, the exit
+   and the install were all inside that window: 5.2 s to the install and 5.5 s to the
+   last session.
+
+What a session's CLI does after a 401 for a token with hours left (measured offline on
+CLI 2.1.284, and again on 2.1.293, with the probe script's recorder, which answers 401
+for the old token):
+
+| What reaches the session's credentials file | What the CLI does |
+|---|---|
+| a new token before the CLI reads the file again, about 0.55 s after the 401 (0.1 s and 0.3 s after it worked; 1 s did not) | repeats the request with the new token: no refresh, no error |
+| nothing in that time | refreshes with its own refresh token, which is the spent grant |
+| a new token while that refresh is in flight, then `invalid_grant` | reads the file again and uses the new token; the file is not blanked |
+| nothing, then `invalid_grant` | blanks its file and reports `Failed to authenticate: OAuth session expired and could not be refreshed`, which ShipIt reads as `auth_required` |
+
+So a 401 costs nothing if the new token reaches the session's file within about 0.5 s,
+plus the time of the session's own refresh request. The fix makes the window that short.
+If fact 1 is false, it changes only how early the sessions get the new token.
+
+- **The copy is watched while the CLI runs.** `spawnCli` reads the copy
+  before the spawn, then every 50 ms (`PROBE_COPY_POLL_MS`), and when its bytes change
+  `runProbe` calls `adoptProbeRotation`. An install runs the ordinary success path at once: the log
+  line, the repush and `refreshed`. The tick keeps its single flight until the CLI
+  exits. Each call keeps every guard of `adoptProbeRotation`: a source that is gone or
+  holds another credential gives the rotation up, a blanked one is installed over, and a
+  failed install keeps the copy for `pendingRotation`. A read that catches a write
+  part-way is an `install_failed` that logs nothing, and the next change, or the exit,
+  judges the file again. A throw from the success path is logged; the install is
+  recorded before it, so the exit still reports the rotation.
+- **After an install, the copy is judged against the installed credential**
+  (`seedIdentity` moves to it). The CLI can still write the copy: if its API call gets
+  a 401 with the new token, it refreshes again and so spends the installed credential's
+  grant, and the source must get that successor. Without the move, the judgement at the
+  exit would read "the source holds another credential" and give the successor up.
+- **At the exit, an installed copy is judged against the source again**
+  (`ProbeHome.installed`). Another writer can have changed the source since the install.
+  If the source holds the copy's credential, the copy is deleted. Over a blank, the
+  rotation is installed again. A source with another credential (a sign-in), or no file,
+  wins and gets a tick of its own. A source that cannot be read, or a reinstall that
+  fails, keeps the copy for `pendingRotation`, as for a rotation that was never
+  installed: with no pinned session, the copy can be the only record of the credential.
+  Such a kept copy holds the installed credential and no successor of it, while every
+  other reader of `pendingRotation` takes a kept copy to hold a successor of its seed
+  (a naming run's later rotation that cannot be installed is then left on disk; a naming
+  run's rejection of that credential is held back). So a naming run's settle judges an
+  installed kept copy again first (`retryKeptRotation`, which the tick's pending path
+  also uses; a throw from its success path is logged, so that the run's own copy is still
+  judged): once the source holds its credential, it is deleted. If it must stay, a naming
+  run's readable rotation of that credential takes its place, but only while the kept
+  copy can be read and still holds that credential: a kept later rotation (a successor
+  that could not be installed) stays, and so does a kept copy that cannot be read. A
+  naming copy that cannot be read takes no place either, because it proves no rotation.
+  When a later install's success path throws, the result of an earlier install is not
+  returned for it: the exit runs the success path again. A later rotation that
+  cannot be installed is kept as before, and is checked before any success, so that a
+  later expiry in the source cannot hide it. The next tick is armed again at the exit: a
+  scheduled tick that fired during the run joined the one in flight.
+- **The repush serves the sessions with a live CLI first** (`createOAuthAccountRepush`).
+  Each push includes a recursive chown of the session's credential tree, and an idle
+  session reads the token at its next turn's sync-in anyway. The live check that decides
+  the leaked-subtree repair is still made at each push.
+
+A poll and not `fs.watch`: the copy is in the orchestrator's own temp directory, where
+either works. A 50 ms poll adds at most 50 ms while the event loop is free (a busy loop,
+such as a repush in progress, delays it further), costs one small read per poll during
+the few seconds a probe runs, and depends on no event that can be lost.
+
+**Options weighed and not taken:**
+
+- *Let the CLI retry instead of killing a turn whose 401 lands during a rotation.* When
+  ShipIt sees `auth_required`, the CLI has already retried, refreshed with the spent
+  grant, blanked its own copy and given the request up: there is nothing left to retry.
+  Keeping the process would mean a new message to the resident CLI after the repush, a
+  new recovery path through the turn executor's post-turn invariants, for the case that
+  the CLI's own retry now covers. If auth kills still follow a rotation after this fix,
+  this is the next step; compare the kill's time with the `rotated_tier2` line, which is
+  now written at the install.
+- *Push the token before the refresh.* No new token exists before the refresh.
+
 ### Known limits (not addressed here)
 
 - **The marker records what provisioning intended, not whose bytes are on
@@ -434,17 +940,106 @@ reading skips the quarantine and the caller deletes the only copy. Guarded by
   marker is published on the marker's word. This is the pre-existing trust of
   the turn-end write-back, unchanged; the harvest widens *when* that write can
   fire (a timer, not a turn), not what it trusts.
-- **The borrow guard is not re-entrant.** `beginSubtreeBorrow` returns early if
-  a borrow is already recorded and `endSubtreeBorrow` deletes the single entry,
-  so overlapping same-session borrows leave `subtreeBorrowInFlight` false while
-  one is still live. Pre-existing (planning#445) and equally under the turn-end
-  write-back; tracked as planning#463.
 - **`syncAgentTokenBackToRoot` reads source freshness and copies over that
   pathname with no re-check**, so an external writer landing between the two is
   overwritten. Pre-existing, in a function this change does not touch, and it
   affects every caller.
-- The **Codex** refresher (`agents/codex/oauth-refresher.ts`) has the same shape
-  and was not audited for the same gap.
+- The **Codex** refresher (`agents/codex/oauth-refresher.ts`) was audited against
+  these fixes in 2026-10. What it had of these gaps, and what it does now, is in
+  docs/154-codex-oauth-refresh-readiness, "On-demand refresh, real rejections,
+  harvest" and "The revoked line, and the account's row". It imports
+  `summarizeRefreshFailure`, `describeCliRun` and `TickTrigger` from this refresher.
+- **The private copy depends on CLI behaviors** that the CLI does not
+  document: it refreshes when the file says 5 minutes or less are left, it writes
+  the result to the file it read before its model call, and it blanks that file on
+  `invalid_grant` only. The early install also counts on a session's CLI reading
+  its file again after a 401 before it refreshes; without that, the fix only
+  makes the 401 window shorter.
+  A CLI bump can change any of them. `scripts/probe-claude-refresh.mjs` checks them
+  against the pinned binary, and CI runs it on every change to the pin. A red run
+  blocks a merge only if the branch protection names the job as a required check.
+- **A rotation is in the copy before it is in the source.** If the orchestrator
+  dies between the CLI's write and the install, the grant is spent and the new
+  token is left in the temp directory, where nothing looks for it; the account
+  needs a sign-in. For a probe the window is one poll of the copy (50 ms while
+  the event loop is free) since 2026-10-12; for a naming run it is the run's
+  remaining time, up to 15 s, because a naming run's copy is judged only when
+  the run ends. A naming run refreshes inside the CLI's 5-minute window, which a
+  working refresher has left 40 minutes earlier, or after a 401. It lasts as long as a
+  `pendingRotation` waits, which is held in memory only: that covers a failed
+  install, not a dead process.
+- **The sign-in PTY still runs in the account root**, because it is meant to
+  write there. In local mode the turn CLIs and session naming run there too.
+  Such a CLI refreshes the source itself when it finds it inside the 5-minute
+  window, and blanks it on `invalid_grant`. When the probe wins the grant it
+  installs over the blank. (The usage-limits provider and the account identity
+  reader only read the file. Bug-report redaction runs in the flat `/root` home.)
+- **A naming run that never ends stops the account's probes.** Its ticks still
+  harvest the sessions' rotations, so the account falls back to the session CLIs
+  refreshing near expiry, as before the private probe copy. The CLI's own 15 s
+  timeout makes this a fault: a process that ignores the kill, or that leaves
+  a child holding its output open.
+- **Only one rotation is kept.** A second copy that cannot be installed while the
+  source does not prove the kept one superseded is left on disk, with its path in
+  the log, and nothing installs it. It takes two failed installs; and since a
+  single-use grant gives at most one live successor, it loses a grant only when the
+  kept copy holds none (an unreadable probe copy) or the source cannot be read.
+- **The late harvest waits 5 s, not until a session's rotation is on disk.** When a
+  session's CLI and a probe (or a naming run) spend the same grant, the loser's
+  `invalid_grant` is judged no earlier than 5 s after it ends (for a naming run, 5 s
+  after the last naming run that was open when it ended; a run that starts later
+  copies the spent grant and cannot hold its successor). A session CLI that writes its new
+  tokens later than that still has the account reported revoked until a later tick
+  harvests the rotation. Measured offline on CLI 2.1.284 (the probe script's recorder,
+  10 runs on an idle container), the CLI writes the new tokens 10–18 ms after the token
+  host answers; the rest of the 5 s is for a loaded session container and for an
+  answer that reaches the session later than the rejection reaches the loser. A real
+  revocation is reported 5 s later than before.
+- **A rotation made by a session's own CLI reaches the other sessions slowly.**
+  The write-back watch publishes it into the source (a 3 s poll and a 750 ms
+  debounce), and nothing pushes it on from there until a tick's harvest or a
+  turn's sync-in; a sibling's 401 in that time is healed by a kill. A session's
+  CLI rotates inside the 5-minute window, which a working refresher has left 40
+  minutes earlier, or after a 401 when its file holds no newer token and its own
+  grant is still live.
+- **The install's token check and its rename are two steps.** A writer that
+  replaces the source's token between them is overwritten. The CLI used to take
+  its own lock in the account root for this; the refresher does not. It is the
+  same class of gap as the `syncAgentTokenBackToRoot` item above.
+- **A forced probe that did not complete still heals.** With more than
+  45 minutes left, a forced tick that finds no rotation and no rejection ends
+  `noop`, and the heal succeeds. `recoverAuth` in `turn-executor.ts` then
+  pushes the account's source credential to the session and runs an ordinary
+  turn again, once; an adopted turn ends with no second run. That is also the
+  result when the CLI did not start or did not end before its timeout, so the
+  refresher has no verdict on the token. The log says so (see "Outcomes and
+  logs"); the result is not changed. A CLI that ran and failed for another
+  reason (an error from the API, a signal from outside) still reads as a live
+  token and writes no line. The Codex refresher has the same rule since
+  2026-10-12: no verdict heals (docs/154, "Turn start and forced heal", with
+  the costs under its Known limits).
+- **The probe's CLI presents the grant a second time after its own timeout.** With a token host
+  that does not answer, the CLI gives up after 30 s and the same process sends the same
+  refresh token again; it ends at about 60 s, where the refresher's timeout for the probe is.
+  That replay is inside the CLI. A shorter timeout would stop the second request,
+  but it would also kill a rotation whose answer is on its way, so it is left as it is.
+- **A request that the token host completes and whose answer is lost still costs the
+  grant.** The refresher cannot know it. A tick that follows sends the same refresh token and is
+  rejected, and the account needs a sign-in. The tier 1 fix removes the case that the
+  refresher made itself; it does not remove a lost answer.
+- **The harvest tells a session's rotation from a pushed copy by expiry alone**, apart
+  from the credential that is known rejected. A source that is replaced by a credential
+  with an earlier expiry than a copy pushed before it is overwritten by that copy.
+- **"Holds a credential" is the login's `isConfigured`**, which for Claude, Codex and
+  Grok is a file that exists, not a token that works. An `authenticating` account with a
+  blanked or empty credential file is still routed to. A sign-in's start removes the
+  file, which is the case that rule 4 is for.
+- **Model eligibility still lists an `authenticating` account** (`listConfiguredCredentials`
+  reads the stored row, not the credential root). A turn started on it while its sign-in
+  has no credential yet gets `auth_required` from the router, or another account.
+- **A login CLI that ends by itself before any code is submitted** is still judged
+  against the baseline of the sign-in's start, so a credential that another writer put
+  there in that time counts as its result. No writer is known for an empty account source.
 
 ## Wiring
 
@@ -523,14 +1118,12 @@ that.
 ### Unit (`claude-oauth-refresher.test.ts`)
 
 - **Single-flight**: two concurrent `refreshNow()` calls spawn the CLI exactly once.
-- **Tier 1 success**: when the fake CLI rotates the source file (test fixture writes a
-  later expiresAt), `repushTokenToPinnedSessions` is called and the next tick is
-  scheduled at `new expiresAt - safetyMargin`.
-- **Tier 1 read-only, Tier 2 success**: when Tier 1 doesn't advance the file but Tier 2
-  does, both run and Tier 2 wins.
-- **Both tiers no-op + 429 in debug log**: emits backoff schedule, no auth_required.
-- **Both tiers no-op + invalid_grant in debug log**: emits `auth_required`, stops
-  scheduling.
+- **Rotation**: when the fake CLI rotates its copy (test fixture writes a later
+  expiresAt), the result is installed in the source, `repushTokenToPinnedSessions` is
+  called and the next tick is scheduled at `new expiresAt - safetyMargin`.
+- **No rotation + 429 in debug log**: emits backoff schedule, no auth_required.
+- **No rotation + invalid_grant** (a blanked copy, or the phrase in the output): emits
+  `auth_required`, stops scheduling.
 - **`auth_complete` rearms**: simulate a fresh source write; refresher schedules.
 - **`stop()` cancels pending timers**: no further spawns after stop.
 - **Per-account isolation**: two accounts schedule independently; one account's
@@ -569,9 +1162,9 @@ trying to refresh on first tick. If the existing rate-limit window is still acti
 
 ### Logging
 
-Refresher activity (`[claude-oauth-refresh] tick scheduled at ...`, `... rotated via
-auth status`, `... rotated via haiku fallback`, `... 429 backoff Ns`, `...
-invalid_grant → auth_required`) goes to `console.log` only. Visible in `docker logs
+Refresher activity (`[claude-oauth-refresh] account=… rotated_tier2 new_expires_at=…`,
+`… rate_limited failure_count=N — backoff scheduled`, `… revoked (invalid_grant) —
+emitting auth_required …`; the full list is in "Outcomes and logs") goes to `console.log` only. Visible in `docker logs
 shipit-shipit-1`, matches the existing `[disk-janitor]`, `[mcp-oauth]`, `[auth]`,
 `[warm]` log-prefix convention. No per-session `broadcastLog` (the refresher is
 session-agnostic) and no SSE telemetry beyond the `claude_account_unauthenticated`
@@ -588,12 +1181,12 @@ event carries the accountId for docs/150 to consume.
 
 | Risk | Mitigation |
 |---|---|
-| `claude auth status --json` behavior changes in a future CLI version. | Two-tier design: Tier 2 (`--print` against Haiku) is structurally guaranteed to make an authenticated API call → refresh-on-use. Tier 1 failing gracefully into Tier 2 is the expected steady state if Anthropic redesigns `auth status`. |
+| The CLI stops refreshing before its model call, or changes when it does. | The CLI refreshes only a token with 5 minutes or less left — an authenticated call does **not** guarantee refresh-on-use, as this row once said — which is why the rotation runs against a copy that claims a short life. `scripts/probe-claude-refresh.mjs` checks that rule against the pinned binary, and in production the sign is `not_rotated`. The refresher no longer runs `claude auth status` (2026-10-13). |
 | The CLI's debug log format changes. | File-state delta is the authoritative success signal; debug parsing is only used for failure classification. A debug-format change degrades the "what's wrong?" classification to "unknown failure", which still backs off and retries. |
-| Session-side CLIs still attempt refresh occasionally despite the safety margin. | The 30-min margin is conservative. If we observe session-side refresh traffic post-deploy (look for `console.anthropic.com` connections from agent-* containers), tighten the margin or add an egress policy that blocks session containers from reaching the OAuth endpoint — future hardening, not blocker for this fix. |
-| Refresher tick fires during an actual `claude /login` flow. | `AuthManager` and the refresher operate on the same source file. The refresher's file-state delta is read-only until the spawn exits; the OAuth flow's atomic-write writes a fresh token. Worst case: refresher re-arms on the new expiresAt. Benign. |
+| Session-side CLIs still attempt refresh occasionally despite the safety margin. | A session CLI refreshes only when its own copy says 5 minutes or less are left, so the lead time matters only if the orchestrator has rotated and repushed before then. If we observe session-side refresh traffic (`[token-publish] published mid-turn claude token rotation`, or token-host connections from agent-* containers), check for `not_rotated` lines first. An egress policy that blocks session containers from the OAuth endpoint remains future hardening. |
+| Refresher tick fires during an actual `claude /login` flow. | The refresher's CLI writes only its private copy, and the install is skipped when the source holds another token than the copy was made from, so the sign-in's token stays. |
 | Two refreshers somehow exist (e.g., racing orchestrator restarts during a deploy). | Refresher state lives in-process; multiple processes don't share mutex. But there's only ever one orchestrator container running at a time (Compose `unless-stopped` doesn't double-run). The CLI's own atomic write protects against concurrent writes even if it did happen — the loser's write just gets clobbered by the winner. |
-| `auth status` rotates the token (Tier 1) but our parse misses it. | The mtime check is the trigger, not the JSON parse — so as long as the CLI updates the file with a later `expiresAt`, we detect it. |
+| The CLI rotates the token but the refresher misses it. | A rotation is new tokens in the copy (a hash of the two tokens), whatever the copy says about their expiry, and a copy that cannot be read after a probe is kept as a possible rotation (`adoptProbeRotation`). |
 
 ## Out of scope
 
@@ -638,6 +1231,8 @@ the orphan is named `claude-default` because that is the migration's literal
 target; it holds the real credential and a multi-megabyte conversation because
 it *is* the moved home; and "no resumable jsonl on disk (DB pointed at `<id>`)"
 happened because the jsonl moved with it. The DB pointer was always correct.
+(That verdict, and the id clear it drove, were removed in docs/007: the repair never
+judges or touches the stored id.)
 
 **Fix — three independent layers**, since any one alone still leaves a live home
 reachable:
@@ -698,12 +1293,75 @@ history that was moved into the orphan.
 - `src/server/orchestrator/shutdown-manager.ts` — drops every remaining watch
   on `onClose`
 
+### Key files (private probe copy, 2026-10)
+
+- `src/server/orchestrator/agents/claude/oauth-refresher.ts` — `REFRESH_PROBE_COMMAND`,
+  `runProbe`, `createProbeHome`,
+  `adoptProbeRotation`, `readSourceFor`, `claudeCredentialIdentity`,
+  `pendingRotation`, `sourceGrantIsKnownRejected`, `clampToLastChance`,
+  `retryNotBefore`, `waitForLateRotation`
+- `src/server/orchestrator/agents/claude/oauth-refresher.test.ts` — "private probe
+  copy", "retry schedule"
+- `scripts/probe-claude-refresh.mjs` — the same checks against the real binary
+- `.github/workflows/ci.yml` — the `claude-refresh-probe` job that runs it
+
+### Key files (sign-in and harvest, 2026-10-12)
+
+- `src/server/orchestrator/token-sync-manager.ts` — `refuseAbsentAccountSource`, and the
+  missing-source rule in `sessionTokenIsAheadOfSource`, `syncAgentTokenBackToRoot`,
+  `syncSubAgentSpawnHomeTokenBack`
+- `src/server/orchestrator/agents/claude/auth-manager.ts` — `credentialFingerprint`,
+  `credentialBaseline`, `hasFreshCredentials`
+- `src/server/orchestrator/provider-account-manager.ts` — `holdsCredential` in
+  `selectAccountForTurn`
+- `src/server/orchestrator/agents/claude/oauth-refresher.ts` — the rejected-credential
+  guard in `harvestSessionRotations`, `emitUnauthenticated`, and the revoked line:
+  `TickTrigger`, `CliRun`, `describeCliRun`, `handleRevoked`
+- `scripts/probe-claude-refresh.mjs` — the delayed answer (`SLOW_ANSWER_MS`)
+- Tests: "a missing account source is not refilled from a replica" in
+  `token-freshness-guard.test.ts`; "fresh-credential completion gate" in
+  `auth-manager.test.ts`; "account-scoped auth flows" in
+  `provider-account-manager.test.ts`; "harvest before spend" and "failure logging" in
+  `oauth-refresher.test.ts`
+
+### Key files (install while the probe runs, 2026-10-12)
+
+- `src/server/orchestrator/agents/claude/oauth-refresher.ts` — `PROBE_COPY_POLL_MS`, the
+  copy poll in `spawnCli`, the early install and the exit judgement in
+  `runProbe`, `seedIdentity` and `installed` in `adoptProbeRotation`,
+  `retryKeptRotation`, `holdsRotation`, `rotated_kept`
+- `src/server/orchestrator/oauth-account-repush.ts` — `createOAuthAccountRepush`, the
+  repush to pinned sessions (moved out of `bootstrap-managers.ts`), live CLIs first
+- Tests: "installs and pushes a rotation as soon as the CLI writes it, before the CLI
+  exits", "installs a second rotation that the CLI writes after the first was
+  installed" and the group "a rotation installed while the CLI runs" in
+  `oauth-refresher.test.ts`; `oauth-account-repush.test.ts`
+- `scripts/probe-claude-refresh.mjs` — the (c) check that the rotation is in the copy
+  before its model call, the (f) checks on a session CLI's 401 handling and the info lines
+  on a late push
+
+### Key files (session naming in a private copy, 2026-10)
+
+- `src/server/orchestrator/agents/claude/oauth-refresher.ts` — `runInPrivateCopy`,
+  `settlePrivateRun`, `waitForPrivateRuns`, `privateRuns`, `openRuns`,
+  `unjudgedRejection`, `rejectionStillApplies`
+- `src/server/orchestrator/provider-account-manager.ts` —
+  `attachClaudeCredentialCopy`, `claudeCredentialCopyRunner`
+- `src/server/orchestrator/bootstrap-managers.ts` — attaches the runner in
+  containerized mode only
+- `src/server/orchestrator/services/graduate-session.ts` — passes
+  `inCredentialCopy` on a Claude account route
+- `src/server/orchestrator/session-namer.ts` — the Claude case runs `callCli` in
+  the copy, and only there removes `CLAUDE_CONFIG_DIR`
+- Tests: "private run (session naming)" in `oauth-refresher.test.ts`, and the
+  credential-copy cases in `session-namer.test.ts` and `graduate-session.test.ts`
+
 ### Key files (harvest before spend, planning#462)
 
 - `src/server/orchestrator/agents/claude/oauth-refresher.ts` —
   `harvestSessionRotations` + `tokenFileIsOwnedBySubtree` (adopt a session's
   rotation before spending), `summarizeRefreshFailure` + `redactSecrets` (the
-  logged reason), `describeUnusableSource` (missing vs blanked vs unreadable)
+  logged reason; `JWT_PATTERN`, `EMAIL_PATTERN`), `describeUnusableSource` (missing vs blanked vs unreadable)
 - `src/server/orchestrator/agents/claude/oauth-refresher.test.ts` — harvest
   adoption / newest-wins / behind-source / foreign-marker / unmarked-subtree /
   escaped-subtree, and the log-shape + redaction tests

@@ -62,7 +62,7 @@ export interface MessageCardCallbacks {
   onScheduleProposalDecision?: (cardId: string, action: ScheduleProposalAction, timeZone?: string) => Promise<void>;
   onScheduleNotesAccessDecision?: (cardId: string, action: ScheduleNotesAccessAction) => Promise<void>;
 
-  onStartRepoSession?: (cardId: string) => Promise<void>;
+  onStartRepoSession?: (cardId: string, options?: { trust: true }) => Promise<void>;
   onDeclineRepoSession?: (cardId: string) => Promise<void>;
   onDeliverSessionMessage?: (cardId: string) => Promise<void>;
   onDeclineSessionMessage?: (cardId: string) => Promise<void>;
@@ -157,7 +157,7 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
             fromTitle={msg.sessionReport.fromTitle}
             {...(msg.sessionReport.fromBranch ? { fromBranch: msg.sessionReport.fromBranch } : {})}
             relation={msg.sessionReport.relation}
-            severity={msg.sessionReport.severity}
+            {...(msg.sessionReport.severity ? { severity: msg.sessionReport.severity } : {})}
             {...(msg.sessionReport.subject ? { subject: msg.sessionReport.subject } : {})}
             body={msg.sessionReport.body}
             {...(cb.onResumeSession ? { onOpen: cb.onResumeSession } : {})}

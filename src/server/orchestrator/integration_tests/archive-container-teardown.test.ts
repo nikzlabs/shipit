@@ -31,12 +31,17 @@ function matchesLabelFilters(labels: Record<string, string>, wanted: string[] | 
 function createFakeDocker() {
   let counter = 0;
   const containers = new Map<string, { id: string; started: boolean; labels: Record<string, string> }>();
+  const removedNetworks: string[] = [];
 
   return {
     _containers: containers,
+    _removedNetworks: removedNetworks,
     ping: async () => "OK",
     createNetwork: async () => ({ id: "net-fake" }),
-    getNetwork: () => ({ inspect: async () => { throw new Error("not found"); }, remove: async () => {} }),
+    getNetwork: (name: string) => ({
+      inspect: async () => { throw new Error("not found"); },
+      remove: async () => { removedNetworks.push(name); },
+    }),
     listNetworks: async () => [],
     listVolumes: async () => ({ Volumes: [] }),
     createContainer: async (opts: { Labels?: Record<string, string> }) => {
@@ -58,8 +63,9 @@ function createFakeDocker() {
     }),
     // Honouring the filters is what makes the teardown assertion mean anything: an
     // unfiltered fake lets a session-scoped sweep delete every other session's container.
-    listContainers: async ({ filters }: { filters?: { label?: string[] } } = {}) =>
-      [...containers.values()]
+    listContainers: async ({ filters }: { filters?: { label?: string[]; network?: string[] } } = {}) =>
+      // No container here is on a session network.
+      filters?.network ? [] : [...containers.values()]
         .filter((c) => matchesLabelFilters(c.labels, filters?.label))
         .map((c) => ({ Id: c.id, Labels: c.labels, State: c.started ? "running" : "exited" })),
     getEvents: async () => new EventEmitter(),
@@ -156,6 +162,11 @@ describe("Integration: archiving tears the agent container down", () => {
     // session-scoped sweep took the child's container and nothing else.
     expect(docker._containers.has(childContainerId)).toBe(false);
     expect(docker._containers.has(parentContainerId)).toBe(true);
+    // The agent can be the last container on the network of a stack that stopped before it (docs/091).
+    await waitFor(
+      () => docker._removedNetworks.includes(`shipit-session-${childId}`), 5000, "child session network released",
+    );
+    expect(docker._removedNetworks).not.toContain(`shipit-session-${sessionId}`);
 
     client.close();
   });

@@ -13,11 +13,13 @@ import {
   CONTAINER_STANDBY_LABEL,
 } from "./session-container.js";
 import {
+  CONTAINER_PERSIST_DIR,
   CONTAINER_PLUGIN_STORE_DIR,
   CONTAINER_WORKSPACE_DIR,
   DEP_CACHE_CONTAINER_PATH,
 } from "../shared/fs-constants.js";
 import { sessionNpmCacheDir } from "../shared/npm-cache.js";
+import { SESSION_PLAYWRIGHT_BROWSERS_DIR } from "../shared/playwright-browsers.js";
 import { pluginsRoot } from "./plugin-generations.js";
 import {
   CONTAINER_SESSION_STATE_DIR,
@@ -88,7 +90,8 @@ import { WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 import { CPU_PERIOD_US as DEFAULT_CPU_PERIOD, SESSION_CPU_SHARES } from "./container-config-builder.js";
 import { RUN_NOTES_CONTAINER_DIR } from "./schedule-notes.js";
 import {
-  GPU_DEVICE_REQUEST, GPU_GRAPHICS_REASON_ENV, gpuEnv, gpuGraphicsBinds, gpuReason, type SessionGpu,
+  GPU_DEVICE_REQUEST, GPU_GRAPHICS_ENV, GPU_GRAPHICS_REASON_ENV, gpuEnv, gpuGraphicsBinds, gpuReason,
+  type SessionGpu,
 } from "./session-gpu.js";
 
 export const OPS_DOCKER_HOST = `tcp://${OPS_DOCKER_PROXY_DNS_NAME}:2375`;
@@ -159,8 +162,6 @@ interface MountSpec {
 }
 
 export { DEP_CACHE_CONTAINER_PATH };
-
-export const PLAYWRIGHT_BROWSERS_PATH = "/opt/playwright-browsers";
 
 export const ANDROID_SDK_ROOT = "/opt/android-sdk";
 export const JAVA_HOME = "/opt/java";
@@ -255,12 +256,12 @@ export function buildMounts(
       mounts.push({
         Type: "volume",
         Source: workspaceVolume,
-        Target: "/persist",
+        Target: CONTAINER_PERSIST_DIR,
         ReadOnly: false,
         VolumeOptions: { Subpath: scratchRelPath },
       });
     } else {
-      binds.push(`${config.scratchDir}:/persist:rw`);
+      binds.push(`${config.scratchDir}:${CONTAINER_PERSIST_DIR}:rw`);
     }
   }
 
@@ -375,7 +376,8 @@ export function buildEnv(
     "WORKER_MODE=session",
     `HOME=${home}`,
     `AGENT_HOME=${home}`,
-    `PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH}`,
+    // Writable so a project's `playwright install` works; the worker links the baked builds in.
+    `PLAYWRIGHT_BROWSERS_PATH=${SESSION_PLAYWRIGHT_BROWSERS_DIR}`,
     `ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}`,
     `ANDROID_HOME=${ANDROID_SDK_ROOT}`,
     `JAVA_HOME=${JAVA_HOME}`,
@@ -458,6 +460,24 @@ export function buildEnv(
     }
   }
   return env;
+}
+
+/**
+ * Ops and Docker-access sessions need the image with the docker CLI and journalctl (docs/128).
+ * Without one they still start on the base image, so the fallback must be visible in the log.
+ */
+export function resolveWorkerImageName(
+  config: Pick<ContainerConfig, "sessionId" | "imageName" | "dockerAccess" | "opsSession">,
+  dockerImageName: string | undefined,
+): string {
+  if (!config.dockerAccess && !config.opsSession) return config.imageName;
+  if (dockerImageName) return dockerImageName;
+  console.warn(
+    `[containers] ${config.sessionId} is ${config.opsSession ? "an ops" : "a Docker-access"} session, but no `
+    + "Docker-capable worker image is configured (SESSION_WORKER_DOCKER_IMAGE). "
+    + `It runs ${config.imageName}, which has no docker CLI and no journalctl.`,
+  );
+  return config.imageName;
 }
 
 export async function buildOrchestratorCallbackEnv(sessionId: string): Promise<string[]> {
@@ -713,9 +733,7 @@ export async function createContainer(
   const workerToken = generateWorkerToken();
   env.push(`${WORKER_TOKEN_ENV}=${workerToken}`);
 
-  const imageName = ((config.dockerAccess || config.opsSession) && deps.dockerImageName)
-    ? deps.dockerImageName
-    : config.imageName;
+  const imageName = resolveWorkerImageName(config, deps.dockerImageName);
 
   let sessionNetworkName: string | undefined;
   if (config.dockerAccess) {
@@ -864,7 +882,7 @@ export async function createContainer(
       const graphicsBinds = gpuGraphicsBinds();
       if (graphicsBinds.length === 0) return createAndStart({ state: "granted" });
       try {
-        return await createAndStart({ state: "granted" }, graphicsBinds);
+        return await createAndStart({ state: "granted" }, graphicsBinds, [...GPU_GRAPHICS_ENV]);
       } catch (err) {
         if (err instanceof ContainerCreateCancelledError) throw err;
         const reason = gpuReason(err);
@@ -995,9 +1013,10 @@ export async function createContainer(
     if (!deps.skipHealthCheck) {
       await waitForWorkerHealth(sc.workerUrl);
     }
-    sc.status = "running";
 
-    // Stamp after start pins the lower layer, but before returning lets the worker run install.
+    // Stamp after start pins the lower layer, and before "running" hands a claiming runner the
+    // worker: an install started meanwhile would delete the marker, and a stamp landing after that
+    // survives the install's failure.
     if (config.overlaySpecs && config.overlaySpecs.length > 0 && deps.stateDir) {
       try {
         const stamped = await preStampInstallMarker({
@@ -1015,6 +1034,7 @@ export async function createContainer(
         );
       }
     }
+    sc.status = "running";
 
     abortIfTornDown("before returning a ready container");
 

@@ -311,7 +311,7 @@ describe("auto-resolve-conflicts integration", () => {
     expect(state?.lastError).toBe("timeout");
     const runner = app.runnerRegistry.get(sessionId);
     expect(runner?.running).toBe(false);
-    expect(runner?.systemTurnInProgress).toBe(false);
+    expect(runner?.sessionHold).toBeNull();
     expect(runner?.getAgent()).toBeNull();
   });
 

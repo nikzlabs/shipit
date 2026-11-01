@@ -5,6 +5,8 @@ description: When the PR poller sees the branch has conflicts with its base and 
 
 # 146 — Auto-Resolve Conflicts on Idle
 
+> **Changed 2026-10-12 by [docs/329-user-steers-every-turn](../329-user-steers-every-turn/plan.md) part 3.** `systemTurn` and `systemTurnInProgress` are deleted. The rebase flow holds the session with `runner.sessionHold` (`session-hold.ts`), which no turn writes; the conflict-resolution turn is an ordinary turn that the user can steer, and the flow ends its agent process before it continues the rebase.
+
 ## Summary
 
 When a session's open PR transitions to `mergeable: CONFLICTING` (typically because `main` moved while the session was idle) and the session's agent is not currently running a turn, automatically kick off the rebase-onto-base + agent-driven conflict resolution flow built in doc 094. The user comes back to a session that has either resolved itself or, if it couldn't, surfaced a clear failure card — instead of a PR sitting on "conflicts must be resolved" until the user notices.

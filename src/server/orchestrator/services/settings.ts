@@ -36,7 +36,7 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
 import { readSessionAccountMarker } from "../session-credentials.js";
-import { revokeSessionProviderCredentials } from "../session-agent-credentials.js";
+import { removeSubAgentSpawnHomesOf, revokeSessionProviderCredentials } from "../session-agent-credentials.js";
 
 export function computeCanRunTurns(agentRegistry: AgentRegistry): boolean {
   return agentRegistry.list().some((a) => a.installed && a.hasRunnableModels);
@@ -697,7 +697,8 @@ function runnerOnAccount(
   if (!credentialsDir) return false;
   const markers = readSessionAccountMarker(credentialsDir, runner.sessionId);
   const recorded = markers[provider];
-  return (recorded !== undefined && accountIds.has(recorded)) || (provider === "codex" && markers.opencode !== undefined && accountIds.has(markers.opencode));
+  const consumes = (consumer: string | undefined): boolean => consumer !== undefined && accountIds.has(consumer);
+  return consumes(recorded) || (provider === "codex" && (consumes(markers.opencode) || consumes(markers.opencode2)));
 }
 
 function busySessionsOnAccounts(
@@ -750,13 +751,17 @@ function revokeRecordedAccountCopies(
   }
   for (const session of sessionManager.listAll()) {
     if (provider === "codex") {
-      const consumerAccount = readSessionAccountMarker(credentialsDir, session.id).opencode;
-      if (consumerAccount && accountIds.has(consumerAccount)) revokeSessionProviderCredentials(credentialsDir, session.id, "opencode");
+      const markers = readSessionAccountMarker(credentialsDir, session.id);
+      for (const consumer of ["opencode", "opencode2"] as const) {
+        const consumerAccount = markers[consumer];
+        if (consumerAccount && accountIds.has(consumerAccount)) revokeSessionProviderCredentials(credentialsDir, session.id, consumer);
+      }
     }
     const recorded = readSessionAccountMarker(credentialsDir, session.id)[provider];
     if (recorded !== undefined && accountIds.has(recorded)) {
       revokeSessionProviderCredentials(credentialsDir, session.id, provider);
     }
+    removeSubAgentSpawnHomesOf(credentialsDir, session.id, provider, accountIds);
   }
 }
 

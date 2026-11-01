@@ -1,6 +1,7 @@
 import type { WsSystemUserMessage } from "../../../server/shared/types.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { dropPredictedQueueEntry } from "../../utils/predicted-queue.js";
+import { fillUserBubble } from "./user-bubble.js";
 import type { Handler } from "./types.js";
 
 /**
@@ -10,10 +11,11 @@ import type { Handler } from "./types.js";
  * The server emits this for every dispatched turn (Fix CI, child spawn, and —
  * after docs/150 — the HTTP `agent/dispatch` route used by Create PR, Send
  * compose error, etc.). For HTTP-initiated dispatches the client has already
- * appended an optimistic user bubble tagged `pendingDispatch: true`; this
- * handler dedupes by clearing the flag in place instead of appending a
- * duplicate. For server-only dispatches (Fix CI), there is no optimistic
- * bubble to match and we append normally — both paths converge here.
+ * appended an optimistic user bubble tagged `pendingDispatch: true`; the echo
+ * carries that bubble's request id, and this handler clears the flag in place
+ * instead of appending a duplicate. For server-only dispatches (Fix CI), there
+ * is no optimistic bubble to match and we append normally — both paths converge
+ * here.
  *
  * It is also emitted for a user-typed WS message, carrying that send's
  * `clientRequestId`. On the SENDING tab that id matches the optimistic bubble
@@ -38,7 +40,13 @@ export const handleSystemUserMessage: Handler<WsSystemUserMessage> = (_ctx, data
   if (echoedRequestId !== undefined) dropPredictedQueueEntry(echoedRequestId);
   if (echoedRequestId !== undefined
     && session.messages.some((m) => m.clientRequestId === echoedRequestId)) {
-
+    // A viewer that did not send a queued message has its text alone (planning#691).
+    session.setMessages((prev) => prev.map((m) => {
+      if (m.clientRequestId !== echoedRequestId) return m;
+      const filled = fillUserBubble(m, data);
+      delete filled.pendingDispatch;
+      return filled;
+    }));
     session.setIsLoading(true);
     if (data.activity) session.setActivity({ label: data.activity });
     return;

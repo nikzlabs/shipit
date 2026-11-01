@@ -1,6 +1,11 @@
 import type { AgentId, AgentProcess, FileAttachment, ImageAttachment } from "../shared/types.js";
 import { executeAgentTurn } from "./turn-executor.js";
-import { releaseResidentOnSpawnChange, releaseResidentOnStatusCardChange } from "./resident-spawn-guard.js";
+import {
+  releaseResidentOnPendingRewind,
+  releaseResidentOnServiceMcpChange,
+  releaseResidentOnSpawnChange,
+  releaseResidentOnStatusCardChange,
+} from "./resident-spawn-guard.js";
 import { desiredSpawnIdentity } from "./service-routing.js";
 import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { resolveFileAttachments, resolveUploadRefs, formatFileContext, imageAttachmentRefusal } from "./validation.js";
@@ -14,42 +19,52 @@ import type {
 } from "./session-runner.js";
 import type { PreparedDispatch } from "./prepared-dispatch.js";
 import { queuedMessageToDispatchOptions, takeRunnableQueuedTurn } from "./queue-drain.js";
+import { requeueDisplacedTurn } from "./dispatch-steering.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
 import { toQueuedMessage } from "./session-runner.js";
-import { POST_MERGE_COMPACT_PROMPT, noteMissedCompaction } from "./compact-before-turn.js";
+import {
+  POST_MERGE_COMPACT_PROMPT,
+  compactionCardBefore,
+  noteMissedCompaction,
+} from "./compact-before-turn.js";
 import {
   createPromptRepark,
   createPromptTakeLedger,
+  settleDispatchSetupFailure,
+  settleWhenRunnerLetsGo,
+  stopLetGoWatch,
   type PromptTakeLedger,
   type TurnOutcome,
 } from "./turn-settlement.js";
 import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
 import { formatSessionMessagePrompt } from "./session-message-origin.js";
 import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
+import { residentBackgroundWork } from "./turn-admission.js";
+import { claimTakenBeforeSubmit, currentTurnPhase, endOwnClaim } from "./turn-stop-request.js";
 import { isCompactCommand } from "../shared/compact-command.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { loadPrompt } from "./load-prompt.js";
+import { imageHash, imageUrl } from "./transcript-projection.js";
 
 const MAX_NO_RESULT_RETRIES = 1;
+
+export const ONE_SHOT_TURN_NOTE = loadPrompt(import.meta.url, "./prompts/one-shot-turn-note.md").trim();
 
 // Clearing the slot bypasses displacement detection. Settle without touching the next turn.
 function supersedeRetiredTurn(outgoing: AgentProcess): void {
   outgoing.emit("superseded");
 }
 
-// Queue incoming messages during the decision; compaction keeps the hold if selected.
-async function decideWithSystemHold(
+// planning#703 — a message whose sender was already told it was dropped is not queued again.
+function yieldToTurnThatTookTheClaim(
   runner: SessionRunnerInterface,
-  decide: () => Promise<boolean>,
-): Promise<boolean> {
-  const held = !runner.systemTurnInProgress;
-  if (held) runner.systemTurnInProgress = true;
-  let compact = false;
-  try {
-    compact = await decide();
-  } finally {
-    if (held && !compact) runner.systemTurnInProgress = false;
+  deps: SystemTurnDeps,
+  opts: PreparedDispatch,
+): void {
+  if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
+    runner.activeDeliveryId = undefined;
   }
-  return compact;
+  requeueDisplacedTurn(runner, stopLetGoWatch(opts.onTurnComplete) ? toQueuedMessage(opts) : undefined, deps);
 }
 
 // Reserve the runner during setup, before the executor owns failure cleanup.
@@ -61,16 +76,15 @@ export async function runDispatchedTurn(
   createAgent: (agentId: AgentId) => AgentProcess,
 ): Promise<void> {
   runner.running = true;
-  if (opts.systemTurn) runner.systemTurnInProgress = true;
   runner.activeDeliveryId = opts.deliveryId;
+  const claim = currentTurnPhase(runner);
   // planning#609 — composition's one-shot takes are owned here until the prompt reaches
   // the executor, so a throw anywhere before that hands every one of them back.
   const takes = createPromptTakeLedger();
   try {
-    await runDispatchedTurnInner(runner, deps, agentId, opts, createAgent, takes);
+    await runDispatchedTurnInner(runner, deps, agentId, opts, createAgent, takes, claim);
   } catch (err) {
-    runner.running = false;
-    if (opts.systemTurn) runner.systemTurnInProgress = false;
+    endOwnClaim(runner, claim);
     if (opts.deliveryId !== undefined && runner.activeDeliveryId === opts.deliveryId) {
       runner.activeDeliveryId = undefined;
     }
@@ -87,10 +101,15 @@ async function runDispatchedTurnInner(
   opts: PreparedDispatch,
   createAgent: (agentId: AgentId) => AgentProcess,
   takes: PromptTakeLedger,
+  claim: object | undefined,
 ): Promise<void> {
   // Queued and recovered turns must recheck admission.
   runner.assertCanDispatch();
   const { text, activity } = opts;
+
+  // planning#700 — before what reads the process's background work, and the spawn guards. A
+  // driver-owned turn is the rebase step, which runs on a process of its own (docs/334 req 1).
+  if (opts.postTurn !== "none" && runner.residentToAttach) await runner.attachIdleResident?.();
 
   const isCompactRequest =
     (getAgentCapabilities(agentId)?.supportsCompaction ?? false) && isCompactCommand(text);
@@ -102,23 +121,34 @@ async function runDispatchedTurnInner(
    */
   const harnessCommand = isCompactRequest && !opts.agentInterface && !opts.messageOrigin;
 
-  const steer = opts.systemTurn ? undefined : deps.steerInputs?.();
+  const steer = deps.steerInputs?.();
   const useStreaming = steer ? steer.liveSteering && steer.steeringCapable : false;
   const sessionDir = runner.sessionDir;
 
-  // Keep this message first after compaction; avoid resolving its attachments twice.
+  // Keep this message first after compaction; avoid resolving its attachments twice. No
+  // compaction while the resident has background work: a turn of the CLI's own could then come
+  // between it and the message, and its result would start the message too early. The claim on
+  // `running` keeps other turns out from the decision to the compaction.
   if (
     sessionDir && opts.postTurn !== "none" && !isCompactRequest
-    && await decideWithSystemHold(runner, () =>
-      deps.shouldCompactBeforeTurn?.(runner, agentId, runner.sessionId, sessionDir, opts.compactContext) ?? Promise.resolve(false))
+    && residentBackgroundWork(runner).length === 0
+    && await (deps.shouldCompactBeforeTurn?.(
+      runner, agentId, runner.sessionId, sessionDir, opts.compactContext,
+    ) ?? Promise.resolve(false))
   ) {
-    runner.messageQueue.unshift({ ...toQueuedMessage(opts), compactContext: false });
+    // planning#703 — the decision awaited: a turn of the CLI's own may hold the process now.
+    if (claimTakenBeforeSubmit(runner, claim)) {
+      yieldToTurnThatTookTheClaim(runner, deps, opts);
+      return;
+    }
+    if (stopLetGoWatch(opts.onTurnComplete)) {
+      runner.messageQueue.unshift({ ...toQueuedMessage(opts), compactContext: false });
+    }
     // Its dispatch was already reported as started; say that it is waiting after all.
     console.log(
-      `[dispatch] re-queued the ${opts.systemTurn ? "system " : ""}dispatch for `
-      + `${runner.sessionId} at position 1 — a compaction turn runs first`,
+      `[dispatch] re-queued the dispatch for ${runner.sessionId} at position 1 — a compaction turn runs first`,
     );
-    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+    runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
     await runDispatchedTurn(runner, deps, agentId, prepareDispatch({
       text: POST_MERGE_COMPACT_PROMPT,
       agentInterface: undefined,
@@ -130,7 +160,6 @@ async function runDispatchedTurnInner(
       uploads: undefined,
       permissionMode: opts.permissionMode,
       postTurn: undefined,
-      systemTurn: true,
       // The prelude of the entry above, so it releases the answer hold only if that would.
       automatic: opts.automatic,
       heldId: undefined,
@@ -217,15 +246,23 @@ async function runDispatchedTurnInner(
         runner, runner.sessionId, sessionDir, opts.resetMergedBranch,
       )
     : undefined;
+  // The ledger covers setup failing before the executor takes over — past that point the
+  // executor reparks, because it is the one that knows whether the prompt was ever
+  // submitted (planning#609).
+  takes.add(reset?.repark);
+
+  // planning#703 — after the last await of the setup, so nothing can come between this and the
+  // take below, and before the spawn guards, which could end that turn's process.
+  if (claimTakenBeforeSubmit(runner, claim)) {
+    yieldToTurnThatTookTheClaim(runner, deps, opts);
+    reset?.ensureRecorded?.(runner.sessionId);
+    return;
+  }
 
   const pendingNotice = opts.postTurn !== "none" && !isCompactRequest
     ? deps.consumePendingAgentNotice?.(runner.sessionId) ?? ""
     : "";
-  // Consumption clears the notice; restore it if the turn never reaches an agent. The
-  // ledger covers setup failing before the executor takes over — past that point the
-  // executor reparks, because it is the one that knows whether the prompt was ever
-  // submitted (planning#609).
-  takes.add(reset?.repark);
+  // Consumption clears the notice; restore it if the turn never reaches an agent.
   if (pendingNotice) {
     takes.add(createPromptRepark(
       `the pending agent notice for ${runner.sessionId}`,
@@ -234,7 +271,7 @@ async function runDispatchedTurnInner(
   }
 
   // Bug outcomes are intentionally consumed at most once, including failed delivery.
-  const bugOutcomeNotice = opts.systemTurn || isCompactRequest
+  const bugOutcomeNotice = opts.postTurn === "none" || isCompactRequest
     ? ""
     : buildBugOutcomeNotice(deps.consumeBugOutcomes?.(runner.sessionId) ?? []);
 
@@ -259,7 +296,12 @@ async function runDispatchedTurnInner(
   const sessionMessageOutcome = isCompactRequest
     ? null
     : deps.sessionMessageOutcomeNotice?.(runner.sessionId) ?? null;
-  const noticeDeliveries = [...cardOutcomes, repoSessionOutcome, sessionMessageOutcome]
+  // docs/328-session-message-inbox — not on a driver-owned turn: its prompt is the driver's
+  // script, and the messages are work for a turn of the session's own.
+  const inboxNotice = isCompactRequest || opts.postTurn === "none"
+    ? null
+    : deps.inboxNotice?.(runner.sessionId) ?? null;
+  const noticeDeliveries = [...cardOutcomes, repoSessionOutcome, sessionMessageOutcome, inboxNotice]
     .filter((d) => d !== null);
 
   // docs/303 req 35 — read, never consumed: the card is standing state, so it rides
@@ -270,14 +312,29 @@ async function runDispatchedTurnInner(
       ? deps.sessionStatusContext?.(runner.sessionId) ?? ""
       : "";
 
+  // docs/235-agent-self-wake-liveness §9 — the agent cannot see which kind of process its
+  // turn runs on. Only where a resident process starts a turn when a background job ends:
+  // there the agent ends a message to wait for one. A driver-owned turn's prompt is the
+  // driver's script, so the note stays off it like the notice above.
+  // Read from the setting and not from a resident that is alive now: a spawn guard can
+  // still retire that one, and the note costs nothing on a process that stays up.
+  const startedByShipIt = opts.automatic === true || opts.unattended === true;
+  const oneShotTurnNote =
+    startedByShipIt && !useStreaming && opts.postTurn !== "none" && !isCompactRequest
+    && (getAgentCapabilities(agentId)?.startsOwnTurns ?? false)
+      ? ONE_SHOT_TURN_NOTE
+      : "";
+
   const agentPrefix = [
     pendingNotice,
     bugOutcomeNotice,
     ...cardOutcomes.map((o) => o.notice),
     repoSessionOutcome?.notice,
     sessionMessageOutcome?.notice,
+    inboxNotice?.notice,
     reset?.agentPrefix,
     isCompactRequest ? "" : dependencyGapAgentPrefix(runner.dependencyGap),
+    oneShotTurnNote,
     statusContext,
   ]
     .filter(Boolean)
@@ -311,20 +368,29 @@ async function runDispatchedTurnInner(
         }))
       : undefined;
 
-  const drainNext = async (info?: { ownsSystemHold: boolean }): Promise<void> => {
-    // A rebase may take the hold during the local commit, or between this turn's result
-    // and its exit — so a system turn owns the hold only while it is still its own (docs/304).
-    const ownsHold = opts.systemTurn === true && info?.ownsSystemHold === true;
-    if (runner.systemTurnInProgress && !ownsHold) return;
-    if (opts.silent && ownsHold) {
-      runner.systemTurnInProgress = false;
-      noteMissedCompaction(runner, deps.listenerDeps.chatHistoryManager, runner.sessionId);
+  // Once: an adopted turn of the CLI's own drains again, after its reset cleared the cards.
+  let compactionChecked = false;
+  const cardBefore = opts.silent
+    ? compactionCardBefore(deps.listenerDeps.chatHistoryManager, runner.sessionId)
+    : null;
+  const drainNext = async (): Promise<void> => {
+    if (opts.silent && !compactionChecked) {
+      compactionChecked = true;
+      noteMissedCompaction(runner, deps.listenerDeps.chatHistoryManager, runner.sessionId, cardBefore);
     }
+    // A rebase or a restart can take the session during the local commit; it releases the queue.
+    if (runner.sessionHold) return;
     if (runner.queueLength === 0) return;
     const next = takeRunnableQueuedTurn(runner);
     if (!next) return;
-    runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
-    await runDispatchedTurn(runner, deps, agentId, queuedMessageToDispatchOptions(next), createAgent);
+    runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
+    const queued = settleWhenRunnerLetsGo(runner, queuedMessageToDispatchOptions(next));
+    try {
+      await runDispatchedTurn(runner, deps, agentId, queued, createAgent);
+    } catch (err) {
+      settleDispatchSetupFailure(runner, queued, err);
+      throw err;
+    }
   };
 
   let noResultRetries = 0;
@@ -339,6 +405,8 @@ async function runDispatchedTurnInner(
     opts.onTurnComplete?.(outcome);
   };
 
+  // One user row for every attempt; a retry's echo of the prompt stamps it (docs/007 req 5).
+  const persistGuard: { done: boolean; rowId?: number } = { done: false };
   const runOnce = async (attempt: number): Promise<void> => {
     // Retire before capture: env prep must not kill the incoming agent during account failover.
     if (deps.needsAccountFailover?.(runner.sessionId, agentId)) {
@@ -351,39 +419,32 @@ async function runDispatchedTurnInner(
         runner.setAgent(null);
       }
     }
-    if (!opts.systemTurn) {
-      releaseResidentOnSpawnChange(
-        runner,
-        desiredSpawnIdentity(deps.listenerDeps.sessionManager, runner.sessionId, agentId),
-      );
-      // docs/303 req 21, the same comparison the interactive path makes. Skipped when the
-      // dep is unwired, where the setting cannot be read at all.
-      if (deps.statusCardEnabled) {
-        releaseResidentOnStatusCardChange(runner, deps.statusCardEnabled());
-      }
+    releaseResidentOnSpawnChange(
+      runner,
+      desiredSpawnIdentity(deps.listenerDeps.sessionManager, runner.sessionId, agentId),
+    );
+    releaseResidentOnPendingRewind(runner, deps.listenerDeps.sessionManager.get(runner.sessionId)?.agentResumeAt);
+    // docs/303 req 21, the same comparison the interactive path makes. Skipped when the
+    // dep is unwired, where the setting cannot be read at all.
+    if (deps.statusCardEnabled) {
+      releaseResidentOnStatusCardChange(runner, deps.statusCardEnabled());
     }
+    releaseResidentOnServiceMcpChange(runner, runner.serviceMcp?.()?.servers ?? null);
     // Reuse follows the resident process, even if live steering was since disabled.
-    const resident =
-      !opts.systemTurn && attempt === 0 && runner.isStreamingActive ? runner.getAgent() : null;
+    const resident = attempt === 0 && runner.isStreamingActive ? runner.getAgent() : null;
     const reuse = resident !== null;
-    // System turns must retire the resident before env prep rewrites its credential tree.
-    if (opts.systemTurn && !reuse) {
-      const outgoing = runner.getAgent();
-      if (outgoing) {
-        supersedeRetiredTurn(outgoing);
-        try { outgoing.kill(); } catch { /* already gone */ }
-        runner.setAgent(null);
-        runner.isStreamingActive = false;
-      }
-    }
     const agent = resident ?? createAgent(agentId);
     const turnStreams = useStreaming || reuse;
-    if (reuse) agent.removeAllListeners();
+    if (reuse) {
+      agent.emit("reused");
+      agent.removeAllListeners();
+    }
 
     takes.handOver();
     await executeAgentTurn(runner, deps, agent, {
       agentId,
       sessionId: runner.sessionId,
+      persistGuard,
       prompt,
       ...(attempt > 0 ? { continuesTurn: true } : {}),
       ...(insertedStatusContext ? { statusContext: insertedStatusContext } : {}),
@@ -394,7 +455,6 @@ async function runDispatchedTurnInner(
       ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
       ...(isCompactRequest ? { compact: true } : {}),
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
-      ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
       ...(opts.automatic !== undefined ? { automatic: opts.automatic } : {}),
       ...(opts.heldId !== undefined ? { heldId: opts.heldId } : {}),
       ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
@@ -403,14 +463,29 @@ async function runDispatchedTurnInner(
       onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
       ...(noticeDeliveries.length > 0 ? { noticeDeliveries } : {}),
       ...(takes.reparks.length > 0 ? { promptReparks: takes.reparks } : {}),
-      emitUserEcho: attempt === 0 && !opts.silent,
+      emitUserEcho: attempt === 0 && !opts.silent && !opts.promptShown,
+      // Every viewer draws the same bubble from the echo (planning#691); image URLs resolve
+      // because the echo goes out after the row below is saved.
+      userEcho: {
+        ...(opts.clientRequestId !== undefined ? { clientRequestId: opts.clientRequestId } : {}),
+        ...(historyImages
+          ? {
+              images: historyImages.map((img) => ({
+                mediaType: img.mediaType,
+                src: imageUrl(runner.sessionId, imageHash(img.data)),
+              })),
+            }
+          : {}),
+        ...(historyFiles ? { files: historyFiles } : {}),
+        ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
+      },
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
       ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
       ...(attempt === 0 && reset?.afterUserMessagePersisted
         ? { afterUserMessagePersisted: reset.afterUserMessagePersisted }
         : {}),
       persistUserMessage:
-        attempt === 0 && !opts.silent
+        attempt === 0 && !opts.silent && !opts.promptShown
           ? (sid) =>
               deps.listenerDeps.chatHistoryManager.append(sid, {
                 role: "user",
@@ -420,8 +495,9 @@ async function runDispatchedTurnInner(
                 ...(historyImages ? { images: historyImages } : {}),
                 ...(historyFiles ? { files: historyFiles } : {}),
                 ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
+                ...(opts.clientRequestId !== undefined ? { clientRequestId: opts.clientRequestId } : {}),
               })
-          : () => { /* already persisted or silent */ },
+          : () => { /* already persisted, shown before, or silent */ },
       isNewSession: false,
       fallbackTitle: text.slice(0, 80) || "Agent",
       turnStartHeadHash: null,

@@ -110,6 +110,11 @@ describe("registerContainerOriginGuard — request gating", () => {
       { config: { containerAccessible: true } },
       async () => ({ entries: [] }),
     );
+    app.get<{ Params: { id: string } }>(
+      "/api/sessions/:id/host-session-transcript",
+      { config: { containerAccessible: true } },
+      async () => ({ entries: [] }),
+    );
     await app.ready();
   });
 
@@ -308,6 +313,21 @@ describe("registerContainerOriginGuard — request gating", () => {
     expect(other.statusCode).toBe(403);
   });
 
+  it("scopes the ops transcript route on the PATH, not on its ?target= filter (docs/326)", async () => {
+    const own = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${OWN_SESSION}/host-session-transcript?target=sess-other`,
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(own.statusCode).toBe(200);
+    const other = await app.inject({
+      method: "GET",
+      url: "/api/sessions/sess-other/host-session-transcript",
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(other.statusCode).toBe(403);
+  });
+
   it("lets a NON-container (browser) origin reach everything, including globals", async () => {
     const secrets = await app.inject({ method: "PUT", url: "/api/secrets", remoteAddress: BROWSER_IP });
     expect(secrets.statusCode).toBe(200);
@@ -466,6 +486,7 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:id/git/credential",
   "POST /api/sessions/:id/plugin/refresh",
   "POST /api/sessions/:id/plugin/exec",
+  "POST /api/sessions/:id/plugin/exec/stdin",
   "GET /api/sessions/:id/plugin/status",
   "PATCH /api/sessions/:id/pr/:number",
   "GET /api/sessions/:id/pr/list",
@@ -506,6 +527,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/source/show",
   "GET /api/sessions/:id/host-sessions",
   "GET /api/sessions/:id/host-session-logs",
+  // docs/326-ops-session-transcript — a read; no ops route writes to another session.
+  "GET /api/sessions/:id/host-session-transcript",
   "POST /api/sessions/:id/agent/spawn",
   "GET /api/sessions/:id/agent/result",
   "GET /api/sessions/:id/agent/roles",
@@ -538,6 +561,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   // docs/324-agent-requested-compaction — records a compaction of the agent's own context.
   "POST /api/sessions/:sessionId/compact-after-turn",
   "POST /api/sessions/:id/branch/reset-to-base",
+  // docs/130-block-branch-ops — the git hook reads its own session's merged state; a pure read.
+  "GET /api/sessions/:id/branch/destructive-git-guard",
   // docs/305 — the agent may ask for its own session's identities and
   // signatures. Every check is on the orchestrator side of these two, because
   // the guard identifies the session and not the process inside it.
@@ -545,6 +570,8 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:id/ssh/sign",
   "GET /api/sessions/:sessionId/cohort",
   "POST /api/sessions/:sessionId/report",
+  // docs/328-session-message-inbox — the agent reads the messages sent to its own session.
+  "POST /api/sessions/:sessionId/inbox/read",
   "POST /api/sessions/:sessionId/voice-note",
   "POST /api/sessions/:sessionId/bug-report",
   "POST /api/sessions/:sessionId/propose-actions",

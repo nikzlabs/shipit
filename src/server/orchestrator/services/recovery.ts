@@ -12,7 +12,9 @@ import {
   type PostInterruptCommitDeps,
 } from "./post-interrupt-commit.js";
 import { currentTurnPhase, noteUserStop } from "../turn-stop-request.js";
+import { returnQueueOnStop } from "../queue-return.js";
 import { stopCompactionContinuation } from "./agent-compaction-stop.js";
+import { takeSessionHold } from "../session-hold.js";
 
 const RECOVERY_WORKER_TIMEOUT_MS = 3000;
 const RESTART_READY_TIMEOUT_MS = 8000;
@@ -61,6 +63,9 @@ export interface RestartContainerResult {
 export async function killAgent(
   deps: RecoveryDeps,
   sessionId: string,
+  // The user's own Kill empties the queue as their Stop does (docs/330). A restart of the
+  // process for another reason, such as a plugin install, leaves it.
+  opts: { stoppedByUser?: boolean } = {},
 ): Promise<KillAgentResult> {
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
@@ -73,6 +78,7 @@ export async function killAgent(
   runner.wasInterrupted = true;
   noteUserStop(runner);
   stopCompactionContinuation(deps.sessionManager, runner);
+  if (opts.stoppedByUser) returnQueueOnStop(runner);
   const killedEpoch = runner.turnEpoch;
   const killedPhase = currentTurnPhase(runner);
 
@@ -92,7 +98,7 @@ export async function killAgent(
     runner.setAgent(null);
   }
 
-  runner.emitMessage({ type: "agent_interrupted" });
+  runner.emitMessage({ type: "agent_interrupted", sessionId: runner.sessionId });
 
   // Worker acknowledgement does not guarantee a later agent_done event. A turn that started
   // while the kill was awaited — a drained message, a requested compaction, even one still in
@@ -261,16 +267,14 @@ export interface QueueHold {
 }
 
 /**
- * Takes `systemTurnInProgress` on the runner, and with `lease` a post-turn lease too, so
- * the idle enforcer cannot reclaim the runner and drop its queue (invariant 5). Release
- * clears the hold only while it is still this one.
+ * Takes the session hold on the runner, and with `lease` a post-turn lease too, so the idle
+ * enforcer cannot reclaim the runner and drop its queue (invariant 5).
  */
 export function takeQueueHold(
   runner: SessionRunnerInterface,
   opts: { lease: boolean },
 ): QueueHold {
-  runner.systemTurnInProgress = true;
-  const seq = runner.systemHoldSeq;
+  const hold = takeSessionHold(runner);
   if (opts.lease) runner.beginPostTurnWork();
   let released = false;
   return {
@@ -279,7 +283,7 @@ export function takeQueueHold(
       if (released) return;
       released = true;
       if (opts.lease) runner.endPostTurnWork();
-      if (!runner.disposed && runner.systemHoldSeq === seq) runner.systemTurnInProgress = false;
+      hold.release();
     },
   };
 }
@@ -415,9 +419,11 @@ export async function restartAgent(
     if (runner && runner !== replacement) {
       for (let next = runner.dequeue(); next; next = runner.dequeue()) carried.push(next);
     }
-    for (const entry of carried) replacement.enqueue(entry);
+    // Past the queue's cap if need be: these were accepted already, and a throw here would
+    // leave the hold set with no caller to release it.
+    replacement.messageQueue.push(...carried);
     if (carried.length > 0) {
-      replacement.emitMessage({ type: "queue_updated", queue: replacement.getQueueSnapshot() });
+      replacement.emitMessage({ type: "queue_updated", sessionId: replacement.sessionId, queue: replacement.getQueueSnapshot() });
     }
   }
 

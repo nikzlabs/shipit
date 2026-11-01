@@ -8,7 +8,12 @@ import { charLength, validateActionItems } from "./propose-actions-validation.js
  * what a few bullets need rather than what one sentence needs. `needsYou` caps
  * each entry, and the list of them is the agent's to size.
  */
-export const MAX_STATUS_LEN = 1200;
+export const MAX_STATUS_LEN = 2000;
+/**
+ * req 49 — the cap the agent is told, below the one enforced. Agents overshoot
+ * a stated cap by a few percent, and a refusal costs them a retry.
+ */
+export const ADVERTISED_STATUS_LEN = 1800;
 /**
  * req 31 — one or two sentences. Two sentences of ordinary prose run to roughly
  * 200–300 characters, so this leaves room without letting the line become a
@@ -76,7 +81,7 @@ export function validateSessionStatus(
     // about or does not exist. Omit the field to leave it as it stands.
     if (!status) return { error: "`status` must be a non-empty string; omit it to leave the stored status unchanged." };
     if (charLength(status) > MAX_STATUS_LEN) {
-      return { error: overLength("status", charLength(status), MAX_STATUS_LEN) };
+      return { error: overLength("status", charLength(status), ADVERTISED_STATUS_LEN) };
     }
     call.status = status;
   }

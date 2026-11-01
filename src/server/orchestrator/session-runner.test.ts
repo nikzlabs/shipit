@@ -1,15 +1,19 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { AgentTurnAdmissionError, SessionRunner, SessionRunnerRegistry, resetRunnerTurnState, sessionHasLiveAgent } from "./session-runner.js";
+import { AgentTurnAdmissionError, SessionRunner, SessionRunnerRegistry, resetRunnerTurnState, sessionHasLiveAgent, toQueuedMessage } from "./session-runner.js";
 import type { QueuedMessage } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   prepareSessionAgentEnvironment,
   PUSH_AGENT_SECRETS_TIMEOUT_MS,
 } from "./session-agent-env.js";
-import type { AgentId } from "../shared/types.js";
+import type { AgentId, AgentRunParams } from "../shared/types.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
-import { TURN_COMPLETED } from "./turn-settlement.js";
+import { TURN_COMPLETED, type TurnOutcome } from "./turn-settlement.js";
+import { noteTurnReady } from "./turn-stop-request.js";
+import { nextSendOrder } from "./queue-identity.js";
+import { returnQueueOnStop, returnedMessages } from "./queue-return.js";
+import { BACKGROUND_TASK_TTL_MS } from "./background-task-tracker.js";
 
 describe("SessionRunner", () => {
   afterEach(() => {
@@ -28,6 +32,58 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
+  it("ends a sub-agent run at once when the adapter finds no credential in run()", async () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = Object.assign(new EventEmitter(), {
+      run: () => { agent.emit("auth_required"); },
+      kill: vi.fn(),
+    });
+    runner.setSystemTurnDeps({ agentFactory: () => agent } as never);
+
+    const res = await runner.spawnSubAgent({
+      agentId: "codex" as AgentId,
+      prompt: "review",
+      spawnId: "sp-1",
+      depth: 0,
+      model: "gpt-5.6-sol",
+    });
+
+    expect(res.status).toBe("error");
+    expect(res.error).toMatch(/credential/);
+    runner.dispose({ force: true });
+  });
+
+  it("runs a local sub-agent under the managed settings, with a sandbox parent's flag", async () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    let seen: AgentRunParams | undefined;
+    const agent = Object.assign(new EventEmitter(), {
+      run: (params: AgentRunParams) => { seen = params; agent.emit("auth_required"); },
+      kill: vi.fn(),
+    });
+    runner.setSystemTurnDeps({ agentFactory: () => agent } as never);
+
+    await runner.spawnSubAgent({
+      agentId: "claude" as AgentId,
+      prompt: "review",
+      spawnId: "sp-2",
+      depth: 0,
+      model: "claude-opus-5",
+      sandbox: true,
+    });
+
+    expect(seen?.settingsPath).toBe("/etc/shipit/managed-settings.json");
+    expect(seen?.sandbox).toBe(true);
+    runner.dispose({ force: true });
+  });
+
   it("manages message queue", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
@@ -35,15 +91,17 @@ describe("SessionRunner", () => {
       defaultAgentId: "claude" as AgentId,
     });
     expect(runner.queueLength).toBe(0);
-    runner.enqueue({ text: "msg1", execution: "interactive" });
+    runner.enqueue({ text: "msg1", execution: "interactive", clientRequestId: "r1" });
     runner.enqueue({ text: "msg2", execution: "interactive" });
     expect(runner.queueLength).toBe(2);
 
     const snapshot = runner.getQueueSnapshot();
     expect(snapshot).toEqual([
-      { text: "msg1", position: 1 },
-      { text: "msg2", position: 2 },
+      { id: "r1", text: "msg1", position: 1 },
+      { id: expect.any(String), text: "msg2", position: 2 },
     ]);
+    // The id an entry gets is the one every later snapshot and event names it by.
+    expect(runner.getQueueSnapshot()[1]?.id).toBe(snapshot[1]?.id);
 
     const dequeued = runner.dequeue();
     expect(dequeued?.text).toBe("msg1");
@@ -64,7 +122,7 @@ describe("SessionRunner", () => {
     const received: any[] = [];
     runner.on("message", (msg) => received.push(msg));
 
-    runner.emitMessage({ type: "agent_interrupted" });
+    runner.emitMessage({ type: "agent_interrupted", sessionId: runner.sessionId });
     runner.emitMessage({ type: "error", message: "test" });
 
     expect(received).toHaveLength(2);
@@ -189,6 +247,7 @@ describe("SessionRunner", () => {
     const sendUserMessage = vi.fn();
     runner.setAgent({ sendUserMessage, kill: vi.fn() } as any);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
 
     expect(() => runner.dispatch(testDispatch({ text: "blocked" }))).toThrow(
@@ -212,6 +271,7 @@ describe("SessionRunner", () => {
     const fakeAgent = { sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any;
     runner.setAgent(fakeAgent);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
 
     const received: any[] = [];
@@ -229,7 +289,7 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
-  it("planning#256: a systemTurn dispatch is NEVER steered into a running user turn — it enqueues, keeping its onTurnComplete", () => {
+  it("planning#256: a dispatch that asks for its own turn is NEVER steered into a running user turn — it enqueues, keeping its onTurnComplete", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: "/tmp/s1",
@@ -239,20 +299,20 @@ describe("SessionRunner", () => {
     const sent: string[] = [];
     runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
-    expect(runner.systemTurnInProgress).toBe(false);
 
     const completions: { errored: boolean }[] = [];
     runner.dispatch(testDispatch({
       text: "child PR merged — resume the rebase",
-      systemTurn: true,
+      automatic: true,
       onTurnComplete: (o) => completions.push(o),
-    }));
+    }), { whenBusy: "queue" });
 
     expect(sent).toEqual([]);
     expect(runner.queueLength).toBe(1);
     const queued = runner.messageQueue[0]!;
-    expect(queued.systemTurn).toBe(true);
+    expect(queued.automatic).toBe(true);
     expect(queued.execution).toBe("dispatched");
     expect(queued.onTurnComplete).toBeTypeOf("function");
     queued.onTurnComplete!(TURN_COMPLETED);
@@ -271,6 +331,7 @@ describe("SessionRunner", () => {
     const sent: string[] = [];
     runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
 
     runner.dispatch(testDispatch({ text: "awaited follow-up", onTurnComplete: () => {} }));
@@ -279,6 +340,46 @@ describe("SessionRunner", () => {
     expect(runner.queueLength).toBe(1);
     expect(runner.messageQueue[0]!.onTurnComplete).toBeTypeOf("function");
 
+    runner.dispose({ force: true });
+  });
+
+  // docs/328-session-message-inbox — the notice is never a queue entry.
+  it("a steer-or-refuse dispatch is steered into a turn that can take it", () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));
+    const sent: string[] = [];
+    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
+    runner.running = true;
+    noteTurnReady(runner);
+    runner.isStreamingActive = true;
+
+    const handle = runner.dispatch(testDispatch({ text: "you have messages" }), { whenBusy: "steer-or-refuse" });
+
+    expect(handle.admitted).toBe("steered");
+    expect(sent).toEqual(["you have messages"]);
+    expect(runner.queueLength).toBe(0);
+    runner.dispose({ force: true });
+  });
+
+  it.each([
+    ["live steering is off", { liveSteering: false }, true],
+    ["the turn is not streaming", { liveSteering: true }, false],
+  ] as const)("a steer-or-refuse dispatch is refused, not queued, when %s", async (_label, deps, streaming) => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    runner.setSystemTurnDeps(steerDeps(deps));
+    const sent: string[] = [];
+    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
+    runner.running = true;
+    runner.isStreamingActive = streaming;
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const handle = runner.dispatch(testDispatch({ text: "you have messages" }), { whenBusy: "steer-or-refuse" });
+
+    expect(handle.admitted).toBe("refused");
+    expect((await handle.settled).status).toBe("refused");
+    expect(sent).toEqual([]);
+    expect(runner.queueLength).toBe(0);
+    vi.restoreAllMocks();
     runner.dispose({ force: true });
   });
 
@@ -293,6 +394,7 @@ describe("SessionRunner", () => {
     const sent: string[] = [];
     runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
 
     const received: any[] = [];
@@ -323,7 +425,7 @@ describe("SessionRunner", () => {
     runner.setSystemTurnDeps(deps);
     const ran = vi.spyOn(runner, "runDispatchedTurn").mockResolvedValue();
 
-    const held = runner.dispatch(testDispatch({ text: "[ci-fix] CI failed", systemTurn: true, automatic: true }));
+    const held = runner.dispatch(testDispatch({ text: "[ci-fix] CI failed", automatic: true }));
     expect(held.admitted).toBe("queued");
     // req 8 — saved, not queued in the runner a stopped container would take with it.
     expect(saved.map((m) => m.text)).toEqual(["[ci-fix] CI failed"]);
@@ -331,7 +433,7 @@ describe("SessionRunner", () => {
     expect(runner.running).toBe(false);
 
     const refused = runner.dispatch(
-      testDispatch({ text: "resolve conflicts", systemTurn: true, automatic: true, postTurn: "none" }),
+      testDispatch({ text: "resolve conflicts", automatic: true, postTurn: "none" }),
       { whenBusy: "refuse" },
     );
     expect(refused.admitted).toBe("refused");
@@ -382,6 +484,7 @@ describe("SessionRunner", () => {
     const sent: string[] = [];
     runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
     runner.awaitingUserAnswer = true;
 
@@ -435,10 +538,10 @@ describe("SessionRunner", () => {
     let killed = 0;
     runner.setAgent({ sendUserMessage: () => {}, kill: () => { killed++; } } as any);
     runner.running = true;
+    noteTurnReady(runner);
     runner.isStreamingActive = true;
 
-    runner.systemTurnInProgress = true;
-    runner.dispatch(testDispatch({ text: "buffered note" }));
+    runner.dispatch(testDispatch({ text: "buffered note" }), { whenBusy: "queue" });
     expect(runner.queueLength).toBe(1);
 
     runner.dispose({ force: true });
@@ -600,6 +703,7 @@ describe("SessionRunner", () => {
     } as any;
     const fresh = { on: vi.fn(), run: vi.fn(), kill: vi.fn(), removeAllListeners: vi.fn() } as any;
     const prepareAgentEnv = vi.fn().mockResolvedValue(undefined);
+    resident.emit = vi.fn();
     runner.setAgent(resident);
     runner.isStreamingActive = true;
     runner.setSystemTurnDeps({
@@ -645,65 +749,6 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
-  it("retires the resident process before env prep on a system turn (merge wake)", async () => {
-    const runner = new SessionRunner({
-      sessionId: "s1",
-      sessionDir: "/tmp/s1",
-      defaultAgentId: "claude" as AgentId,
-    });
-    const order: string[] = [];
-    const resident = {
-      on: vi.fn(),
-      run: vi.fn(),
-      emit: vi.fn(),
-      kill: vi.fn(() => { order.push("kill-resident"); }),
-      removeAllListeners: vi.fn(),
-      sendUserMessage: vi.fn(),
-    } as any;
-    const fresh = { on: vi.fn(), run: vi.fn(), kill: vi.fn(), removeAllListeners: vi.fn() } as any;
-    let agentAtEnvPrep: unknown = "unset";
-    const prepareAgentEnv = vi.fn().mockImplementation(async () => {
-      order.push("env-prep");
-      agentAtEnvPrep = runner.getAgent();
-    });
-    runner.setAgent(resident);
-    runner.isStreamingActive = true;
-    runner.setSystemTurnDeps({
-      agentFactory: () => fresh,
-      autoCommit: vi.fn().mockResolvedValue({
-        commitHash: null,
-        parentHash: null,
-        conflictedFiles: [],
-        rebaseInProgress: false,
-        secretFindings: [],
-      }),
-      scheduleAutoPush: vi.fn(),
-      listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), touchUnlessResolved: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
-        chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
-        usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
-        sseBroadcast: vi.fn(),
-        broadcastLog: vi.fn(),
-        getSelectedModel: () => undefined,
-      },
-      prepareAgentEnv,
-      buildRunParams: vi.fn().mockResolvedValue({ prompt: "merged", cwd: "/tmp/s1" }),
-    });
-
-    runner.dispatch(testDispatch({ text: "merged", systemTurn: true }));
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(resident.sendUserMessage).not.toHaveBeenCalled();
-    expect(fresh.run).toHaveBeenCalledWith(expect.objectContaining({ prompt: "merged" }));
-    expect(order).toEqual(["kill-resident", "env-prep"]);
-    // The incoming agent occupies the slot before it starts.
-    expect(agentAtEnvPrep).toBe(fresh);
-    expect(agentAtEnvPrep).not.toBe(resident);
-
-    runner.dispose({ force: true });
-  });
-
   it("dispatch still spawns the agent when env prep's network step hangs (warm-pool hang regression)", async () => {
     const runner = new SessionRunner({
       sessionId: "s1",
@@ -730,7 +775,6 @@ describe("SessionRunner", () => {
       setAgentPinned: vi.fn(),
       setProviderRoute: vi.fn(),
       setAgentSessionId: vi.fn(),
-      clearAgentSessionId: vi.fn(),
       setLastTurnErrored: vi.fn(),
     } as any;
 
@@ -976,6 +1020,31 @@ describe("SessionRunner", () => {
     expect(runner.lastViewerDetachAt).toBeGreaterThanOrEqual(firstZero);
     runner.dispose();
   });
+
+  // planning#710 — the SSE announcement reaches the sidebar only, so the open chat kept its row.
+  it("tells the open chat when the task list is cleared or expires", () => {
+    vi.useFakeTimers();
+    try {
+      const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+      const seen: unknown[] = [];
+      runner.on("message", (m) => { if (m.type === "background_tasks") seen.push(m); });
+      const drained = { type: "background_tasks", sessionId: "s1", count: 0, descriptions: [] };
+      runner.isStreamingActive = true;
+
+      runner.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
+      runner.clearBackgroundTasks();
+      runner.clearBackgroundTasks();
+      expect(seen).toEqual([drained]);
+
+      runner.setBackgroundTasks([{ id: "t2", description: "npm run build" }]);
+      vi.advanceTimersByTime(BACKGROUND_TASK_TTL_MS);
+      expect(seen).toEqual([drained, drained]);
+      expect(runner.backgroundWorkDescriptions).toEqual([]);
+      runner.dispose({ force: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("statusUpdated", () => {
@@ -1108,5 +1177,115 @@ describe("SessionRunnerRegistry", () => {
     const r = registry.getOrCreate("s1", "/tmp/s1", "claude" as AgentId);
     r.dispose();
     expect(registry.get("s1")).toBeUndefined();
+  });
+});
+
+// docs/330-stop-returns-queued-messages — a Stop tells what was sent before it by this order.
+describe("the send order of a dispatch", () => {
+  function startedRunner() {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    runner.setSystemTurnDeps({} as never);
+    const run = vi.spyOn(runner, "runDispatchedTurn").mockResolvedValue(undefined);
+    return { runner, run };
+  }
+
+  it("is taken when the dispatch is accepted, also for a dispatch that starts at once", () => {
+    const { runner, run } = startedRunner();
+    const before = nextSendOrder();
+
+    runner.dispatch(testDispatch({ text: "a wake" }));
+
+    expect(run.mock.calls[0]?.[0].sendOrder).toBeGreaterThan(before);
+    runner.dispose({ force: true });
+  });
+
+  it("returns a dispatch that was sent before the last Stop instead of starting it", async () => {
+    const { runner, run } = startedRunner();
+    const sentEarlier = nextSendOrder();
+    returnQueueOnStop(runner);
+
+    const handle = runner.dispatch(testDispatch({
+      text: "on its way at the Stop",
+      execution: "interactive",
+      clientRequestId: "m1",
+      sendOrder: sentEarlier,
+    }));
+
+    expect(handle.admitted).toBe("refused");
+    expect((await handle.settled).status).toBe("dropped");
+    expect(run).not.toHaveBeenCalled();
+    expect(runner.queueLength).toBe(0);
+    expect(returnedMessages(runner)).toEqual([{ id: "m1", text: "on its way at the Stop" }]);
+    runner.dispose({ force: true });
+  });
+
+  it("is kept when the dispatch has one already, as an entry that a drain started has", () => {
+    const { runner, run } = startedRunner();
+
+    runner.dispatch(testDispatch({ text: "drained", sendOrder: 3 }));
+
+    expect(run.mock.calls[0]?.[0].sendOrder).toBe(3);
+    runner.dispose({ force: true });
+  });
+});
+
+// A sender told that its dispatch failed acts on it (planning#695 parks a note), so a
+// dispatch that still runs must not be told so.
+describe("a dispatch that a pre-turn compaction put back in the queue", () => {
+  it("is not settled as a setup failure when the compaction fails, and runs next", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const forgetHeldTurn = vi.fn();
+    runner.setSystemTurnDeps({
+      answerHold: {
+        automaticTurnsHeld: () => false,
+        setAwaitingAnswer: vi.fn(),
+        holdTurn: vi.fn(),
+        heldTurns: () => [],
+        forgetHeldTurn,
+        hasHeldDelivery: () => false,
+      },
+    } as never);
+    const run = vi.spyOn(runner, "runDispatchedTurn")
+      .mockImplementationOnce((opts) => {
+        runner.messageQueue.unshift({ ...toQueuedMessage(opts), compactContext: false });
+        return Promise.reject(new Error("the compaction could not start"));
+      })
+      .mockResolvedValue(undefined);
+    const outcomes: TurnOutcome[] = [];
+
+    const handle = runner.dispatch(testDispatch({
+      text: "a wake",
+      heldId: 5,
+      onTurnComplete: (o) => { outcomes.push(o); },
+    }));
+
+    await vi.waitFor(() => { expect(run).toHaveBeenCalledTimes(2); });
+    expect(run.mock.calls[1]?.[0].text).toBe("a wake");
+    expect(runner.queueLength).toBe(0);
+    expect(outcomes).toEqual([]);
+    // Its saved copy goes when it runs, not before.
+    expect(forgetHeldTurn).not.toHaveBeenCalled();
+
+    run.mock.calls[1]![0].onTurnComplete!(TURN_COMPLETED);
+    expect(await handle.settled).toEqual(TURN_COMPLETED);
+    expect(outcomes).toEqual([TURN_COMPLETED]);
+    runner.dispose({ force: true });
+  });
+
+  it("is told of its own setup failure while another entry waits in the queue", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    runner.setSystemTurnDeps({} as never);
+    const run = vi.spyOn(runner, "runDispatchedTurn")
+      .mockRejectedValueOnce(new Error("no worker"))
+      .mockResolvedValue(undefined);
+    runner.messageQueue.push({ text: "waiting", execution: "dispatched", onTurnComplete: () => {} });
+
+    const handle = runner.dispatch(testDispatch({ text: "a wake" }));
+
+    const outcome = await handle.settled;
+    expect(outcome.status).toBe("errored");
+    expect(outcome.detail).toContain("no worker");
+    await vi.waitFor(() => { expect(run.mock.calls[1]?.[0].text).toBe("waiting"); });
+    runner.dispose({ force: true });
   });
 });

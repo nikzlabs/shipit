@@ -5,6 +5,9 @@ issue: planning#39
 
 # 144 — Sub-agent spawning (cross-agent delegation)
 
+The requirements for the limit on runs are in [`requirements.md`](./requirements.md);
+the rest of the feature predates requirements discipline.
+
 > **Reconnect invariant:** the in-flight `sub_agent_spawn` chip is transient
 > client state. The client clears it whenever the session WebSocket disconnects,
 > then queues any replayed spawn marker until HTTP history has rehydrated. A
@@ -109,7 +112,7 @@ affordance the pinned agent drives.
   subprocess, outside the slot machinery, and exits when done.
 - **Multi-level recursion.** A spawned sub-agent is not meant to spawn
   another sub-agent; depth is capped at 1 by a best-effort guard (§3), with
-  the per-turn cap as the forgery-resistant backstop. Deep agent trees /
+  the limit on runs in progress (§5) as the forgery-resistant backstop. Deep agent trees /
   orchestration graphs are out of scope.
 - **A slash command.** The primary agent recognizes the user saying "review
   with codex" / "ask claude to draft the migration" and runs the `shipit
@@ -293,13 +296,14 @@ Flow:
      POST the localhost worker directly with `{"depth":0}`. The worker can't
      close this in v0 — it's a single long-lived process, so it has no trusted
      view of an arbitrary calling subprocess's env (unlike `SESSION_ID`, which
-     it injects). The actual forgery-resistant bound on total fan-out is the
-     **per-turn cap (§5)**, which the next check enforces: it lives on the
-     runner keyed by the worker-injected `SESSION_ID`, so *every* spawn in the
-     session's turn — including any a sub-agent forges its way into —
-     decrements the same budget. Worktree isolation (Future work) is what
+     it injects). The actual forgery-resistant bound on fan-out is the
+     **limit on runs in progress (§5)**, which the next check enforces: the
+     orchestrator counts it against the runner that the worker-injected
+     `SESSION_ID` resolves to, so *every* run in the session — including any a
+     sub-agent forges its way into — holds a slot of the same limit for as long
+     as it runs. Worktree isolation (Future work) is what
      would let a later version make depth itself enforceable.
-   - Per-turn cap (§5) not yet exceeded.
+   - Runs in progress (§5) below the limit.
 4. **Credential provisioning (§4)** runs synchronously for a cross-provider
    spawn, before the subprocess starts.
 5. **Orchestrator → worker spawn.** `POST /agent/spawn` on the session
@@ -336,6 +340,63 @@ Flow:
 - **Crash handling.** Subprocess exits non-zero → the orchestrator returns
   an error; the CLI exits non-zero with the message; the primary sees it and
   can react. Credential wipe (§4) fires in `finally` regardless.
+- **A failed run carries its reason.** `runAgentToCompletion` keeps the exit
+  code and a 300-character tail of the harness's stderr (the adapters' `log`
+  events from a `…stderr` source). `describeSubAgentFailure`
+  (`shared/sub-agent-run.ts`) makes one line from the message, the exit code
+  and the tail. That line is in the worker's `worker done` log, in the
+  orchestrator's `finished` log, in the card's `statusDetail` (so
+  `shipit agent result` prints it again), and on the stderr of
+  `shipit agent run`.
+  - **Redaction.** `shared/redacted-tail.ts` keeps the stderr lines as the
+    adapter gave them and redacts all of the kept text with `redactCredentials`
+    one time, when the run ends: the redaction comes before the white space is
+    removed and before the 300-character cut. A text with a part removed cannot
+    be redacted by shape: the cut can go through a credential, and it changes
+    which quotes are a pair in all the text after it. So the budget is 256,000
+    characters, and of a longer stderr, or of one from which the emitter
+    removed a line, nothing is shown (the line then says
+    `[not shown: too long for a safe redaction]`). `describeSubAgentFailure`
+    redacts and bounds its input again, because a result can come from a
+    worker. The `error` that the account failover reads stays as the harness
+    gave it; the copies of `error` and `stderrTail` in the answer to the CLI
+    are redacted.
+  - **Whole lines.** The redaction is sound only if each emission is a whole
+    line: a credential in two emissions has no shape. Every process that
+    `runAgentToCompletion` runs emits stderr as lines. The Codex adapter
+    emitted trimmed pipe chunks before; it now uses
+    `session/agents/stderr-lines.ts`, one for each process:
+    - a text with no line end is given after 250 ms of quiet (a prompt waits
+      with no line end), when the process closes, and when the adapter is
+      killed (the time limit of a run reads the tail directly after the kill;
+      what a killed process writes after that is not logged);
+    - the auth check runs on each given line, after its `log`, so a text with
+      no line end raises `auth_required` up to 250 ms later than before;
+    - a line longer than 64,000 characters is removed, not cut: the logs get
+      `STDERR_TEXT_REMOVED` in its place, which makes the tail show nothing,
+      and the auth check still reads the removed text.
+
+    **Known limits.** The redaction reads the lines as the adapters give
+    them: each adapter trims a line, and the Claude adapter removes ANSI
+    sequences. A credential whose shape needs the removed characters is not
+    found (that is true for every reader of these logs). A text with no line
+    end that is younger than 250 ms when
+    the adapter reports an `error` is not in that run's tail. The resident
+    Claude process (`StreamingClaudeProcess`, used only for primary turns with
+    `useStreaming`) still emits chunks, and the primary turn's tail
+    (`agent-stderr-tail.ts`) cuts its buffer before it redacts, so that tail
+    can still show a part of a credential. A sub-agent run uses neither.
+  - **`auth_required`.** An adapter that finds no credential emits it inside
+    `run()` and starts no process, so no `done` follows; such a run used to wait
+    for the wall-clock cap. Each caller starts the adapter through
+    `handle.start(() => agent.run(…))`, and an `auth_required` in that call ends
+    the run at once (as `cancelled` if the caller cancelled it before). From a
+    live process the event does **not** end the run:
+    the Codex adapter emits it for any stderr line with "api key" in it, and a
+    result can follow whose error the account failover must read. If the
+    process then exits with no result, the run is an `error` that names the
+    credential, also when the exit code is 0 (the Claude adapter does not pass
+    on the result of an auth failure).
 - **Cancel handling.** *Superseded 2026-08-31 — see §8.* Cancelling the
   primary's turn does **not** cancel the sub-agent running on its behalf, and
   the `POST /agent/cancel` primitive this bullet described is gone. A spawn ends
@@ -361,106 +422,151 @@ Flow:
 
 ### 4. Lazy, scoped, post-spawn-wiped cross-agent credentials
 
-Only relevant for a **cross-provider** spawn (a same-provider spawn reuses
-the pinned agent's already-present credentials and provisions nothing).
+Every provisioned spawn — cross-provider or not — gets credentials of its own,
+in a home of its own.
 
-- **Lazy.** The other agent's subtree is provisioned *only* on a
-  cross-provider `shipit agent` invocation, which only fires if the setting
-  is on AND the primary chose to spawn. Pre-invocation, docs/138 isolation
-  holds exactly.
-- **Just-in-time, just-before-spawn, account-correct.** `runSubAgent`
-  resolves the sub-agent's provider-account route first —
-  `providerAccountManager.selectRouteForTurn(subAgentId)`, exactly as the
-  primary turn path does (`session-agent-env.ts`) — then provisions from
-  *that account's* root, not the flat credentials root. When the route is
-  `{ kind: "account", id: accountId }` it copies from
-  `providerAccountCredentialRoot(credentialsRoot, subAgentId, accountId)` via
-  `provisionProviderAccountCredentials(credentialsRoot, sessionId, subAgentId,
-  accountId)`; only the legacy no-account fallback copies from the flat
-  `credentialsRoot`. Post-docs/150/153 the flat root holds legacy-alias
-  symlinks into the provider-account subtrees and is **not** the freshest
-  source for a multi-account user — provisioning from it would start the
-  sub-agent CLI on stale credentials and 401. The copy pulls *only* the
-  sub-agent's subtree (`AGENT_CREDENTIAL_PATHS[subAgentId]` plus a refresh of
-  the token-sync files); it must never touch `AGENT_CREDENTIAL_PATHS[pinnedAgentId]`
-  (would clobber the CLI's in-place writes per docs/138 §"write-once").
-  Record the resolved `accountId` — the wipe and token-sync-back below must
-  target the same account root.
-- **Token-sync-back before wipe.** If the sub-agent CLI rotated its OAuth
-  refresh token during the run (docs/142 — Claude and Codex both rotate
-  refresh tokens), the new token lives in the per-session subtree.
-  `runSubAgent` runs `syncAgentTokenBack(subAgentId)` to the orchestrator's
-  source-of-truth credentials — the **same account root** resolved at
-  provision time (`providerAccountCredentialRoot(...)` for an account route,
-  the flat root only for the legacy fallback), not unconditionally the flat
-  root — **before** invoking the wipe. Otherwise the next session that lazily
-  provisions this agent starts from a stale refresh token and 401s.
-- **Wiped on completion.** `removeSubAgentCredentials(credentialsRoot,
-  sessionId, subAgentId)` runs in a `finally` after the subprocess exits
-  (success, failure, crash, or cancel). Deletes only the sub-agent's subtree.
-- **Wipe is best-effort.** The sub-agent CLI may still be flushing writes to
-  its subtree at the instant we `rm -rf` it. Tolerable: any interrupted write
-  is the sub-agent's *own* transient state, and the next provision re-copies
-  cleanly from source-of-truth. The pinned agent's subtree is never touched.
-- **Sign-out propagation.** When the user signs out of an agent
-  (`AgentRegistry` emits a sign-out for `agentX`), the orchestrator runs
-  `removeSubAgentCredentials` for every session where `agentX` is *not* the
-  pinned agent — sweeping any in-flight cross-agent creds that would
-  otherwise outlive the user's authorization.
+- **Lazy.** A sub-agent's credentials are provisioned *only* on a `shipit agent`
+  invocation, which only fires if the setting is on AND the primary chose to
+  spawn. Pre-invocation, docs/138 isolation holds exactly.
+- **Just-in-time, account-correct, one private home for each spawn.**
+  `runSubAgent` resolves the sub-agent's provider-account route first, then
+  `provisionSubAgentSpawnHome(credentialsRoot, sessionId, spawnId, subAgentId,
+  accountId)` copies `AGENT_CREDENTIAL_PATHS[subAgentId]` from *that account's*
+  root — the flat root only for the legacy no-account fallback, which is **not**
+  the freshest source for a multi-account user — into
+  `<credentialsRoot>/sessions/<id>/sub-agent-homes/<spawnId>`. The spawn request
+  carries the container path of that home as `homeDir`, and each adapter prefers
+  it over its own home. The session's own subtree is never written: not the
+  pinned agent's (docs/138 §"write-once"), and not another harness's.
+- **A Claude spawn runs under the managed settings.** `buildSubAgentRunParams`
+  passes `--settings /etc/shipit/managed-settings.json`, as a main turn does, so
+  the deny list (docs/097-explicit-session-agent-permissions) and the
+  branch-block hook apply to it. A sandbox session's `shipit agent run` spawn
+  carries `sandbox`, so the hook's sandbox exemption (docs/211) holds for it as
+  for its parent. Session-naming and PR-description spawns (`non-turn-work.ts`)
+  do not carry it: they have no reason to move a branch. The
+  Stop hook stays quiet: a spawn sets no `autoCreatePr`, so
+  `SHIPIT_AUTO_CREATE_PR` is unset. A tools-off spawn still has no tools
+  (measured with Claude Code 2.1.300). The post-merge destructive-git guard
+  (`SHIPIT_GUARD_DESTRUCTIVE_GIT`) is not passed to a spawn.
+- **Token-sync-back before delete.** If the CLI rotated its OAuth refresh token
+  during the run (docs/142), the new token lives in the spawn home.
+  `releaseSubAgentSpawnHome` publishes it to the root the home's
+  `.shipit-spawn-home.json` names — the root it was provisioned from, never a
+  caller-supplied account — and only then deletes the home. A rotation that can
+  be neither published nor quarantined keeps the home, and the next container
+  create tries again (`sweepSubAgentSpawnHomes`).
+- **A home is provisioned once.** `provisionSubAgentSpawnHome` empties its
+  target first, so a second provision of a kept home would delete the only
+  copy of that rotation. An account-failover attempt therefore gets a home of
+  its own, `sub-agent-homes/<spawnId>-<attempt>`.
+- **Deleted when the run settles.** The release runs in a `finally` once the
+  run has an outcome (success, failure, crash, timeout or cancel), and before
+  each account-failover attempt. The worker has signalled the CLI by then; its
+  exit is not awaited. A home orphaned by an orchestrator restart is released
+  at the next container create (`sweepSubAgentSpawnHomes`).
+- **Revocation.** A spawn home sets no session account marker, so its
+  provenance file is the only record of what it holds, and both revocation
+  paths read it (`removeSubAgentSpawnHomesOf`, no sync-back). Disconnecting an
+  account, or signing out of a provider (`revokeRecordedAccountCopies`,
+  `services/settings.ts`), removes the homes provisioned from those accounts
+  in every session. When an agent becomes unrunnable (`AgentRegistry` emits
+  `sign-out` for `agentX`), the orchestrator removes, in every session where
+  `agentX` is *not* the pinned agent, the homes provisioned for `agentX` and
+  any `agentX` subtree an older build left in the session's own directory. A
+  run still in flight loses its home and can fail.
+
+**Why not one subtree for each (session, harness).** That was the design for
+cross-provider spawns until 2026-10-13: they borrowed the session's subtree for
+that harness, with a ledger of holders so that only the last release wiped it
+(planning#572 records the half that ledger did not fix). Same-harness spawns had
+left it on 2026-08-22, when a borrow replaced the live primary's token. That
+code is deleted; docs/260-turn-level-account-routing §4b keeps its history. Two
+consults of one harness at one moment are routine, and
+a shared home fails them in two ways, both reproduced with three Codex consults
+started at one moment:
+
+- **Each provision prunes the home under the CLIs already in it.** A provision
+  removes everything but conversation state and copies the account's files
+  again. Recorded on the deployed build: the second provision deleted the first
+  process's `state_5.sqlite` and its `auth.json` 50 ms after that process
+  started.
+- **The CLIs race to create one set of state.** Codex creates and migrates its
+  SQLite state databases at startup, and a provision makes the home new again
+  each time. Two processes that start within about 30 ms of each other in such
+  a home: one exits with code 1 in 50–200 ms (`failed to initialize sqlite state
+  runtime`), or waits 30 s for the other's "state db backfill" and then exits
+  the same way. On Codex 0.159.2 and 0.160.1, 16–17 of 30 starts failed in a
+  shared new home, and 0 of 30 with a home for each process.
+
+Serialising the starts was the alternative. It needs a signal for "this CLI
+finished its startup" for every harness, it makes a consult wait for the turn
+or the consult before it, and it leaves two runs on different accounts writing
+one token file. A private home needs none of that and was already the
+same-harness path.
+
+**The cost: several copies of one account's token.** Three consults on one
+account each hold a copy of its refresh token, where the shared subtree held
+one file. Codex reloads its auth file before a refresh and skips the refresh
+when the file changed, so with one file a second process could see the first
+one's rotation; with a copy each it cannot, and a late refresh with the old
+token is refused. The shared file never made two refreshes at one moment safe
+(the CLI's guard is process-local), and same-harness spawns have had this
+exposure since 2026-08-22. A consult's CLI should not refresh at all: the
+orchestrator renews a Codex or Claude account's token 45 minutes ahead of
+expiry (`agents/*/oauth-refresher.ts`), the Codex CLI refreshes by itself only
+in the last 5, and a consult is capped at 30. The exposure is a renewal that
+is overdue when the consult starts.
+
+**Local mode is not covered.** `RUNTIME_MODE=local` provisions no home (§8;
+OpenCode is the exception), so a spawn there runs in the user's own home and
+shares it with the session's turns.
 
 ### 5. Caps, cost, attribution
 
-- **Per-turn cap (the real fan-out bound).** The runner tracks
-  `subAgentSpawnsThisTurn`, incremented on each spawn reaching
-  `services/sub-agent.ts`, refilled on each new human instruction. Modest hard cap in v0
-  (**3 per turn**) — enough for "review with both other models" or a couple
-  of delegations, low enough to bound a misbehaving-primary loop. A call past
-  the cap returns an error without spawning. This is the **forgery-resistant**
-  bound (§3): the counter is keyed by the worker-injected `SESSION_ID`, which
-  a sub-agent cannot spoof, so every spawn in the turn — primary's or any a
-  sub-agent forges past the best-effort depth guard — decrements the same
-  budget. Spam across turns is not a separate concern: bounded by normal turn
-  rate and the user's intent.
+- **Runs in progress (the real fan-out bound).** A session may have
+  `MAX_SUB_AGENT_RUNS_IN_PROGRESS` runs in progress at the same time: 16 by
+  default, the value of the limit on unfinished child sessions (req 2,
+  docs/117), and `SHIPIT_SUB_AGENT_MAX_IN_PROGRESS` on the orchestrator changes
+  it. A run holds a slot from admission until `runSubAgent` settles — success,
+  error, time limit or cancellation, through its credential cleanup and its
+  commit step. A call past the limit returns an error (429) without spawning and
+  without a card, and the error tells the caller to wait for a run to finish and
+  then try again.
 
-  **Where the budget refills matters as much as its size.** It was originally
-  refilled in exactly one place, inside `resetRunnerTurnState`, i.e. only when an
-  orchestrator turn *starts*. That covers ordinary, queued, retried and adopted
-  turns (all enter `executeAgentTurn`) and self-woken turns (docs/235 —
-  `agent_self_wake` calls it behind `!runner.running`). It does **not** cover
-  **live steering**: a message the user types while the agent is mid-turn is
-  injected into the running turn on purpose (docs/140), starting no orchestrator
-  turn. On that path the budget had no refill point at all, so in a session where
-  the agent is usually busy — the ordinary shape once it backgrounds consults —
-  every typed message drew on one budget of 3, and `shipit agent run` was then
-  refused with "cap reached for this turn" on a turn the user experiences as
-  brand new.
+  This is the bound that a sub-agent cannot forge its way past (§3). The
+  orchestrator keeps the count (`runsInProgress` in `services/sub-agent.ts`)
+  against the runner that the worker-injected `SESSION_ID` resolves to. A
+  sub-agent that forges its depth and spawns another holds its own slot while
+  it waits for the other, so a chain stops at the limit.
 
-  The budget therefore has its own `resetSubAgentSpawnBudget`
-  (`session-runner.ts`), called from `resetRunnerTurnState` **and** from the WS
-  steer branch in `ws-handlers/send-message.ts`. It never calls
-  `resetRunnerTurnState` on the steer path: that would clear the accumulator
-  mid-turn and destroy the running turn's chat history (docs/237).
+  **It counts the runs the orchestrator is waiting for**, which is not always
+  the processes alive in the container. A run whose connection to the worker
+  failed frees its slot while its process can go on, and so does every run that
+  outlives an orchestrator restart. Both end on their own wall-clock cap. Like
+  the child-session limit, this is a brake on an accident and not admission
+  control.
 
-  The refill trigger is deliberately **a human keystroke** — a WS `send_message`
-  from a browser client, which no agent can emit — so §5's forgery-resistant
-  bound is untouched. Three agent-reachable alternatives were considered and
-  rejected for the same reason: refilling on `agent_self_wake` (any finished
-  `Bash(run_in_background)` job emits the notification it rides on), refilling at
-  CLI turn *end* (`agent_result` is neither once-per-turn — Codex emits two for
-  one turn — nor exhaustive, since `done`-without-result paths exist, and it
-  opens an idle window in which a spawn request scheduled before the boundary
-  lands against the fresh budget), and refilling on a *programmatic* steer
-  (`trySteerDispatch`, reachable by a parent agent messaging its child).
-  Guard: `integration_tests/sub-agent-budget-steering.test.ts`.
-- **Cost / wall-clock cap.** Wall-clock cap on each subprocess (30 min, raised
-  from the initial 5 min because real consults — audits, large-diff reviews,
-  generation — routinely overran it; override via `SHIPIT_SUB_AGENT_TIMEOUT_MS`);
-  output-token cap via the sub-agent CLI's natural settings (initial: 8K).
-  Hitting either truncates, with the result flagged truncated and a note the
-  primary can surface.
+  **There is no count for each turn, on purpose (req 1).** v0 allowed 3 runs for
+  each turn. A refusal for that count does not clear inside the turn, so a turn
+  that nobody interrupts stops there. A refusal for runs in progress clears when
+  a run ends, so the agent waits and continues.
+
+  **The limit does not protect a small container (req 3).** A run is a process
+  in the session's container and shares its memory with the primary agent; a
+  child session has a container of its own.
+- **Wall-clock and output-size caps. There is no cost cap.** Wall-clock cap on
+  each subprocess (30 min, raised from the initial 5 min because real consults —
+  audits, large-diff reviews, generation — routinely overran it; override via
+  `SHIPIT_SUB_AGENT_TIMEOUT_MS`); output-size cap on the returned text
+  (`DEFAULT_SUB_AGENT_MAX_OUTPUT_CHARS`, 32,000 characters). Hitting either flags
+  the result `truncated`. The result's `outputLimitChars` is present only when
+  the size cap cut the text, so the CLI's note names the cap that applied; a
+  timed-out run has status `timeout`.
 - **Recursion cap.** Depth 1 (§3) — a best-effort guard that stops a
   well-behaved sub-agent from recursing; not forgery-resistant in v0 (the
-  per-turn cap above is what bounds an adversarial sub-agent's fan-out).
+  limit on runs in progress above is what bounds an adversarial sub-agent's
+  fan-out).
 - **Usage attribution.** `UsageManager` records the sub-agent's cost **and full
   token breakdown** (input/output/cache/context) against `subAgentId`, not the
   runner's pinned `agentId`. The token breakdown is carried back from the spawn
@@ -650,12 +756,12 @@ the set and keep flowing. Guard test:
 In `RUNTIME_MODE=local`, agents run in-process and credential provisioning is
 a no-op (docs/138). Sub-agent spawning in local mode:
 
-- Provisioning helpers (`provisionSubAgentCredentials` /
-  `removeSubAgentCredentials`) short-circuit, mirroring docs/138.
+- Spawn-home provisioning (`provisionSubAgentSpawnHome`) is skipped, mirroring
+  docs/138 — except for OpenCode, which always needs its private data home.
 - The "spawn sub-agent as subprocess" path mirrors local mode's primary-agent
   flow (in-process spawn rather than container subprocess).
-- Setting gate, per-turn cap, cost cap, recursion cap, and the `shipit agent`
-  command all behave identically.
+- Setting gate, limit on runs in progress, run caps, recursion cap, and the
+  `shipit agent` command all behave identically.
 
 ### 9. Re-reading a finished run — `shipit agent result` (planning#247)
 
@@ -773,10 +879,11 @@ persisted output and `shipit agent result` are unaffected.
   id in the path and the forwarded `depth` in the body. Plus (§9)
   `GET /api/sessions/:id/agent/result` → `getSubAgentResult`.
 - **New `services/sub-agent.ts`** — `runSubAgent({ sessionId, subAgentId,
-  prompt })`. Checks the setting + auth + pin + recursion depth + per-turn
-  cap; resolves the sub-agent's provider-account route; provisions creds (§4)
-  for a cross-provider spawn; calls worker `/agent/spawn`; on completion runs
-  token-sync-back and wipes creds in `finally`; records usage + emits the live
+  prompt })`. Checks the setting + auth + pin + recursion depth + the limit
+  on runs in progress; resolves the sub-agent's provider-account route;
+  provisions the spawn home (§4); calls worker `/agent/spawn`; on completion
+  runs token-sync-back and deletes the home in `finally`; records usage + emits
+  the live
   bill refresh; returns `{ status, text, truncated, durationMs, costUsd,
   inputTokens?, outputTokens?, cacheReadTokens?, cacheCreateTokens?,
   contextTokens? }`. Tracks each in-flight spawn so it can
@@ -799,10 +906,10 @@ persisted output and `shipit agent result` are unaffected.
   (`this.agent`) is untouched. Worker memory holds two CLI processes during a
   spawn window. **This is a meaningful new code path, not a drop-in adapter
   reuse.**
-- **`session-credentials.ts`** — add `provisionSubAgentCredentials()` and
-  `removeSubAgentCredentials()` (lazy + scoped + reversible + account-correct
-  per §4), plus a sub-agent-scoped variant of `syncAgentTokenBack` invoked
-  before the wipe. Reuse `provisionProviderAccountCredentials` /
+- **`session-credentials.ts`** — `provisionSubAgentSpawnHome()` /
+  `releaseSubAgentSpawnHome()` (lazy + scoped + account-correct per §4; the
+  release publishes a rotated token before it deletes the home) and
+  `removeSubAgentSpawnHomesOf()` for the sign-out sweep. Reuses
   `providerAccountCredentialRoot` (docs/150/153).
 - **`AgentRegistry`** — `refreshAuth(agentId)` and `get(id)?.authConfigured`
   already exist (verified). `AgentRegistry` becomes an `EventEmitter` (new
@@ -814,13 +921,13 @@ persisted output and `shipit agent result` are unaffected.
   the orchestrator's authorization check rejects any non-zero `depth`. This is
   a **best-effort** guard against accidental recursion only — `depth` is
   caller-supplied and a shell-capable sub-agent can spoof it (§3); the
-  forgery-resistant fan-out bound is the per-turn cap, not this env.
+  forgery-resistant fan-out bound is the limit on runs in progress (§5), not
+  this env.
 - **Worker memory headroom** — confirm container sizing tolerates a
   +500MB–1GB peak RSS during a spawn window before shipping. Block-shipping
   concern, not a write-now concern.
-- **`ContainerSessionRunner`** — add `subAgentSpawnsThisTurn: number`
-  (per-turn counter, reset at primary-turn start). No sub-agent slot, queue,
-  or SSE machinery.
+- **`ContainerSessionRunner`** — no sub-agent slot, queue, or SSE machinery,
+  and no run counter: `services/sub-agent.ts` counts the runs in progress (§5).
 - **`UsageManager`** — accept a `subAgentId` parameter distinct from the
   runner's `agentId` when recording sub-agent costs.
 - **Chat surfacing** — the transient in-flight spinner (`sub_agent_spawn` +
@@ -845,10 +952,11 @@ persisted output and `shipit agent result` are unaffected.
   - Recursion cap (best-effort): a spawned sub-agent whose shim forwards a
     non-zero `depth` is rejected. Companion test documents the known v0 gap —
     a sub-agent that spoofs `depth: 0` is *not* rejected by the depth guard
-    and is instead bounded only by the shared per-turn cap.
-  - Per-turn cap: 4th spawn in one primary turn returns error without
-    spawning.
-  - Cost cap: synthetic over-limit output truncated, result flagged.
+    and is instead bounded only by the limit on runs in progress.
+  - Runs in progress: a call at the limit returns an error without spawning,
+    and a run that ends — in success, in failure or in a refusal after
+    admission — frees its slot.
+  - Output-size cap: synthetic over-limit output truncated, result flagged.
   - Crash path: subprocess killed → primary sees error, creds wiped.
   - Spawn lifetime (§8): a primary-turn interrupt or kill leaves an in-flight
     spawn running and its result still reaches the card; only `dispose()` and
@@ -932,11 +1040,11 @@ Traceability for the product decisions made during design:
 5. **Recursion capped at depth 1 (best-effort).** A spawned sub-agent is
    blocked from spawning another via a body-carried `depth` guard that stops
    well-behaved recursion; it is not forgery-resistant in v0 (a
-   shell-capable sub-agent can spoof `depth`). The per-turn cap (§5), keyed
-   by the worker-injected session id, is the forgery-resistant bound on total
-   fan-out.
-6. **Per-turn cap = 3 spawns.** Bounds runaway loops; generous enough for
-   "ask both other models" or a couple of delegations.
+   shell-capable sub-agent can spoof `depth`). The limit on runs in progress
+   (§5), counted for the session that the worker-injected session id names, is
+   the forgery-resistant bound on fan-out.
+6. **At most 16 runs in progress for a session, and no count for each turn**
+   (requirements.md req 1–3). This replaced v0's "per-turn cap = 3 spawns".
 7. **Synchronous, not fire-and-forget.** The `shipit agent` command blocks on
    the result; the primary continues its turn with the text in hand. No
    "inject into next turn" mechanism needed. *Amended by planning#247:* the **call**
@@ -1026,27 +1134,28 @@ v0 is implemented end-to-end behind the `enableSubAgents` global setting
   worker→orchestrator leg (`orchestrator-client.ts` `OrchestratorClient.request`)
   now route the explicitly-unbounded (`timeoutMs: 0`) request over Node `http`
   (no default response timeout), matching the orchestrator→worker leg which
-  already used `worker-http.ts`. Short/bounded calls keep the `fetch` path.
+  already used `worker-http.ts`. Short/bounded calls keep the `fetch` path on
+  the shim→worker leg; the worker→orchestrator leg now uses Node `http` for
+  every call (docs/306-spawn-retry-safety req 6).
   Tests: `agent-shim/shim-common.test.ts` (`callBroker`),
   `orchestrator-client.test.ts` (unbounded relay).
 - **Orchestrator route + service** — `api-routes-agent.ts`
   (`POST /api/sessions/:id/agent/spawn`) → `services/sub-agent.ts` (`runSubAgent`
-  with the setting/auth/pin/recursion/per-turn-cap gates, lazy account-correct
-  credential provisioning, usage attribution, the spawn chip, and token-sync-back
-  + wipe in `finally`; `sweepSubAgentCredentialsOnSignOut`).
+  with the setting/auth/pin/recursion/runs-in-progress gates, lazy account-correct
+  spawn-home provisioning, usage attribution, the spawn chip, and token-sync-back
+  + home release in `finally`; `sweepSubAgentCredentialsOnSignOut`).
 - **Worker spawn execution** — `session/agent-controller.ts` (`POST /agent/spawn`,
   a fresh adapter outside the slot, `SHIPIT_AGENT_DEPTH` stamping, and
   `cancelAllSpawns` reachable only from `stop()` — see §8), sharing the
   adapter-run core with local mode via `shared/sub-agent-run.ts`
   (`runAgentToCompletion`).
 - **Runner wiring** — `session-runner.ts` (interface + in-process
-  `SessionRunner.spawnSubAgent`, `subAgentSpawnsThisTurn` reset in
-  `resetRunnerTurnState`), `container-session-runner.ts`
+  `SessionRunner.spawnSubAgent`), `container-session-runner.ts`
   (`ContainerSessionRunner.spawnSubAgent` → worker).
 - **Credentials** — `session-credentials.ts`
-  (`provisionSubAgentCredentials` / `removeSubAgentCredentials`, scoped to the
-  sub-agent subtree; token-sync-back reuses the existing `syncAgentTokenBack` /
-  `syncProviderAccountTokenBack`).
+  (`provisionSubAgentSpawnHome` / `releaseSubAgentSpawnHome`, one home for each
+  spawn under `sub-agent-homes/`; token-sync-back is
+  `syncSubAgentSpawnHomeTokenBack`, driven by the home's provenance file).
 - **Registry sign-out** — `shared/agent-registry.ts` (now an `EventEmitter`,
   emits `sign-out` on a configured→not-configured edge), wired in
   `app-lifecycle.ts`.

@@ -28,6 +28,7 @@ import { pluginCommandIssuesByRepo } from "./plugin-commands.js";
 import { pluginHostDeclarationsFor } from "./plugin-hosts.js";
 import { egressHostReach } from "./egress-host-reach.js";
 import type { PluginCliRequest } from "./plugin-cli-run.js";
+import { claimPluginStdin, writePluginStdin } from "./plugin-cli-stdin.js";
 import { pluginSettingsIssuesByRepo } from "./plugin-state.js";
 import {
   getActivationState,
@@ -136,7 +137,10 @@ export async function registerPluginRepoRoutes(
     },
   );
 
-  app.post<{ Params: { id: string }; Body: Partial<PluginCliRequest> }>(
+  app.post<{
+    Params: { id: string };
+    Body: { alias?: string; command?: string; args?: string[]; cwd?: string; stdin?: string; stdinId?: string };
+  }>(
     "/api/sessions/:id/plugin/exec",
     { config: { containerAccessible: true } },
     async (request, reply) => {
@@ -158,13 +162,57 @@ export async function registerPluginRepoRoutes(
       const args = Array.isArray(request.body?.args)
         ? request.body.args.filter((a): a is string => typeof a === "string")
         : [];
-      return await deps.runPluginCommandForSession(request.params.id, session.workspaceDir, {
-        alias,
-        command,
-        args,
-        ...(typeof request.body?.cwd === "string" ? { cwd: request.body.cwd } : {}),
-        ...(typeof request.body?.stdin === "string" ? { stdin: request.body.stdin } : {}),
+      const inline = typeof request.body?.stdin === "string" ? request.body.stdin : undefined;
+      const stdinId = typeof request.body?.stdinId === "string" ? request.body.stdinId : "";
+      // Claimed before anything is awaited: a part waits only a short time for its call.
+      const sent = inline === undefined && stdinId ? claimPluginStdin(request.params.id, stdinId) : undefined;
+      if (sent === null) {
+        reply.code(409).send({
+          error: "This call reached ShipIt before, and its command runs or ran. ShipIt does not run it again.",
+        });
+        return;
+      }
+      const stdin: PluginCliRequest["stdin"] = sent?.stream ?? inline;
+      // Not `request.raw`: its `close` comes when the body was read, while the caller still waits.
+      let callerGone = false;
+      reply.raw.once("close", () => { callerGone = !reply.raw.writableFinished; });
+      try {
+        return await deps.runPluginCommandForSession(request.params.id, session.workspaceDir, {
+          alias,
+          command,
+          args,
+          ...(typeof request.body?.cwd === "string" ? { cwd: request.body.cwd } : {}),
+          ...(stdin !== undefined ? { stdin } : {}),
+          callerGone: () => callerGone,
+        });
+      } finally {
+        sent?.release();
+      }
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: { id?: string; seq?: number; data?: string; end?: boolean } }>(
+    "/api/sessions/:id/plugin/exec/stdin",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      if (!deps.sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const id = typeof request.body?.id === "string" ? request.body.id : "";
+      const seq = request.body?.seq;
+      if (!id || typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 0) {
+        reply.code(400).send({ error: "`id` and a part number `seq` are required." });
+        return;
+      }
+      const answer = await writePluginStdin(request.params.id, id, {
+        seq,
+        data: typeof request.body?.data === "string" ? request.body.data : "",
+        end: request.body?.end === true,
       });
+      // An error is input that did not reach the command, and the caller must not take it for an end.
+      if ("error" in answer) reply.code(409);
+      return answer;
     },
   );
 
@@ -281,7 +329,7 @@ function liveGenerationsFor(
 async function readRuntimeState(
   sessionId: string | undefined,
   workspaceDir: string,
-  config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose">,
+  config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose" | "mcp">,
   live: LiveGenerations,
   opts: { containEgress: boolean; projectCompose?: ProjectComposeAccess },
 ): Promise<Record<string, PluginRepoRuntime>> {
@@ -347,21 +395,27 @@ async function readRuntimeState(
 async function collectPluginFragmentIssues(
   workspaceDir: string,
   live: LiveGenerations,
-  config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose">,
+  config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose" | "mcp">,
   containEgress: boolean,
   projectCompose: ProjectComposeAccess | undefined,
 ): Promise<Map<string, string[]>> {
   // Project compose errors are reported separately.
   const { names: projectServiceNames } = await readProjectServices(config, containEgress, projectCompose);
   try {
-    return collectPluginFragments({
+    const { issuesByRepo, mcpIssuesByRepo } = collectPluginFragments({
       workspaceDir,
       live,
       plugins: config.plugins,
       selfExports: config.pluginExports,
       projectServiceNames,
+      projectMcpNames: config.mcp.map((m) => m.name),
       containEgress,
-    }).issuesByRepo;
+    });
+    const issues = new Map(issuesByRepo);
+    for (const [repo, mcpIssues] of mcpIssuesByRepo) {
+      issues.set(repo, [...(issues.get(repo) ?? []), ...mcpIssues]);
+    }
+    return issues;
   } catch {
     return new Map();
   }

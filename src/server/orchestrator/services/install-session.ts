@@ -64,7 +64,8 @@ export async function installPluginAsSession(
 
   const agentId = opts.agentId ?? deps.defaultAgentId;
 
-  const claimed = await deps.claimService.claim(repoUrl, { forceFetch: true });
+  // A plugin install only opens a PR; the warm session stays for a person (docs/288 req 12).
+  const claimed = await deps.claimService.claim(repoUrl, { forceFetch: true, skipWarm: true });
   const sessionId = claimed.sessionId;
   const workspaceDir = claimed.workspaceDir;
 

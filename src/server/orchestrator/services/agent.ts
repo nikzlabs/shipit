@@ -32,6 +32,7 @@ const PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set<PermissionMode>([
 
 const MAX_TEXT_LEN = 50_000;
 const MAX_ACTIVITY_LEN = 200;
+const MAX_REQUEST_ID_LEN = 200;
 
 export interface DispatchAgentMessageInput {
   text: string;
@@ -44,14 +45,16 @@ export interface DispatchAgentMessageInput {
   /**
    * docs/218 + docs/295 — the composer's per-send tick boxes, carried when the
    * USER clicked the thing that dispatched this (a ShipIt button beside that
-   * composer). Absent for an automatic dispatch — a CI auto-fix, an
-   * agent-interface continuation — which follow the global setting (req 13),
-   * and `false` only ever SKIPS an action.
+   * composer) and by a message from an agent-built page (req 14). Absent for an
+   * automatic dispatch — a CI auto-fix — which follows the global setting
+   * (req 13), and `false` only ever SKIPS an action.
    */
   resetMergedBranch?: boolean;
   compactContext?: boolean;
   /** docs/322 — sent by the browser's own automation (the preview auto-fix), not by a click. */
   automatic?: boolean;
+  /** planning#691 — the id of the sender's optimistic bubble. */
+  clientRequestId?: string;
 }
 
 export interface DispatchAgentMessageResult {
@@ -99,6 +102,11 @@ export async function dispatchAgentMessage(
     if (input.activity.length > MAX_ACTIVITY_LEN) {
       throw new ServiceError(400, `Activity exceeds ${MAX_ACTIVITY_LEN} characters`);
     }
+  }
+  if (input.clientRequestId !== undefined && (
+    typeof input.clientRequestId !== "string" || input.clientRequestId.length > MAX_REQUEST_ID_LEN
+  )) {
+    throw new ServiceError(400, `requestId must be a string of at most ${MAX_REQUEST_ID_LEN} characters`);
   }
   if (input.permissionMode !== undefined && !PERMISSION_MODES.has(input.permissionMode)) {
     throw new ServiceError(400, `Unknown permission mode: ${input.permissionMode}`);
@@ -185,17 +193,17 @@ export async function dispatchAgentMessage(
     permissionMode: input.permissionMode,
     execution: undefined,
     postTurn: undefined,
-    systemTurn: undefined,
     automatic: input.automatic === true ? true : undefined,
     heldId: undefined,
     onTurnComplete: undefined,
     deliveryId: undefined,
     dictated: undefined,
-    // docs/218 + docs/295 — a user-clicked dispatch carries the composer's tick
-    // boxes; an automatic one omits them and follows the setting (req 13).
+    // docs/218 + docs/295 — a user-clicked dispatch and an agent-interface message
+    // carry the composer's tick boxes; an automatic one omits them (req 13).
     resetMergedBranch: input.resetMergedBranch,
     compactContext: input.compactContext,
     silent: undefined,
+    clientRequestId: input.clientRequestId,
   }));
 
   return { ok: true, queued: wasRunning };

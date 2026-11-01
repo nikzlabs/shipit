@@ -1,7 +1,13 @@
 import type { SessionManager } from "./sessions.js";
-import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
 import { prepareDispatch, withSettlement, type PreparedDispatch } from "./prepared-dispatch.js";
-import { createTurnSettlement, type TurnHandle, type TurnOutcome } from "./turn-settlement.js";
+import {
+  createTurnSettlement,
+  turnRefused,
+  type TurnHandle,
+  type TurnOutcome,
+  type TurnSettlement,
+} from "./turn-settlement.js";
 import { toQueuedMessage } from "./session-runner.js";
 import { readAnswerHold } from "./turn-admission.js";
 import { holdTurn } from "./held-turns.js";
@@ -35,10 +41,20 @@ export interface WakeTurnOptions {
   /** Worker-persisted identity lets adoption restore settlement after restart. */
   deliveryId?: string;
   /**
-   * The caller's hold on this runner, released just before the dispatch so the wake runs
-   * ahead of the messages it kept queued (docs/321-agent-requested-restart).
+   * The caller's hold on this runner (docs/321-agent-requested-restart). The wake goes to
+   * the head of what the hold kept queued, then the hold comes off: a message of the
+   * user's runs before it, and anything else after it (docs/329-user-steers-every-turn).
    */
   releaseHold?: QueueHold;
+  /**
+   * docs/328-session-message-inbox — a turn that starts now or is refused, never a queued
+   * one. Its caller does not wait for its settlement.
+   */
+  startOrRefuse?: { automatic: boolean };
+  /** An earlier attempt of this wake put `text` in the transcript already. */
+  promptShown?: boolean;
+  /** Read again just before dispatch, after a preparation that can take tens of seconds. */
+  stillWanted?: () => boolean;
 }
 
 // Dispatch also waits for readiness; this wait exposes early boot failures.
@@ -46,7 +62,7 @@ const WAKE_WORKER_READY_TIMEOUT_MS = 30_000;
 
 /**
  * Resolves once the turn is dispatched, NOT once it runs. Read `admitted` on the handle:
- * a wake queued behind a running turn or a system hold has started nothing (docs/304).
+ * a wake queued behind a running turn or a session hold has started nothing (docs/304).
  */
 export async function wakeSessionWithTurn(
   deps: WakeSessionDeps,
@@ -56,18 +72,17 @@ export async function wakeSessionWithTurn(
   if (!session.workspaceDir) {
     throw new Error(`session ${session.id} has no workspace`);
   }
-  const {
-    sessionManager,
-    runnerRegistry,
-    containerManager,
-    credentialsDir,
-    credentialStore,
-    providerAccountManager,
-    defaultAgentId,
-  } = deps;
+  const { sessionManager } = deps;
 
   // docs/322 — nothing may run before the user replies, so nothing is booted to wait.
-  if (readAnswerHold({ answerHold: sessionManager }, session.id)) {
+  const answerHeld = readAnswerHold({ answerHold: sessionManager }, session.id);
+  if (answerHeld && opts.startOrRefuse?.automatic) {
+    const settlement = createTurnSettlement();
+    settlement.noteAdmission("refused");
+    settlement.settle(turnRefused("the agent waits for the user's answer"));
+    return settlement;
+  }
+  if (answerHeld && !opts.startOrRefuse) {
     const settlement = createTurnSettlement();
     const entry = toQueuedMessage(withSettlement(wakeDispatch(session.id, opts), settlement));
     if (holdTurn(sessionManager, session.id, entry)) {
@@ -80,6 +95,42 @@ export async function wakeSessionWithTurn(
       }
       return settlement;
     }
+  }
+
+  const runner = await bootSessionRunner(deps, session);
+  if (opts.stillWanted && !opts.stillWanted()) {
+    const settlement = createTurnSettlement();
+    settlement.noteAdmission("refused");
+    settlement.settle(turnRefused("the wake is no longer wanted"));
+    return settlement;
+  }
+
+  const prepared = wakeDispatch(session.id, opts);
+  if (opts.releaseHold && !opts.startOrRefuse) return queueAheadAndRelease(runner, opts.releaseHold, prepared);
+  opts.releaseHold?.release();
+  // A wake is work of its own: it waits for a running turn and is never steered into it.
+  return runner.dispatch(prepared, { whenBusy: opts.startOrRefuse ? "refuse" : "queue" });
+}
+
+/**
+ * The session's runner, with a container started for it when none runs. Throws when the
+ * container could not be resumed.
+ */
+export async function bootSessionRunner(
+  deps: WakeSessionDeps,
+  session: SessionInfo,
+): Promise<SessionRunnerInterface> {
+  const {
+    sessionManager,
+    runnerRegistry,
+    containerManager,
+    credentialsDir,
+    credentialStore,
+    providerAccountManager,
+    defaultAgentId,
+  } = deps;
+  if (!session.workspaceDir) {
+    throw new Error(`session ${session.id} has no workspace`);
   }
 
   // Recreate reclaimed workspaces before booting a container against them.
@@ -107,6 +158,8 @@ export async function wakeSessionWithTurn(
     await prepareSessionAgentEnvironment(runner, {
       sessionId: session.id,
       agentId: effectiveAgentId,
+      // The wake reuses a resident process, which can reread what a repair removes.
+      ...(runner.isStreamingActive && runner.getAgent() !== null ? { reusingResidentAgent: true } : {}),
       deps: {
         credentialsDir,
         credentialStore,
@@ -128,10 +181,24 @@ export async function wakeSessionWithTurn(
   if (runner.disposed) {
     throw new Error(`session ${session.id} container could not be resumed; wake-turn not delivered`);
   }
+  return runner;
+}
 
-  opts.releaseHold?.release();
-
-  return runner.dispatch(wakeDispatch(session.id, opts));
+function queueAheadAndRelease(
+  runner: SessionRunnerInterface,
+  hold: QueueHold,
+  prepared: PreparedDispatch,
+): TurnSettlement {
+  const settlement = createTurnSettlement();
+  settlement.noteAdmission("queued");
+  const entry = toQueuedMessage(withSettlement(prepared, settlement));
+  runner.messageQueue.unshift(entry);
+  hold.release();
+  releaseQueuedTurn(runner);
+  // A late answer hold also takes the entry out of the queue, into the saved hold.
+  if (!runner.messageQueue.includes(entry) && !runner.answerHold) settlement.noteAdmission("started");
+  runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
+  return settlement;
 }
 
 function wakeDispatch(sessionId: string, opts: WakeTurnOptions): PreparedDispatch {
@@ -142,8 +209,9 @@ function wakeDispatch(sessionId: string, opts: WakeTurnOptions): PreparedDispatc
     agentInterface: undefined,
     messageOrigin: opts.messageOrigin,
     activity: opts.activity,
-    systemTurn: true,
-    automatic: true,
+    automatic: opts.startOrRefuse && !opts.startOrRefuse.automatic ? undefined : true,
+    unattended: true,
+    ...(opts.promptShown ? { promptShown: true } : {}),
     heldId: undefined,
     ...(onSettled
       ? {

@@ -50,7 +50,7 @@ const FULL = {
   agentId: "codex",
   serviceId: "openai",
   billingMode: "sub",
-  modelId: "gpt-5.6-sol",
+  modelId: "gpt-6.1-sol",
   reasoningEffort: "high",
 };
 
@@ -62,7 +62,7 @@ describe("parseSubAgentSpawnTarget — the explicit path (docs/261 req 7)", () =
       harnessId: "codex",
       serviceId: "openai",
       billingMode: "sub",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
       reasoningEffort: "high",
     });
   });
@@ -196,7 +196,7 @@ describe("parseSpawnTarget — the role path with overrides (docs/264-agent-role
     ["agentId", "harnessId", "codex"],
     ["serviceId", "serviceId", "openai"],
     ["billingMode", "billingMode", "key"],
-    ["modelId", "modelId", "gpt-5.6-sol"],
+    ["modelId", "modelId", "gpt-6.1-sol"],
     ["reasoningEffort", "reasoningEffort", "high"],
   ] as const) {
     it(`carries a role plus ${field} as an override rather than refusing it`, async () => {
@@ -273,11 +273,11 @@ describe("parseSpawnTarget — the role path with overrides (docs/264-agent-role
 describe("parseSpawnTarget — the parent base (req 16)", () => {
   it("accepts a partial call when a parent is available, and refuses it when not", async () => {
     const { parseSpawnTarget } = await import("./sub-agent-target.js");
-    expect(parseSpawnTarget({ modelId: "gpt-5.6-sol" }, { parentBase: true })).toEqual({
+    expect(parseSpawnTarget({ modelId: "gpt-6.1-sol" }, { parentBase: true })).toEqual({
       kind: "inherit",
-      overrides: { modelId: "gpt-5.6-sol" },
+      overrides: { modelId: "gpt-6.1-sol" },
     });
-    expect(() => parseSpawnTarget({ modelId: "gpt-5.6-sol" }, { parentBase: false })).toThrow(
+    expect(() => parseSpawnTarget({ modelId: "gpt-6.1-sol" }, { parentBase: false })).toThrow(
       /missing/,
     );
   });
@@ -294,7 +294,7 @@ describe("parseSpawnTarget — the parent base (req 16)", () => {
       harnessId: "codex",
       serviceId: "openai",
       billingMode: "sub",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
       reasoningEffort: "high",
     });
   });
@@ -311,9 +311,9 @@ describe("parseSpawnTarget — the parent base (req 16)", () => {
   describe("--no-role (docs/264-agent-roles req 20)", () => {
     it("carries the decline onto the inherit target, overrides and all", async () => {
       const { parseSpawnTarget } = await import("./sub-agent-target.js");
-      expect(parseSpawnTarget({ noRole: true, modelId: "gpt-5.6-sol" }, { parentBase: true })).toEqual({
+      expect(parseSpawnTarget({ noRole: true, modelId: "gpt-6.1-sol" }, { parentBase: true })).toEqual({
         kind: "inherit",
-        overrides: { modelId: "gpt-5.6-sol" },
+        overrides: { modelId: "gpt-6.1-sol" },
         noRole: true,
       });
     });
@@ -362,7 +362,7 @@ describe("resolveSpawnTarget", () => {
         harnessId: "codex",
         serviceId: "openai",
         billingMode: "sub",
-        modelId: "gpt-5.6-sol",
+        modelId: "gpt-6.1-sol",
         reasoningEffort: "high",
       },
       { harnessId: "claude" },
@@ -371,7 +371,7 @@ describe("resolveSpawnTarget", () => {
     expect(resolved.selection).toEqual({
       serviceId: "openai",
       billingMode: "sub",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
     });
     expect(resolved.reasoningEffort).toBe("high");
     expect(resolved.route).toBeUndefined();
@@ -406,7 +406,7 @@ describe("resolveSpawnTarget", () => {
           harnessId: "claude",
           serviceId: "openai",
           billingMode: "sub",
-          modelId: "gpt-5.6-sol",
+          modelId: "gpt-6.1-sol",
           reasoningEffort: "high",
         },
         { harnessId: "claude" },
@@ -424,7 +424,7 @@ describe("resolveSpawnTarget", () => {
           harnessId: "codex",
           serviceId: "openai",
           billingMode: "sub",
-          modelId: "gpt-5.6-sol",
+          modelId: "gpt-6.1-sol",
           reasoningEffort: "ludicrous",
         },
         { harnessId: "claude" },
@@ -483,7 +483,7 @@ describe("resolveSpawnTarget", () => {
           harnessId: "codex",
           serviceId: "openai",
           billingMode: "sub",
-          modelId: "gpt-5.6-sol",
+          modelId: "gpt-6.1-sol",
         },
         { harnessId: "claude" },
         { credentialStore: storeWith([]) },
@@ -569,7 +569,7 @@ describe("resolveSpawnTarget", () => {
     );
     const forCodex = resolveSubAgentSpawnTarget(
       { kind: "role", role: "reviewer", overrides: {} },
-      { harnessId: "codex", selection: { serviceId: "openai", billingMode: "key", modelId: "gpt-5.6-sol" } },
+      { harnessId: "codex", selection: { serviceId: "openai", billingMode: "key", modelId: "gpt-6.1-sol" } },
       deps,
     );
     expect(forClaude.harnessId).toBe("codex");
@@ -690,7 +690,7 @@ describe("resolveSpawnTargetForChild (req 11)", () => {
 });
 
 describe("assertHarnessCanRunSelection", () => {
-  const selection = { serviceId: "openai", billingMode: "sub" as const, modelId: "gpt-5.6-sol" };
+  const selection = { serviceId: "openai", billingMode: "sub" as const, modelId: "gpt-6.1-sol" };
 
   it("accepts a selection in the harness's eligible set", async () => {
     const { assertHarnessCanRunSelection } = await import("./sub-agent-target.js");
@@ -700,7 +700,7 @@ describe("assertHarnessCanRunSelection", () => {
   it("refuses a harness pointed at a model no credential of its own offers", async () => {
     const { assertHarnessCanRunSelection } = await import("./sub-agent-target.js");
     expect(() =>
-      assertHarnessCanRunSelection("Claude Code", [selection], { ...selection, modelId: "gpt-5.6-luna" }),
+      assertHarnessCanRunSelection("Claude Code", [selection], { ...selection, modelId: "gpt-6-luna" }),
     ).toThrow(/cannot run/);
   });
 

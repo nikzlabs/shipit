@@ -5,7 +5,7 @@ import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
 import { TEST_CREDENTIALS_DIR } from "../credentials-test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { UsageManager } from "../usage.js";
-import { recordNonTurnUsage } from "./non-turn-work.js";
+import { oneRequest, recordNonTurnUsage } from "./non-turn-work.js";
 
 function keyRoute(serviceId: string, billingMode: "key" | "sub" = "key"): CredentialRoute {
   return {
@@ -147,6 +147,20 @@ describe("makeNonTurnGenerateText", () => {
     expect(row.extra?.attribution).toMatchObject({ serviceId: "zai", billingMode: "sub" });
     expect(row.costUsd).toBe(0);
     expect(row.extra?.costSource).toBe("per-turn");
+  });
+
+  it("passes the run's request list and context size to its row (docs/329-tiered-model-pricing)", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const requests = [{ input: 1000, cacheRead: 0, cacheWrite: 0 }];
+    const { deps, h } = buildDeps({ spawn: async () => ({ ...OK_RESULT, requests, contextTokens: 1000 }) });
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      fallback: async () => "unused",
+    } as never);
+
+    await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
+
+    expect(h.recorded[0].extra).toMatchObject({ requests, contextTokens: 1000 });
   });
 
   it("records nothing when the harness reported no telemetry", async () => {
@@ -313,28 +327,29 @@ describe("makeNonTurnGenerateText — credential window", () => {
     vi.doUnmock("../session-credentials.js");
   });
 
-  it("gives a same-harness run an isolated spawn home and never borrows the session subtree", async () => {
-    const calls: string[] = [];
+  const mockSpawnHomes = (calls: string[], provision: () => void = () => {}) => {
     vi.doMock("../session-credentials.js", () => ({
-      provisionSubAgentCredentials: () => calls.push("provision"),
-      releaseSubAgentCredentials: () => {
-        calls.push("wipe");
-        return "acct_marker";
+      provisionSubAgentSpawnHome: () => {
+        calls.push("provision-home");
+        provision();
       },
-      provisionSubAgentSpawnHome: () => calls.push("provision-home"),
       releaseSubAgentSpawnHome: () => calls.push("release-home"),
       subAgentSpawnHomeContainerDir: (spawnId: string) => `/credentials/sub-agent-homes/${spawnId}`,
-      syncAgentTokenBack: () => calls.push("sync"),
-      syncProviderAccountTokenBack: () => calls.push("sync-account"),
-      provisionProviderAccountCredentials: () => calls.push("restore"),
     }));
+  };
+
+  // No session harness is given to the run: a run of ANY harness gets its own home. A run that
+  // shared the session's subtree was pruned under by the next one (planning#572).
+  it("gives every run a private spawn home and never writes the session subtree", async () => {
+    const calls: string[] = [];
+    mockSpawnHomes(calls);
     const { ContainerSessionRunner } = await import("../container-session-runner.js");
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
-    let seenHomeDir: string | undefined;
+    const homes: (string | undefined)[] = [];
     const runner = fakeContainerRunner(ContainerSessionRunner, {
       spawnSubAgent: async (req: { spawnId: string; homeDir?: string }) => {
         calls.push("spawn");
-        seenHomeDir = req.homeDir;
+        homes.push(req.homeDir);
         return OK_RESULT;
       },
     });
@@ -342,78 +357,25 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const generate = makeNonTurnGenerateText({
       ...(deps as object),
       getRunnerRegistry: () => ({ get: () => runner }),
-      sessionManager: { get: () => ({ agentId: "claude" }) },
       credentialsDir: TEST_CREDENTIALS_DIR,
       fallback: async () => "unused",
     } as never);
 
-    await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
+    await Promise.all([
+      generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" }),
+      generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" }),
+    ]);
 
-    expect(calls).toEqual(["provision-home", "spawn", "release-home"]);
-    expect(seenHomeDir).toMatch(/^\/credentials\/sub-agent-homes\//);
+    expect(calls.filter((c) => c === "provision-home")).toHaveLength(2);
+    expect(calls.filter((c) => c === "release-home")).toHaveLength(2);
+    expect(homes[0]).toMatch(/^\/credentials\/sub-agent-homes\//);
+    expect(homes[1]).toMatch(/^\/credentials\/sub-agent-homes\//);
+    expect(homes[0]).not.toBe(homes[1]);
   });
 
-  it("still borrows the session subtree for a cross-harness run, and restores on release", async () => {
+  it("still releases the home when the spawn throws", async () => {
     const calls: string[] = [];
-    const restored: string[] = [];
-    vi.doMock("../session-credentials.js", () => ({
-      provisionSubAgentCredentials: () => calls.push("provision"),
-      releaseSubAgentCredentials: () => {
-        calls.push("wipe");
-        return "acct_marker";
-      },
-      provisionSubAgentSpawnHome: () => calls.push("provision-home"),
-      releaseSubAgentSpawnHome: () => calls.push("release-home"),
-      subAgentSpawnHomeContainerDir: (spawnId: string) => `/credentials/sub-agent-homes/${spawnId}`,
-      syncAgentTokenBack: () => calls.push("sync"),
-      syncProviderAccountTokenBack: () => calls.push("sync-account"),
-      provisionProviderAccountCredentials: (
-        _dir: string, _sessionId: string, _agentId: string, accountId: string,
-      ) => {
-        calls.push("restore");
-        restored.push(accountId);
-      },
-    }));
-    const { ContainerSessionRunner } = await import("../container-session-runner.js");
-    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
-    const runner = fakeContainerRunner(ContainerSessionRunner, {
-      spawnSubAgent: async () => {
-        calls.push("spawn");
-        return OK_RESULT;
-      },
-    });
-    const { deps } = buildDeps({});
-    // Model a session changing harness between capture and release.
-    const agentIds = ["codex", "claude"];
-    const generate = makeNonTurnGenerateText({
-      ...(deps as object),
-      getRunnerRegistry: () => ({ get: () => runner }),
-      sessionManager: { get: () => ({ agentId: agentIds.length > 1 ? agentIds.shift() : agentIds[0] }) },
-      credentialsDir: TEST_CREDENTIALS_DIR,
-      fallback: async () => "unused",
-    } as never);
-
-    await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
-
-    expect(calls).toEqual(["provision", "spawn", "sync", "wipe", "restore"]);
-    expect(restored).toEqual(["acct_marker"]);
-  });
-
-  it("still wipes when the spawn throws", async () => {
-    const calls: string[] = [];
-    vi.doMock("../session-credentials.js", () => ({
-      provisionSubAgentCredentials: () => calls.push("provision"),
-      releaseSubAgentCredentials: () => {
-        calls.push("wipe");
-        return undefined;
-      },
-      provisionSubAgentSpawnHome: () => calls.push("provision-home"),
-      releaseSubAgentSpawnHome: () => calls.push("release-home"),
-      subAgentSpawnHomeContainerDir: (spawnId: string) => `/credentials/sub-agent-homes/${spawnId}`,
-      syncAgentTokenBack: () => calls.push("sync"),
-      syncProviderAccountTokenBack: () => calls.push("sync-account"),
-      provisionProviderAccountCredentials: () => calls.push("restore"),
-    }));
+    mockSpawnHomes(calls);
     const { ContainerSessionRunner } = await import("../container-session-runner.js");
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const runner = fakeContainerRunner(ContainerSessionRunner, {
@@ -428,27 +390,14 @@ describe("makeNonTurnGenerateText — credential window", () => {
     } as never);
 
     expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
-    expect(calls).toContain("wipe");
+    expect(calls).toEqual(["provision-home", "release-home"]);
   });
 
   it("closes the credential window when provisioning itself throws", async () => {
     const calls: string[] = [];
-    vi.doMock("../session-credentials.js", () => ({
-      provisionSubAgentCredentials: () => calls.push("provision"),
-      releaseSubAgentCredentials: () => {
-        calls.push("wipe");
-        return "acct_marker";
-      },
-      provisionSubAgentSpawnHome: () => {
-        calls.push("provision-home");
-        throw new Error("ENOSPC: no space left on device");
-      },
-      releaseSubAgentSpawnHome: () => calls.push("release-home"),
-      subAgentSpawnHomeContainerDir: (spawnId: string) => `/credentials/sub-agent-homes/${spawnId}`,
-      syncAgentTokenBack: () => calls.push("sync"),
-      syncProviderAccountTokenBack: () => calls.push("sync-account"),
-      provisionProviderAccountCredentials: () => calls.push("restore"),
-    }));
+    mockSpawnHomes(calls, () => {
+      throw new Error("ENOSPC: no space left on device");
+    });
     const { ContainerSessionRunner } = await import("../container-session-runner.js");
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
     const runner = fakeContainerRunner(ContainerSessionRunner, {
@@ -461,7 +410,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const generate = makeNonTurnGenerateText({
       ...(deps as object),
       getRunnerRegistry: () => ({ get: () => runner }),
-      sessionManager: { get: () => ({ agentId: "claude" }) },
       credentialsDir: TEST_CREDENTIALS_DIR,
       fallback: async () => "unused",
     } as never);
@@ -718,6 +666,42 @@ describe("recordNonTurnUsage — what the selection says, not how it ran (docs/2
     expect(stats.totals.meteredCostUsd).toBeGreaterThan(0);
   });
 
+  it("prices each request of background work at its own prompt length (docs/329-tiered-model-pricing)", () => {
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: "s1",
+      purpose: "session-naming",
+      target: { selection: { serviceId: "anthropic", billingMode: "sub", modelId: "claude-haiku-5-5" } },
+      telemetry: {
+        durationMs: 900,
+        inputTokens: 150_000,
+        outputTokens: 100,
+        requests: oneRequest({ inputTokens: 150_000, outputTokens: 100 }),
+      },
+    });
+
+    // Haiku 5.5 above 100K: $0.5 input and $2.5 output per million.
+    expect(usageManager.getSessionTurns("s1")[0].atApiRatesUsd).toBeCloseTo((150_000 * 0.5 + 100 * 2.5) / 1e6, 12);
+  });
+
+  it("prices what a partial list leaves out at the tier of the run's context size", () => {
+    // Claude's shape: prompt fields per call, output only in the totals.
+    recordNonTurnUsage({ usageManager }, {
+      sessionId: "s1",
+      harnessId: "claude",
+      purpose: "pr-description",
+      target: { selection: { serviceId: "anthropic", billingMode: "sub", modelId: "claude-haiku-5-5" } },
+      telemetry: {
+        durationMs: 900,
+        inputTokens: 150_000,
+        outputTokens: 1_000,
+        requests: [{ input: 150_000, cacheRead: 0, cacheWrite: 0 }],
+        contextTokens: 150_000,
+      },
+    });
+
+    expect(usageManager.getSessionTurns("s1")[0].atApiRatesUsd).toBeCloseTo((150_000 * 0.5 + 1_000 * 2.5) / 1e6, 12);
+  });
+
   it("still names the harness that ran the work, where one did", () => {
     recordNonTurnUsage({ usageManager }, {
       sessionId: "s1",
@@ -878,6 +862,8 @@ describe("makeNonTurnGenerateText — a direct call needs no session and no cont
     expect(row.inputTokens).toBe(900);
     expect(row.outputTokens).toBe(40);
     expect(row.costUsd).toBeGreaterThan(0);
+    // One call, so its totals are that call's entry.
+    expect(row.extra?.requests).toEqual([{ input: 900, output: 40, cacheRead: 10 }]);
   });
 
   it("persists a failure notice for the session that asked, and returns nothing", async () => {

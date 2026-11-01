@@ -5,7 +5,7 @@ import type { SessionRunnerInterface } from "./session-runner.js";
 import { getErrorMessage } from "./validation.js";
 import { AutoRemediationManager } from "./auto-remediation-manager.js";
 import type { RemediationArbiter } from "./auto-remediation-arbiter.js";
-import type { TurnOutcome } from "./turn-settlement.js";
+import { DISPATCH_SETUP_FAILURE, type TurnOutcome } from "./turn-settlement.js";
 
 export const MAX_AUTO_FIX_ATTEMPTS = 3;
 export const AUTO_FIX_COOLDOWN_MS = 2 * 60 * 1000;
@@ -20,6 +20,10 @@ export interface AutoFixResult { outcome: "fixed" | "noop"; lastError?: string }
 export function autoFixResultForOutcome(outcome: TurnOutcome): AutoFixResult {
   if (outcome.status === "dropped" || outcome.status === "steered") {
     return { outcome: "noop", lastError: `fix turn ${outcome.status}` };
+  }
+  // A turn that failed to start never gave the agent the logs.
+  if (outcome.status === "errored" && outcome.detail?.startsWith(DISPATCH_SETUP_FAILURE)) {
+    return { outcome: "noop", lastError: "fix turn failed to start" };
   }
   return { outcome: "fixed" };
 }

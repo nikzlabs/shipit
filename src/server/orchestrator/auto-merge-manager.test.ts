@@ -45,7 +45,7 @@ function makeManager(mergeResult = { success: true, message: "merged" }) {
 }
 
 function makeManagerWithRunner(
-  runner: { running?: boolean; agentBusy: boolean; systemTurnInProgress?: boolean } | undefined,
+  runner: { running?: boolean; agentBusy: boolean; sessionHold?: { release(): void } | null } | undefined,
 ) {
   const mergePullRequest = vi.fn().mockResolvedValue({ success: true, message: "merged" });
   const githubAuth = { mergePullRequest } as unknown as GitHubAuthManager;
@@ -393,11 +393,11 @@ describe("AutoMergeManager.handleManaged", () => {
       expect(mergePullRequest).toHaveBeenCalledTimes(1);
     });
 
-    it("holds the merge during a system turn (rebase / force-push)", async () => {
+    it("holds the merge while a flow holds the session (rebase / force-push)", async () => {
       const { manager, mergePullRequest } = makeManagerWithRunner({
         running: false,
         agentBusy: false,
-        systemTurnInProgress: true,
+        sessionHold: { release: () => {} },
       });
       manager.setEnabled("s1", true);
       manager.setManaged("s1", true);

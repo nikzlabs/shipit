@@ -210,6 +210,26 @@ process's own reads kept failing?" — a restart re-earns the benefit of the dou
 which is the right answer for an outage that spanned it. Any answer at all clears
 the run; the limit is on *consecutive* failures.
 
+**A read that GitHub does not answer is an unreadable answer after thirty
+seconds** (`GITHUB_READ_TIMEOUT_MS`), on the GraphQL read that decides the merge
+and on the REST read that settles one. The tick does one read at a time, for
+every request of every session, and the HTTP client's own limit is five minutes
+(measured: 299 s to a server that sends no headers) — so one read with no answer
+held every other request for that long. The merge call itself keeps the
+client's limit: to end it early turns a slow merge into an `indeterminate` one.
+The REST read rejects at a deadline that comes before the response headers, as
+it does on a network error, and answers "nothing" at one that comes while the
+body is read. Both defer a settlement. Because of the first, the direct merge's
+route catches a throw from the whole recording that follows a merge and answers
+"merged, recording deferred" — it answered "Merge failed" for a pull request
+that had merged.
+
+The GraphQL read is shared, and one other caller could not take "no answer" for
+a page: the boot janitor deletes a `shipit/` branch that has a merged pull
+request and no open one, and it took a page it could not read as the end of the
+list. It now deletes nothing in a repository whose list it did not read to the
+end.
+
 **A throw from the merge call is `indeterminate`, never a failure.** The manager's
 wrapper reads the pull request before it sends the merge, so a rejection can come
 from either — and the second can reject after GitHub accepted it. The shape of an
@@ -254,6 +274,38 @@ answers "idle" for exactly the session most likely to be mid-push.
 `unprobedAfterRestart` names them until a runner exists, which is the moment the
 ordinary checks can answer again.
 
+**Nothing clears that mark from a later answer of the worker, and that is on
+purpose.** Adoption's later probes can read "no turn", and the request still
+waits until the session has a runner — until somebody opens it. A change that
+cleared the mark from that answer was written with req 8's follow-ups and taken
+out again: three independent reviews each found a state in which it let a merge
+run beside live work (req 6).
+
+- *The worker's status cannot say "no work".* It reports a turn, a turn its CLI
+  started, background commands and a running install. It does not report a
+  sub-agent run, a start that it accepted and still prepares (`pendingStart`),
+  or an install that it still prepares.
+- *A session with no tracked container is not proof either.* `destroyContainer`
+  forgets the entry also when Docker's stop and remove both failed.
+- *A probe that adopts the turn it finds does not help*, because of the limit
+  below.
+
+A request that waits on the mark gets the held-request notice (req 8) after two
+minutes, which says that ShipIt restarted and has not confirmed that the
+session's last turn ended. To end that wait with nobody opening the session,
+the worker must first report all of its work in one answer. A test pins the
+mark's behaviour (`restart-turn-reattach.test.ts`).
+
+**Known limit: after a restart, the orchestrator does not know all of a worker's
+work.** A runner counts background commands from the stream of the CLI
+(`setBackgroundTasks`) and sub-agent runs from its own memory, and its first
+connect reads the worker's status without them. So a runner made after the
+restart — somebody opened the session, or adoption followed a turn that then
+ended — can read as idle while a background command or a sub-agent run from
+before the restart continues. A session with no runner whose boot probe
+answered reads as idle whatever its worker does. Both are older than req 8 and
+are not changed here.
+
 ### Where the executor runs
 
 **Its own small loop in the orchestrator process** (`services/agent-merge-executor.ts`),
@@ -286,6 +338,25 @@ Two directions, and they need different mechanisms.
 only when the session is idle: no runner, or a runner that is not `running`, not
 `agentBusy`, not holding `systemTurnInProgress`, with an empty queue.
 
+**A live background command is not idle, and that is the rule, not an accident
+of `agentBusy`.** `agentBusy` counts the resident CLI's background tasks
+(verified at `container-session-runner.ts` `agentBusy`), and a background task
+normally ends by starting a turn the orchestrator did not start — the CLI's own
+completion notice (verified at `ws-handlers/agent-listeners.ts`
+`adoptCliStartedTurn`). That turn passes no admission site, so `mergeHold`
+cannot keep it back: a merge that began while the task was live could not keep
+the second half of req 6. It is also `docs/266-auto-merge-busy-guard` req 2 —
+the window in which the agent can still produce commits. The cost is real: a
+background `sleep 1200` started to look at the pull request later holds the
+merge for those twenty minutes, and then for the turn its end starts.
+Requirement 8 exists because that wait was silent.
+
+The count is the CLI's report, not a process table. Bash tasks send no
+heartbeat, so a task is counted for at most an hour after the CLI last changed
+its task list (`BACKGROUND_TASK_TTL_MS` in `background-task-tracker.ts`), and
+only while the resident CLI is alive. A command that outlives that hour stops
+holding the merge.
+
 **A turn does not start while the merge is in progress.** A busy check cannot give
 that — `PostTurnHold.begin()` only increments a counter, and neither admission
 site consults `agentBusy` — so the executor sets `runner.mergeHold` for the
@@ -313,11 +384,18 @@ next check read the session as busy — and the merge defers, for ever, on every
 session that has a runner at all. It shipped that way for one round and no test
 caught it, because the fake runner's `agentBusy` was a hard-coded `false`.
 
-**Under the hold, `isIdle` asks one question: did a turn start?** Everything else
-it could ask about — the lease, a queued message, the hold — is this pass's own
-effect. Nothing is lost: the full busy check ran *before* the hold was taken, and
-a turn cannot appear afterwards without setting `running`, which admission
-forbids under the hold.
+**The full busy check runs twice: before the GitHub read, and again after it,
+immediately before the hold.** The read is awaited, and a turn can start *and
+end* inside it, leaving a background command or post-turn work behind. A check
+that asks only "is a turn running?" does not see that, and it merged there until
+an independent review found it (2026-10-10). Nothing is awaited between the
+second check and the merge call, so its answer still holds when the call goes
+out.
+
+**Under the hold, `isIdle` asks one question: did a turn start?** That is the
+settlement's check. Everything else it could ask about — the lease, a queued
+message, the hold — is this pass's own effect, and a turn cannot appear without
+setting `running`, which admission forbids under the hold.
 
 **A runner is not always there to hold.** A session with no container has no
 runner at all, and the user opening it *during* the merge creates one — with
@@ -346,6 +424,57 @@ clears `mergeHold` and calls the shared `releaseQueuedTurn()`
 own (req 6, last sentence). Both run in a `finally`, **after** the durable state
 change, so a crash in between leaves a row reconciliation resolves rather than a
 queue released against a hold that still exists.
+
+### A request that waits on a session that is not idle says so (req 8)
+
+Three places, one rule each.
+
+**The answer to `--auto`** says "once its checks pass **and this session is
+idle**", says what idle means, and tells the agent what follows from it: end the
+turn, and do not wait for the merge in the turn or in a background command. That
+is the place the agent reads at the moment it decides how to wait. When the
+session already has background work as it arms — a dev server the agent
+started — the answer names it (`backgroundWork`, read from the runner by the
+route).
+
+**The transcript** gets one notice per request when the session has been not
+idle for longer than the usual hold (`noteHold`). The notice names what holds
+the request, from the same function that decides the wait (`idleBlocker`), so
+the two cannot disagree.
+
+- *Two minutes with no turn running*, because the commit and push that follow
+  every turn also hold the session, and that is not news.
+- *Ten minutes while a turn runs.* A turn that asks for the merge usually ends
+  soon after, and the transcript shows it; a turn that still runs ten minutes
+  later is most often the agent waiting for the merge it holds back. This
+  notice goes through `emitNoticeInTurn`, so it is recorded with the turn's own
+  rows at its place in the turn — a row appended beside rows still in progress
+  would not keep that place.
+- *Each turn has its own count, and so does the time with no turn.* The count
+  restarts when a turn starts or ends. A turn is named by its runner and its
+  `turnEpoch`, not by "a turn runs", so two turns with no pass between them
+  are still two, also when a new runner replaced the first — otherwise a
+  request armed early in a long turn would announce the ordinary post-turn work
+  the moment that turn finished.
+- *A write that fails does not double the notice.* With no turn, and in a turn
+  that has not started its rows yet (the rows of the turn before are final),
+  the notice is written before it is shown, and tried again. In a turn with
+  rows in progress, `emitChatCard` shows and records the notice before it
+  writes; a notice that is on the runner is written with the turn's next rows,
+  so it counts as said.
+- *It does not say the checks passed.* The executor reads nothing from GitHub
+  while the session is not idle, and that stays: the notice states the hold and
+  what ends it.
+- *Once per request*, whichever kind of hold came first. A request armed again
+  is a new request and may say so again. The record is in memory, so a restart
+  may repeat it.
+
+**The log** gets every reason a request waits, once per change of reason
+(`logWaitOnce`) — the session not idle and why, checks running, a rollup that
+lags. Before this, a waiting request logged nothing at all, so the incident that
+prompted req 8 left no record to read. Background work is logged as a count: the
+descriptions are text the agent wrote, and they stay in the session's own
+transcript.
 
 ### Revocation (req 4)
 
@@ -415,6 +544,9 @@ cannot prove ShipIt performed the merge. Two details are this feature's:
 | `src/server/orchestrator/services/agent-merge-settlement.ts` | reconciliation stands down for a merge in flight |
 | `src/server/orchestrator/bootstrap-managers.ts` | construct and start the executor after adoption; `route-registry.ts` and `startup-monitors.ts` take it from the runtime |
 | `src/server/shipit-docs/github.md` | the agent-facing `--auto` section |
+| `src/server/orchestrator/restart-turn-reattach.ts` | `unprobedAfterRestart`, the mark of a session whose boot probe failed |
+| `src/server/orchestrator/github-api.ts` | `GITHUB_READ_TIMEOUT_MS`, the limit on the reads the tick waits for |
+| `src/server/orchestrator/prompts/pull-requests.md` | "Never poll for a merge", which covers a wait in the background too |
 
 ## Tests
 
@@ -430,3 +562,24 @@ cannot prove ShipIt performed the merge. Two details are this feature's:
 - "Not yet": the refusal returns the row to `pending` and a later pass merges; a
   failing required check still ends it; a withdrawal during the PUT is not
   revived; a long run of such refusals says so once and keeps the row.
+- A held request (req 8): a real runner with a background command waits, says so
+  once with the command named, and merges when the command ends; post-turn work
+  shorter than two minutes is not announced; the count starts at the end of the
+  turn; a notice whose write fails is tried again; the log carries no text the
+  agent wrote; the answer to `--auto` states the rule and names live background
+  work.
+- A request held by a running turn (req 8), on a real runner: no notice before
+  ten minutes; then one, in the turn's rows at its place, with the id the
+  viewer got; one row after the turn's rows become final; no second notice for
+  the hold that follows; the count starts when the turn does, again for the
+  turn that follows it, and again for the turn of a runner that replaced the
+  first; a write that fails leaves one notice, with rows in progress and with
+  the rows of the turn before still final.
+- A session whose boot probe failed keeps its mark when the worker then reports
+  no turn, and when it has no container (req 6).
+- A read with no answer (req 1): the GraphQL read returns "unanswered" at its
+  deadline, and the REST read of one pull request rejects; a direct merge whose
+  recording rejects, at the read or at the write, is still reported as merged;
+  the janitor deletes no branch when a page of pull requests gets no answer.
+- A turn that starts and ends during the GitHub read, and leaves a background
+  command running, does not merge (req 6).

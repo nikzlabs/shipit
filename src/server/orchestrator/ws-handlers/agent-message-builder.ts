@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { WsServerMessage, ClaudeContentBlockToolUse } from "../../shared/types.js";
 import type {
   ChatMessageGroup,
@@ -6,6 +7,7 @@ import type {
   SteeredMessage,
   ToolResultEntry,
 } from "../session-runner.js";
+import { nextSendOrder, queueEntryId, requeueInSendOrder } from "../queue-identity.js";
 
 // Keep plan and question cards with the preceding text.
 const STANDALONE_MERGE = new Set(["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]);
@@ -92,12 +94,34 @@ export function attachToolResultsToGroup(
   }
 }
 
+/**
+ * docs/007 req 5 — the group just fed holds the CLI's latest message of the conversation.
+ * Not when a steer the CLI has read sits after the group: a lone question or plan tool merged
+ * into it comes after that steer in the conversation, and a fork there would keep the steer.
+ */
+export function stampLastGroup(
+  runner: Pick<SessionRunnerInterface, "chatMessageGroups" | "steeredMessages">,
+  agentMessageId: string,
+): void {
+  const groups = runner.chatMessageGroups;
+  if (groups.length === 0) return;
+  const persistable = groups.filter((g) => g.text || g.toolUse.length > 0).length;
+  if (runner.steeredMessages.some((s) => s.delivered && s.afterGroupIndex >= persistable)) return;
+  groups[groups.length - 1].agentMessageId = agentMessageId;
+}
+
+/** Returns the steer's bubble id: `extra.clientRequestId`, or one made here. */
 export function recordSteeredMessage(
   runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[] },
   text: string,
-  extra?: Pick<SteeredMessage, "images" | "files" | "uploadPaths" | "assembledPrompt" | "agentInterface" | "messageOrigin" | "automatic">,
-): void {
+  extra?: Pick<
+    SteeredMessage,
+    "images" | "files" | "uploadPaths" | "assembledPrompt" | "agentInterface" | "messageOrigin" | "automatic"
+    | "bestEffort" | "clientRequestId" | "sendOrder" | "steeredDispatch"
+  >,
+): string {
   const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
+  const clientRequestId = extra?.clientRequestId ?? randomUUID();
   runner.steeredMessages = [
     ...runner.steeredMessages,
     {
@@ -110,11 +134,16 @@ export function recordSteeredMessage(
       uploadPaths: extra?.uploadPaths,
       assembledPrompt: extra?.assembledPrompt,
       ...(extra?.automatic ? { automatic: true } : {}),
+      ...(extra?.bestEffort ? { bestEffort: true } : {}),
+      ...(extra?.steeredDispatch ? { steeredDispatch: true } : {}),
+      clientRequestId,
+      sendOrder: extra?.sendOrder ?? nextSendOrder(),
     },
   ];
   console.log(
     `[steered] recordSteeredMessage afterGroupIndex=${afterGroupIndex} steered.len=${runner.steeredMessages.length} text=${JSON.stringify(text.slice(0, 60))}`,
   );
+  return clientRequestId;
 }
 
 export function steerToQueuedMessage(s: SteeredMessage): QueuedMessage {
@@ -124,9 +153,13 @@ export function steerToQueuedMessage(s: SteeredMessage): QueuedMessage {
     ...(s.agentInterface ? { agentInterface: s.agentInterface } : {}),
     ...(s.messageOrigin ? { messageOrigin: s.messageOrigin } : {}),
     ...(s.automatic ? { automatic: true } : {}),
+    ...(s.clientRequestId !== undefined ? { clientRequestId: s.clientRequestId } : {}),
+    ...(s.sendOrder !== undefined ? { sendOrder: s.sendOrder } : {}),
+    ...(s.steeredDispatch ? { steeredDispatch: true } : {}),
   };
   if (s.images && s.images.length > 0) queued.images = s.images;
   if (s.files && s.files.length > 0) queued.files = s.files.map((f) => ({ path: f.path }));
+  if (s.uploadPaths && s.uploadPaths.length > 0) queued.uploadPaths = s.uploadPaths;
   return queued;
 }
 
@@ -141,13 +174,16 @@ export function requeueUndeliveredSteers(
     s.assembledPrompt !== undefined && !s.delivered && persistableGroups <= s.afterGroupIndex;
   const undelivered = steers.filter(isUndelivered);
   if (undelivered.length === 0) return 0;
+  // Its row goes either way: the transcript keeps no message that the agent did not get.
   runner.steeredMessages = steers.filter((s) => !isUndelivered(s));
-  for (const s of undelivered) {
-    const position = runner.enqueue(steerToQueuedMessage(s));
-    emit({ type: "message_queued", text: s.text, position });
+  const requeued = undelivered.filter((s) => !s.bestEffort);
+  for (const s of requeued) {
+    const entry = steerToQueuedMessage(s);
+    const position = requeueInSendOrder(runner, entry);
+    emit({ type: "message_queued", sessionId: runner.sessionId, id: queueEntryId(entry), text: s.text, position });
     console.log(
       `[steer-requeue] runner=${runner.sessionId} un-acked steer re-queued at pos=${position} text=${JSON.stringify(s.text.slice(0, 60))}`,
     );
   }
-  return undelivered.length;
+  return requeued.length;
 }

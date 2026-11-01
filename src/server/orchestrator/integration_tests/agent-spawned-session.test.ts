@@ -73,6 +73,8 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       tmpDir,
       repoUrl: SPAWN_REPO_URL,
       seedFiles: { "README.md": "# spawn-remote-test\n" },
+      // A spawn never takes the warm session, so it exercises the clone path.
+      bare: true,
     });
     repoStore.add(SPAWN_REPO_URL);
     repoStore.setReady(SPAWN_REPO_URL);
@@ -245,11 +247,11 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const { sessionId: childId } = res.json() as { sessionId: string };
 
     const child = sessionManager.get(childId);
-    expect(child?.model).toBe("gpt-5.6-sol");
+    expect(child?.model).toBe("gpt-6.1-sol");
     expect(child?.serviceId).toBe("openai");
     expect(child?.billingMode).toBe("key");
 
-    expect(sessionManager.get(parentId)?.model).toBe("gpt-5.6-sol");
+    expect(sessionManager.get(parentId)?.model).toBe("gpt-6.1-sol");
     expect(sessionManager.get(parentId)?.billingMode).toBe("key");
   });
 
@@ -571,13 +573,23 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     }
     const cp = createdClaudes[createdClaudes.length - 1];
     cp.finish();
-    await new Promise((r) => setTimeout(r, 50));
+    // Idle means committed too: a message that arrives before the commit lands is queued behind it.
+    const registry = (app as unknown as {
+      runnerRegistry: { get(id: string): { running: boolean; turnCommitPending: boolean } | undefined };
+    }).runnerRegistry;
+    await expect.poll(() => {
+      const runner = registry.get(childId);
+      return runner !== undefined && !runner.running && !runner.turnCommitPending;
+    }, { timeout: 5000 }).toBe(true);
     return childId;
   }
 
-  it("POST /children/:childId/message enqueues a prompt on the child runner", { timeout: 15_000 }, async () => {
+  // docs/328-session-message-inbox req 1 — a message to a busy child is not a queued turn.
+  it("POST /children/:childId/message puts the message in a busy child's inbox and queues no turn", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
     const childId = await spawnChild(parentId);
+    const runner = (app as unknown as { runnerRegistry: { get(id: string): { queueLength: number } } }).runnerRegistry.get(childId);
+    const queuedBefore = runner.queueLength;
 
     const res = await app.inject({
       method: "POST",
@@ -585,15 +597,25 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       payload: { text: "Also do X" },
     });
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { queuePosition: number; enqueued: boolean };
-    expect(body.enqueued).toBe(true);
-    expect(body.queuePosition).toBeGreaterThanOrEqual(1);
-    const runner = (app as unknown as { runnerRegistry: { get(id: string): { messageQueue: { messageOrigin?: unknown }[] } } }).runnerRegistry.get(childId);
-    expect(runner.messageQueue.at(-1)?.messageOrigin).toEqual({
+    expect(res.json()).toMatchObject({ enqueued: true, queuePosition: 0, told: "later" });
+    expect(runner.queueLength).toBe(queuedBefore);
+
+    const inbox = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${childId}/inbox/read`,
+      payload: {},
+    });
+    const messages = inbox.json().messages as { text: string; from?: unknown }[];
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.text).toContain("Also do X");
+    expect(messages[0]!.from).toEqual({
       sessionId: parentId,
       sessionTitle: "Parent",
       relation: "parent",
     });
+    // One read returns every unread message and marks it read (req 4).
+    const again = await app.inject({ method: "POST", url: `/api/sessions/${childId}/inbox/read`, payload: {} });
+    expect(again.json().messages).toEqual([]);
   });
 
   it("POST /children/:childId/message starts a turn directly when the child is idle", { timeout: 15_000 }, async () => {
@@ -606,9 +628,13 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       payload: { text: "Also do X" },
     });
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { queuePosition: number; enqueued: boolean };
-    expect(body.enqueued).toBe(false);
-    expect(body.queuePosition).toBe(0);
+    expect(res.json()).toMatchObject({ enqueued: false, queuePosition: 0, told: "started" });
+    // The response says "started"; this is the turn, and what its agent was given.
+    await waitFor(
+      () => createdClaudes.some((cp) => cp.runCalled && cp.lastPrompt?.includes("shipit session inbox")),
+      10_000,
+      "the child's inbox turn",
+    );
   });
 
   it("POST /children/:childId/message rejects an empty body with 400", { timeout: 15_000 }, async () => {
@@ -825,7 +851,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   it("docs/217 — a level the child's harness doesn't offer is dropped, not forwarded", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
     sessionManager.setAgentId(parentId, "codex");
-    sessionManager.setModel(parentId, "gpt-5.5");
+    sessionManager.setModel(parentId, "gpt-6.1-sol");
     sessionManager.setReasoning(parentId, "minimal");
 
     const res = await app.inject({
@@ -1186,7 +1212,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
         agentId: "claude",
         serviceId: "openai",
         billingMode: "sub",
-        modelId: "gpt-5.6-sol",
+        modelId: "gpt-6.1-sol",
         reasoningEffort: "high",
       },
     });
@@ -1217,7 +1243,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
         harnessId: "codex",
         serviceId: "openai",
         billingMode: "key",
-        modelId: "gpt-5.6-sol",
+        modelId: "gpt-6.1-sol",
         reasoningEffort: "high",
       },
     });
@@ -1283,11 +1309,11 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", title: "Mismatch", agent: "claude", model: "gpt-5.5" },
+      payload: { prompt: "x", title: "Mismatch", agent: "claude", model: "gpt-6.1-sol" },
     });
     expect(res.statusCode).toBe(400);
     const err = (res.json() as { error: string }).error;
-    expect(err).toContain("gpt-5.5");
+    expect(err).toContain("gpt-6.1-sol");
     expect(err).toContain("codex");
   });
 
@@ -1297,12 +1323,12 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const res = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", title: "Derive agent", model: "gpt-5.5" },
+      payload: { prompt: "x", title: "Derive agent", model: "gpt-6.1-sol" },
     });
     expect(res.statusCode).toBe(200);
     const childId = (res.json() as { sessionId: string }).sessionId;
     expect(sessionManager.get(childId)?.agentId).toBe("codex");
-    expect(sessionManager.get(childId)?.model).toBe("gpt-5.5");
+    expect(sessionManager.get(childId)?.model).toBe("gpt-6.1-sol");
   });
 
   it("planning#304 — inheritance cannot hand a child a model its harness can't run", { timeout: 15_000 }, async () => {
@@ -1310,8 +1336,8 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const parentId = await createParentSession();
     sessionManager.setAgentId(parentId, "claude");
     sessionManager.setAgentPinned(parentId);
-    sessionManager.setModel(parentId, "gpt-5.5");
-    expect(sessionManager.get(parentId)?.model).toBe("gpt-5.5");
+    sessionManager.setModel(parentId, "gpt-6.1-sol");
+    expect(sessionManager.get(parentId)?.model).toBe("gpt-6.1-sol");
 
     const res = await app.inject({
       method: "POST",
@@ -1355,7 +1381,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const spawnRes = await app.inject({
       method: "POST",
       url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", title: "View agent/model", agent: "codex", model: "gpt-5.5" },
+      payload: { prompt: "x", title: "View agent/model", agent: "codex", model: "gpt-6.1-sol" },
     });
     expect(spawnRes.statusCode).toBe(200);
     const childId = (spawnRes.json() as { sessionId: string }).sessionId;
@@ -1367,7 +1393,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(viewRes.statusCode).toBe(200);
     const child = (viewRes.json() as { child: { agent?: string; model?: string } }).child;
     expect(child.agent).toBe("codex");
-    expect(child.model).toBe("gpt-5.5");
+    expect(child.model).toBe("gpt-6.1-sol");
   });
 
   it("prepareSessionAgentEnvironment is idempotent: provisioning runs once, pin sticks", { timeout: 15_000 }, async () => {
@@ -1422,6 +1448,29 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const parent = sessionManager.get(parentId)!;
     return { parentId, workspaceDir: parent.workspaceDir! };
   }
+
+  it("leaves the repo's warm session for a person (docs/288 req 12)", { timeout: 30_000 }, async () => {
+    const { parentId } = await claimGraduatedParent();
+    await waitFor(() => !!repoStore.get(SPAWN_REPO_URL)?.warmSessionId, 10000, "re-warm after parent claim");
+    const warmId = repoStore.get(SPAWN_REPO_URL)!.warmSessionId!;
+
+    const spawnRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "do the thing", title: "Do the thing" },
+    });
+    expect(spawnRes.statusCode).toBe(200);
+    const { sessionId: childId } = spawnRes.json() as { sessionId: string };
+    expect(childId).not.toBe(warmId);
+    expect(repoStore.get(SPAWN_REPO_URL)?.warmSessionId).toBe(warmId);
+
+    const claimRes = await app.inject({
+      method: "POST",
+      url: `/api/repos/${encodeURIComponent(SPAWN_REPO_URL)}/claim-session`,
+    });
+    expect(claimRes.statusCode).toBe(200);
+    expect((claimRes.json() as { sessionId: string }).sessionId).toBe(warmId);
+  });
 
   it("spawns the child branched off origin/main, NOT off parent's HEAD", { timeout: 30_000 }, async () => {
     const { parentId, workspaceDir: parentWorkspace } = await claimGraduatedParent();

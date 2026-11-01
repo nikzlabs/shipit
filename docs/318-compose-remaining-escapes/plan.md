@@ -233,13 +233,19 @@ orchestrator path. It is this session's own, which requirement 1 permits.
   needs service-env files is refused with a message that names it (req 6).
   ShipIt's docker-secret files (`SHIPIT_SECRETS_INTERNAL_DIR`) likewise use the
   host path the operator supplies. The agent can write none of these paths.
-- **The Mountpoint is still right where the daemon itself does the mount.**
-  The per-session workspace volume and the `persist` volume are `local`
-  volumes with `driver_opts: {type: none, o: bind, device: <Mountpoint>/…}`
-  (`workspaceVolumeDaemonPath`, `compose-persist.ts`). The daemon performs that
-  mount in its own mount namespace, where the Mountpoint is a real path, as it
-  does for the dependency overlays (`container-overlay-provisioner.ts`). These
-  are unchanged.
+- **A bind-backed volume's device is a bind source too.** The per-session
+  workspace volume and the `persist` volume are `local` volumes with
+  `driver_opts: {type: none, o: bind, device: <Mountpoint>/…}`
+  (`workspaceVolumeDaemonPath`, `compose-persist.ts`). This plan first said the
+  daemon mounts that device in its own namespace, where the Mountpoint is real.
+  That holds on a Linux daemon and is **false on Docker Desktop**, which looks
+  the device up on the host like any bind source and mounts an empty directory
+  (seen 2026-10-14). Only the dependency overlays
+  (`container-overlay-provisioner.ts`), whose paths are in `o:`, use the
+  Mountpoint there. So a mount of the whole workspace or the whole of
+  `/persist` is a subpath of the shared volume, and on Docker Desktop ShipIt
+  refuses a subdirectory of either, because no volume rooted at one can be made
+  there (docs/317-compose-persist-mount, *Docker Desktop*).
 - Nothing else is mounted: not another session, not the shared volume root
   (which holds `.shipit.db`), and no orchestrator file. The image is a minimal
   helper image, not the orchestrator's (see *How each container runs*).
@@ -342,7 +348,38 @@ do:
   could name. It is built with the orchestrator image, from the same Docker apt
   repository, and its reference is resolved at startup, as
   `resolveWorkerImageId` resolves the worker image (`app-lifecycle.ts`). If it
-  is missing, starts are refused with a message that says so.
+  is missing, starts are refused with a message that says so. Docker can lose
+  the pinned id while ShipIt runs (a rebuild that moves the tag, an image
+  cleanup), and then every helper run fails with "No such image". So a run that
+  fails that way asks Docker whether the pinned id is really gone. Only then
+  does it resolve the name again, pin the new id for every session
+  (`repinComposeHelperImage`, one bounded resolve shared by concurrent runs),
+  and run once more — still by id and with `--pull never`. If the name
+  resolves to nothing either, the start is refused with the rebuild message.
+  Both the startup pin and this re-pin trust the name, so no project may name
+  the helper's repository in `image:` or `build.tags`: a build with that name
+  would move the tag to an image the project wrote. The same holds for every
+  image ShipIt starts by name — the session worker (`SESSION_WORKER_IMAGE`,
+  `SESSION_WORKER_DOCKER_IMAGE`), which every new session container runs, and
+  the egress sidecar (`SESSION_EGRESS_SIDECAR_IMAGE`) — so
+  `validateReservedImageUse` refuses all four repositories, with any tag. The
+  orchestrator's own image is not on the list: no setting names it, and ShipIt
+  never starts it. Compose hands both fields to Buildx Bake,
+  which expands `${…}` and `%{…}` in them after ShipIt's check, so every
+  `image:` and build tag must also be a literal reference
+  (`validateLiteralImageNames`); that also keeps the ops-proxy rule's
+  name check sound. Compose 5.5.1 (`pkg/compose/build_bake.go`) escapes `${`
+  only in build args and `dockerfile_inline`, so Bake expands the other build
+  strings too. None of them needs its own rule: `build.network`,
+  `build.privileged`, and `build.entitlements` accept only fixed values, which
+  a template is not; every path (context, extra contexts, Dockerfile, secret
+  and SSH sources, local caches) still resolves inside the helper container;
+  Compose grants Bake's `fs.read` and `security.insecure` from the
+  unexpanded values; and Bake's template functions read no file or
+  environment variable (`homedir()` is the one system lookup). Checked
+  2026-10-15. A service that is not registered because the
+  project file's read failed is reported with that failure, not as an unknown
+  service.
 - **A pinned Compose version.** This design depends on how `config` behaves:
   which services it selects, and whether it inlines `env_file` values. That has
   changed between releases (on 2.34.0, `config` keeps the `env_file` of a

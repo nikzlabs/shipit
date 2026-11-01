@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 /**
- * ShipIt's PreToolUse guard for the Bash tool. It refuses two shapes: branch
+ * ShipIt's PreToolUse guard for the Bash and Monitor tools, which both run a
+ * `command` in a shell. It refuses two shapes: branch
  * changes and destructive git during merged-branch recovery, and a process
  * test whose own pattern matches the command it is written in.
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import http from "node:http";
 
 // Sandbox sessions own their branches (docs/211). That exemption is about
 // branch ownership and nothing else, so it scopes the git checks below rather
@@ -20,7 +22,8 @@ try {
   process.exit(0); // can't parse stdin — fail open
 }
 
-if (payload?.tool_name !== "Bash") process.exit(0);
+const tool = payload?.tool_name;
+if (tool !== "Bash" && tool !== "Monitor") process.exit(0);
 const command = payload?.tool_input?.command;
 if (typeof command !== "string" || !command.trim()) process.exit(0);
 
@@ -659,8 +662,55 @@ function offendsSelfMatchingProcessTest(line) {
   return null;
 }
 
-// The orchestrator enables this only during merged-branch recovery.
-const guardDestructiveGit = process.env.SHIPIT_GUARD_DESTRUCTIVE_GIT === "1";
+// The destructive rules apply only while the session's branch is merged. An
+// agent process outlives that state, so it is read from ShipIt for each command
+// (docs/130); the spawn environment is the answer when ShipIt gives none.
+const GUARD_QUERY_TIMEOUT_MS = 3000;
+const GUARD_ANSWER_MAX_LENGTH = 1024;
+
+function askGuard() {
+  const atSpawn = process.env.SHIPIT_GUARD_DESTRUCTIVE_GIT === "1";
+  const worker = (
+    process.env.SHIPIT_AGENT_OPS_URL || `http://127.0.0.1:${process.env.WORKER_PORT || "9100"}`
+  ).replace(/\/$/, "");
+  return new Promise((resolve) => {
+    const answer = (guarded) => resolve(typeof guarded === "boolean" ? guarded : atSpawn);
+    // One limit for the connection, the headers and the body.
+    setTimeout(answer, GUARD_QUERY_TIMEOUT_MS);
+    try {
+      // Under `NODE_USE_ENV_PROXY`, `fetch` and the default `http` agent send
+      // this loopback request to the proxy. `agent: false` makes an agent with
+      // no proxy configuration.
+      http
+        .get(`${worker}/agent-ops/branch/destructive-git-guard`, { agent: false }, (res) => {
+          if (res.statusCode < 200 || res.statusCode > 299) return answer();
+          let body = "";
+          res.setEncoding("utf8");
+          res.on("error", () => answer());
+          res.on("data", (chunk) => {
+            body += chunk;
+            if (body.length > GUARD_ANSWER_MAX_LENGTH) answer();
+          });
+          res.on("end", () => {
+            try {
+              answer(JSON.parse(body)?.guarded);
+            } catch {
+              answer();
+            }
+          });
+        })
+        .on("error", () => answer());
+    } catch {
+      answer(); // an address that is not an `http:` URL
+    }
+  });
+}
+
+let guardAnswer = null;
+function guardsDestructiveGit() {
+  guardAnswer ??= askGuard();
+  return guardAnswer;
+}
 
 // The git rules judge only what runs in this container: a heredoc that is data
 // for another program and an ssh remote command are cut first (docs/130). What
@@ -686,8 +736,8 @@ for (const seg of sandboxSession ? [] : segments(runsHere)) {
     process.exit(2);
   }
 
-  const destructive = guardDestructiveGit ? offendsDestructive(seg) : null;
-  if (destructive) {
+  const destructive = offendsDestructive(seg);
+  if (destructive && (await guardsDestructiveGit())) {
     process.stderr.write(
       `Blocked: ${destructive}.\n\n` +
         "This session's PR has merged and ShipIt has recorded the merged head " +
@@ -759,7 +809,7 @@ if (selfMatched) {
   process.stderr.write(
     `Blocked: this \`${selfMatched.program} -f\` looks for \`${selfMatched.pattern}\`, ` +
       "which is text in this very command.\n\n" +
-      "The Bash tool runs a command as `bash -c '<the whole command>'`, so every " +
+      `The ${tool} tool runs a command as \`bash -c '<the whole command>'\`, so every ` +
       "literal you write is part of the command line of the process that runs it — " +
       `and \`${selfMatched.program} -f\` matches full command lines. ` +
       `${consequence}\n` +

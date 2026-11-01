@@ -270,7 +270,8 @@ export function createCommentWidgetManager(
       options: {
         glyphMarginClassName: "monaco-comment-add-glyph",
         glyphMarginHoverMessage: { value: ADD_COMMENT_TOOLTIP },
-        stickiness: 1,                               
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-assignment -- TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges; the monaco import is type-only
+        stickiness: 1,
       },
     };
     if (hoverCollection) {
@@ -558,6 +559,7 @@ export function createCommentWidgetManager(
 
   // Monaco MouseTargetType.GUTTER_GLYPH_MARGIN — literal because the monaco
 
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-assignment -- the monaco import is type-only
   const GLYPH_MARGIN_TYPE = 2 as monaco.editor.MouseTargetType;
   const glyphDisposable = editor.onMouseDown((e) => {
     if (options.readOnly) return;
@@ -628,7 +630,8 @@ export function createCommentWidgetManager(
               ? "monaco-comment-glyph monaco-comment-glyph--static"
               : "monaco-comment-glyph",
             glyphMarginHoverMessage: { value: HAS_COMMENT_TOOLTIP },
-            stickiness: 1,                               
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-assignment -- TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges; the monaco import is type-only
+            stickiness: 1,
           },
         });
       }

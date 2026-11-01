@@ -55,6 +55,21 @@ export function formatHoistedDepDirsWarning(depDirs: string[]): string {
   );
 }
 
+export function formatIncompleteDepDirs(
+  incomplete: { depDir: string; missing: string[] }[],
+  maxExamples: number,
+): string {
+  const described = incomplete.map(({ depDir, missing }) => {
+    if (missing.length === 0) {
+      return `${depDir} (no .package-lock.json: an npm install there did not finish)`;
+    }
+    const examples = missing.slice(0, maxExamples).join(", ");
+    const more = missing.length > maxExamples ? ` +${missing.length - maxExamples} more` : "";
+    return `${depDir} (${missing.length} package(s) npm recorded are missing: ${examples}${more})`;
+  });
+  return `declared dep dir(s) are incomplete: ${described.join(", ")}`;
+}
+
 export function formatStaleDepDirsFailureMessage(
   stale: { depDir: string; mismatches: { packagePath: string; expected: string; found: string | null }[] }[],
   maxExamples: number,

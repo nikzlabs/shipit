@@ -15,7 +15,10 @@ shouldn't be interrupted by rebase, fix ci, and any other automatic turns".
 2. An automatic turn is any turn the user did not start in that session: an
    automatic rebase or conflict resolution, an automatic CI fix, a merge notice,
    a child session's report, a message from a parent session, a finished consult,
-   a quota continuation, and any turn of this kind that is added later.
+   a quota continuation, and any turn of this kind that is added later. One
+   exception: an idle compaction ([docs/333](../333-idle-compaction/requirements.md)
+   req 12) runs while the agent waits, and does not count as the user's
+   response.
 3. The user responds by starting any turn in the session: an answer on the card,
    a plan approval or rejection, or any message they type.
 4. Automatic work that comes due while the agent waits is held, not dropped.
@@ -48,6 +51,11 @@ None.
   saved in the db, I've had issues with turns getting lost on container
   restart". Recorded as req 8; it covers a ShipIt restart as well as a stopped
   or restarted container.
+- 2026-10-19 — Does an idle compaction (docs/333-idle-compaction), which the
+  user did not start, wait while a question waits? Holding it until the reply
+  is useless, because the prompt cache is cold by then. The user chose to let
+  it run as an exception. Recorded in req 2; docs/333-idle-compaction req 12
+  carries it.
 
 Requirements 2–6 spell out the words of the request: "automatic" is
 the class requirement 2 lists, and "shouldn't be interrupted" is about *when*

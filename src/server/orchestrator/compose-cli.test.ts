@@ -924,6 +924,78 @@ exit 17
 
     expect(chunks.join("")).toBe("#5 building");
   });
+
+  it("kills the command when its signal aborts, and rejects", async () => {
+    fakeDocker("echo started >&2\nexec sleep 30");
+    const limit = new AbortController();
+    const startedAt = Date.now();
+    const running = defaultComposeRunner(
+      ["compose", "-p", "shipit-sess-1", "down"], os.tmpdir(),
+      (chunk) => { if (chunk.includes("started")) limit.abort(); },
+      limit.signal,
+    );
+
+    await expect(running).rejects.toThrow(/exit null/);
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+  });
+
+  // `docker` waits for its Compose plugin, and neither has to end on a first signal.
+  it("ends a command, and its child process, that do not end on the first signal", async () => {
+    fakeDocker("trap '' TERM\necho started >&2\nsleep 60 &\nwait");
+    const limit = new AbortController();
+    const startedAt = Date.now();
+    const running = defaultComposeRunner(
+      ["compose", "-p", "shipit-sess-1", "down"], os.tmpdir(),
+      (chunk) => { if (chunk.includes("started")) limit.abort(); },
+      limit.signal,
+    );
+
+    await expect(running).rejects.toThrow(/exit null/);
+    expect(Date.now() - startedAt).toBeLessThan(20_000);
+  }, 30_000);
+
+  it("settles at the abort when `docker` has gone and another process still holds its pipes", async () => {
+    fakeDocker("echo started >&2\nsleep 8 &");
+    const limit = new AbortController();
+    const startedAt = Date.now();
+    const running = defaultComposeRunner(
+      ["compose", "-p", "shipit-sess-1", "down"], os.tmpdir(),
+      (chunk) => { if (chunk.includes("started")) setTimeout(() => limit.abort(), 300); },
+      limit.signal,
+    );
+
+    await running.catch(() => undefined);
+    expect(Date.now() - startedAt).toBeLessThan(4_000);
+  }, 15_000);
+});
+
+describe("ComposeCli.bounded", () => {
+  it("gives its signal to each command and query, and leaves the first object's without one", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "compose-bounded-"));
+    const runnerSignals: (AbortSignal | undefined)[] = [];
+    const querySignals: (AbortSignal | undefined)[] = [];
+    const runner: ComposeRunner = async (_args, _cwd, _onOutput, signal) => { runnerSignals.push(signal); };
+    const cli = new ComposeCli({
+      sessionId: SID,
+      workspaceDir: path.join(tmp, "workspace"),
+      composeStateDir: path.join(tmp, "state", "compose"),
+      confined: confinedVia(runner),
+      composeQuery: async (_args, _cwd, signal) => { querySignals.push(signal); return ""; },
+      composeRunner: runner,
+    });
+    const limit = new AbortController();
+    try {
+      const bounded = cli.bounded(limit.signal);
+      await bounded.runningServices();
+      await bounded.downModelFree({ removeVolumes: false });
+      await cli.downModelFree({ removeVolumes: false });
+
+      expect(querySignals).toEqual([limit.signal]);
+      expect(runnerSignals).toEqual([limit.signal, undefined]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("ComposeCli — model-free commands (docs/318)", () => {

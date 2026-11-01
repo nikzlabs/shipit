@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
+import type Docker from "dockerode";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
@@ -9,13 +10,14 @@ import { parse as parseYaml } from "yaml";
 import type { ComposeConfig } from "../shared/shipit-config.js";
 import type { ComposeServiceOriginView } from "../shared/types/ws-server-messages/service.js";
 import { killChild } from "../shared/kill-child.js";
-import { truncateTerminalBuffer } from "./terminal-buffer.js";
+import { tailLines, truncateTerminalBuffer } from "./terminal-buffer.js";
 import type { LogStore } from "./log-store.js";
 import {
   classifyComposeFailure,
   composeBuildModel,
   ComposeValidationError,
   declaresHome,
+  dockerDesktopRefusal,
   extractContainerPort,
   generateComposeOverride,
   mountProjectFileCopies,
@@ -45,15 +47,19 @@ import { preparePersistDir } from "./compose-persist.js";
 import { noGpuWhy, type SessionGpu } from "./session-gpu.js";
 import { toComposeService, type PluginComposeService } from "./plugin-compose.js";
 import { PLUGIN_PORT_ENV } from "../shared/plugin-contract.js";
+import { pluginServiceMcpServers } from "./service-mcp.js";
+import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
 import {
   COMPOSE_OVERRIDE_FILE,
   composeStateDirForWorkspace,
+  SESSION_SCRATCH_SUBDIR,
   sessionScratchDirForWorkspace,
   sessionStateDirForWorkspace,
 } from "./session-state-dir.js";
-import { ComposeHelperError, ConfinedCompose, type ConfinedComposeApi } from "./compose-helper.js";
+import { COMPOSE_HELPER_IMAGE_ENV, ComposeHelperError, ConfinedCompose, type ConfinedComposeApi } from "./compose-helper.js";
 import { ComposeStartRecord } from "./compose-start-record.js";
 import { composeProjectName } from "./compose-stack-reaper.js";
+import { stackLabelFilters } from "./stack-label.js";
 import {
   ServiceSecretsResolver,
   type SecretsStatusInternalSnapshot,
@@ -61,7 +67,12 @@ import {
 } from "./service-secrets-resolver.js";
 import type { PluginCredentialDeclaration } from "../shared/plugin-credentials.js";
 import type { EgressPolicy } from "./egress-firewall-install.js";
-import { ServicePoller } from "./service-poller.js";
+import { ServicePoller, type PollerContainer } from "./service-poller.js";
+import {
+  connectContainerViaApi,
+  inspectContainerViaApi,
+  listProjectContainers,
+} from "./compose-container-listing.js";
 import { ServiceRetryManager } from "./service-retry-manager.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 import { markStackUp, forgetStackUp } from "./preview-timing.js";
@@ -145,6 +156,12 @@ export const GATED_TEARDOWN_GRACE_MARGIN_MS = 60_000;
 
 export const GATE_WATCHDOG_SETTLE_MS = 60_000;
 
+// Long enough that a follower failing immediately cannot spin, short enough to keep logs flowing.
+export const LOG_FOLLOWER_REARM_MS = 2_000;
+
+// A follower that never attaches must not leave a timer running on an idle session.
+export const MAX_LOG_FOLLOWER_REARMS = 5;
+
 /** A timeout stops waiting without cancelling work; rejections still propagate. */
 async function settleOrTimeout(work: Promise<void>, ms: number): Promise<"settled" | "timeout"> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -198,13 +215,20 @@ export interface ServiceManagerOptions {
   composeQuery?: ComposeQuery;
   /** Opens a topology-change bracket and returns its closing callback. */
   onTopologyChange?: () => () => void;
-  /** 0 disables polling. Default: 5000. */
+  /**
+   * A periodic per-session poll, which production does not use: service state is driven by Docker
+   * events and a host-wide backstop instead (docs/332). Default 0, meaning no timer.
+   */
   pollIntervalMs?: number;
+  /** Enables the Engine API source for listings, in place of spawning `docker compose ps`. */
+  docker?: Docker;
   gateWatchdogSettleMs?: number;
   workspaceVolume?: string;
   workspaceSubpath?: string;
   /** Daemon-side path of the workspace, which roots the volume its subdirectory mounts use. */
   resolveWorkspaceDevice?: () => Promise<string>;
+  /** The daemon is Docker Desktop, which cannot use those daemon-side paths (`dockerDesktopCheck`). */
+  isDockerDesktop?: () => Promise<boolean>;
   stackName?: string;
   /** No project compose file is declared; missing declared files still fail. */
   noProjectCompose?: boolean;
@@ -217,7 +241,12 @@ export interface ServiceManagerOptions {
    * can start before the container decides it (docs/325-session-gpu-access req 3).
    */
   sessionGpu?: () => Promise<SessionGpu | undefined>;
-  networkJoinFn?: (networkName: string) => Promise<void>;
+  /** `networkExpected` is false for a join that follows no `up`: the network can be absent. */
+  networkJoinFn?: (networkName: string, opts: { networkExpected: boolean }) => Promise<void>;
+  /** Queues the removal of the session network after a `down`; not awaited (docs/091). */
+  networkReleaseFn?: () => void;
+  /** Whether a ServiceManager is registered for the session; read inside the stack queue (docs/091). */
+  stackOwnedFn?: () => boolean;
   networkHealFn?: (networkName: string) => Promise<void>;
   containServicesFn?: (serviceNames: string[]) => Promise<void>;
   /** What `containServicesFn` installs; omitted means contained. */
@@ -252,6 +281,9 @@ export interface ServiceManagerEvents {
   secrets_status: [snapshot: SecretsStatusInternalSnapshot];
 }
 
+/** A `stop()` ran after the start began. The start ends without `up`, and reports nothing. */
+class StartOvertakenByStop extends Error {}
+
 export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly sessionId: string;
   private readonly workspaceDir: string;
@@ -264,6 +296,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private logProcesses = new Map<string, ChildProcess>();
   private logBuffers = new Map<string, string>();
   private followerSince = new Map<string, string>();
+  private followerRearmTimers = new Map<string, NodeJS.Timeout>();
+  private followerRearmAttempts = new Map<string, number>();
   private readonly logStore?: LogStore;
   private readonly gateWatchdogSettleMs: number;
   private _started = false;
@@ -271,6 +305,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private readonly workspaceVolume?: string;
   private readonly workspaceSubpath?: string;
   private readonly resolveWorkspaceDevice?: () => Promise<string>;
+  private readonly isDockerDesktop?: () => Promise<boolean>;
   private overlayDepDirs: OverlayDepDirVolume[];
   private pluginServices: PluginComposeService[] = [];
   // The project parse the service-env files were last written for.
@@ -289,7 +324,9 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   // The services the last snapshot started without the GPU they asked for, with why.
   private gpuRemovals = new Map<string, string>();
   private noProjectCompose: boolean;
-  private readonly networkJoinFn?: (networkName: string) => Promise<void>;
+  private readonly networkJoinFn?: (networkName: string, opts: { networkExpected: boolean }) => Promise<void>;
+  private readonly networkReleaseFn?: () => void;
+  private readonly stackOwnedFn?: () => boolean;
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
   private containServicesFn?: (serviceNames: string[]) => Promise<void>;
   private firewallPolicy: EgressPolicy;
@@ -315,6 +352,11 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   // Last parse/validation failure, separate from failures to run the stack.
   private _projectComposeFailure: ComposeFailure | null = null;
   private _disposed = false;
+
+  // `start()` clears `_disposed`, so a start reads this count to learn that a stop overtook it.
+  private _stops = 0;
+
+  private readonly upsRunning = new Set<Promise<void>>();
 
   private _installRunning = false;
 
@@ -383,6 +425,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.workspaceVolume = opts.workspaceVolume;
     this.workspaceSubpath = opts.workspaceSubpath;
     this.resolveWorkspaceDevice = opts.resolveWorkspaceDevice;
+    this.isDockerDesktop = opts.isDockerDesktop;
     this.overlayDepDirs = opts.overlayDepDirs ?? [];
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
@@ -390,6 +433,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this.sessionGpu = opts.sessionGpu ?? (() => Promise.resolve(undefined));
     this.noProjectCompose = opts.noProjectCompose ?? false;
     this.networkJoinFn = opts.networkJoinFn;
+    this.networkReleaseFn = opts.networkReleaseFn;
+    this.stackOwnedFn = opts.stackOwnedFn;
     this.networkHealFn = opts.networkHealFn;
     this.containServicesFn = opts.containServicesFn;
     this.firewallPolicy = opts.firewallPolicy ?? "contained";
@@ -423,13 +468,25 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       runRetryNow: (name) => this.runRetryNow(name),
     });
 
+    const stackFilters = stackLabelFilters(opts.stackName);
     this.poller = new ServicePoller({
       sessionId: opts.sessionId,
       workspaceDir: opts.workspaceDir,
       queryCwd: () => this.compose.modelFreeDir(),
       composeQuery: this.compose.query,
-      pollIntervalMs: opts.pollIntervalMs ?? 5_000,
+      pollIntervalMs: opts.pollIntervalMs ?? 0,
       composeArgs: (...extra) => this.compose.modelFreeArgs(...extra),
+      ...(opts.docker
+        ? {
+            listContainers: listProjectContainers(
+              opts.docker,
+              composeProjectName(opts.sessionId),
+              stackFilters,
+            ),
+            inspectContainer: inspectContainerViaApi(opts.docker),
+            repairNetwork: connectContainerViaApi(opts.docker),
+          }
+        : {}),
       isGated: (name) => this.gatedServices.has(name),
       getService: (name) => this.services.get(name),
       listServices: () => [...this.services.values()],
@@ -467,16 +524,44 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       onExitedWithError: (name, exitCode, oomKilled) => {
         this.handleNonZeroExit(name, exitCode, oomKilled);
       },
-      afterPoll: async () => {
-        // A slow network heal must not delay the gate check.
+      // The network heal used to run here, on every tick. Docker `network` events drive it now
+      // (docs/332), so a healthy refresh costs no network inspect per session.
+      afterPoll: () => {
         this.checkInstallGateLiveness();
-        await this.healSessionNetwork();
+        this.armGateWatchdog();
       },
     });
   }
 
-  private async healSessionNetwork(): Promise<void> {
-    if (!this.networkHealFn) return;
+  /**
+   * Reconcile this project against Docker: the entry point for a routed Docker event, the host-wide
+   * backstop and the resync after the event stream reconnects (docs/332).
+   */
+  async refreshServices(listed?: PollerContainer[], takenAt?: number): Promise<void> {
+    if (this._disposed) return;
+    await this.poller.pollOnce(listed, takenAt);
+  }
+
+  /**
+   * The host-wide listing failed, so this stack's state could not be confirmed. Reported rather
+   * than relisted per session: the docker-unreachable grace still has to start, but a hundred
+   * sessions each repeating a listing that can hang to its own timeout would take the better part
+   * of an hour to reach the last of them (docs/332).
+   */
+  noteListingFailed(): void {
+    if (this._disposed) return;
+    this.poller.noteListingFailed();
+  }
+
+  /** A service container's exit, as the Docker event reported it (docs/332). */
+  applyServiceExit(serviceName: string, info: { exitCode: number; oomKilled?: boolean }): void {
+    if (this._disposed) return;
+    this.poller.applyServiceExit(serviceName, info);
+  }
+
+  /** The agent's attachment to the session network, after a network event touched it. */
+  async healNetwork(): Promise<void> {
+    if (this._disposed || !this.networkHealFn) return;
     const networkName = `shipit-session-${this.sessionId}`;
     try {
       await this.networkHealFn(networkName);
@@ -497,6 +582,11 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     const changed = JSON.stringify(this.pluginServices) !== JSON.stringify(services);
     this.pluginServices = services;
     return changed;
+  }
+
+  /** docs/327 — the MCP servers the resolved plugin services carry. */
+  pluginMcpServers(): ServiceMcpServer[] {
+    return pluginServiceMcpServers(this.pluginServices);
   }
 
   get composeFilePath(): string {
@@ -693,16 +783,21 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     return this.logBuffers.get(name) ?? "";
   }
 
-  async snapshotLogs(name: string, lines = 2000): Promise<string> {
+  async snapshotLogs(name: string, lines?: number): Promise<string> {
     if (!this.services.has(name)) return "";
+    const maxLines = lines !== undefined && Number.isFinite(lines) && lines >= 1
+      ? Math.floor(lines)
+      : undefined;
 
     // Prefer persisted history: Docker only retains logs for the current container.
     const channel = `service:${name}`;
     if (this.logStore?.hasChannel(this.sessionId, channel)) {
-      return this.logStore.snapshotText(this.sessionId, channel, ServiceManager.MAX_LOG_SNAPSHOT);
+      const stored = this.logStore.snapshotText(this.sessionId, channel, ServiceManager.MAX_LOG_SNAPSHOT);
+      // With no `lines`, the whole retained history is the answer: the Logs drawer reads it.
+      return maxLines === undefined ? stored : tailLines(stored, maxLines);
     }
 
-    const tail = Number.isFinite(lines) && lines > 0 ? String(Math.floor(lines)) : "2000";
+    const tail = String(maxLines ?? 2000);
     const args = this.compose.modelFreeArgs("logs", "--no-log-prefix", "--tail", tail, name);
 
     return new Promise<string>((resolve) => {
@@ -713,7 +808,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         const out = val.length > ServiceManager.MAX_LOG_SNAPSHOT
           ? truncateTerminalBuffer(val, ServiceManager.MAX_LOG_SNAPSHOT)
           : val;
-        resolve(out.length > 0 ? out : this.getLogBuffer(name));
+        const text = out.length > 0 ? out : this.getLogBuffer(name);
+        resolve(maxLines === undefined ? text : tailLines(text, maxLines));
       };
       try {
         const proc = spawn("docker", args, {
@@ -870,6 +966,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   async start(opts: { sweepStaleContainers?: boolean } = {}): Promise<void> {
     this._disposed = false;
+    const stops = this._stops;
     // Invalidate old gate releases before an await lets one act on partially rebuilt state.
     this._gateGeneration++;
     await this.ensureSessionNetworkModeFn?.(Boolean(this.containServicesFn));
@@ -959,22 +1056,33 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       }
     }
     this._gateHeldSince = this.gatedServices.size > 0 && !this._installFailed ? Date.now() : null;
+    // The watchdog's clock starts when the gate starts being held, not at the next refresh: a gate
+    // holds no containers, so it produces no Docker events of its own to ride (docs/332).
+    this.armGateWatchdog();
 
     try {
       // Compose starts every service when given no names; skip an empty batch.
       const autoNames = startNow.map(s => s.name);
+      let upRan = false;
       if (autoNames.length > 0) {
-        await this.withUpInFlight(autoNames, async (start, names) => {
+        upRan = await this.withUpInFlight(autoNames, async (start, names) => {
           await this.prepareContainedStartFn?.(names);
           this.armLogFollowerSince(names);
           await this.buildAndUp(start, names);
           markStackUp(this.sessionId, startNow.filter((svc) => names.includes(svc.name)));
           await this.containServicesFn?.([...this.services.keys()]);
-        }, { removeOrphans: true });
+        }, { removeOrphans: true, stops });
+      }
+      // Also for a start that runs no `up`: every service at the install gate, or none automatic.
+      if (stops !== this._stops) {
+        // The stop set "stopped" before this start set "starting".
+        if (this._disposed) for (const name of this.services.keys()) this.updateServiceStatus(name, "stopped");
+        return;
       }
       this._started = true;
 
-      await this.joinSessionNetwork();
+      // Still join when no `up` ran: a reconcile keeps the manual services that already run.
+      await this.joinSessionNetwork({ networkExpected: upRan });
 
       await this.poller.pollOnce();
 
@@ -1012,21 +1120,22 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   async startService(name: string): Promise<void> {
     const svc = this.services.get(name);
-    if (!svc) throw new Error(`Unknown service: ${name}`);
+    if (!svc) throw unknownServiceError(name, this._projectComposeFailure);
     this.refusePluginPortStart(name);
 
     this.retry.resetOomBudget(name);
     this.stoppedByUser.delete(name);
     this.updateServiceStatus(name, "starting");
+    const stops = this._stops;
     try {
       await this.withUpInFlight([name], async (start, names) => {
         await this.prepareContainedStartFn?.(names);
         this.armLogFollowerSince(names);
         await this.buildAndUp(start, names);
         await this.containServicesFn?.([...this.services.keys()]);
-      });
+      }, { stops });
       // A later Stop owns the result of this start.
-      if (this.stoppedByUser.has(name)) return;
+      if (stops !== this._stops || this.stoppedByUser.has(name)) return;
       // Attach before the poll can consume the replay anchor with a follower we would replace.
       this.streamLogs(name);
       this.reportGpuRemovals([name]);
@@ -1040,12 +1149,13 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   async restartService(name: string): Promise<void> {
     const svc = this.services.get(name);
-    if (!svc) throw new Error(`Unknown service: ${name}`);
+    if (!svc) throw unknownServiceError(name, this._projectComposeFailure);
     this.refusePluginPortStart(name);
 
     this.retry.resetOomBudget(name);
     this.stoppedByUser.delete(name);
     this.updateServiceStatus(name, "starting");
+    const stops = this._stops;
     try {
       await this.stopContainer(name);
       // A Stop during the shutdown wait has no in-flight up to chase; check before starting one.
@@ -1055,8 +1165,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         this.armLogFollowerSince(names);
         await this.buildAndUp(start, names);
         await this.containServicesFn?.([...this.services.keys()]);
-      });
-      if (this.stoppedByUser.has(name)) return;
+      }, { stops });
+      if (stops !== this._stops || this.stoppedByUser.has(name)) return;
       this.streamLogs(name);
       this.reportGpuRemovals([name]);
       await this.joinSessionNetwork();
@@ -1070,7 +1180,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   // Stop now, then stop anything a racing up creates after this call returns.
   async stopService(name: string): Promise<void> {
     const svc = this.services.get(name);
-    if (!svc) throw new Error(`Unknown service: ${name}`);
+    if (!svc) throw unknownServiceError(name, this._projectComposeFailure);
 
     this.stoppedByUser.add(name);
     this.retry.clearRetryState(name);
@@ -1140,16 +1250,24 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       this.bufferServiceLog(name, text);
     };
 
-    proc.stdout?.on("data", handleData);
+    // Only container output proves the follower attached, and so restores its re-arm budget. A
+    // `docker compose logs` that writes a diagnostic to stderr and exits proves the opposite, and
+    // crediting it would make the bound meaningless — one spawn every two seconds, for ever.
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      this.followerRearmAttempts.delete(name);
+      handleData(chunk);
+    });
     proc.stderr?.on("data", handleData);
 
     proc.on("error", (err: Error) => {
       console.warn(`[compose:${this.sessionId}] log follower for ${name} failed to start:`, err.message);
-      if (this.logProcesses.get(name) === proc) this.logProcesses.delete(name);
+      // Leave the map entry for `close`, which follows a spawn failure and owns the re-arm.
     });
 
     proc.on("close", () => {
-      if (this.logProcesses.get(name) === proc) this.logProcesses.delete(name);
+      if (this.logProcesses.get(name) !== proc) return;
+      this.logProcesses.delete(name);
+      this.scheduleFollowerRearm(name);
     });
 
     this.logProcesses.set(name, proc);
@@ -1162,13 +1280,23 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   private ensureLogFollower(name: string): void {
     if (this.logProcesses.has(name)) return;
+    // The budget bounds EVERY attempt, not just the self-armed ones: `onRunning` runs on each
+    // reconcile, so a follower that can never attach would otherwise spawn a process on every
+    // backstop for ever — periodic per-session process work, which is what docs/332 removes.
+    const attempt = (this.followerRearmAttempts.get(name) ?? 0) + 1;
+    if (attempt > MAX_LOG_FOLLOWER_REARMS) return;
+    this.followerRearmAttempts.set(name, attempt);
     this.streamLogs(name);
   }
 
   // Millisecond precision avoids replaying the outgoing container's final second of logs.
   private armLogFollowerSince(names: readonly string[]): void {
     const at = new Date().toISOString();
-    for (const name of names) this.followerSince.set(name, at);
+    for (const name of names) {
+      this.followerSince.set(name, at);
+      // A deliberate start is a new container to follow, so the re-arm budget starts over.
+      this.followerRearmAttempts.delete(name);
+    }
   }
 
   // Clear after polling gives replacement followers a chance to claim the anchor.
@@ -1193,6 +1321,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   // Let Compose reconcile changed services; the cold-start sweep would kill healthy previews.
   async reconcile(): Promise<void> {
+    this.cancelFollowerRearms();
     for (const [, proc] of this.logProcesses) killChild(proc);
     this.logProcesses.clear();
     this.poller.stop();
@@ -1216,10 +1345,12 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   /** removeVolumes also deletes isolated secret files; use it only for permanent teardown. */
   async stop(opts: { removeVolumes?: boolean } = {}): Promise<void> {
     this._disposed = true;
+    this._stops++;
     this.poller.stop();
     this.retry.cancelAll();
     this.cancelStartingWatchdogs();
     this.cancelPluginPortProbes();
+    this.cancelFollowerRearms();
     this.postGateServices.clear();
     this._gatedTeardown = null;
     this._gateHeldSince = null;
@@ -1231,12 +1362,17 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     }
 
     await this.stopRunningServices();
+    // An `up` that has not ended can create containers after the `down`. No older start adds one
+    // to this set now: `buildAndUp` reads the count first.
+    const lateUps = [...this.upsRunning];
     try {
-      await this.compose.downModelFree({ removeVolumes: opts.removeVolumes ?? false });
-      this.startRecord.clear();
+      await this.down(opts);
+      // The second teardown stops what a late `up` created from the files of that start.
+      if (lateUps.length === 0) this.startRecord.clear();
     } catch {
       // Best-effort cleanup
     }
+    if (lateUps.length > 0) void this.downAfterLateUps(lateUps, opts);
 
     if (opts.removeVolumes) {
       removeSessionServiceEnvDir({ rootDir: this.serviceEnvDir, sessionId: this.sessionId });
@@ -1254,6 +1390,35 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     this._started = false;
   }
 
+  private async down(opts: { removeVolumes?: boolean }, compose = this.compose): Promise<void> {
+    await compose.downModelFree({ removeVolumes: opts.removeVolumes ?? false });
+    // `down` exits 0 and leaves a network that has an endpoint Compose does not own, and the
+    // orchestrator's is one.
+    this.networkReleaseFn?.();
+  }
+
+  // Not awaited, as `stopAfterPendingUps`: a stop does not wait for an `up` that hangs.
+  private async downAfterLateUps(ups: Promise<void>[], opts: { removeVolumes?: boolean }): Promise<void> {
+    await Promise.allSettled(ups);
+    await serializeStackOp(this.sessionId, async () => {
+      // A start since the stop, or another manager of the session, owns what the late `up` created.
+      if (!this._disposed || this.stackOwnedFn?.()) return;
+      // The stack queue has no timeout of its own, and a `pre_stop` hook is the project's command.
+      const limitMs = Math.max(
+        DEFAULT_STOP_GRACE_PERIOD_MS + GATED_TEARDOWN_GRACE_MARGIN_MS,
+        ...[...this.services.keys()].map((name) => this.gatedTeardownTimeoutMs(name)),
+      );
+      const bounded = (): ComposeCli => this.compose.bounded(AbortSignal.timeout(limitMs));
+      await this.stopRunningServices(bounded());
+      try {
+        await this.down(opts, bounded());
+        this.startRecord.clear();
+      } catch (err) {
+        console.warn(`[compose:${this.sessionId}] down after a late up failed:`, (err as Error).message);
+      }
+    });
+  }
+
   /** Refresh declarations and values without restarting containers. */
   async refreshSecretsStatus(): Promise<void> {
     let parsedServices: ComposeService[];
@@ -1267,6 +1432,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   }
 
   async refreshSecrets(): Promise<void> {
+    const stops = this._stops;
     let parsedServices: ComposeService[];
     try {
       parsedServices = this.noProjectCompose ? [] : await this.readProjectCompose();
@@ -1288,7 +1454,8 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         this.armLogFollowerSince(names);
         await this.buildAndUp(start, names);
         await this.containServicesFn?.([...this.services.keys()]);
-      }, { removeOrphans: true });
+      }, { removeOrphans: true, stops });
+      if (stops !== this._stops) return;
       await this.poller.pollOnce();
       for (const name of autoNames) this.ensureLogFollower(name);
       this.disarmLogFollowerSince(autoNames);
@@ -1310,6 +1477,31 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       );
       return undefined;
     }
+  }
+
+  // Before anything is prepared or looked up; Docker is asked only for a stack that needs it.
+  private async refuseOnDockerDesktop(model: Record<string, unknown>): Promise<void> {
+    if (!this.workspaceVolume || !this.isDockerDesktop) return;
+    const refusal = this.checked(() => dockerDesktopRefusal(model, this.workspaceDir));
+    if (!refusal) return;
+    let desktop: boolean;
+    try {
+      desktop = await this.isDockerDesktop();
+    } catch (err) {
+      // `refreshSecrets` only logs a failed start; the list must still say why.
+      throw this.recordComposeFailure(err);
+    }
+    if (desktop) throw this.recordComposeFailure(refusal);
+  }
+
+  // All of /persist is mounted from the workspace volume; only a subdirectory needs the daemon-side path.
+  private async persistVolume(scratchDir: string, subpaths: readonly string[]): Promise<PersistVolume> {
+    if (!this.workspaceVolume || !this.workspaceSubpath) {
+      return { device: await this.persistDevicePath(scratchDir) };
+    }
+    const volumeSubpath = path.posix.join(path.posix.dirname(this.workspaceSubpath), SESSION_SCRATCH_SUBDIR);
+    if (subpaths.every((subpath) => subpath === "")) return { volumeSubpath };
+    return { volumeSubpath, device: await this.persistDevicePath(scratchDir) };
   }
 
   // Share every override option across writers; resolver reads are not an atomic snapshot.
@@ -1395,7 +1587,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
    * resolved model, and this start's snapshot and override. A start of plugin services only, and a
    * stack with no project file, start from the override alone.
    */
-  private async prepareStart(names: string[]): Promise<PreparedStart> {
+  private async prepareStart(names: string[], stops: number): Promise<PreparedStart> {
     const admitted = this._overrideAdmittedPlugins;
     const pluginNames = new Set(admitted.map((svc) => svc.name));
     const projectNames = names.filter((name) => !pluginNames.has(name));
@@ -1406,6 +1598,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         await this.writeStartOverride(files.overrideFile, admitted.map(toComposeService), []);
         return {
           id: files.id,
+          stops,
           model: { overrideFile: files.overrideFile },
           snapshotServices: [],
           ...(this.noProjectCompose ? { projectServiceNames: [] } : {}),
@@ -1443,15 +1636,17 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         ...opts,
         project: composeProjectName(this.sessionId),
         workspaceDir: this.workspaceDir,
+        reservedImages: SHIPIT_IMAGE_ENVS.map((key) => process.env[key]).filter((ref): ref is string => Boolean(ref)),
       }));
 
       const persistUse = this.checked(() => resolvedPersistUse(model));
+      await this.refuseOnDockerDesktop(model);
       let persist: PersistVolume | undefined;
       if (persistUse.used) {
         // A volume subpath must exist when mounted, and the agent can delete one.
         const scratchDir = sessionScratchDirForWorkspace(this.workspaceDir);
         preparePersistDir(scratchDir, persistUse.subpaths);
-        persist = { device: await this.persistDevicePath(scratchDir) };
+        persist = await this.persistVolume(scratchDir, persistUse.subpaths);
       }
       const workspaceDevice = await this.workspaceDevice();
       const gpu = Object.values(services).some(requestsGpu) ? await this.sessionGpu() : undefined;
@@ -1497,6 +1692,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       );
       return {
         id: files.id,
+        stops,
         model: { snapshotFile: files.snapshotFile, overrideFile: files.overrideFile },
         ...(rewrite.builtServices.length > 0
           ? { build: { model: buildModel, services: rewrite.builtServices } }
@@ -1583,12 +1779,15 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   /**
    * Resolves the start before counting it as in flight, so a refused start gets no polling
    * exemption; registers it with `upSettled` first, so a Stop during the resolve follows it.
+   * False when no `up` ran: such a Stop left nothing to start, or a `stop()` of the stack overtook
+   * the start. `stops` is the count of `stop()` calls when the caller's start began; the caller
+   * compares it again afterwards, and does nothing more when a `stop()` came.
    */
   private async withUpInFlight(
     names: string[],
     fn: (start: PreparedStart, names: string[]) => Promise<void>,
-    opts: { removeOrphans?: boolean } = {},
-  ): Promise<void> {
+    opts: { stops: number; removeOrphans?: boolean },
+  ): Promise<boolean> {
     let settle!: () => void;
     const settled = new Promise<void>((resolve) => { settle = resolve; });
     for (const name of names) {
@@ -1599,11 +1798,11 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     let counted: string[] = [];
     let start: PreparedStart | null = null;
     try {
-      start = await this.prepareStart(names);
+      start = await this.prepareStart(names, opts.stops);
       const live = names.filter((name) => !this.stoppedByUser.has(name));
       if (live.length === 0) {
         console.log(`[compose:${this.sessionId}] ${names.join(", ")} stopped while the start resolved — not starting`);
-        return;
+        return false;
       }
       for (const name of live) {
         this.upInFlight.set(name, (this.upInFlight.get(name) ?? 0) + 1);
@@ -1621,6 +1820,11 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
         }
       }
       await fn(start, live);
+      return true;
+    } catch (err) {
+      if (!(err instanceof StartOvertakenByStop)) throw err;
+      console.log(`[compose:${this.sessionId}] the stack stopped while ${names.join(", ")} was starting — not starting`);
+      return false;
     } finally {
       for (const name of counted) {
         const next = (this.upInFlight.get(name) ?? 1) - 1;
@@ -1653,39 +1857,48 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private async buildAndUp(start: PreparedStart, names: string[]): Promise<void> {
     const sink = this.composeLogSink(names);
     await this.compose.build(start.build, sink);
+    // A build can outlast a stop, and an `up` after the stop's `down` makes a stack that nothing
+    // owns. No await from here to the `up`: a stop finds it in `upsRunning`, or this finds the stop.
+    if (start.stops !== this._stops) throw new StartOvertakenByStop();
     // Before `up`: a failed `up` can still have created containers, which `stop` must find.
     this.startRecord.record(
       [...new Set([...start.snapshotServices, ...names])],
       { id: start.id, snapshot: start.model.snapshotFile !== undefined },
     );
-    await this.compose.up(names, start, sink);
+    const up = this.compose.up(names, start, sink);
+    this.upsRunning.add(up);
+    try {
+      await up;
+    } finally {
+      this.upsRunning.delete(up);
+    }
   }
 
   /** From the model the service was started from, so Compose runs its `pre_stop` hook. */
-  private async stopContainer(name: string): Promise<void> {
+  private async stopContainer(name: string, compose = this.compose): Promise<void> {
     const recorded = this.startRecord.lookup(name);
     if (recorded.recorded) {
-      await this.compose.stopFrom(name, recorded.model);
+      await compose.stopFrom(name, recorded.model);
       return;
     }
-    if (!(await this.compose.hasContainer(name))) {
+    if (!(await compose.hasContainer(name))) {
       console.log(`[compose:${this.sessionId}] ${name} has no container — recorded the stop only`);
       return;
     }
-    await this.compose.stopFrom(name, null);
+    await compose.stopFrom(name, null);
   }
 
-  private async stopRunningServices(): Promise<void> {
+  private async stopRunningServices(compose = this.compose): Promise<void> {
     let running: string[];
     try {
-      running = await this.compose.runningServices();
+      running = await compose.runningServices();
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] could not list running services before down:`, (err as Error).message);
       return;
     }
     await Promise.all(running.map(async (name) => {
       try {
-        await this.stopContainer(name);
+        await this.stopContainer(name, compose);
       } catch (err) {
         console.warn(`[compose:${this.sessionId}] stopping ${name} before down failed:`, (err as Error).message);
       }
@@ -1736,14 +1949,16 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     const svc = this.services.get(name);
     if (!svc) return;
     if (this.stoppedByUser.has(name)) return;
+    const stops = this._stops;
     try {
-      await this.withUpInFlight([name], async (start, names) => {
+      const upRan = await this.withUpInFlight([name], async (start, names) => {
         await this.prepareContainedStartFn?.(names);
         this.armLogFollowerSince(names);
         await this.buildAndUp(start, names);
         await this.containServicesFn?.([...this.services.keys()]);
-      });
-      await this.joinSessionNetwork();
+      }, { stops });
+      if (stops !== this._stops) return;
+      await this.joinSessionNetwork({ networkExpected: upRan });
       await this.poller.pollOnce();
       this.disarmLogFollowerSince([name]);
       this.reportGpuRemovals([name]);
@@ -1781,13 +1996,28 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     }
   }
 
+  /**
+   * Ask for one look a settle window out, while the gate is one the watchdog could still reopen.
+   * A FAILED install holds its services indefinitely by design, so asking there would refresh an
+   * otherwise idle session for ever.
+   */
+  private armGateWatchdog(): void {
+    if (this.gateWatchdogCanAct()) this.poller.requestFollowUp(this.gateWatchdogSettleMs);
+  }
+
+  /**
+   * Whether a held gate is one this watchdog could still reopen. A failed install holds its
+   * services indefinitely on purpose, so it must not keep asking for another look (docs/332).
+   */
+  private gateWatchdogCanAct(): boolean {
+    return !this._disposed && this.gatedServices.size > 0 && !this._installFailed;
+  }
+
   // Recover a lost release, never an unfinished or failed install or a pending teardown.
   private checkInstallGateLiveness(now = Date.now()): void {
     const wedged =
-      !this._disposed &&
-      this.gatedServices.size > 0 &&
+      this.gateWatchdogCanAct() &&
       !this._installRunning &&
-      !this._installFailed &&
       this._gateReleasesInFlight === 0;
 
     if (!wedged) {
@@ -1860,15 +2090,17 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     // A service can be removed or stopped while this batch waits in the queue.
     const names = requested.filter(n => this.services.has(n) && !this.stoppedByUser.has(n));
     if (names.length === 0) return;
+    const stops = this._stops;
     try {
-      await this.withUpInFlight(names, async (start, live) => {
+      const upRan = await this.withUpInFlight(names, async (start, live) => {
         await this.prepareContainedStartFn?.(live);
         this.armLogFollowerSince(live);
         await this.buildAndUp(start, live);
         markStackUp(this.sessionId, live.flatMap(n => this.services.get(n) ?? []));
         await this.containServicesFn?.([...this.services.keys()]);
-      }, { removeOrphans: true });
-      await this.joinSessionNetwork();
+      }, { removeOrphans: true, stops });
+      if (stops !== this._stops) return;
+      await this.joinSessionNetwork({ networkExpected: upRan });
       await this.poller.pollOnce();
       this.disarmLogFollowerSince(names);
       this.reportGpuRemovals(names);
@@ -1921,6 +2153,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
       this.retry.resetOomBudget(svc.name);
     }
     this._gatedTeardownGeneration = ++this._gateGeneration;
+    this.armGateWatchdog();
     this._gatedTeardown = this.stopGatedForReinstall([...this.gatedServices]);
   }
 
@@ -1954,12 +2187,14 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   // Retry after each up: an all-manual stack has no network until its first service starts.
   // Bound the wait so a hung join does not block status and address polling.
-  private async joinSessionNetwork(): Promise<void> {
+  private async joinSessionNetwork(
+    opts: { networkExpected: boolean } = { networkExpected: true },
+  ): Promise<void> {
     if (!this.networkJoinFn) return;
     const networkName = `shipit-session-${this.sessionId}`;
     try {
       await withTimeout(
-        this.networkJoinFn(networkName),
+        this.networkJoinFn(networkName, opts),
         NETWORK_JOIN_TIMEOUT_MS,
         `network join for ${networkName} did not complete within ${NETWORK_JOIN_TIMEOUT_MS}ms`,
       );
@@ -1993,6 +2228,39 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     for (const timer of this.portProbeTimers.values()) clearTimeout(timer);
     this.portProbeTimers.clear();
     // Keep settled verdicts to avoid repeating diagnostics after each reconcile.
+  }
+
+  /**
+   * No poll re-attaches a follower now, so one that died under a still-running container re-arms
+   * itself (docs/332). Bounded on purpose: a follower that cannot attach at all — docker gone, the
+   * container removed while the status still reads running — must not become a permanent timer on
+   * an otherwise idle session. Any byte of output proves attachment and restores the budget.
+   */
+  private scheduleFollowerRearm(name: string): void {
+    if (this._disposed) return;
+    if (this.services.get(name)?.status !== "running") return;
+    if (this.followerRearmTimers.has(name)) return;
+    if ((this.followerRearmAttempts.get(name) ?? 0) >= MAX_LOG_FOLLOWER_REARMS) {
+      console.warn(
+        `[compose:${this.sessionId}] log follower for ${name} failed ${MAX_LOG_FOLLOWER_REARMS} times ` +
+        "in a row — giving up until the service is started again",
+      );
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.followerRearmTimers.delete(name);
+      if (this._disposed) return;
+      if (this.services.get(name)?.status !== "running") return;
+      this.ensureLogFollower(name);
+    }, LOG_FOLLOWER_REARM_MS);
+    timer.unref?.();
+    this.followerRearmTimers.set(name, timer);
+  }
+
+  private cancelFollowerRearms(): void {
+    for (const timer of this.followerRearmTimers.values()) clearTimeout(timer);
+    this.followerRearmTimers.clear();
+    this.followerRearmAttempts.clear();
   }
 
   private cancelStartingWatchdogs(): void {
@@ -2063,6 +2331,8 @@ function hasLiveAddress(svc: ManagedService): svc is ManagedService & { containe
 /** One start's files, from the before-`up` sequence (docs/318-compose-remaining-escapes, Mechanism 2). */
 interface PreparedStart {
   id: string;
+  /** The count of `stop()` calls when the start began. */
+  stops: number;
   model: ComposeStartModel;
   build?: ComposeBuild;
   /** The services the snapshot holds: the named project services and their dependencies. */
@@ -2078,6 +2348,22 @@ function isMapping(value: unknown): value is Record<string, unknown> {
 
 // Compose's own rule for a secret or config key; the copy is named after it.
 const PROJECT_FILE_KEY = /^[A-Za-z0-9._-]+$/;
+
+// The images ShipIt starts by name, which a project build must not retag (docs/318-compose-remaining-escapes).
+const SHIPIT_IMAGE_ENVS = [
+  "SESSION_WORKER_IMAGE",
+  "SESSION_WORKER_DOCKER_IMAGE",
+  "SESSION_EGRESS_SIDECAR_IMAGE",
+  COMPOSE_HELPER_IMAGE_ENV,
+] as const;
+
+/** A failed read of the project file leaves its services unregistered; name that failure, not the name. */
+export function unknownServiceError(name: string, failure: ComposeFailure | null): Error {
+  if (!failure) return new Error(`Unknown service: ${name}`);
+  return new Error(
+    `ShipIt has no service "${name}", and its last read of this session's Compose file failed: ${failure.message}`,
+  );
+}
 
 // Compose could not read or resolve the project file: the start is refused with its message (req 6).
 function projectFileError(err: unknown): unknown {

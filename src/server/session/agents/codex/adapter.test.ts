@@ -6,6 +6,7 @@ import path from "node:path";
 import { CodexAdapter, CODEX_SANDBOX_ARGS } from "./adapter.js";
 import type { AgentEvent } from "../agent-process.js";
 import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { createRedactedTail, STDERR_TEXT_REMOVED } from "../../../shared/redacted-tail.js";
 
 // Prefix for assertions about what ELSE rides the pre-subcommand `-c` position.
 // The contents are pinned literally in "sandbox overrides", not here.
@@ -231,9 +232,9 @@ describe("CodexAdapter", () => {
     expect(adapter.capabilities.toolNames).not.toContain("file_write");
     expect(adapter.capabilities.toolNames).not.toContain("file_read");
     expect(adapter.capabilities.toolNames).not.toContain("file_edit");
-    expect(adapter.capabilities.models[0]).toBe("gpt-5.6-sol");
+    expect(adapter.capabilities.models[0]).toBe("gpt-6.1-sol");
     expect(adapter.capabilities.models).not.toContain("gpt-5.6");
-    expect(adapter.capabilities.models).toContain("gpt-5.4");
+    expect(adapter.capabilities.models).toContain("gpt-6-luna");
     expect(adapter.capabilities.supportsReview).toBe(true);
     expect(adapter.capabilities.toolNames).toContain("shell");
     expect(adapter.capabilities.toolNames).toContain("spawn_agent");
@@ -428,7 +429,7 @@ describe("CodexAdapter", () => {
       type: "agent_init",
       agentId: "codex",
       sessionId: "thread-abc-123",
-      model: "gpt-5.6-sol",
+      model: "gpt-6.1-sol",
       tools: [...CODEX_TOOL_NAMES],
     });
   });
@@ -799,6 +800,38 @@ describe("CodexAdapter", () => {
     expect((resultEvent as any).error).toBeUndefined();
   });
 
+  it("lists each response's own usage on agent_result (docs/329-tiered-model-pricing)", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("thread/tokenUsage/updated", {
+      turnId: "turn-001",
+      tokenUsage: {
+        total: { inputTokens: 120_000, outputTokens: 300, cachedInputTokens: 100_000 },
+        last: { inputTokens: 120_000, outputTokens: 300, cachedInputTokens: 100_000, totalTokens: 120_300 },
+      },
+    });
+    fakeProc.sendNotification("thread/tokenUsage/updated", {
+      turnId: "turn-001",
+      tokenUsage: {
+        total: { inputTokens: 250_000, outputTokens: 800, cachedInputTokens: 220_000 },
+        last: { inputTokens: 130_000, outputTokens: 500, cachedInputTokens: 120_000, totalTokens: 130_500 },
+      },
+    });
+    fakeProc.sendNotification("turn/completed", { turn: { id: "turn-001", status: "completed" } });
+
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === "agent_result")).toBe(true);
+    });
+    expect(events.find((e) => e.type === "agent_result")).toMatchObject({
+      tokens: { input: 30_000, output: 800, cacheRead: 220_000 },
+      requests: [
+        { input: 20_000, output: 300, cacheRead: 100_000 },
+        { input: 10_000, output: 500, cacheRead: 120_000 },
+      ],
+    });
+  });
+
   it("takes cache-written tokens out of the input class as well as the cached ones", async () => {
     await createAndInit("Hello");
     events.length = 0;
@@ -1113,6 +1146,82 @@ describe("CodexAdapter", () => {
     adapter.writeStdin("steer me\n");
     const steer = fakeProc.getRequests().find((r) => r.method === "turn/steer");
     expect((steer!.params as any).expectedTurnId).toBe("turn-042");
+  });
+
+  // docs/329-user-steers-every-turn — `run()` is accepted before `turn/start` answers, and
+  // ShipIt gives the turn its waiting messages as soon as the run is accepted.
+  it("keeps a steer that arrives before the turn has an id, and sends it when it has one", async () => {
+    adapter = new CodexAdapter(() => false);
+    adapter.on("event", (e) => events.push(e));
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+    await respondTo("initialize", { serverInfo: { name: "codex-app-server" } });
+    await respondTo("thread/start", { threadId: "thread-abc-123" });
+
+    adapter.sendUserMessage("sent during startup");
+    expect(fakeProc.getRequests().some((r) => r.method === "turn/steer")).toBe(false);
+
+    await respondTo("turn/start", { turnId: "turn-001" });
+
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().some((r) => r.method === "turn/steer")).toBe(true);
+    });
+    const steer = fakeProc.getRequests().find((r) => r.method === "turn/steer");
+    expect((steer!.params as any).input).toEqual([{ type: "text", text: "sent during startup" }]);
+    expect((steer!.params as any).expectedTurnId).toBe("turn-001");
+
+    // The notification names the same turn again: the kept steer is sent one time.
+    fakeProc.sendNotification("turn/started", { turn: { id: "turn-001" } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fakeProc.getRequests().filter((r) => r.method === "turn/steer")).toHaveLength(1);
+  });
+
+  it("gives a kept steer back when the turn cannot start, and does not send it to a later turn", async () => {
+    adapter = new CodexAdapter(() => false);
+    adapter.on("event", (e) => events.push(e));
+    adapter.on("error", () => {});
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+    await respondTo("initialize", { serverInfo: { name: "codex-app-server" } });
+    await respondTo("thread/start", { threadId: "thread-abc-123" });
+
+    adapter.sendUserMessage("sent during startup");
+    await vi.waitFor(() => expect(fakeProc.getRequests().some((r) => r.method === "turn/start")).toBe(true));
+    const start = fakeProc.getRequests().find((r) => r.method === "turn/start");
+    fakeProc.sendErrorResponse(start!.id!, -32000, "the turn cannot start");
+
+    await vi.waitFor(() => {
+      expect(events.filter((e) => e.type === "agent_steer_rejected")).toEqual([
+        { type: "agent_steer_rejected", text: "sent during startup" },
+      ]);
+    });
+
+    fakeProc.sendNotification("turn/started", { turn: { id: "turn-099" } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fakeProc.getRequests().some((r) => r.method === "turn/steer")).toBe(false);
+  });
+
+  it("gives a kept steer back when the process ends before its turn starts", async () => {
+    adapter = new CodexAdapter(() => false);
+    adapter.on("event", (e) => events.push(e));
+    adapter.run({ prompt: "Hello", cwd: "/workspace" });
+    await respondTo("initialize", { serverInfo: { name: "codex-app-server" } });
+
+    adapter.sendUserMessage("sent during startup");
+    fakeProc.emit("close", 1);
+
+    expect(events.filter((e) => e.type === "agent_steer_rejected")).toEqual([
+      { type: "agent_steer_rejected", text: "sent during startup" },
+    ]);
+  });
+
+  it("keeps no steer for a compaction run, which starts no turn", async () => {
+    adapter = new CodexAdapter(() => false);
+    adapter.on("event", (e) => events.push(e));
+    adapter.run({ prompt: "/compact", cwd: "/workspace", sessionId: "thread-abc-123", compact: true });
+
+    adapter.sendUserMessage("sent during the compaction");
+    fakeProc.emit("close", 0);
+
+    expect(events.some((e) => e.type === "agent_steer_rejected")).toBe(false);
   });
 
   it("drops steer when no turn is active (no expectedTurnId to send)", async () => {
@@ -1601,7 +1710,118 @@ describe("CodexAdapter", () => {
 
     fakeProc.stderr.emit("data", Buffer.from("Error: Invalid API key provided"));
 
-    expect(authRequired).toBe(true);
+    await vi.waitFor(() => expect(authRequired).toBe(true));
+  });
+
+  describe("stderr", () => {
+    // Put together here, so that no secret scan reads a credential in this file.
+    const FAKE_KEY = ["sk", "proj", "k".repeat(28)].join("-");
+
+    async function startWithLogs(): Promise<{ logs: string[]; order: string[]; auth: () => number }> {
+      adapter = new CodexAdapter();
+      const logs: string[] = [];
+      const order: string[] = [];
+      let auth = 0;
+      adapter.on("log", (source, text) => {
+        if (source !== "codex-stderr") return;
+        logs.push(text);
+        order.push("log");
+      });
+      adapter.on("done", () => order.push("done"));
+      adapter.on("auth_required", () => {
+        auth += 1;
+        order.push("auth_required");
+      });
+      adapter.run({ prompt: "Hello", cwd: "/workspace" });
+      await vi.waitFor(() => expect(fakeProc).toBeDefined());
+      return { logs, order, auth: () => auth };
+    }
+
+    const write = (text: string): void => { fakeProc.stderr.emit("data", Buffer.from(text)); };
+
+    it("emits a line that two chunks hold one time, and whole", async () => {
+      const { logs } = await startWithLogs();
+      write("Error: failed to initialize sqlite sta");
+      expect(logs).toEqual([]);
+      write("te runtime under /home/x/.codex\n");
+      expect(logs).toEqual(["Error: failed to initialize sqlite state runtime under /home/x/.codex"]);
+    });
+
+    it("emits the last line with no line end when the process closes, before done", async () => {
+      const { logs, order } = await startWithLogs();
+      write("fatal: no line end");
+      expect(logs).toEqual([]);
+      fakeProc.emit("close", 1);
+      expect(logs).toEqual(["fatal: no line end"]);
+      expect(order).toEqual(["log", "done"]);
+    });
+
+    // A caller reads the logs directly after a kill: the time limit of a sub-agent run does.
+    it("emits the text with no line end when the process is killed", async () => {
+      const { logs } = await startWithLogs();
+      write("fatal: cannot open the state database");
+      adapter.kill();
+      expect(logs).toEqual(["fatal: cannot open the state database"]);
+    });
+
+    it("detects an auth error in a line that is too long for the logs", async () => {
+      const { logs, auth } = await startWithLogs();
+      write("x".repeat(64_001));
+      write(" 401 Unauthorized\n");
+      expect(auth()).toBe(1);
+      expect(logs).toEqual([STDERR_TEXT_REMOVED]);
+    });
+
+    it("gives a redaction the whole of a credential that a chunk boundary divided", async () => {
+      const { logs } = await startWithLogs();
+      write(`401 for key ${FAKE_KEY.slice(0, 12)}`);
+      write(`${FAKE_KEY.slice(12)} at the provider\nOPENAI_API_KEY=`);
+      write("q7q7q7q7q7q7q7q7q7\n");
+
+      const tail = createRedactedTail();
+      for (const line of logs) tail.add(line);
+      expect(tail.read(300)).toBe("401 for key [REDACTED] at the provider OPENAI_API_KEY=[REDACTED]");
+    });
+
+    it("detects an auth error that a chunk boundary divided", async () => {
+      const { auth } = await startWithLogs();
+      write("Error: 401 Unauth");
+      write("orized\n");
+      expect(auth()).toBe(1);
+    });
+
+    // The primary turn kills the process on auth_required, and a log after that is dropped.
+    it("logs a prompt for a key before it raises auth_required, with no line end", async () => {
+      const { logs, order } = await startWithLogs();
+      write("Enter your API key: ");
+      await vi.waitFor(() => expect(order).toEqual(["log", "auth_required"]));
+      expect(logs).toEqual(["Enter your API key:"]);
+    });
+
+    it("keeps the order of the lines when an auth_required listener kills the adapter", async () => {
+      const { logs } = await startWithLogs();
+      adapter.on("auth_required", () => { adapter.kill(); });
+      write("401 Unauthorized\nmiddle\nlast");
+      expect(logs).toEqual(["401 Unauthorized", "middle", "last"]);
+    });
+
+    it("keeps the stderr of a killed process apart from the stderr of the next one", async () => {
+      const { logs } = await startWithLogs();
+      const killed = fakeProc;
+      write("fatal from the old process");
+      adapter.kill();
+      expect(logs).toEqual(["fatal from the old process"]);
+
+      adapter.run({ prompt: "Again", cwd: "/workspace" });
+      await vi.waitFor(() => expect(fakeProc).not.toBe(killed));
+      write("part of a line of the new process");
+      killed.stderr.emit("data", Buffer.from("last words of the old process\n"));
+      killed.emit("close", 1);
+      expect(logs).toEqual(["fatal from the old process"]);
+
+      write(", and the rest of it\n");
+      expect(logs).toEqual(["fatal from the old process", "part of a line of the new process, and the rest of it"]);
+    });
   });
 
   it("ignores an empty-string message delta", async () => {

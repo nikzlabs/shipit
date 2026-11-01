@@ -5,6 +5,7 @@ import { useUiStore } from "../ui-store.js";
 import { useIssuesStore } from "../issues-store.js";
 import { usePluginReposStore } from "../plugin-repos-store.js";
 import { useRepoStore } from "../repo-store.js";
+import { useSettingsStore } from "../settings-store.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
 
 function session(id: string, title = id): SessionInfo {
@@ -172,6 +173,17 @@ describe("resumeSessionInternal", () => {
     resumeSessionInternal("session-b");
 
     expect(useSessionStore.getState().historyLoaded).toBe(false);
+  });
+
+  // docs/330 — a Stop returns a message's uploads as file chips, which name the outgoing
+  // session's files: sent from the incoming session, they would not resolve.
+  it("drops the file chips of the outgoing session", () => {
+    useSessionStore.setState({ sessionId: "session-a" });
+    useSettingsStore.getState().addPendingFile("/uploads/shot.png");
+
+    resumeSessionInternal("session-b");
+
+    expect(useSettingsStore.getState().pendingFiles).toEqual([]);
   });
 
   it("resets the mobile panel to chat so a switch never lands on the previous session's workspace tab", () => {

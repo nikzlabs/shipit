@@ -43,12 +43,12 @@ supports appear, so on a harness with one mode there is nothing to choose.
 |---|---|
 | **Plan** | Read-only. You research and plan; you do not edit |
 | **Guarded** | Autonomous, but every shell and network command is safety-checked before it runs and risky ones are blocked. Slower, and costs a little more. Conditions below |
-| **Auto** | Autonomous, no command safety check |
+| **Auto** | Autonomous, no command safety check. Claude asks for no approval: ShipIt allows each call the CLI would ask about, and shows no card |
 
 **Guarded mode can be picked and then not happen, and this is worth getting
 right** — it is the one place where reassuring the user wrongly has a cost. The
-menu enforces the model half: guarded needs a Sonnet or Opus model, and it
-refuses the pick otherwise. The *account* half is only discovered when the turn
+menu enforces the model half: guarded does not run on Haiku before 5.5, and it
+refuses the pick there. The *account* half is only discovered when the turn
 starts: it also needs a Max, Team or Enterprise plan, and where the account or
 the model cannot run it, ShipIt says so in the conversation and **runs the turn
 in auto — with no command safety check at all**, as do the turns after it. So if
@@ -78,7 +78,8 @@ of the **Files** tab, where the user can delete one they no longer want.
 
 **Workspace file references — `@`.** A pointer at a file in the session's own
 checkout, picked from the `@` menu (next section), added from the **Files** tab
-with "Add to chat", or dragged out of the file tree onto the composer. Each one
+with "Add to chat", or dragged out of the file tree onto the composer. A file
+under `/persist` in the Files tab is added the same two ways. Each one
 shows as a chip. ShipIt reads the file and inlines its contents, marked as
 untrusted content — **at the moment the message runs**, not the moment it was
 typed, so a message that sat in the queue carries the file as it is when its
@@ -135,13 +136,25 @@ can also send:
   running. It appears in the transcript as an ordinary message from them, and
   you see it mid-turn. The switch is *Inject messages mid-turn* in **Settings →
   Advanced** (`shipit settings get advanced.liveSteering`). Injection also needs
-  a live streaming process and a turn that can take one: a ShipIt-driven system
-  turn, or a merge being held, sends the message to the queue instead. That is
-  the honest answer to "why did it queue when it should have interrupted?".
+  a live streaming process and a turn that can take one. A turn that ShipIt
+  started for work — a merge notice, a finished consult, a CI fix, the turn
+  after a restart — takes one like a turn they typed. A turn takes a message
+  from the moment the agent has that turn's prompt. A message sent before
+  that, while the turn starts, waits in the queue for those seconds and is then
+  normally given to the same turn, after its prompt and in the order they sent
+  it; a `/compact` or `/goal` that waits in the queue keeps a turn of its own.
+  The turn that resolves the conflicts of a rebase takes one too. One turn
+  takes none: a compaction turn, whoever started it (`/compact`, or one that
+  ShipIt starts). There, and while a merge is being held, the message stays in
+  the queue. That is the honest answer to "why did it queue when it should have
+  interrupted?". A message the agent did not take goes back to the queue at its
+  place in the order they sent it, so it does not run after a correction they
+  sent later.
 - **Otherwise** the message is **queued**. A strip above the composer lists the
   queued messages in order, each with an ✕ to drop it, and **Clear all**. A
   queued message runs as its own turn once the current one has finished and its
-  work is committed. Without live steering there is no Send button mid-turn at
+  work is committed, and a message of theirs runs before a queued entry from
+  another source, such as a merge notice or a CI fix. Without live steering there is no Send button mid-turn at
   all: on a desktop Enter still queues, but **on a phone there is no way to
   queue while a turn runs** — they wait, or they stop the turn.
 
@@ -153,6 +166,41 @@ new turn; the next message resumes the conversation. A brokered
 `shipit agent run` is not inside it and keeps running. A
 stop that does not take is what **Force-kill the agent** on the Terminal tab's
 health strip is for ([sessions.md](sessions.md)).
+
+**Stop also empties the queue.** The messages that the user had waiting go back
+into their composer, in the order they sent them and before the text they were
+writing, with their attachments as file chips. So does a message still on its
+way when they pressed Stop, and one they steered into the turn that you had
+not read yet. Nothing they sent before the Stop starts by itself after it; they
+send again what they still want. So when a user asks "where did my queued
+message go?" after a Stop, the answer is: into the composer. This is the same
+behind a turn they typed and a turn that ShipIt started, and **Force-kill the
+agent** does the same. A message that they send after the Stop is not written
+into the stopped turn: it waits, and runs as the next turn.
+
+An entry that ShipIt had put in the queue is removed and does not go to the
+composer. Most come back by themselves: the notice that the session's pull
+request merged, a message from another session, an automatic CI fix. A note
+about a restart, about stopped background jobs, about a rebase or about a
+finished `shipit agent run` consult rides the next turn; no turn starts for it.
+Two kinds do not come back: an action the user started with a button while a
+turn ran (**Fix CI**, **Create PR**), which they press again; and a compaction
+you asked for with `shipit compact`, which you ask for again.
+
+**Background work outlives a turn only on an agent process that stays up.** With
+live steering on and a harness whose process stays up between turns, a turn
+runs on such a process,
+so a job you left in the background can end and start a new turn. That holds
+for a turn the user typed and for a turn ShipIt started — a merge notice, a
+finished consult, a CI fix. Otherwise the process exits a few seconds after
+your message ends, and a job that is still running then stops with it. The
+process of the turn that resolves the conflicts of a rebase always ends with
+that turn, before ShipIt continues the rebase, and the turn's prompt says so.
+Otherwise ShipIt then normally starts one turn that names the work.
+If that turn leaves work running too, or if another turn took the agent process
+first, ShipIt starts no turn for it: the transcript normally gets a notice, and
+that notice is the answer when the user asks why a session stopped with a build
+half done. `/shipit-docs/environment.md` has the rule to follow.
 
 While you work, a line under the transcript names what you are doing. When the
 turn ends, ShipIt commits, and pushes if the session has a remote and GitHub is
@@ -167,19 +215,26 @@ Three things stop and wait for an answer, and they look different on purpose.
 
 | Card | Appears when | The user can |
 |---|---|---|
-| **Permission needed** | A tool call needs approval | **Approve**, **Deny**, or **Approve & remember** — the last only when the request names a file, and it then allows that file for the rest of the session. **Show details**, where the call has more to show than the one-line summary, expands it in full. ShipIt sets no deadline, but the agent can stop waiting — Claude Code gives up on an unanswered prompt after 30 minutes, and Stop ends it too. The card then reads **Denied** and the session no longer asks for attention |
-| **A question** | You call `AskUserQuestion` | Pick an option, tick several where the question allows it, or choose **Other** and type — with a mic on that field where voice input is on. Answering starts a turn |
+| **Permission needed** | A tool call needs approval — never for Claude in Auto mode | **Approve**, **Deny**, or **Approve & remember** — the last only when the request names a file, and it then allows that file for the rest of the session. **Show details**, where the call has more to show than the one-line summary, expands it in full. ShipIt sets no deadline, but the agent can stop waiting — Claude Code gives up on an unanswered prompt after 30 minutes, and Stop ends it too. The card then reads **Denied** and the session no longer asks for attention. When the call ended before anyone answered, and not by the user's Stop, the card adds a line that says so, such as "Nobody answered in 30 min" |
+| **A question** | You call `AskUserQuestion` | Pick an option, tick several where the question allows it, or choose **Other** and type — with a mic on that field where voice input is on. Answering starts a turn. An answer given while a different turn runs goes to that turn as a message, or to the queue |
 | **Plan ready** | You end plan mode with `ExitPlanMode` — the card hangs off that tool call, so plan-shaped prose alone does not produce one | Accept, accept guarded, or suggest changes (above) |
 
 A permission prompt counts as you still working, so the session is not "waiting
 on the user" in the sidebar's sense and cannot be muted — see
 [sessions.md](sessions.md). A question does put the session in that state.
 
+A permission prompt returns nothing to you while it waits. For a call of a
+**background subagent** of yours, ShipIt puts a `[ShipIt]` line in your running
+turn after two minutes, so that you can stop that subagent or change the work.
+`/shipit-docs/environment.md` ("Writes that wait for the user's approval") says
+which writes raise a prompt and when the line comes.
+
 While a question card or a plan card waits, ShipIt starts **no automatic turn**
 in the session: no CI auto-fix, no automatic conflict resolution, no merge
-notice, child report, message from a parent session, finished consult or preview
-auto-fix. They wait, and run after the user's reply turn ends — unless that turn
-ends on a new question. The hold and the held turns are saved, so a stopped or
+notice, finished consult or preview auto-fix. They wait, and run after the
+user's reply turn ends — unless that turn ends on a new question. A child's
+report or a parent's message still goes to the inbox; no turn starts to tell you
+about it, and the notice comes in front of the user's reply instead. The hold and the held turns are saved, so a stopped or
 restarted container, or a ShipIt restart, loses neither. A turn your own CLI
 starts by itself — a background job of yours finishing — is stopped at once; you
 read what the job returned together with the user's reply. What the user starts
@@ -221,7 +276,9 @@ conversation, a webhook, or both — is the user's setting and never your
 decision; always just call the tool. Where the note does land in the
 conversation it is a card with a Play button, and the user can have such notes
 autoplay hands-free, with a chime, from **Settings → Voice**. On a webhook-only
-setting there is no card at all, which is not a failure. Separately, the same
+setting there is no card at all, which is not a failure. When a call starts to
+wait for the user's approval, ShipIt sends such a note itself, by the same
+setting, because you wait inside the call. Separately, the same
 tab can put a **Play** button on every completed turn of yours, for reading a
 whole reply aloud.
 
@@ -254,11 +311,13 @@ cache totals, and a row that opens the full usage view.
 
 Money needs care when answering. The dial separates **metered spend** — what an
 API key was actually charged — from **at API rates**, which is what turns
-already covered by a subscription *would* have cost and is not a bill. The
-figures sit beside the ring on a wide composer and inside the popover otherwise,
-so "I can't see a number" usually means a narrow panel.
+already covered by a subscription *would* have cost and is not a bill. Where a
+model charges more for a long prompt, both figures use the higher rate for each
+request whose prompt is over the vendor's limit. The figures sit beside the ring
+on a wide composer and inside the popover otherwise, so "I can't see a number"
+usually means a narrow panel.
 
-**Compaction** summarises the conversation so far and frees that context. Four
+**Compaction** summarises the conversation so far and frees that context. Five
 ways it happens:
 
 - The user types **`/compact`**, optionally with instructions after it —
@@ -271,17 +330,41 @@ ways it happens:
   at a point you choose — between two features, say — when the user's setting
   *Let the agent compact its own context* (Settings → Advanced, off by default)
   allows it; read it with `shipit settings get advanced.agentCompaction`. It runs
-  after your turn ends; your next turn starts with your instructions word for
-  word, and with a note you continue on your own. When the user says context is
-  the problem, do this if the setting is on; if it is off, propose turning it on
-  with `shipit settings propose`, or let them type `/compact`. Details:
+  after your turn ends, and with a note you continue on your own. It compacts
+  only a context of 200K tokens or more when your turn ends: then your next turn
+  starts with your instructions word for word; under that, nothing is compacted
+  and your next turn says so. **When the user asks you to compact your context,
+  do it yourself** with `shipit compact --user-asked`, which compacts at any
+  size, as their `/compact` does; never tell them to type `/compact`. If the
+  setting is off, propose turning it on with `shipit settings propose`. Do not
+  repeat your system prompt — ShipIt's instructions and the user's own — in the
+  instructions: it comes with every turn. Details:
   `/shipit-docs/sessions.md` → *Compacting your own context*.
 - **The harness does it itself** when its context fills.
 - **After a merge.** When a session's pull request has merged and the user's
   next message will reset the branch to the latest base, the composer offers
   *Compact the context* beside that choice — shipped work is summarised down to
   what it changed, keeping their standing preferences and anything unresolved.
-  Offered only where the harness supports compaction, and the user can untick it.
+  Offered only where the harness supports compaction. The user can untick it,
+  and the choice is kept for the session — the pull request's **⋮** menu shows
+  it as **Compact after merge**. Ticked or not, it does not compact a context
+  under 200K tokens.
+- **While the session is idle.** With the user's setting *Compact idle sessions
+  before the prompt cache expires* (Settings → Advanced, off by default) on,
+  ShipIt compacts a session whose context is 200K tokens or more shortly before
+  its provider's prompt cache expires — 54 minutes after the last model request
+  on a one-hour cache, 27 on a 30-minute one — so the user's next message does
+  not read the whole conversation again at full price. Read it with
+  `shipit settings get advanced.idleCompaction`. It also runs while you wait for
+  the user's answer to a question or a plan, which stays open. It skips a done
+  session, a cache that lives under 30 minutes (Claude on an API key, or a
+  Claude model through OpenCode), Grok and OpenCode 2 sessions, and a session whose next turn
+  would run on another account than its last one, because a cache belongs to
+  the account. When ShipIt has stopped the session's container — a ShipIt
+  update does that to idle sessions — it starts the container for the
+  compaction and stops it again afterwards, unless someone used the session
+  meanwhile. A message the user sends meanwhile waits for the compaction, then
+  runs.
 
 Whichever way it happened, a **Context compacted** card is left in the
 transcript — with the before and after token counts where the harness reports
@@ -355,9 +438,12 @@ if you need to say what it is set to.
 **Work for another repository.** When a change belongs in a different
 repository, `propose_repo_session` puts a card in the transcript naming the
 repository and showing your prompt. **Start in owner/repo** starts an
-independent session there with the prompt already sent; **Decline** closes the
-card. Either way, a `[ShipIt]` line at the start of your next turn says what the
-user did, so never ask them. Details: `/shipit-docs/sessions.md`.
+independent session there with the prompt already sent, on this session's
+harness, model and level, and on its role if it runs one; **Decline** closes the
+card. When the user has not trusted that repository, the card says so and the
+button reads **Trust and start in owner/repo**. Either way, a `[ShipIt]` line at
+the start of your next turn says what the user did, so never ask them. Details:
+`/shipit-docs/sessions.md`.
 
 ## Quoting and re-using what is on screen
 
@@ -371,9 +457,9 @@ to say "this part, specifically".
 | The user does | You do |
 |---|---|
 | Types, dictates, attaches, and sends | Read the message, including the attachments and the `@` files |
-| Interrupts, queues, cancels a queued message | Stop cleanly; in an ordinary session ShipIt commits the partial work |
+| Interrupts, queues, cancels a queued message | Stop cleanly; in an ordinary session ShipIt commits the partial work, and a Stop returns their queued messages to the composer |
 | Answers a question, approves or denies a permission, accepts a plan | Ask only when the answer changes what you do |
-| Types `/compact` when context is full; turns on *Let the agent compact its own context* | Compact your own context with `shipit compact` at a point you choose, such as between features — only while that setting is on |
+| Types `/compact` when context is full, or asks you to compact; turns on *Let the agent compact its own context* | Compact your own context with `shipit compact` at a point you choose, such as between features, and with `--user-asked` when they ask — only while that setting is on |
 | Sets and clears a goal | Work toward it |
 | Chooses the permission mode | Say what the work needs, and why |
 | Ticks a proposed action | Offer them; then do the work |

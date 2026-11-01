@@ -1,4 +1,5 @@
 import type { LoginIntegrationId } from "../shared/catalogue/types.js";
+import { isOpenCodeHarness } from "../shared/opencode-harness.js";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -34,6 +35,7 @@ const PROVIDER_LABEL: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
   opencode: "OpenCode",
+  opencode2: "OpenCode 2",
   grok: "Grok Build",
   antigravity: "Antigravity",
 };
@@ -42,6 +44,7 @@ const LEGACY_CREDENTIAL_PATHS: Record<AgentId, readonly LegacyCredentialPath[]> 
   claude: [{ rel: ".claude", kind: "dir" }, { rel: ".claude.json", kind: "file" }],
   codex: [{ rel: ".codex", kind: "dir" }],
   opencode: [],
+  opencode2: [],
   grok: [],
   antigravity: [],
 };
@@ -60,6 +63,7 @@ const LEGACY_CREDENTIAL_MARKERS: Record<AgentId, readonly string[]> = {
   ],
   codex: [path.join(".codex", "auth.json")],
   opencode: [],
+  opencode2: [],
   grok: [],
   antigravity: [],
 };
@@ -99,9 +103,9 @@ function requireHarness(serviceId: string): AgentId {
   return harness;
 }
 
-// OpenCode consumes the existing OpenAI login; Zen remains its native service.
+// Both OpenCode harnesses consume the existing OpenAI login; Zen remains their native service.
 export function accountOwnerHarness(provider: AgentId): AgentId {
-  return provider === "opencode" ? "codex" : provider;
+  return isOpenCodeHarness(provider) ? "codex" : provider;
 }
 
 export function accountServiceForHarness(provider: AgentId): string {
@@ -130,11 +134,15 @@ export interface SelectAccountOptions {
   optimistic?: boolean;
 }
 
+// Runs `run` with HOME at a private copy of a Claude account's credentials (docs/153).
+export type ClaudeCredentialCopyRunner = <T>(accountId: string, run: (home: string) => Promise<T>) => Promise<T>;
+
 export class ProviderAccountManager {
   private credentialsDir: string;
   private credentialStore: CredentialStore;
   private authManagers: Map<LoginIntegrationId, AgentAuthManager> | null = null;
   private getSubscriptionLimits: (() => SubscriptionLimitsMap) | undefined;
+  private claudeCredentialCopy: ClaudeCredentialCopyRunner | null = null;
 
   constructor(opts: ProviderAccountManagerOptions) {
     this.credentialsDir = opts.credentialsDir;
@@ -155,6 +163,15 @@ export class ProviderAccountManager {
 
   attachAuthManagers(authManagers: Map<LoginIntegrationId, AgentAuthManager>): void {
     this.authManagers = authManagers;
+  }
+
+  attachClaudeCredentialCopy(runner: ClaudeCredentialCopyRunner): void {
+    this.claudeCredentialCopy = runner;
+  }
+
+  // Null in local mode and until boot attaches the OAuth refresher: a caller then uses the account root.
+  claudeCredentialCopyRunner(): ClaudeCredentialCopyRunner | null {
+    return this.claudeCredentialCopy;
   }
 
   migrateDefaultAccounts(): void {
@@ -407,7 +424,8 @@ export class ProviderAccountManager {
     const exclude = new Set(opts.exclude ?? []);
     const mode = this.credentialStore.getSelectionMode(...routingSettingsKeyFor(serviceId));
     const eligible = this.accountsInSelectionOrder(serviceId).filter(
-      (account) => account.status === "ready" || account.status === "authenticating",
+      (account) => account.status === "ready"
+        || (account.status === "authenticating" && this.holdsCredential(serviceId, account.id)),
     );
     const connected = orderForSelectionMode(
       eligible.filter((account) => !exclude.has(account.id)),
@@ -465,6 +483,16 @@ export class ProviderAccountManager {
     const reserved = this.reservedRouteFor(serviceId);
     if (reserved && !exclude.has(reserved.id)) return { ok: true, route: reserved };
     return { ok: false, reason: "auth_required" };
+  }
+
+  // A sign-in can remove the account's credential before it writes the new one (Claude's does).
+  // Until then the account has nothing to run a turn on.
+  private holdsCredential(serviceId: string, accountId: string): boolean {
+    const provider = harnessFor(serviceId);
+    const loginId = loginIntegrationForService(serviceId);
+    const mgr = loginId ? this.authManagers?.get(loginId) : undefined;
+    if (!provider || !mgr) return true;
+    return mgr.isConfigured({ credentialDir: this.resolveCredentialRoot(provider, accountId) });
   }
 
   hasAnyAuthForProvider(provider: AgentId): boolean {
@@ -566,9 +594,26 @@ export class ProviderAccountManager {
     const mgr = this.requireAuthManager(serviceId);
     const inFlight = mgr.getActiveAccountId();
     if (!inFlight || inFlight === accountId) mgr.cancel();
+    return this.setAccountStatus(serviceId, accountId, this.statusWithoutSignIn(provider, accountId, mgr));
+  }
+
+  // No login process outlives the orchestrator, so a row still signing in at start-up was interrupted (docs/150).
+  endInterruptedSignIns(loginManagers: ReadonlyMap<LoginIntegrationId, AgentAuthManager>): void {
+    for (const account of this.list()) {
+      if (account.status !== "authenticating") continue;
+      const provider = harnessFor(account.serviceId);
+      const loginId = loginIntegrationForService(account.serviceId);
+      const mgr = loginId ? loginManagers.get(loginId) : undefined;
+      if (!provider || !mgr || mgr.getActiveAccountId() === account.id) continue;
+      const status = this.statusWithoutSignIn(provider, account.id, mgr);
+      this.setAccountStatus(account.serviceId, account.id, status);
+      console.log(`[provider-accounts] ${account.id}: the sign-in did not survive a restart, status=${status}`);
+    }
+  }
+
+  private statusWithoutSignIn(provider: AgentId, accountId: string, mgr: AgentAuthManager): CredentialStatus {
     const credentialDir = this.resolveCredentialRoot(provider, accountId);
-    const status: CredentialStatus = mgr.isConfigured({ credentialDir }) ? "ready" : "unavailable";
-    return this.setAccountStatus(serviceId, accountId, status);
+    return mgr.isConfigured({ credentialDir }) ? "ready" : "unavailable";
   }
 
   submitAccountCode(serviceId: string, accountId: string, code: string): void {

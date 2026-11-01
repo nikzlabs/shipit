@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -330,6 +330,115 @@ describe("AgentController — /agent/spawn requires a model (docs/261)", () => {
     expect(res.statusCode).toBe(200);
     expect(spawned).toHaveLength(1);
     expect(spawned[0].lastParams?.homeDir).toBe("/credentials/sub-agent-homes/s-3");
+    expect(spawned[0].lastParams?.settingsPath).toBe("/etc/shipit/managed-settings.json");
+    expect(spawned[0].lastParams?.sandbox).toBeUndefined();
+  });
+
+  it("hands a sandbox spawn's flag through to agent.run", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/spawn",
+      payload: { agentId: "claude", prompt: "review", spawnId: "s-4", model: "claude-opus-5", sandbox: true, timeoutMs: 50 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(spawned[0].lastParams?.sandbox).toBe(true);
+  });
+});
+
+describe("AgentController — /agent/spawn says why a run failed", () => {
+  // Put together here, so that no secret scan reads a credential in this file.
+  const FAKE_KEY = ["sk", "proj", "k".repeat(28)].join("-");
+
+  type Ending = "exit" | "no-credential" | "success";
+
+  class EndingAgent extends EventEmitter {
+    readonly agentId = "codex" as const;
+    constructor(private readonly ending: Ending) {
+      super();
+    }
+    run(): void {
+      if (this.ending === "no-credential") {
+        this.emit("auth_required");
+        return;
+      }
+      setImmediate(() => {
+        if (this.ending === "success") {
+          this.emit("log", "codex-stderr", "warning: a plugin took 2 s to start");
+          this.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "no findings" }] });
+          this.emit("event", { type: "agent_result", status: "success" });
+          this.emit("done", 0);
+          return;
+        }
+        this.emit("log", "codex-stderr", `error: config.toml is not valid (key ${FAKE_KEY})`);
+        this.emit("done", 2);
+      });
+    }
+    kill(): void {}
+  }
+
+  let app: FastifyInstance;
+  let workspace: string;
+  let ending: Ending;
+
+  beforeEach(async () => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-spawn-fail-"));
+    ending = "exit";
+    app = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => new EndingAgent(ending) as unknown as AgentProcess,
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+    }).registerRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await app.close();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  async function spawnAndReadDoneLine(spawnId: string): Promise<{ body: Record<string, unknown>; doneLine: string }> {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/spawn",
+      payload: { agentId: "codex", prompt: "review", spawnId, model: "gpt-5.6-sol" },
+    });
+    expect(res.statusCode).toBe(200);
+    const doneLine = log.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.includes(`worker done spawn=${spawnId}`));
+    expect(doneLine).toBeDefined();
+    return { body: res.json(), doneLine: doneLine! };
+  }
+
+  it("logs the exit code and the stderr tail, with the credential redacted", async () => {
+    const { body, doneLine } = await spawnAndReadDoneLine("s-crash");
+    expect(body).toMatchObject({ status: "error", exitCode: 2 });
+    expect(doneLine).toContain("status=error");
+    expect(doneLine).toContain("Exit code 2.");
+    expect(doneLine).toContain("config.toml is not valid");
+    expect(doneLine).not.toContain(FAKE_KEY);
+    expect(JSON.stringify(body)).not.toContain(FAKE_KEY);
+  });
+
+  it("answers at once, with a reason, when the harness has no credential", async () => {
+    ending = "no-credential";
+    const { body, doneLine } = await spawnAndReadDoneLine("s-noauth");
+    expect(body).toMatchObject({ status: "error" });
+    expect(doneLine).toMatch(/reason=".*credential/);
+  }, 2_000);
+
+  it("adds no reason to the line of a run that succeeded", async () => {
+    ending = "success";
+    const { body, doneLine } = await spawnAndReadDoneLine("s-ok");
+    expect(body).toMatchObject({ status: "success", text: "no findings" });
+    expect(doneLine).not.toContain("reason=");
+    expect(doneLine).not.toContain("plugin");
   });
 });
 
@@ -736,6 +845,7 @@ describe("AgentController — a permission request the agent stopped waiting for
   let agents: FakeAgent[];
   let workspace: string;
   let broker: PermissionBroker;
+  let controller: AgentController;
   let brokerEvents: { type: string; requestId?: string; behavior?: string }[];
 
   async function startTurn(): Promise<FakeAgent> {
@@ -757,7 +867,7 @@ describe("AgentController — a permission request the agent stopped waiting for
     resetNodeRuntimeForTests();
     broker = new PermissionBroker({ broadcast: (e) => brokerEvents.push(e) });
     app = Fastify({ logger: false });
-    new AgentController({
+    controller = new AgentController({
       agentFactory: () => {
         const a = new FakeAgent();
         agents.push(a);
@@ -768,7 +878,8 @@ describe("AgentController — a permission request the agent stopped waiting for
       permissionBroker: broker,
       mcpConfig: new McpConfigController({ broadcast: () => {} }),
       latestSseSeq: () => 0,
-    }).registerRoutes(app);
+    });
+    controller.registerRoutes(app);
     await app.ready();
   });
 
@@ -789,7 +900,12 @@ describe("AgentController — a permission request the agent stopped waiting for
       content: [{ type: "tool_result", tool_use_id: "toolu_1", is_error: true, content: "sent no response or progress for 1800s; aborting." }],
     });
 
-    expect(denials()).toEqual([{ type: "agent_permission_resolved", requestId, behavior: "deny" }]);
+    expect(denials()).toEqual([{
+      type: "agent_permission_resolved",
+      requestId,
+      behavior: "deny",
+      callEnded: { summary: expect.stringContaining("curl x"), waitedMs: expect.any(Number) },
+    }]);
     expect(denials().some((e) => e.requestId === otherId)).toBe(false);
   });
 
@@ -816,6 +932,56 @@ describe("AgentController — a permission request the agent stopped waiting for
 
     expect(denials().some((e) => e.requestId === newId)).toBe(false);
     expect(broker.pendingCount).toBe(1);
+  });
+
+  // The order the Claude CLI emits: a background Agent call returns before its subagent's first call.
+  it("tells a background subagent's call from a foreground one and from the main agent's", async () => {
+    const agent = await startTurn();
+    const use = (id: string, name: string) => [{ type: "tool_use", id, name, input: {} }];
+    const result = (id: string) => [{ type: "tool_result", tool_use_id: id, content: "ok" }];
+
+    agent.emit("event", { type: "agent_assistant", content: use("agent_bg", "Agent") });
+    agent.emit("event", { type: "agent_tool_result", content: result("agent_bg") });
+    agent.emit("event", { type: "agent_assistant", content: use("agent_fg", "Agent") });
+    agent.emit("event", { type: "agent_assistant", content: use("write_bg", "Write"), parentToolUseId: "agent_bg" });
+    agent.emit("event", { type: "agent_assistant", content: use("write_fg", "Write"), parentToolUseId: "agent_fg" });
+    agent.emit("event", { type: "agent_assistant", content: use("write_main", "Write") });
+
+    await expect(controller.subagentCaller("write_bg")).resolves.toBe("background");
+    await expect(controller.subagentCaller("write_fg")).resolves.toBe("foreground");
+    await expect(controller.subagentCaller("write_main")).resolves.toBeUndefined();
+
+    agent.emit("event", { type: "agent_tool_result", content: result("write_bg"), parentToolUseId: "agent_bg" });
+    agent.emit("done", 0);
+    await expect(controller.subagentCaller("write_fg")).resolves.toBeUndefined();
+  });
+
+  it("names the caller of a request that arrives before the stream shows its call", async () => {
+    const agent = await startTurn();
+    const caller = controller.subagentCaller("write_late");
+
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "tool_use", id: "write_late", name: "Write", input: {} }],
+      parentToolUseId: "agent_bg",
+    });
+
+    await expect(caller).resolves.toBe("background");
+  });
+
+  it("keeps a replaced process's late events out of its successor's calls", async () => {
+    const killed = await startTurn();
+    const kill = await app.inject({ method: "POST", url: "/agent/kill", payload: {} });
+    expect(kill.statusCode).toBe(200);
+    await startTurn();
+
+    killed.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "tool_use", id: "write_old", name: "Write", input: {} }],
+      parentToolUseId: "agent_old",
+    });
+
+    await expect(controller.subagentCaller("write_old")).resolves.toBeUndefined();
   });
 
   it("reports the requests still waiting, so a restarted orchestrator can check its saved cards", async () => {
@@ -953,5 +1119,106 @@ describe("AgentController — a turn that ends inside run()", () => {
     expect(res.statusCode, res.body).toBe(200);
     expect(agent.cleanups).toBe(1);
     expect((await app.inject({ method: "GET", url: "/agent/status" })).json().running).toBe(false);
+  });
+});
+
+describe("AgentController — /agent/service-mcp (docs/327)", () => {
+  const proxy = { tsxBin: "/usr/bin/node", bridgePath: "/app/dist/mcp-bridges/mcp-service-proxy.js" };
+  const verseshot = { name: "verseshot", url: "http://verseshot:8787/mcp" };
+  const dev = { name: "verseshotdev", url: "http://api:8787/mcp" };
+
+  class LiveAgent extends FakeAgent {
+    liveCalls: string[][] = [];
+    accepts = true;
+    setLiveMcpServers(servers: { name: string }[]): Promise<boolean> {
+      this.liveCalls.push(servers.map((s) => s.name));
+      return Promise.resolve(this.accepts);
+    }
+  }
+
+  let app: FastifyInstance;
+  let workspace: string;
+  let agent: FakeAgent | null;
+  let makeAgent: () => FakeAgent;
+
+  beforeEach(async () => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-mcp-"));
+    resetNodeRuntimeForTests();
+    agent = null;
+    makeAgent = () => new LiveAgent();
+    const mcpConfig = new McpConfigController({ broadcast: () => {} });
+    mcpConfig.serviceProxyPaths = () => proxy;
+    app = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => {
+        agent = makeAgent();
+        return agent as unknown as AgentProcess;
+      },
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig,
+      latestSseSeq: () => 0,
+    }).registerRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    resetNodeRuntimeForTests();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  async function start(serviceMcpServers: typeof verseshot[]): Promise<void> {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "p", cwd: workspace, useStreaming: true, serviceMcpServers } },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+  }
+
+  async function sync(serviceMcpServers: typeof verseshot[]): Promise<unknown> {
+    const res = await app.inject({ method: "POST", url: "/agent/service-mcp", payload: { serviceMcpServers } });
+    expect(res.statusCode, res.body).toBe(200);
+    return res.json();
+  }
+
+  it("gives a running agent a server that was declared after it started, and reports what it holds", async () => {
+    await start([dev]);
+
+    expect(await sync([dev, verseshot])).toEqual({ live: [dev, verseshot] });
+    expect((agent as LiveAgent).liveCalls).toEqual([["verseshotdev", "verseshot"]]);
+  });
+
+  it("sends nothing when the set is the one the agent already holds", async () => {
+    await start([verseshot]);
+
+    expect(await sync([verseshot])).toEqual({ live: [verseshot] });
+    expect((agent as LiveAgent).liveCalls).toEqual([]);
+  });
+
+  it("leaves a changed or removed server to a new process, and reports the old set", async () => {
+    await start([verseshot]);
+
+    expect(await sync([{ name: "verseshot", url: "http://verseshot:9000/mcp" }, dev])).toEqual({ live: [verseshot] });
+    expect(await sync([])).toEqual({ live: [verseshot] });
+    expect((agent as LiveAgent).liveCalls).toEqual([]);
+  });
+
+  it("reports the old set when the agent cannot take servers while it runs", async () => {
+    makeAgent = () => new FakeAgent();
+    await start([]);
+    expect(await sync([verseshot])).toEqual({ live: [] });
+
+    makeAgent = () => Object.assign(new LiveAgent(), { accepts: false });
+    agent?.emit("done", 0);
+    await new Promise((r) => setImmediate(r));
+    await start([]);
+    expect(await sync([verseshot])).toEqual({ live: [] });
+  });
+
+  it("answers null when no agent process runs", async () => {
+    expect(await sync([verseshot])).toEqual({ live: null });
   });
 });

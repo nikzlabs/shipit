@@ -328,11 +328,14 @@ describe("AntigravityAdapter", () => {
         usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 900, total_tokens: 120 },
       }), RESULT_OK]);
       close(0);
-      const result = events.at(-1) as { type: string; status: string; tokens?: unknown; contextTokens?: number };
+      const result = events.at(-1) as {
+        type: string; status: string; tokens?: unknown; contextTokens?: number; requests?: unknown;
+      };
       expect(result.type).toBe("agent_result");
       expect(result.status).toBe("success");
       expect(result.tokens).toEqual({ input: 100, output: 20, cacheRead: 900 });
       expect(result.contextTokens).toBe(1000);
+      expect(result.requests).toEqual([{ input: 100, output: 20, cacheRead: 900 }]);
     });
 
     // Partial text must never imply success: a truncated stream is an error turn

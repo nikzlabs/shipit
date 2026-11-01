@@ -43,8 +43,9 @@ describe("AgentRegistry", () => {
     await registry.detect();
 
     const agents = registry.list();
-    expect(agents).toHaveLength(5);
-    expect(agents.map((a) => a.id)).toEqual(["claude", "codex", "opencode", "grok", "antigravity"]);
+    expect(agents).toHaveLength(6);
+    // opencode2 before opencode: list order is the tie-break for a shared model (docs/269 req 5).
+    expect(agents.map((a) => a.id)).toEqual(["claude", "codex", "opencode2", "opencode", "grok", "antigravity"]);
   });
 
   it("checks Claude auth via checkClaudeAuth callback", async () => {
@@ -113,9 +114,9 @@ describe("AgentRegistry", () => {
 
     const codex = registry.get("codex")!;
     expect(codex.capabilities.supportsResume).toBe(true);
-    expect(codex.capabilities.models[0]).toBe("gpt-5.6-sol");
+    expect(codex.capabilities.models[0]).toBe("gpt-6.1-sol");
     expect(codex.capabilities.models).not.toContain("gpt-5.6");
-    expect(codex.capabilities.models).toContain("gpt-5.4");
+    expect(codex.capabilities.models).toContain("gpt-6-luna");
     expect(codex.capabilities.toolNames).toContain("shell");
   });
 

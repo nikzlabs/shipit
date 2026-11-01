@@ -90,6 +90,8 @@ export interface SessionInfo {
   warm?: boolean;
   branchRenamed?: boolean;
   conversationReplay?: string;
+  /** docs/007 — a rewind's message id: the next spawn forks the stored conversation there. */
+  agentResumeAt?: string;
   mergedAt?: string;
   closedAt?: string;
   model?: string;
@@ -112,7 +114,10 @@ export interface SessionInfo {
   rootSessionId?: string;
   lastTurnErrored?: boolean;
   autoFixCiPaused?: boolean;
+  /** The parent's watch on this session's PR (docs/196). */
   mergeWatch?: SessionMergeWatch;
+  /** This session's watch on its own PR (docs/239). Stored apart, so neither arm displaces the other. */
+  selfMergeWatch?: SessionMergeWatch;
   secretBlock?: SessionSecretBlock;
   /** Set when the checkout cannot be made durable; exempts the row from the sidebar cap. */
   workspaceBlock?: WorkspaceBlockKind;
@@ -127,6 +132,10 @@ export interface SessionInfo {
    * which one is spent.
    */
   mergeContinueDeclinedAnchor?: string;
+  /** docs/218 req 6 — the merge whose compaction offer is spent (started, or unticked); same identity as above. */
+  mergeContinueCompactedAnchor?: string;
+  /** docs/295-compact-context-on-merge req 5 — the user turned the post-merge compaction off for this session. */
+  compactAfterMergeOff?: boolean;
   /** Durable, last-write-wins notice consumed atomically by the next interactive turn. */
   pendingAgentNotice?: string;
   /** Pair witnessed by ShipIt opening the PR; never derive from general PR status. */
@@ -164,12 +173,13 @@ export interface SessionInfo {
 
 /**
  * A row of the session lists, which every tab receives again on each change. The
- * status card and the goal reach only the open session's viewer, on `session_details`;
- * the replay and the notice are for the agent.
+ * status card, the goal and the compaction choice reach only the open session's viewer,
+ * on `session_details` (the lists are filtered, so they can lack the open session);
+ * the replay, the rewind point and the notice are for the agent.
  */
 export type SessionListRow = Omit<
   SessionInfo,
-  "sessionStatus" | "agentGoal" | "conversationReplay" | "pendingAgentNotice"
+  "sessionStatus" | "agentGoal" | "conversationReplay" | "agentResumeAt" | "pendingAgentNotice" | "compactAfterMergeOff"
 >;
 
 /**
@@ -272,8 +282,49 @@ export interface SessionMergeWatch {
   lastAttemptAt?: string;
   /** Worker-visible watchId:attempt; reconnect adoption uses it to avoid duplicate wakes. */
   deliveryId?: string;
+  /** The merge this watch fires for. Kept here because a branch re-arm clears the session's PR snapshot. */
+  mergedPr?: { prNumber: number; prUrl: string; prTitle: string; branch: string; mergeSha?: string };
+  /** Parent's watch: the parent was already told about this PR. A later arm inherits it and does not fire for it again. */
+  reportedPr?: { prNumber: number; outcome: "merged" | "closed" };
+  /** Parent's watch: the parent armed again while this watch was `merge-observed`. A new watch follows when this one ends. */
+  rearmedAt?: string;
+  /**
+   * Parent's watch: the PRs that resolved while this watch could not report them (it held
+   * another PR, or had reported), oldest first. The next arm inherits them and reports the first.
+   */
+  unreportedPrs?: SessionMergeWatchPr[];
   lastDeliveryError?: string;
   failedAt?: string;
+  /** Self watch, docs/306-quota-continuation: wakes that no credential could run, after a quota refusal. They spend no attempt. */
+  quotaRefusals?: number;
+  /** Self watch: after such a refusal, no wake before `until`, and none once a later turn has taken the session on. */
+  quotaWait?: { until: string; lastUsedAt: string };
+}
+
+/**
+ * docs/306-quota-continuation — a session that ShipIt continues by itself once a credential has
+ * quota again. Persisted, so a restart does not lose the promise its notice made.
+ */
+export interface SessionQuotaResume {
+  agentId: AgentId;
+  /** What the continuation turn is told: a turn that a quota limit or a renewed sign-in cut short, or a wake that never ran. */
+  cause: "quota" | "auth" | "wake";
+  /** Every turn start stamps lastUsedAt; a change means another turn may have taken the session on. */
+  lastUsedAt: string;
+  wakeAttempts: number;
+  /** No wake before this: the earliest reset that the refusing providers stated. */
+  notBefore?: string;
+  /** Continuations in a row that every credential refused for quota. */
+  quotaRefusals?: number;
+}
+
+export interface SessionMergeWatchPr {
+  outcome: "merged" | "closed";
+  prNumber: number;
+  prUrl: string;
+  prTitle: string;
+  branch: string;
+  mergeSha?: string;
 }
 
 export interface ChildMergedCard {
@@ -293,6 +344,14 @@ export interface ChildMergedCard {
   createdAt: string;
 }
 
+export type SelfMergeWatchEnd =
+  | "merged"
+  | "closed"
+  | "cancelled"
+  | "replaced"
+  | "other-pr-merged"
+  | "wake-failed";
+
 export interface SelfMergeWatchCard {
   cardId: string;
   watchId: string;
@@ -301,6 +360,8 @@ export interface SelfMergeWatchCard {
   prTitle?: string;
   branch?: string;
   createdAt: string;
+  /** Why this card's watch is gone. Absent while the watch can still fire. */
+  ended?: SelfMergeWatchEnd;
 }
 
 export type SessionReportSeverity = "fyi" | "warn" | "blocker";
@@ -310,9 +371,13 @@ export interface SessionReportCard {
   fromSessionId: string;
   fromTitle: string;
   fromBranch?: string;
-  /** Sibling is a legacy persisted value; current reports come from children. */
-  relation: "child" | "sibling";
-  severity: SessionReportSeverity;
+  /**
+   * `child` is a report; `sibling` is a legacy persisted report. `parent` and `proposed`
+   * are a message, shown to the user of the session that received it (docs/328).
+   */
+  relation: "child" | "sibling" | "parent" | "proposed";
+  /** A report has one; a message has none. */
+  severity?: SessionReportSeverity;
   subject?: string;
   body: string;
   createdAt: string;

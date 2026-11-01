@@ -7,5 +7,6 @@ export const handleSessionDetails: Handler<WsSessionDetails> = (_ctx, data) => {
   useSessionStore.getState().setSessionDetails(data.sessionId, {
     sessionStatus: data.sessionStatus,
     agentGoal: data.agentGoal,
+    ...(data.compactAfterMergeOff ? { compactAfterMergeOff: true } : {}),
   });
 };

@@ -188,6 +188,49 @@ services:
       expect(services[0].externalVolumes).toContain("shipit-workspace");
     });
 
+    describe("on Docker Desktop (docs/317)", () => {
+      function resolveOnDesktop(answer: boolean | Error): { asked: () => number; run: ReturnType<typeof resolveSessionPluginServices> } {
+        let asked = 0;
+        const run = resolveSessionPluginServices(SESSION_ID, workspaceDir, {
+          containEgress: false,
+          workspaceVolume: "shipit-workspace-vol",
+          stateRoot: path.dirname(sessionDir),
+          isDockerDesktop: () => {
+            asked++;
+            return answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
+          },
+        });
+        return { asked: () => asked, run };
+      }
+
+      it("leaves out a self service that mounts a subdirectory, and says why", async () => {
+        writeConfig(SELF_DECLARATION);
+        const { asked, run } = resolveOnDesktop(true);
+
+        expect(await run).toEqual([]);
+        expect(asked()).toBe(1);
+        expect(getPluginServiceFailures(SESSION_ID, "mine")[0]).toContain("use `/plugin/tools`");
+      });
+
+      it("records Docker's failure to answer as the reason", async () => {
+        writeConfig(SELF_DECLARATION);
+        const { run } = resolveOnDesktop(new Error("connect ECONNREFUSED"));
+
+        expect(await run).toEqual([]);
+        expect(getPluginServiceFailures(SESSION_ID, "mine")[0]).toContain("connect ECONNREFUSED");
+      });
+
+      it("does not ask Docker for a self service that mounts the whole repository", async () => {
+        writeConfig(SELF_DECLARATION.replace("compose: tools/docker-compose.yml", "compose: docker-compose.yml"));
+        fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"),
+          "services:\n  probe:\n    image: node:22-alpine\n    volumes:\n      - .:/app:ro\n");
+        const { asked, run } = resolveOnDesktop(true);
+
+        expect(await run).toHaveLength(1);
+        expect(asked()).toBe(0);
+      });
+    });
+
     it("drops the services with a reason when the session is outside the volume root", async () => {
       writeConfig(SELF_DECLARATION);
       const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {

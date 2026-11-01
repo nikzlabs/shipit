@@ -11,17 +11,19 @@ import {
 import { serializeStackOp } from "./stack-op-queue.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { getErrorMessage } from "./validation.js";
+import { isRecentlyUsedRepo, WARM_PREVIEW_RECENCY_DAYS } from "./warm-recency.js";
 
-// Applied during warming, not claiming; a break does not discard an existing warm preview.
-export const WARM_PREVIEW_RECENCY_DAYS = 7;
+export { isRecentlyUsedRepo, WARM_PREVIEW_RECENCY_DAYS };
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+export type WarmPreviewState = "running" | "starting" | "error" | "none" | "no-auto";
 
-export function isRecentlyUsedRepo(lastUsedAt: string | undefined, now = Date.now()): boolean {
-  if (!lastUsedAt) return false;
-  const ms = Date.parse(lastUsedAt);
-  if (Number.isNaN(ms)) return false;
-  return now - ms <= WARM_PREVIEW_RECENCY_DAYS * DAY_MS;
+/** What a claim finds waiting for the user, for the claim's timing line (req 11). */
+export function warmPreviewState(mgr: ServiceManager | undefined): WarmPreviewState {
+  if (!mgr) return "none";
+  const auto = mgr.getServices().filter((s) => s.preview === "auto");
+  if (auto.length === 0) return mgr.started ? "no-auto" : "starting";
+  if (auto.some((s) => s.status === "error")) return "error";
+  return auto.every((s) => s.status === "running") ? "running" : "starting";
 }
 
 export interface WarmPreviewDeps extends ServiceManagerBuildDeps {
@@ -32,6 +34,20 @@ export interface WarmPreviewDeps extends ServiceManagerBuildDeps {
   isSessionActive?: (sessionId: string) => boolean;
   /** Test seam; production uses the shared buildServiceManager. */
   createManager?: typeof buildServiceManager;
+}
+
+/** Whether `preStartWarmPreview` would start anything: a recent repo, a compose file, no manager yet. */
+export function warmPreviewWanted(
+  target: { sessionId: string; workspaceDir: string; repoUrl: string },
+  deps: Pick<WarmPreviewDeps, "repoStore" | "serviceManagers">,
+): boolean {
+  if (deps.serviceManagers.has(target.sessionId)) return false;
+  if (!isRecentlyUsedRepo(deps.repoStore.get(target.repoUrl)?.lastUsedAt)) return false;
+  try {
+    return Boolean(resolveShipitConfig(target.workspaceDir).compose);
+  } catch {
+    return false;
+  }
 }
 
 /** Call after pre-install completes, before activation adopts the registered manager. */

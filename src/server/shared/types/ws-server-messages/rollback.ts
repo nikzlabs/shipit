@@ -56,6 +56,8 @@ export interface WsRewindPreview {
   discardedTurnGroupCount?: number;
   keptTurnGroupCount?: number;
   fileCount?: number;
+  /** docs/007 reqs 6, 9 — why the agent cannot rewind its conversation here in place; names fork. */
+  unavailableReason?: string;
 }
 
 export interface WsSessionForked {

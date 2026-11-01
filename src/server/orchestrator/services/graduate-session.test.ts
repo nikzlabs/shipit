@@ -289,6 +289,7 @@ describe("graduateSession", () => {
         credentialsDir: TEST_CREDENTIALS_DIR,
         providerAccountManager: {
           selectRouteForTurn: () => ({ kind: "account", id: "acct_work" }),
+          claudeCredentialCopyRunner: () => null,
         } as never,
       },
       { sessionId: "s1", userText: "hi", agentId: "claude" },
@@ -301,6 +302,37 @@ describe("graduateSession", () => {
       harnessId: "claude",
       credentialRoot: `${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct_work`,
     });
+  });
+
+  it("names a Claude account route in the refresher's private copy of the account", async () => {
+    let inCredentialCopy: ((run: (home: string) => Promise<string>) => Promise<string>) | undefined;
+    const generateSessionName = vi.fn(async (_text: string, target: { inCredentialCopy?: typeof inCredentialCopy }) => {
+      inCredentialCopy = target.inCredentialCopy;
+      return { name: { slug: "s", title: "T" } };
+    });
+    vi.doMock("../session-namer.js", () => ({ generateSessionName }));
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+    const copyRunner = vi.fn(async (_accountId: string, run: (home: string) => Promise<string>) => run("/tmp/private-copy"));
+
+    graduateSession(
+      {
+        ...deps,
+        credentialsDir: TEST_CREDENTIALS_DIR,
+        providerAccountManager: {
+          selectRouteForTurn: () => ({ kind: "account", id: "acct_work" }),
+          claudeCredentialCopyRunner: () => copyRunner,
+        } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "claude" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(await inCredentialCopy!(async (home) => home)).toBe("/tmp/private-copy");
+    expect(copyRunner).toHaveBeenCalledWith("acct_work", expect.any(Function));
   });
 
   it("leaves naming on the singleton root for a reserved (API-key) route", async () => {

@@ -50,7 +50,7 @@ const OPENROUTER_KEY = route({ serviceId: "openrouter", billingMode: "key" });
 describe("reviewerDistanceTier (req 4)", () => {
   const claude = { canonicalModelKey: "claude-opus-5", family: "claude" as const };
   const sonnet = { canonicalModelKey: "claude-sonnet-5", family: "claude" as const };
-  const gpt = { canonicalModelKey: "gpt-5.4", family: "gpt" as const };
+  const gpt = { canonicalModelKey: "gpt-6.1-sol", family: "gpt" as const };
 
   it("tier 1 — a different family on a different harness is the ideal", async () => {
     const { reviewerDistanceTier } = await import("./reviewer-model.js");
@@ -240,7 +240,7 @@ describe("resolving the two reviewer slots", () => {
     expect(slots[0].target?.selection).toEqual({
       serviceId: "openai",
       billingMode: "key",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
     });
     expect(slots[0].target?.harnessId).toBe("codex");
     expect(slots[1].target?.selection.serviceId).toBe("deepseek");
@@ -325,7 +325,7 @@ describe("resolving the two reviewer slots", () => {
     });
 
     expect(slots[0].source).toBe("pinned");
-    expect(slots[0].target?.selection.modelId).toBe("gpt-5.6-sol");
+    expect(slots[0].target?.selection.modelId).toBe("gpt-6.1-sol");
   });
 
   it("reports a pin the install can no longer run", async () => {
@@ -336,7 +336,7 @@ describe("resolving the two reviewer slots", () => {
         first: {
           serviceId: "openai",
           billingMode: "key",
-          modelId: "gpt-5.4",
+          modelId: "gpt-6.1-sol",
           reasoningEffort: "high",
         },
       }),
@@ -392,8 +392,10 @@ describe("reviewer harness derivation", () => {
     const { harnessesPreferring } = await import("./non-turn-model.js");
     const all = harnessesPreferring().map((h) => h.id);
 
-    expect(harnessesPreferring("claude").map((h) => h.id)).toEqual(["codex", "opencode", "grok", "antigravity", "claude"]);
-    expect(harnessesPreferring("codex").map((h) => h.id)).toEqual(["claude", "opencode", "grok", "antigravity", "codex"]);
+    expect(harnessesPreferring("claude").map((h) => h.id)).toEqual(["codex", "opencode2", "opencode", "grok", "antigravity", "claude"]);
+    expect(harnessesPreferring("codex").map((h) => h.id)).toEqual(["claude", "opencode2", "opencode", "grok", "antigravity", "codex"]);
+    // docs/269 req 5: the avoidance rule stays ahead of OpenCode 2's list position.
+    expect(harnessesPreferring("opencode2").map((h) => h.id)).toEqual(["claude", "codex", "opencode", "grok", "antigravity", "opencode2"]);
     expect(harnessesPreferring("claude").map((h) => h.id).sort()).toEqual([...all].sort());
   });
 
@@ -441,7 +443,7 @@ describe("a pinned level does not cross onto a selection that refuses it (planni
     const result = selectReviewer(
       {
         harnessId: "codex",
-        selection: { serviceId: "openai", billingMode: "key", modelId: "gpt-5.4" },
+        selection: { serviceId: "openai", billingMode: "key", modelId: "gpt-6.1-sol" },
       },
       {
         // Pin both slots so automatic selection cannot bypass the pinned level.
@@ -690,7 +692,8 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
     expect(result.target.slot).toBe("second");
     expect(result.target.selection.modelId).toBe("claude-sonnet-5");
     expect(result.tier).toBe(3);
-    expect(result.target.harnessId).toBe("opencode");
+    // Both OpenCode harnesses run it; ShipIt picks OpenCode 2 (docs/269 req 5).
+    expect(result.target.harnessId).toBe("opencode2");
   });
 
   it("prefers a different family over a different service of the same one", async () => {
@@ -810,7 +813,7 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
           second: {
             serviceId: "openai",
             billingMode: "key",
-            modelId: "gpt-5.4",
+            modelId: "gpt-6.1-sol",
             reasoningEffort: "high",
           },
         }),
@@ -888,7 +891,7 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
     if (!result.ok) return;
     expect(result.tierBasis).toBe("harness-only");
     expect(result.target.slot).toBe("first");
-    expect(result.target.harnessId).toBe("opencode");
+    expect(result.target.harnessId).toBe("opencode2");
     expect(result.tier).toBe(1);
   });
 

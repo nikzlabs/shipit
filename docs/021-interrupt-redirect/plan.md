@@ -113,6 +113,11 @@ Alternatively, offer a choice: "Claude was interrupted. [Continue with queued me
 
 For simplicity, the recommended behavior: interrupt clears the queue. The user is interrupting because something is wrong; queued messages based on the wrong approach aren't useful.
 
+> Changed 2026-10-12 by `docs/330-stop-returns-queued-messages`: a Stop still
+> empties the queue, but a message of the user's is not thrown away. It goes
+> back into the input box, before the text that is there. The Stop empties the
+> queue itself, behind every kind of turn; the drain no longer does.
+
 ### Client-Side
 
 #### Stop Button

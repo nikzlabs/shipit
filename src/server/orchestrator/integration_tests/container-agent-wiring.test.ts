@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -8,7 +8,11 @@ import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { SystemTurnDeps } from "../session-runner.js";
 import { prepareDispatch, type PreparedDispatch } from "../prepared-dispatch.js";
 import { TURN_COMPLETED, type TurnOutcome } from "../turn-settlement.js";
+import { releaseResidentOnServiceMcpChange } from "../resident-spawn-guard.js";
+import { forgetServiceMcpSpawn, serviceMcpSetKey, serviceMcpSpawnKey } from "../service-mcp.js";
+import type { ServiceMcpServer } from "../../shared/types.js";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
+import { currentTurnAttempt, noteSubmissionRejected, noteTurnReady, TURN_SETUP_MAX_MS } from "../turn-stop-request.js";
 
 class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentProcess {
   readonly agentId: AgentId = "claude";
@@ -58,6 +62,12 @@ class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements AgentP
 
   writeMcpConfig(): { mcpConfigPath?: string; runtimeEnv?: Record<string, string>; cleanup?: () => void } {
     return {};
+  }
+
+  liveMcp: string[][] = [];
+  setLiveMcpServers(servers: { name: string }[]): Promise<boolean> {
+    this.liveMcp.push(servers.map((s) => s.name));
+    return Promise.resolve(true);
   }
 }
 
@@ -144,6 +154,89 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     expect(lastAgent.lastParams?.cwd).toBe("/workspace");
 
     runner.dispose();
+  });
+
+  describe("declared MCP servers reach the worker's agent (docs/327)", () => {
+    const verseshot: ServiceMcpServer = { name: "verseshot", url: "http://verseshot:8787/mcp" };
+
+    function runnerWith(sessionId: string, declared: { current: ServiceMcpServer[] }): ContainerSessionRunner {
+      forgetServiceMcpSpawn(sessionId);
+      const runner = new ContainerSessionRunner({ sessionId, sessionDir: "/tmp/test", defaultAgentId: "claude", workerUrl });
+      runner.serviceMcp = () => ({ servers: declared.current, candidates: ["verseshot"] });
+      return runner;
+    }
+
+    it("starts the agent with the set of the moment the start is posted, not of when its params were built", async () => {
+      const declared = { current: [] as ServiceMcpServer[] };
+      const runner = runnerWith("mcp-start", declared);
+      const proxy = runner.createAgent("claude");
+
+      // The plugin's version went live while the start waited for the install.
+      declared.current = [verseshot];
+      proxy.run({ prompt: "Turn one", cwd: "/workspace" });
+      await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
+
+      expect(lastAgent.lastParams?.serviceMcpServers).toEqual([verseshot]);
+      expect(lastAgent.lastParams?.serviceMcpCandidates).toEqual(["verseshot"]);
+      expect(lastAgent.lastParams?.mcpServers?.map((m) => [m.name, m.type])).toEqual([["verseshot", "stdio"]]);
+      expect(serviceMcpSpawnKey("mcp-start")).toBe(serviceMcpSetKey([verseshot]));
+      expect(lastAgent.liveMcp).toEqual([]);
+
+      runner.dispose({ force: true });
+    });
+
+    it("gives a running agent a server declared after its start, so the next turn keeps the process", async () => {
+      const declared = { current: [] as ServiceMcpServer[] };
+      const runner = runnerWith("mcp-live", declared);
+      const proxy = runner.createAgent("claude");
+      proxy.run({ prompt: "Turn one", cwd: "/workspace" });
+      await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
+      expect(lastAgent.lastParams?.serviceMcpServers).toBeUndefined();
+
+      declared.current = [verseshot];
+      await runner.syncServiceMcp();
+
+      expect(lastAgent.liveMcp).toEqual([["verseshot"]]);
+      expect(releaseResidentOnServiceMcpChange(runner, declared.current)).toBe(false);
+      expect(lastAgent.killed).toBe(false);
+
+      runner.dispose({ force: true });
+    });
+
+    it("leaves a changed server to the next turn, which retires the process", async () => {
+      const declared = { current: [verseshot] };
+      const runner = runnerWith("mcp-changed", declared);
+      const proxy = runner.createAgent("claude");
+      proxy.run({ prompt: "Turn one", cwd: "/workspace" });
+      await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
+
+      declared.current = [{ name: "verseshot", url: "http://verseshot:9000/mcp" }];
+      await runner.syncServiceMcp();
+
+      expect(lastAgent.liveMcp).toEqual([]);
+      expect(releaseResidentOnServiceMcpChange(runner, declared.current)).toBe(true);
+
+      runner.dispose({ force: true });
+    });
+
+    it("asks the worker what an adopted agent holds when a turn starts with no record", async () => {
+      const declared = { current: [] as ServiceMcpServer[] };
+      const runner = runnerWith("mcp-adopted", declared);
+      const proxy = runner.createAgent("claude");
+      proxy.run({ prompt: "Turn one", cwd: "/workspace" });
+      await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
+      // An orchestrator restart loses the record; the worker and its agent live on.
+      forgetServiceMcpSpawn("mcp-adopted");
+      declared.current = [verseshot];
+
+      expect(releaseResidentOnServiceMcpChange(runner, declared.current)).toBe(false);
+      await waitFor(() => serviceMcpSpawnKey("mcp-adopted") !== undefined, 3000, "the record");
+
+      expect(lastAgent.liveMcp).toEqual([["verseshot"]]);
+      expect(serviceMcpSpawnKey("mcp-adopted")).toBe(serviceMcpSetKey([verseshot]));
+
+      runner.dispose({ force: true });
+    });
   });
 
   it("proxy receives events via SSE after run()", async () => {
@@ -1051,6 +1144,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       await new Promise((r) => setTimeout(r, 200));
 
       runner.running = true;
+      noteTurnReady(runner);
       expect(lastAgent).toBeNull();
 
       const messages: { type: string; running?: boolean; error?: string }[] = [];
@@ -1082,7 +1176,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       runner.enqueue({
         text: "Child PR #1939 merged: Retire the docs/246 one-time clone migration",
         execution: "dispatched",
-        systemTurn: true,
+        automatic: true,
         postTurn: "none",
         activity: "Waking on merge…",
         deliveryId: "delivery-queued",
@@ -1090,6 +1184,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       });
 
       runner.running = true;
+      noteTurnReady(runner);
       expect(await runner.verifyRunningState()).toBe(false);
 
       expect(runner.queueLength).toBe(0);
@@ -1099,7 +1194,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       const opts = runner.dispatched[0];
       expect(opts.text).toMatch(/Child PR #1939 merged/);
       expect(opts.execution).toBe("dispatched");
-      expect(opts.systemTurn).toBe(true);
+      expect(opts.automatic).toBe(true);
       expect(opts.postTurn).toBe("none");
       expect(opts.activity).toBe("Waking on merge…");
       expect(opts.deliveryId).toBe("delivery-queued");
@@ -1123,7 +1218,6 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
         uploads: undefined,
         permissionMode: undefined,
         postTurn: undefined,
-        systemTurn: true,
         automatic: undefined,
         heldId: undefined,
         onTurnComplete: undefined,
@@ -1135,6 +1229,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       }));
       expect(runner.running).toBe(true);
       expect(runner.hasDelivery("delivery-running")).toBe(true);
+      noteTurnReady(runner);
 
       expect(await runner.verifyRunningState()).toBe(false);
 
@@ -1154,6 +1249,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       const runner = makeDispatchStubbedRunner("test-stuck-empty-queue", workerUrl);
 
       runner.running = true;
+      noteTurnReady(runner);
       const idlePromise = new Promise<void>((resolve) => { runner.once("idle", () => resolve()); });
 
       expect(await runner.verifyRunningState()).toBe(false);
@@ -1161,6 +1257,56 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       expect(runner.dispatched).toHaveLength(0);
 
       runner.dispose();
+    });
+
+    // docs/329-user-steers-every-turn — a typed message asks this on every send while a turn
+    // runs, and from the claim until the worker records the start there is no agent to find.
+    it("leaves a turn that is still in setup alone", async () => {
+      const runner = makeDispatchStubbedRunner("test-setup-not-stuck", workerUrl);
+      runner.attachViewer();
+      await new Promise((r) => setTimeout(r, 200));
+
+      runner.running = true;
+      let abandoned = false;
+      runner.on("turn_abandoned", () => { abandoned = true; });
+
+      expect(await runner.verifyRunningState()).toBe(true);
+
+      expect(runner.running).toBe(true);
+      expect(abandoned).toBe(false);
+
+      runner.running = false;
+      runner.dispose({ force: true });
+    });
+
+    it("does not shield a claim whose prompt the agent refused", async () => {
+      const runner = makeDispatchStubbedRunner("test-setup-refused", workerUrl);
+      runner.attachViewer();
+      await new Promise((r) => setTimeout(r, 200));
+
+      runner.running = true;
+      noteSubmissionRejected(runner, currentTurnAttempt(runner));
+
+      expect(await runner.verifyRunningState()).toBe(false);
+      expect(runner.running).toBe(false);
+
+      runner.dispose({ force: true });
+    });
+
+    it("gives a setup up when it is older than its bound", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const runner = makeDispatchStubbedRunner("test-setup-outlived", workerUrl);
+        runner.running = true;
+        vi.setSystemTime(Date.now() + TURN_SETUP_MAX_MS + 1);
+
+        expect(await runner.verifyRunningState()).toBe(false);
+        expect(runner.running).toBe(false);
+
+        runner.dispose({ force: true });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("returns true and preserves state when worker confirms agent is running", async () => {
@@ -1179,6 +1325,8 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
 
       runner.running = true;
+      // Past its setup, so the answer below is the worker's and not the setup guard's.
+      noteTurnReady(runner);
 
       const actuallyRunning = await runner.verifyRunningState();
 

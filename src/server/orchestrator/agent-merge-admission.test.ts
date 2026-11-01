@@ -42,8 +42,8 @@ describe("turn admission under a merge hold", () => {
     expect(runner.running).toBe(false);
     expect(runner.queueLength).toBe(1);
 
-    runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
-    runner.dispatch(testDispatch({ text: "resolve", systemTurn: true, postTurn: "none" }));
+    runner.dispatch(testDispatch({ text: "fix CI", automatic: true }));
+    runner.dispatch(testDispatch({ text: "resolve", postTurn: "none" }));
     expect(runner.running).toBe(false);
     expect(runner.queueLength).toBe(3);
 

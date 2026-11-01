@@ -6,6 +6,8 @@ description: Why a late agent_self_wake stranded systemTurnInProgress on a non-s
 
 # Releasing a system-turn hold a CLI-started turn displaced
 
+> **Changed 2026-10-12 by [docs/329-user-steers-every-turn](../329-user-steers-every-turn/plan.md) part 3.** The flag and its hold ticket are deleted. The session hold (`runner.sessionHold`, `session-hold.ts`) is taken only by a flow (a rebase, a restart) and released only by it, so no turn can strand it.
+
 Implements [requirements.md](./requirements.md). Sibling of
 [docs/287-consult-result-delivery](../287-consult-result-delivery/plan.md),
 which fixed the same event order on the *other* flag.

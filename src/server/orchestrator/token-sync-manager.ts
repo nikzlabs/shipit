@@ -4,7 +4,6 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
 import {
-  CONTAINER_WORKSPACE_DIR,
   STRANDED_CREDENTIAL_MARKER,
   isStrandedCredentialOf,
 } from "../shared/fs-constants.js";
@@ -18,7 +17,6 @@ import {
   chownSessionCredentialsTree,
   perSessionCredentialsDir,
   readSessionAccountMarker,
-  subtreeBorrowInFlight,
   writeSessionAccountMarker,
 } from "./session-credentials-scaffold.js";
 
@@ -32,9 +30,6 @@ export const AGENT_TOKEN_FILES: Partial<Record<AgentId, readonly string[]>> = {
   // refresh rename cannot replace the link (docs/266 step 3).
   antigravity: [ANTIGRAVITY_TOKEN_REL],
 };
-
-// Claude resume only finds conversations in the current working directory's bucket.
-const CLAUDE_SESSION_PROJECT_DIR = CONTAINER_WORKSPACE_DIR.replaceAll("/", "-");
 
 function atomicCopyFile(src: string, dst: string): void {
   fs.mkdirSync(path.dirname(dst), { recursive: true });
@@ -160,11 +155,6 @@ const UNORDERABLE_HINT =
   + "which is what a renamed field or a changed encoding looks like — re-check the reader "
   + "against a REAL captured credential file (docs/266-harness-integration-recipe)";
 
-// null tells the caller to clear the stale CLI resume ID; ShipIt's transcript survives.
-export type AgentSessionIdRecoveryCallback = (
-  recoveredOrClear: string | null,
-) => void;
-
 export interface SyncTokenInOptions {
   // Set false under a live CLI: subtree replacement briefly removes its credentials.
   repairLeakedSubtrees?: boolean;
@@ -174,14 +164,9 @@ export function syncAgentTokenIn(
   credentialsRoot: string,
   sessionId: string,
   agentId: AgentId,
-  onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
-  currentAgentSessionId?: string | null,
   opts?: SyncTokenInOptions,
 ): void {
-  syncAgentTokenInFromRoot(
-    credentialsRoot, sessionId, agentId, credentialsRoot,
-    onRecoverAgentSessionId, currentAgentSessionId, opts,
-  );
+  syncAgentTokenInFromRoot(credentialsRoot, sessionId, agentId, credentialsRoot, opts);
 }
 
 export function syncProviderAccountTokenIn(
@@ -189,8 +174,6 @@ export function syncProviderAccountTokenIn(
   sessionId: string,
   agentId: AgentId,
   accountId: string,
-  onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
-  currentAgentSessionId?: string | null,
   opts?: SyncTokenInOptions,
 ): void {
   syncAgentTokenInFromRoot(
@@ -198,8 +181,6 @@ export function syncProviderAccountTokenIn(
     sessionId,
     agentId,
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
-    onRecoverAgentSessionId,
-    currentAgentSessionId,
     opts,
   );
 }
@@ -240,8 +221,6 @@ function syncAgentTokenInFromRoot(
   sessionId: string,
   agentId: AgentId,
   sourceRoot: string,
-  onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
-  currentAgentSessionId?: string | null,
   opts?: SyncTokenInOptions,
 ): void {
   const files = AGENT_TOKEN_FILES[agentId];
@@ -249,18 +228,7 @@ function syncAgentTokenInFromRoot(
   const freshness = TOKEN_FRESHNESS[agentId] ?? (() => null);
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
   if (opts?.repairLeakedSubtrees ?? true) {
-    const repair = materializeLeakedSubtreeSymlinks(
-      credentialsRoot, sessionDir, agentId, sourceRoot, currentAgentSessionId,
-    );
-    if (repair.outcome !== "no-action" && onRecoverAgentSessionId) {
-      try {
-        onRecoverAgentSessionId(
-          repair.outcome === "recovered" ? repair.recoveredAgentSessionId : null,
-        );
-      } catch (err) {
-        console.warn("[session-credentials] recovered agent_session_id callback failed:", err);
-      }
-    }
+    materializeLeakedSubtreeSymlinks(credentialsRoot, sessionDir, agentId, sourceRoot);
   }
   for (const rel of files) {
     const src = path.join(sourceRoot, rel);
@@ -297,14 +265,9 @@ export function repushAgentToken(
   credentialsRoot: string,
   sessionId: string,
   agentId: AgentId,
-  onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
-  currentAgentSessionId?: string | null,
   opts?: SyncTokenInOptions,
 ): boolean {
-  return repushAgentTokenFromRoot(
-    credentialsRoot, sessionId, agentId, credentialsRoot,
-    onRecoverAgentSessionId, currentAgentSessionId, opts,
-  );
+  return repushAgentTokenFromRoot(credentialsRoot, sessionId, agentId, credentialsRoot, opts);
 }
 
 export function repushProviderAccountToken(
@@ -312,8 +275,6 @@ export function repushProviderAccountToken(
   sessionId: string,
   agentId: AgentId,
   accountId: string,
-  onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
-  currentAgentSessionId?: string | null,
   opts?: SyncTokenInOptions,
 ): boolean {
   return repushAgentTokenFromRoot(
@@ -321,8 +282,6 @@ export function repushProviderAccountToken(
     sessionId,
     agentId,
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
-    onRecoverAgentSessionId,
-    currentAgentSessionId,
     opts,
   );
 }
@@ -332,8 +291,6 @@ function repushAgentTokenFromRoot(
   sessionId: string,
   agentId: AgentId,
   sourceRoot: string,
-  onRecoverAgentSessionId?: AgentSessionIdRecoveryCallback,
-  currentAgentSessionId?: string | null,
   opts?: SyncTokenInOptions,
 ): boolean {
   const files = AGENT_TOKEN_FILES[agentId];
@@ -341,18 +298,7 @@ function repushAgentTokenFromRoot(
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
 
   if (opts?.repairLeakedSubtrees ?? true) {
-    const repair = materializeLeakedSubtreeSymlinks(
-      credentialsRoot, sessionDir, agentId, sourceRoot, currentAgentSessionId,
-    );
-    if (repair.outcome !== "no-action" && onRecoverAgentSessionId) {
-      try {
-        onRecoverAgentSessionId(
-          repair.outcome === "recovered" ? repair.recoveredAgentSessionId : null,
-        );
-      } catch (err) {
-        console.warn("[session-credentials] recovered agent_session_id callback failed:", err);
-      }
-    }
+    materializeLeakedSubtreeSymlinks(credentialsRoot, sessionDir, agentId, sourceRoot);
   }
 
   let wrote = false;
@@ -402,18 +348,11 @@ export const SUBTREE_STATE_SUBPATHS: Readonly<Record<string, readonly string[]>>
   ".grok": GROK_SESSION_STATE_SUBPATHS,
   ".gemini": ANTIGRAVITY_SESSION_STATE_SUBPATHS,
   ".local/share/opencode": ["shipit-data", "opencode.db", "opencode.db-wal", "opencode.db-shm", "storage", "snapshot"],
+  // The ChatGPT projection in shipit-account is disposable and never merged.
+  ".local/share/opencode2": ["shipit-data", "shipit-state", "shipit-config"],
 };
 
-const CODEX_ROLLOUT_ROOTS: readonly string[] = ["sessions", "archived_sessions"];
-
-const CODEX_ROLLOUT_SCAN_MAX_DEPTH = 5;
-
 const CREDENTIALS_MOUNT_PREFIX = "/credentials/";
-
-type LeakRepairResult =
-  | { outcome: "no-action" }
-  | { outcome: "recovered"; recoveredAgentSessionId: string }
-  | { outcome: "clear" };
 
 /**
  * Root-RELATIVE remainders, not bare filenames: a token can sit more than one
@@ -496,15 +435,14 @@ function mergeOrphans(
   return combined;
 }
 
+// Layout only: never reads a conversation file and never decides the session's resume id.
 function materializeLeakedSubtreeSymlinks(
   credentialsRoot: string,
   sessionDir: string,
   agentId: AgentId,
   sourceRoot: string,
-  currentAgentSessionId?: string | null,
-): LeakRepairResult {
+): void {
   let aCaseFired = false;
-  let recoveredAgentSessionId: string | null = null;
   const orphanRootsToRemove = new Set<string>();
   const unsafeOrphanRoots = new Set<string>();
 
@@ -568,15 +506,6 @@ function materializeLeakedSubtreeSymlinks(
       continue;
     }
 
-    // Recover before copying changes the mtimes used to select a conversation.
-    if (rel === ".claude" && recoveredAgentSessionId === null) {
-      for (const orphan of orphans) {
-        if (!fs.existsSync(orphan.path)) continue;
-        recoveredAgentSessionId = findLatestAgentSessionId(path.join(orphan.path, "projects"));
-        if (recoveredAgentSessionId !== null) break;
-      }
-    }
-
     const orphanPathsNote = orphans.map((orphan) => orphan.path).join(", ") || null;
 
     if (isSymlinkLeak) {
@@ -600,37 +529,6 @@ function materializeLeakedSubtreeSymlinks(
     aCaseFired = true;
   }
 
-  if (
-    // eslint-disable-next-line no-restricted-syntax -- Claude conversation file layout
-    agentId === "claude"
-    && recoveredAgentSessionId === null
-    && currentAgentSessionId
-  ) {
-    const dst = path.join(sessionDir, ".claude");
-    let isRealDir = false;
-    try {
-      const stat = fs.lstatSync(dst);
-      isRealDir = !stat.isSymbolicLink() && stat.isDirectory();
-    } catch { /* dst doesn't exist — nothing to recover */ }
-    if (isRealDir) {
-      const projectsRoot = path.join(dst, "projects");
-      if (!jsonlExistsForAgentSessionId(projectsRoot, currentAgentSessionId)) {
-        aCaseFired = true;
-        const latest = findLatestAgentSessionId(projectsRoot);
-        if (latest && latest !== currentAgentSessionId) {
-          recoveredAgentSessionId = latest;
-          console.log(
-            `[session-credentials] recovered stale agent_session_id in ${sessionDir}: .claude (DB pointed at ${currentAgentSessionId}, latest on disk is ${latest})`,
-          );
-        } else {
-          console.log(
-            `[session-credentials] clearing stale agent_session_id in ${sessionDir}: .claude (DB pointed at ${currentAgentSessionId}, no resumable jsonl on disk)`,
-          );
-        }
-      }
-    }
-  }
-
   if (aCaseFired) {
     for (const orphanRoot of orphanRootsToRemove) {
       if (unsafeOrphanRoots.has(orphanRoot)) {
@@ -646,42 +544,6 @@ function materializeLeakedSubtreeSymlinks(
       }
     }
   }
-
-  // eslint-disable-next-line no-restricted-syntax -- Codex rollout file layout
-  if (agentId === "codex") {
-    if (!currentAgentSessionId) return { outcome: "no-action" };
-    const dst = path.join(sessionDir, ".codex");
-    let isRealDir = false;
-    try {
-      const stat = fs.lstatSync(dst);
-      isRealDir = !stat.isSymbolicLink() && stat.isDirectory();
-    } catch { /* no `.codex` yet — nothing to judge */ }
-    if (!isRealDir) return { outcome: "no-action" };
-    // Check after merging so a restored rollout keeps its resume ID.
-    if (codexRolloutState(dst, currentAgentSessionId) !== "absent") {
-      return { outcome: "no-action" };
-    }
-    console.log(
-      `[session-credentials] clearing stale agent_session_id in ${sessionDir}: .codex (DB pointed at thread ${currentAgentSessionId}, no rollout on disk)`,
-    );
-    return { outcome: "clear" };
-  }
-  // eslint-disable-next-line no-restricted-syntax -- Claude conversation recovery result
-  if (agentId !== "claude") return { outcome: "no-action" };
-  if (!aCaseFired) return { outcome: "no-action" };
-  if (recoveredAgentSessionId !== null) {
-    return { outcome: "recovered", recoveredAgentSessionId };
-  }
-  return { outcome: "clear" };
-}
-
-function jsonlExistsForAgentSessionId(projectsRoot: string, agentSessionId: string): boolean {
-  const candidate = path.join(
-    projectsRoot,
-    CLAUDE_SESSION_PROJECT_DIR,
-    `${agentSessionId}.jsonl`,
-  );
-  return fs.existsSync(candidate) && jsonlIsResumableConversation(candidate);
 }
 
 interface OrphanMergeResult {
@@ -764,100 +626,6 @@ function mergeOrphanState(orphanPath: string, dstPath: string, rel: string): Orp
   return { preserved: false, failed: true };
 }
 
-// An unreadable directory must not clear a live resume ID as if its rollout were absent.
-function codexRolloutState(codexHome: string, threadId: string): "found" | "absent" | "unknown" {
-  let sawUnreadableDir = false;
-
-  const walk = (dir: string, depth: number): boolean => {
-    if (depth > CODEX_ROLLOUT_SCAN_MAX_DEPTH) return false;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") sawUnreadableDir = true;
-      return false;
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        if (walk(path.join(dir, entry.name), depth + 1)) return true;
-      } else if (entry.name.endsWith(".jsonl") && entry.name.includes(threadId)) {
-        return true;
-      }
-    }
-    return false;
-  };
-
-  for (const root of CODEX_ROLLOUT_ROOTS) {
-    if (walk(path.join(codexHome, root), 0)) return "found";
-  }
-  return sawUnreadableDir ? "unknown" : "absent";
-}
-
-const RESUMABLE_JSONL_SCAN_LINES = 50;
-
-// Post-turn metadata stubs can be newer than conversations but cannot be resumed.
-function jsonlIsResumableConversation(file: string): boolean {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(file, "utf8");
-  } catch {
-    return false;
-  }
-  if (!raw.trim()) return false;
-  let hasUser = false;
-  let hasAssistant = false;
-  const lines = raw.split("\n", RESUMABLE_JSONL_SCAN_LINES);
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    let parsed: { type?: unknown };
-    try {
-      parsed = JSON.parse(line) as { type?: unknown };
-    } catch {
-      continue;
-    }
-    if (parsed.type === "user") hasUser = true;
-    else if (parsed.type === "assistant") hasAssistant = true;
-    if (hasUser && hasAssistant) return true;
-  }
-  return false;
-}
-
-function findLatestAgentSessionId(projectsRoot: string): string | null {
-  const candidates: { path: string; mtimeMs: number }[] = [];
-  let files: fs.Dirent[];
-  try {
-    files = fs.readdirSync(
-      path.join(projectsRoot, CLAUDE_SESSION_PROJECT_DIR),
-      { withFileTypes: true },
-    );
-  } catch {
-    return null;
-  }
-  const projectDir = path.join(projectsRoot, CLAUDE_SESSION_PROJECT_DIR);
-  for (const file of files) {
-    if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
-    const full = path.join(projectDir, file.name);
-    try {
-      const mtimeMs = fs.statSync(full).mtimeMs;
-      candidates.push({ path: full, mtimeMs });
-    } catch { /* ignore — race with another writer */ }
-  }
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  for (const c of candidates) {
-    if (!jsonlIsResumableConversation(c.path)) continue;
-    try {
-      const raw = fs.readFileSync(c.path, "utf8");
-      const firstNewline = raw.indexOf("\n");
-      const firstLine = firstNewline === -1 ? raw : raw.slice(0, firstNewline);
-      if (!firstLine.trim()) continue;
-      const parsed = JSON.parse(firstLine) as Record<string, unknown>;
-      const sid = parsed.sessionId;
-      if (typeof sid === "string" && sid.length > 0) return sid;
-    } catch { /* try the next candidate */ }
-  }
-  return null;
-}
-
 export function agentTokenFilePaths(
   credentialsRoot: string,
   sessionId: string,
@@ -891,6 +659,7 @@ export function sessionTokenIsAheadOfSource(
     const sourceReading = classifyTokenFreshness(agentId, "source", freshness, sourceFile);
     // Turn-end sync-back reports refusals; this per-file-change probe stays silent.
     if (sourceReading.kind === "unorderable") continue;
+    if (sourceReading.kind === "absent" && accountId !== undefined) continue;
     if (sourceReading.kind === "ordered" && sessionReading.at <= sourceReading.at) continue;
     return true;
   }
@@ -901,18 +670,7 @@ export function syncAgentTokenBack(
   credentialsRoot: string,
   sessionId: string,
   agentId: AgentId,
-  opts?: ProviderTokenWriteBackOptions,
 ): void {
-  // Borrow copies precede their markers; block session-route writes for the whole borrow.
-  if (opts?.sessionOwnRoute === true && subtreeBorrowInFlight(sessionId, agentId)) {
-    logWriteBackOutcome(
-      "refused",
-      { sessionId, agentId, target: "flat-root", holder: undefined, reason: "borrow-in-flight" },
-      `refusing ${agentId} token write-back for ${sessionId} to the flat root: `
-        + `the subtree is lent to a sub-agent`,
-    );
-    return;
-  }
   // Publishing an account token to the flat root also creates a false legacy migration.
   const holder = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
   if (holder !== undefined) {
@@ -943,6 +701,17 @@ function logWriteBackOutcome(
   );
 }
 
+// An account's source is missing while a sign-in runs and after a sign-out. A replica holds the
+// credential that was removed, so it must not refill the source (docs/153).
+function refuseAbsentAccountSource(sessionId: string, agentId: AgentId, accountId: string, replica: string): void {
+  logWriteBackOutcome(
+    "refused",
+    { sessionId, agentId, target: `account:${accountId}`, holder: accountId, reason: "source-absent" },
+    `refusing to publish ${replica} to account ${accountId}: the account holds no credential `
+      + `(a sign-in in progress, or a sign-out)`,
+  );
+}
+
 export function syncProviderAccountTokenBack(
   credentialsRoot: string,
   sessionId: string,
@@ -951,15 +720,6 @@ export function syncProviderAccountTokenBack(
   opts?: ProviderTokenWriteBackOptions,
 ): void {
   // Check ownership before freshness; a newer token may belong to another account.
-  if (opts?.sessionOwnRoute === true && subtreeBorrowInFlight(sessionId, agentId)) {
-    logWriteBackOutcome(
-      "refused",
-      { sessionId, agentId, target: `account:${accountId}`, holder: undefined, reason: "borrow-in-flight" },
-      `refusing ${agentId} token write-back for ${sessionId} to account ${accountId}: `
-        + `the subtree is lent to a sub-agent`,
-    );
-    return;
-  }
   const holder = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
   if (holder !== accountId) {
     const repairable = holder === undefined && opts?.sessionOwnRoute === true;
@@ -979,7 +739,7 @@ export function syncProviderAccountTokenBack(
       "repaired",
       { sessionId, agentId, target: `account:${accountId}`, holder, reason: "lost-marker" },
       `repairing lost ${agentId} account marker for ${sessionId}: recording ${accountId} `
-        + `(the session's own turn route, no borrow in flight) and publishing its rotation`,
+        + `(the session's own turn route) and publishing its rotation`,
     );
     writeSessionAccountMarker(credentialsRoot, sessionId, agentId, accountId);
   }
@@ -988,6 +748,7 @@ export function syncProviderAccountTokenBack(
     sessionId,
     agentId,
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
+    accountId,
   );
 }
 
@@ -996,6 +757,7 @@ function syncAgentTokenBackToRoot(
   sessionId: string,
   agentId: AgentId,
   sourceRoot: string,
+  accountId?: string,
 ): void {
   const files = AGENT_TOKEN_FILES[agentId];
   if (!files) return;
@@ -1021,6 +783,10 @@ function syncAgentTokenBackToRoot(
         { sessionId, agentId, direction: "sync-back", file: sourceFile },
         `refusing to overwrite the source credential with ${sessionFile}: ${UNORDERABLE_HINT}`,
       );
+      continue;
+    }
+    if (sourceReading.kind === "absent" && accountId !== undefined) {
+      refuseAbsentAccountSource(sessionId, agentId, accountId, sessionFile);
       continue;
     }
     if (sourceReading.kind === "ordered" && sessionReading.at <= sourceReading.at) continue;
@@ -1130,6 +896,10 @@ export function syncSubAgentSpawnHomeTokenBack(
       if (!quarantineTokenCopy(targetRoot, rel, spawnFile)) safeToDelete = false;
       continue;
     }
+    if (targetReading.kind === "absent" && accountId !== undefined) {
+      refuseAbsentAccountSource(sessionId, agentId, accountId, spawnFile);
+      continue;
+    }
     if (targetReading.kind === "ordered" && spawnReading.at <= targetReading.at) continue;
     try {
       atomicCopyFile(spawnFile, targetFile);
@@ -1140,32 +910,4 @@ export function syncSubAgentSpawnHomeTokenBack(
     }
   }
   return safeToDelete;
-}
-
-// Run after publishing. Borrow cleanup must wipe for isolation even if rescue fails.
-export function preserveBorrowedTokensBeforeWipe(
-  credentialsRoot: string,
-  sessionId: string,
-  agentId: AgentId,
-  accountId?: string,
-): void {
-  const files = AGENT_TOKEN_FILES[agentId];
-  if (!files) return;
-  const freshness = TOKEN_FRESHNESS[agentId] ?? (() => null);
-  const targetRoot = accountId
-    ? providerAccountCredentialRoot(credentialsRoot, agentId, accountId)
-    : credentialsRoot;
-  const borrowRoot = perSessionCredentialsDir(credentialsRoot, sessionId);
-  for (const rel of files) {
-    const borrowedFile = path.join(borrowRoot, rel);
-    rescueAdapterQuarantines(targetRoot, rel, borrowedFile);
-    const borrowedReading = classifyTokenFreshness(agentId, "replica", freshness, borrowedFile);
-    if (borrowedReading.kind === "absent") continue;
-    const targetReading = classifyTokenFreshness(agentId, "source", freshness, path.join(targetRoot, rel));
-    const superseded = borrowedReading.kind === "ordered"
-      && targetReading.kind === "ordered"
-      && borrowedReading.at <= targetReading.at;
-    if (superseded) continue;
-    quarantineTokenCopy(targetRoot, rel, borrowedFile);
-  }
 }

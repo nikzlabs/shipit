@@ -1,7 +1,12 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: consume prefill text from external store on mount
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useEventListener } from "../../hooks/useEventListener.js";
-import { useSessionStore } from "../../stores/session-store.js";
+import {
+  compactAfterMergeEnabled,
+  contextUnderCompactionMinimum,
+  useSessionStore,
+} from "../../stores/session-store.js";
+import { AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS } from "../../../server/shared/compaction-threshold.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useIsMobile } from "../../hooks/useMediaQuery.js";
 import { useNarrowContainer } from "../../hooks/useNarrowContainer.js";
@@ -33,16 +38,17 @@ import {
   getSavedRoleName,
   saveRoleName,
   getSavedMergeContinueOptOut,
-  type MergeContinueControl,
+  saveDraftMessage,
 } from "../../utils/local-storage.js";
 import { applyRoleSeeds } from "../../utils/role-seed.js";
+import { takeReturnedMessages } from "../../utils/returned-messages.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
 import { isLargePaste, buildPastedTextFile } from "./large-paste.js";
 import { isCompactCommand } from "../../../server/shared/compact-command.js";
 import { isGoalCommand } from "../../../server/shared/goal-command.js";
-import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef } from "../../../server/shared/types.js";
+import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef, WsReturnedQueueMessage } from "../../../server/shared/types.js";
 import type { UploadItem } from "../../hooks/useFileUpload.js";
 import type { AgentOption, ModelChoice } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
@@ -110,6 +116,7 @@ export function MessageInput({
   pendingFiles = [],
   onRemoveFile,
   onAddFile,
+  onReturnedTaken,
   fileTree = [],
   skills = [],
   sessionId,
@@ -161,6 +168,11 @@ export function MessageInput({
   pendingFiles?: FileContextRef[];
   onRemoveFile?: (index: number) => void;
   onAddFile?: (filePath: string) => void;
+  /**
+   * docs/330-stop-returns-queued-messages — the draft holds these returned messages now, so
+   * the server can stop keeping them.
+   */
+  onReturnedTaken?: (ids: string[]) => void;
   fileTree?: FileTreeNode[];
 
   skills?: SkillInfo[];
@@ -240,6 +252,9 @@ export function MessageInput({
 
   const settingsLocked = isLoading || (disabled && !!sessionId);
   const [text, setText] = useState("");
+  // The returned messages are placed against the text as it is now, outside an updater.
+  const textRef = useRef(text);
+  textRef.current = text;
 
   // folds the parameters away again, while switching sessions cannot carry an
 
@@ -326,13 +341,18 @@ export function MessageInput({
   const showResetControl = resetEligible && autoResetMergedBranch && !isLoading;
 
   // docs/295 — offered whenever the reset control is (reqs 1, 3, 11), if the
-  // backend can compact (req 10). No occupancy threshold (req 3).
+  // backend can compact (req 10). No occupancy threshold (req 3). Not offered a
+  // second time for the same merge (docs/218 req 6): the reset can still be due
+  // then, and a ticked box that compacts nothing would say otherwise.
   const agentSupportsCompaction =
     agents.find((a) => a.id === activeAgentId)?.supportsCompaction ?? false;
-  const showCompactControl = showResetControl && agentSupportsCompaction;
+  const compactionSpent = usePrStore((s) => (sessionId ? s.compactionSpentBySession[sessionId] ?? false : false));
+  const showCompactControl = showResetControl && agentSupportsCompaction && !compactionSpent;
+  // docs/295 req 18 — still offered under the minimum, with a hint that it compacts nothing.
+  const compactUnderMinimum = useSessionStore((s) => (sessionId ? contextUnderCompactionMinimum(s, sessionId) : false));
 
   /**
-   * Both controls' tick state, and why it is not component state.
+   * The reset control's tick state, and why it is not component state.
    *
    * It was two `useState(true)` flags re-armed by an effect keyed on the
    * control becoming visible, and each half could silently discard an untick
@@ -353,6 +373,9 @@ export function MessageInput({
    * — and only the send it was made for clears it (req 5). Nothing keys on a
    * transition. Read through the store, falling back to the durable mirror for
    * the reload case where localStorage is the only record.
+   *
+   * The compaction control is the session's kept choice instead (docs/295 req
+   * 5), saved on the server, which the PR card menu also writes (req 16).
    */
   const storedOptOut = usePrStore((s) => (sessionId ? s.mergeContinueOptOutBySession[sessionId] : undefined));
   const mergeOptOut = useMemo(
@@ -360,10 +383,14 @@ export function MessageInput({
     [storedOptOut, sessionId],
   );
   const resetChecked = !mergeOptOut.reset;
-  const compactChecked = !mergeOptOut.compact;
-  const toggleMergeControl = (control: MergeContinueControl, currentlyChecked: boolean) => {
+  const compactChecked = useSessionStore((s) => (sessionId ? compactAfterMergeEnabled(s, sessionId) : true));
+  const toggleResetControl = () => {
     if (!sessionId) return;
-    usePrStore.getState().setMergeContinueOptOut(sessionId, control, currentlyChecked);
+    usePrStore.getState().setMergeContinueOptOut(sessionId, "reset", resetChecked);
+  };
+  const toggleCompactControl = () => {
+    if (!sessionId) return;
+    void useSessionStore.getState().setCompactAfterMerge(sessionId, !compactChecked);
   };
 
   const {
@@ -514,6 +541,30 @@ export function MessageInput({
       consume(state.quoteReplyText);
     });
   }, [surface, inert]);
+
+  // docs/330-stop-returns-queued-messages — the messages that a Stop took out of the queue.
+  // eslint-disable-next-line no-restricted-syntax -- consume the returned messages from the external store
+  useEffect(() => {
+    if (surface === "overlay" || !sessionId) return undefined;
+    const consume = (offer: { sessionId: string; messages: WsReturnedQueueMessage[] } | undefined) => {
+      // Left in the store while this composer cannot take it; the server keeps its copy.
+      if (offer?.sessionId !== sessionId || inert) return;
+      useSessionStore.getState().setReturnedToComposer(undefined);
+      const returned = takeReturnedMessages(sessionId, offer.messages, textRef.current);
+      if (returned.text !== null) {
+        textRef.current = returned.text;
+        setText(returned.text);
+        // Before the answer below, which lets the server forget the messages.
+        if (focusKey) saveDraftMessage(focusKey, returned.text);
+      }
+      for (const filePath of returned.files) onAddFile?.(filePath);
+      onReturnedTaken?.(returned.ids);
+    };
+    consume(useSessionStore.getState().returnedToComposer);
+    return useSessionStore.subscribe((state) => {
+      consume(state.returnedToComposer);
+    });
+  }, [surface, inert, sessionId, focusKey, onAddFile, onReturnedTaken]);
 
   // session switch). The ref is intentionally seeded with `undefined` (not `focusKey`)
 
@@ -900,7 +951,7 @@ export function MessageInput({
                 type="button"
                 data-testid="reset-merged-branch-control"
                 aria-pressed={resetChecked}
-                onClick={() => toggleMergeControl("reset", resetChecked)}
+                onClick={toggleResetControl}
                 className="w-full flex items-start gap-2.5 px-3 pt-2.5 pb-1 text-left"
               >
                 <span
@@ -933,11 +984,11 @@ export function MessageInput({
                   type="button"
                   data-testid="compact-context-control"
                   aria-pressed={compactChecked}
-                  onClick={() => toggleMergeControl("compact", compactChecked)}
-                  className="w-full flex items-center gap-2.5 px-3 pt-1.5 pb-2.5 text-left"
+                  onClick={toggleCompactControl}
+                  className="w-full flex items-start gap-2.5 px-3 pt-1.5 pb-2.5 text-left"
                 >
                   <span
-                    className={`shrink-0 grid place-items-center w-4 h-4 rounded ${
+                    className={`shrink-0 mt-0.5 grid place-items-center w-4 h-4 rounded ${
                       compactChecked
                         ? "bg-(--color-accent) text-white"
                         : "border border-(--color-border-secondary) bg-(--color-bg-tertiary)"
@@ -945,8 +996,19 @@ export function MessageInput({
                   >
                     {compactChecked && <CheckIcon size={12} weight="bold" />}
                   </span>
-                  <span className="flex items-center gap-1.5 text-xs font-medium text-(--color-text-primary)">
-                    <BroomIcon size={ICON_SIZE.XS} /> Compact the context
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-1.5 text-xs font-medium text-(--color-text-primary)">
+                      <BroomIcon size={ICON_SIZE.XS} /> Compact the context
+                    </span>
+                    {compactUnderMinimum && (
+                      <span
+                        data-testid="compact-context-under-minimum"
+                        className="block text-[11px] text-(--color-text-tertiary) mt-0.5"
+                      >
+                        The context is under {AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS / 1000}K tokens, so no compaction runs.
+                        Send <code className="font-mono">/compact</code> to compact it anyway.
+                      </span>
+                    )}
                   </span>
                 </button>
               )}

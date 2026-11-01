@@ -5,6 +5,8 @@ description: Make the programmatic dispatch path honor live steering (and reliab
 
 # Live steering on the dispatch path (docs/163)
 
+> **Changed 2026-10-12 by [docs/329-user-steers-every-turn](../329-user-steers-every-turn/plan.md) part 3.** `systemTurn` is deleted, and no turn refuses a steer for who started it. A compaction turn takes no message (docs/329 part 2); every other turn takes one, the conflict-resolution turn included.
+
 ## Symptom
 
 In a session with live steering (docs/140) enabled, a message sent **during an

@@ -34,6 +34,7 @@ services:
       - CREDENTIALS_VOLUME=shipit-dev_credentials
       - DOCKER_NETWORK=shipit-dev
       - SESSION_WORKER_IMAGE=shipit-session-worker:dev
+      - SESSION_WORKER_DOCKER_IMAGE=shipit-session-worker:docker-dev
       - DOCKER_STACK=shipit-dev
       - OVERLAY_DEP_STORE=${OVERLAY_DEP_STORE:-}
       - SHIPIT_ORCHESTRATOR_HOST=shipit
@@ -70,6 +71,19 @@ services:
       context: ../..
       dockerfile: Dockerfile.compose-helper
     image: shipit-compose-helper:dev
+    profiles:
+      - build-only
+
+  # Ops and Docker-access sessions run this image (docs/128). Build after session-worker
+  # without --pull; its base image is local-only. Its tag differs from the prod stacks'
+  # so both can share one daemon.
+  session-worker-docker:
+    build:
+      context: ../../..
+      dockerfile: docker/Dockerfile.session-worker.docker
+      args:
+        BASE_IMAGE: shipit-session-worker:dev
+    image: shipit-session-worker:docker-dev
     profiles:
       - build-only
 

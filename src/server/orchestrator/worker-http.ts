@@ -142,8 +142,18 @@ export async function workerInstall(
   return workerPost(baseUrl, "/install", { commands }, opts);
 }
 
-export async function workerPostMessage(baseUrl: string, text: string, opts?: WorkerHttpOpts): Promise<void> {
-  await workerPost(baseUrl, "/agent/message", { text }, opts);
+export async function workerPostMessage(
+  baseUrl: string,
+  text: string,
+  turn?: { deliveryId?: string; silentCompaction?: boolean },
+  opts?: WorkerHttpOpts,
+): Promise<void> {
+  const body = {
+    text,
+    ...(turn?.deliveryId !== undefined ? { deliveryId: turn.deliveryId } : {}),
+    ...(turn?.silentCompaction ? { silentCompaction: true } : {}),
+  };
+  await workerPost(baseUrl, "/agent/message", body, opts);
 }
 
 export async function workerPut(baseUrl: string, path: string, body?: unknown, opts?: WorkerHttpOpts): Promise<unknown> {

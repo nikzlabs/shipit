@@ -203,6 +203,39 @@ describe("findViolations", () => {
     expect(violations[0].kind).toBe("lookup-failed");
   });
 
+  it("ages an npm alias by the package it installs — docs/335's second playwright-core", () => {
+    const asked: string[] = [];
+    const violations = findViolations(
+      [
+        manifest("docker/agent-cli/package.json", {
+          "playwright-stable": "npm:playwright-core@1.64.1",
+          "scoped-alias": "npm:@playwright/mcp@0.0.83",
+        }),
+      ],
+      {
+        now: NOW,
+        lookup: (name, version) => {
+          asked.push(`${name}@${version}`);
+          return name === "playwright-core" ? daysAgo(2) : daysAgo(30);
+        },
+      },
+    );
+    expect(asked).toEqual(["playwright-core@1.64.1", "@playwright/mcp@0.0.83"]);
+    expect(violations).toHaveLength(1);
+    // Named as the manifest names it, so a waiver matches the line in the diff.
+    expect(violations[0]).toMatchObject({ name: "playwright-stable", version: "1.64.1", kind: "too-new" });
+  });
+
+  it("holds an npm alias to the exact-pin rule", () => {
+    const violations = findViolations(
+      [manifest("docker/agent-cli/package.json", { "playwright-stable": "npm:playwright-core@^1.64.0" })],
+      { now: NOW, lookup: () => daysAgo(30) },
+    );
+    expect(violations).toEqual([
+      expect.objectContaining({ name: "playwright-stable", version: "npm:playwright-core@^1.64.0", kind: "not-pinned" }),
+    ]);
+  });
+
   it("reports a failed lookup instead of throwing, and keeps checking the rest", () => {
     const violations = findViolations(
       [manifest("package.json", { broken: "1.0.0", fine: "1.0.0" })],

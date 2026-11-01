@@ -7,6 +7,7 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import * as claude from "./claude/index.js";
 import * as codex from "./codex/index.js";
 import * as opencode from "./opencode/index.js";
+import * as opencode2 from "./opencode2/index.js";
 import * as grok from "./grok/index.js";
 import * as antigravity from "./antigravity/index.js";
 
@@ -25,16 +26,20 @@ export interface AgentRuntime {
   parallelSessionsSections: Map<AgentId, string>;
 }
 
-export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
+export function loginManagers(
+  deps: Omit<BuildAgentRuntimeDeps, "providerAccountManager">,
+): Map<LoginIntegrationId, AgentAuthManager> {
   const declared: (AgentAuthManager | undefined)[] = [
     deps.authManager,
     deps.codexAuthManager,
     deps.xaiAuthManager,
     deps.antigravityAuthManager,
   ];
-  const authManagers = new Map<LoginIntegrationId, AgentAuthManager>(
-    declared.filter((mgr) => mgr !== undefined).map((mgr) => [mgr.loginId, mgr]),
-  );
+  return new Map(declared.filter((mgr) => mgr !== undefined).map((mgr) => [mgr.loginId, mgr]));
+}
+
+export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
+  const authManagers = loginManagers(deps);
 
   const limitsProviders = new Map<AgentId, LimitsProvider>([
     ["claude", new claude.ClaudeLimitsProvider({
@@ -60,6 +65,7 @@ export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
     ["claude", claude.prepareClaudeRunParams],
     ["codex", codex.prepareCodexRunParams],
     ["opencode", opencode.prepareOpencodeRunParams],
+    ["opencode2", opencode2.prepareOpencode2RunParams],
     ["grok", grok.prepareGrokRunParams],
     ["antigravity", antigravity.prepareAntigravityRunParams],
   ]);
@@ -68,6 +74,7 @@ export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
     ["claude", claude.CLAUDE_PARALLEL_SESSIONS_SECTION],
     ["codex", codex.CODEX_PARALLEL_SESSIONS_SECTION],
     ["opencode", opencode.OPENCODE_PARALLEL_SESSIONS_SECTION],
+    ["opencode2", opencode2.OPENCODE2_PARALLEL_SESSIONS_SECTION],
     ["grok", grok.GROK_PARALLEL_SESSIONS_SECTION],
     ["antigravity", antigravity.ANTIGRAVITY_PARALLEL_SESSIONS_SECTION],
   ]);

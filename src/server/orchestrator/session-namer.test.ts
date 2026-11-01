@@ -56,6 +56,7 @@ describe("generateSessionName", () => {
           expect(args).toContain("-p");
           expect(args).toContain("--output-format");
           expect(args).toContain("json");
+          expect(args).toContain("--no-session-persistence");
           setImmediate(() => {
             cb(null, '{"slug": "add-login", "title": "Add Login Page"}\n', "");
           });
@@ -95,8 +96,73 @@ describe("generateSessionName", () => {
     } finally { fs.rmSync(source, { recursive: true, force: true }); }
   });
 
+  it("names on OpenCode 2's ChatGPT route by importing an access-only credential first", async () => {
+    const fs = await import("node:fs"); const os = await import("node:os"); const path = await import("node:path");
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), "oc2-naming-source-"));
+    fs.mkdirSync(path.join(source, ".codex"));
+    const access_token = `e30.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": { chatgpt_account_id: "external-a" } })).toString("base64url")}.test`;
+    fs.writeFileSync(path.join(source, ".codex/auth.json"), JSON.stringify({ tokens: { access_token, refresh_token: "source-refresh-only" } }));
+    const calls: { file: string; args: string[]; env: Record<string, string> }[] = [];
+    // The host's own install report need not name opencode2.
+    vi.stubEnv("SHIPIT_AGENTS_INSTALL_REPORT", path.join(source, "no-report.json"));
+    vi.doMock("node:child_process", () => ({
+      execFile: (file: string, args: string[], opts: { env: Record<string, string> }, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+        calls.push({ file, args, env: opts.env });
+        if (args[1] === "import") expect(fs.readFileSync(args[2], "utf8")).not.toContain("source-refresh-only");
+        const out = args[0] === "run" ? JSON.stringify({ type: "text", part: { type: "text", text: '{"slug":"v2-test","title":"V2 Test"}' } }) : "ok";
+        setImmediate(() => cb(null, out, ""));
+        return { on: () => {}, stdin: { end: () => {} } };
+      },
+    }));
+    try {
+      const mod = await import("./session-namer.js");
+      const result = await mod.generateSessionName("test", { harnessId: "opencode2", model: "gpt-6-luna", credentialRoot: source, serviceRouting: { serviceId: "openai", serviceName: "OpenAI", billingMode: "sub", style: "openai-responses", baseUrl: "https://api.openai.com/v1", credentialTarget: { kind: "openai-chatgpt", accountId: "account-a" } } });
+      expect(result.name).toEqual({ slug: "v2-test", title: "V2 Test" });
+      expect(calls.map((c) => [c.file, ...c.args.slice(0, 2)])).toEqual([
+        ["opencode2", "auth", "import"],
+        ["opencode2", "auth", "switch"],
+        ["opencode2", "run", "--standalone"],
+      ]);
+      expect(calls[2].args).toContain("openai/gpt-6-luna");
+      const root = path.dirname(calls[2].env.XDG_DATA_HOME);
+      expect(calls.every((c) => c.env.XDG_DATA_HOME.startsWith(root) && c.env.OPENCODE_CONFIG_DIR.startsWith(root))).toBe(true);
+      expect(fs.existsSync(root)).toBe(false);
+      expect(fs.existsSync(path.join(source, ".local/share/opencode"))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(source, { recursive: true, force: true });
+    }
+  });
+
+  it("never relays an OpenCode 2 auth command's output, which can echo the token", async () => {
+    const fs = await import("node:fs"); const os = await import("node:os"); const path = await import("node:path");
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), "oc2-naming-quiet-"));
+    fs.mkdirSync(path.join(source, ".codex"));
+    const access_token = `e30.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": { chatgpt_account_id: "external-a" } })).toString("base64url")}.test`;
+    fs.writeFileSync(path.join(source, ".codex/auth.json"), JSON.stringify({ tokens: { access_token } }));
+    vi.stubEnv("SHIPIT_AGENTS_INSTALL_REPORT", path.join(source, "no-report.json"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.doMock("node:child_process", () => ({
+      execFile: (_file: string, _args: string[], _opts: unknown, cb: (err: (Error & { code?: number }) | null, stdout: string, stderr: string) => void) => {
+        setImmediate(() => cb(Object.assign(new Error(`Command failed\n${access_token}`), { code: 1 }), "", `bad credential ${access_token}`));
+        return { on: () => {}, stdin: { end: () => {} } };
+      },
+    }));
+    try {
+      const mod = await import("./session-namer.js");
+      const result = await mod.generateSessionName("test", { harnessId: "opencode2", model: "gpt-6-luna", credentialRoot: source, serviceRouting: { serviceId: "openai", serviceName: "OpenAI", billingMode: "sub", style: "openai-responses", baseUrl: "https://api.openai.com/v1", credentialTarget: { kind: "openai-chatgpt", accountId: "account-a" } } });
+      expect(result.name).toBeNull();
+      expect(JSON.stringify(result)).not.toContain(access_token);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(access_token);
+    } finally {
+      warn.mockRestore();
+      vi.unstubAllEnvs();
+      fs.rmSync(source, { recursive: true, force: true });
+    }
+  });
+
   it("runs the CLI with HOME at the account credential root when given one", async () => {
-    let seenHome: string | undefined;
+    let seenEnv: Record<string, string> = {};
     vi.doMock("node:child_process", () => ({
       execFile: (
         _file: string,
@@ -104,19 +170,74 @@ describe("generateSessionName", () => {
         opts: { env?: Record<string, string> },
         cb: (err: Error | null, stdout: string, stderr: string) => void,
       ) => {
-        seenHome = opts.env?.HOME;
+        seenEnv = opts.env ?? {};
         setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
         return { on: () => {}, stdin: { end: () => {} } } as unknown;
       },
     }));
+    // Local mode has no private copy and keeps its environment as it was.
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "/root/.claude-local");
 
     const mod = await import("./session-namer.js");
     await mod.generateSessionName("hi", {
       harnessId: "claude",
       credentialRoot: "/credentials/provider-accounts/claude/acct_work",
     });
+    vi.unstubAllEnvs();
 
-    expect(seenHome).toBe("/credentials/provider-accounts/claude/acct_work");
+    expect(seenEnv.HOME).toBe("/credentials/provider-accounts/claude/acct_work");
+    expect(seenEnv.CLAUDE_CONFIG_DIR).toBe("/root/.claude-local");
+  });
+
+  it("runs Claude naming in the credential copy it is given, never in the account root", async () => {
+    let seenEnv: Record<string, string> = {};
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        _file: string,
+        _args: string[],
+        opts: { env?: Record<string, string> },
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        seenEnv = opts.env ?? {};
+        setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "/credentials/provider-accounts/claude/acct_work/.claude");
+    const settledAfterRun: boolean[] = [];
+
+    const mod = await import("./session-namer.js");
+    const result = await mod.generateSessionName("hi", {
+      harnessId: "claude",
+      credentialRoot: "/credentials/provider-accounts/claude/acct_work",
+      inCredentialCopy: async (run) => {
+        const value = await run("/tmp/private-copy");
+        settledAfterRun.push(seenEnv.HOME === "/tmp/private-copy");
+        return value;
+      },
+    });
+    vi.unstubAllEnvs();
+
+    expect(result.name).toEqual({ slug: "s", title: "T" });
+    expect(seenEnv.HOME).toBe("/tmp/private-copy");
+    expect(seenEnv.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(settledAfterRun).toEqual([true]);
+  });
+
+  it("reports a credential copy that cannot be made as the naming failure, without a spawn", async () => {
+    const execFile = vi.fn();
+    vi.doMock("node:child_process", () => ({ execFile }));
+
+    const mod = await import("./session-namer.js");
+    const result = await mod.generateSessionName("hi", {
+      harnessId: "claude",
+      credentialRoot: "/credentials/provider-accounts/claude/acct_work",
+      inCredentialCopy: () => Promise.reject(new Error("The Claude account's credentials could not be copied (ENOENT).")),
+    });
+
+    expect(result.name).toBeNull();
+    expect(result.failure).toBe("The Claude account's credentials could not be copied (ENOENT).");
+    expect(execFile).not.toHaveBeenCalled();
   });
 
   it("falls back to the singleton root when no account root is given", async () => {
@@ -153,6 +274,7 @@ describe("generateSessionName", () => {
           expect(args[0]).toBe("exec");
           expect(args).toContain("--skip-git-repo-check");
           expect(args).toContain("--json");
+          expect(args).toContain("--ephemeral");
           expect(args[args.length - 1]).toContain("Add a login page");
           setImmediate(() => {
             cb(null, '{"slug": "add-login", "title": "Add Login Page"}\n', "");
@@ -456,6 +578,27 @@ describe("generateSessionName", () => {
     expect(seenArgs).toContain("deepseek-flash");
     expect(seenEnv.ANTHROPIC_BASE_URL).toBe("https://api.deepseek.com/anthropic");
     expect(seenEnv.ANTHROPIC_API_KEY).toBe("sk-deepseek");
+  });
+
+  it("names with the Haiku 4.5 row's vendor id, never Claude Code's `haiku` alias", async () => {
+    let seenArgs: string[] = [];
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        _file: string,
+        args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        seenArgs = args;
+        setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+
+    const mod = await import("./session-namer.js");
+    await mod.generateSessionName("hi", { harnessId: "claude", model: "haiku" });
+
+    expect(seenArgs[seenArgs.indexOf("--model") + 1]).toBe("claude-haiku-4-5");
   });
 
   it("refuses to name when the selected service has no credential to deliver", async () => {

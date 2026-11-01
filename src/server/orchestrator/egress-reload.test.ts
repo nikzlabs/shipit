@@ -126,7 +126,16 @@ describe("staleEgressSidecars", () => {
       internalDomains: names, extraDomains: ["fal.run"], unqualifiedInternalNames,
     })}`,
   ];
-  const check = (docker: Docker, overrides: { internalNames?: string[]; decisionUrl?: string } = {}) =>
+  const resolverEnvWith = (lines: string[]) => {
+    const config = Buffer.from(buildResolverConfigB64({
+      internalDomains: ["new-host", "shipit"], extraDomains: ["fal.run"], unqualifiedInternalNames: true,
+    }), "base64").toString("utf-8");
+    return [`EGRESS_DNSMASQ_CONFIG_B64=${Buffer.from(`${config}${lines.join("\n")}\n`).toString("base64")}`];
+  };
+  const check = (
+    docker: Docker,
+    overrides: { internalNames?: string[]; allowlist?: string[]; decisionUrl?: string } = {},
+  ) =>
     staleEgressSidecars(docker, {
       sessionId: "s1",
       agentContainerId: "agent1",
@@ -153,6 +162,17 @@ describe("staleEgressSidecars", () => {
   it("accepts a resolver that forwards every current name, as after a plain restart", async () => {
     const docker = sidecarDocker([{ label: RESOLVER, env: resolverEnv(["new-host", "shipit"]) }]);
     await expect(check(docker)).resolves.toEqual({ resolver: false, proxy: false });
+  });
+
+  // #3166: a resolver built before the fix sends an allowlisted `api` to the public upstream.
+  it("finds a resolver that sends a Compose service name to the public upstream", async () => {
+    const docker = sidecarDocker([{ label: RESOLVER, env: resolverEnvWith(["server=/api/1.1.1.1"]) }]);
+    await expect(check(docker, { allowlist: ["fal.run", "api"] })).resolves.toEqual({ resolver: true, proxy: false });
+  });
+
+  it("accepts a public route that a single-label suffix entry asks for", async () => {
+    const docker = sidecarDocker([{ label: RESOLVER, env: resolverEnvWith(["server=/dev/1.1.1.1"]) }]);
+    await expect(check(docker, { allowlist: ["fal.run", ".dev"] })).resolves.toEqual({ resolver: false, proxy: false });
   });
 
   it("finds a proxy that asks the previous ShipIt for decisions", async () => {

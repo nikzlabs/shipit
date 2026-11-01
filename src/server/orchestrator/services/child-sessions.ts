@@ -1,12 +1,17 @@
+import { randomUUID } from "node:crypto";
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
-import type { SessionManager } from "../sessions.js";
+import { isLiveMergeWatch, type SessionManager } from "../sessions.js";
+import { addUnreportedPr, unreportedPrs, withUnreportedPrs } from "../merge-watch-prs.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
+import { REPOSITORY_UNTRUSTED_CODE, isAgentWorking } from "../session-runner.js";
+import { parseGitHubRemote, stripUrlCredentials } from "../git-utils.js";
 import type {
   SessionInfo,
   AgentId,
   SessionMergeWatch,
   SpawnTarget,
   SessionMessageOrigin,
+  SessionReportCard,
 } from "../../shared/types.js";
 import type { BillingMode } from "../../shared/catalogue/index.js";
 import { selectionExists } from "../../shared/catalogue/index.js";
@@ -19,12 +24,9 @@ import { joinRolePrompt, ROLE_PROMPT_LIMITS } from "./roles.js";
 import { applyModelRetirement } from "../model-retirement.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
-import type { SessionContainerManager } from "../session-container.js";
-import { ContainerSessionRunner } from "../container-session-runner.js";
 import { agentIdForModel, getAgentCapabilities, KNOWN_AGENT_IDS } from "../../shared/agent-registry.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
-import { reconcileRunnerAgent } from "../reconcile-runner-agent.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
@@ -32,13 +34,34 @@ import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { isSessionDone } from "../../shared/session-resolution.js";
-import type { TurnAdmission } from "../turn-settlement.js";
+import type { InboxTold, SessionInbox } from "./session-inbox.js";
+import type { PersistedMessage } from "../chat-history.js";
+import { getErrorMessage } from "../../shared/utils.js";
 
 export class ResolvedChildMessageError extends ServiceError {
   constructor(public readonly child: SessionInfo) {
     super(409, `${child.title} is resolved; no message, card, or wake turn was sent.`);
   }
 }
+
+/** Refused before the claim, so no session, clone or container exists (docs/243). */
+export class SpawnRepositoryUntrustedError extends ServiceError {
+  readonly code = REPOSITORY_UNTRUSTED_CODE;
+
+  constructor(public readonly repoUrl: string) {
+    const parsed = parseGitHubRemote(repoUrl);
+    const repo = parsed ? `${parsed.owner}/${parsed.repo}` : stripUrlCredentials(repoUrl);
+    super(
+      403,
+      `ShipIt did not create the session: the repository ${repo} is not trusted, so an agent cannot `
+        + `receive a message there. Trust is the user's decision: open a session on ${repo} in ShipIt `
+        + 'and select "Trust this repository". Then try again.',
+    );
+  }
+}
+
+/** Removes a session that a failed spawn created. It must throw if the session still exists. */
+export type DiscardSpawnedChild = (sessionId: string) => Promise<void>;
 
 function hasVisibleDirectChildren(sessionManager: SessionManager, sessionId: string): boolean {
   return sessionManager.findChildren(sessionId).some(
@@ -75,7 +98,7 @@ function isChildLive(
   seen.add(child.id);
   const runner = runnerRegistry.get(child.id);
   const busy = runner?.agentBusy === true || (runner?.queueLength ?? 0) > 0;
-  if (busy || !isSessionDone(child, { hasUnfinishedDescendant: false })) return true;
+  if (!isSessionDone(child, { hasUnfinishedDescendant: false, agentWorking: busy })) return true;
   return sessionManager.findChildren(child.id)
     .some((grandchild) => isChildLive(sessionManager, runnerRegistry, grandchild, seen));
 }
@@ -129,6 +152,16 @@ export interface SpawnChildSessionOptions {
   repoUrlOverride?: string;
   /** No parent/root linkage; the originating turn still counts toward the spawn cap. */
   detached?: boolean;
+  /**
+   * Send the prompt unchanged: the role's standing instructions reach the agent with the
+   * first turn, outside the transcript, as for a session the user starts on a role.
+   */
+  verbatimPrompt?: boolean;
+  /**
+   * Called once the child exists and before anything is sent to it, so a caller can record
+   * the id durably. A throw fails the spawn and the child is removed.
+   */
+  onChildClaimed?: (sessionId: string) => void;
 }
 
 export interface SpawnChildSessionResult {
@@ -151,6 +184,44 @@ export async function spawnChildSession(
   credentialStore: CredentialStore | undefined,
   providerAccountManager: ProviderAccountManager | undefined,
   graduationDeps: GraduateSessionDeps,
+  discardChild: DiscardSpawnedChild,
+): Promise<SpawnChildSessionResult> {
+  // Set by the claim. A failure after it would leave a session the caller was told had failed.
+  const claimed: { sessionId?: string } = {};
+  try {
+    return await claimAndStartChild(
+      sessionManager, runnerRegistry, claimService, parentSessionId, opts, defaultAgentId,
+      credentialsDir, credentialStore, providerAccountManager, graduationDeps, claimed,
+    );
+  } catch (err) {
+    const childId = claimed.sessionId;
+    if (!childId) throw err;
+    try {
+      await discardChild(childId);
+    } catch (discardErr) {
+      console.error(`[spawn-child] Could not remove ${childId} after its spawn failed:`, discardErr);
+      throw new ServiceError(
+        err instanceof ServiceError ? err.statusCode : 500,
+        `${getErrorMessage(err)}\nThe session ${childId} was created before this failure and still `
+          + `exists: ShipIt did not remove it (${getErrorMessage(discardErr)}).`,
+      );
+    }
+    throw err;
+  }
+}
+
+async function claimAndStartChild(
+  sessionManager: SessionManager,
+  runnerRegistry: SessionRunnerRegistry,
+  claimService: ClaimSessionService,
+  parentSessionId: string,
+  opts: SpawnChildSessionOptions,
+  defaultAgentId: AgentId,
+  credentialsDir: string | undefined,
+  credentialStore: CredentialStore | undefined,
+  providerAccountManager: ProviderAccountManager | undefined,
+  graduationDeps: GraduateSessionDeps,
+  claimed: { sessionId?: string },
 ): Promise<SpawnChildSessionResult> {
   const parent = sessionManager.get(parentSessionId);
   if (!parent) throw new ServiceError(404, "Parent session not found");
@@ -208,7 +279,7 @@ export async function spawnChildSession(
   if (!task) {
     throw new ServiceError(400, "prompt is required");
   }
-  const trimmedPrompt = roleForChild
+  const trimmedPrompt = roleForChild && !opts.verbatimPrompt
     ? joinRolePrompt(task, roleForChild, ROLE_PROMPT_LIMITS.child)
     : task;
   if (trimmedPrompt.length > ROLE_PROMPT_LIMITS.child) {
@@ -321,14 +392,23 @@ export async function spawnChildSession(
         "Give it a short, human-readable name describing what the session is for.",
     );
   }
+  // docs/243: the child's first dispatch is refused for an untrusted remote. Refuse here,
+  // before the claim creates the session, its clone and its container.
+  if (!graduationDeps.repoStore.isTrusted(claimUrl)) {
+    throw new SpawnRepositoryUntrustedError(claimUrl);
+  }
   // Fetch recent merges; exclude the parent and any draft the user is still composing.
-  const claimed = await claimService.claim(claimUrl, {
+  const claim = await claimService.claim(claimUrl, {
     forceFetch: true,
     skipReuse: true,
+    // The repo's one warm session is kept for a person opening a session (docs/288 req 12).
+    skipWarm: true,
     excludeSessionIds: [parentSessionId],
   });
-  const newSessionId = claimed.sessionId;
-  const newWorkspaceDir = claimed.workspaceDir;
+  claimed.sessionId = claim.sessionId;
+  opts.onChildClaimed?.(claim.sessionId);
+  const newSessionId = claim.sessionId;
+  const newWorkspaceDir = claim.workspaceDir;
 
   let branchName: string;
   try {
@@ -419,6 +499,9 @@ export async function spawnChildSession(
     const options = getAgentCapabilities(childAgentId)?.reasoning?.options;
     return options?.some((o) => o.value === level) ? level : undefined;
   })();
+  // Before graduation, whose session-list broadcast is what the child's composer reads.
+  // The live role can later clear; originRoleName remains the creation record.
+  if (roleForChild?.roleName) sessionManager.setRoleName(newSessionId, roleForChild.roleName);
   graduateSession(graduationDeps, {
     sessionId: newSessionId,
     userText: trimmedPrompt,
@@ -429,13 +512,11 @@ export async function spawnChildSession(
     ...(selection.serviceId ? { serviceId: selection.serviceId } : {}),
     ...(selection.billingMode ? { billingMode: selection.billingMode } : {}),
     ...(inheritedReasoning ? { reasoning: inheritedReasoning } : {}),
-    ...(roleForChild?.roleName ? { originRoleName: roleForChild.roleName } : {}),
+    // Left unset for a verbatim prompt: the first turn sets it when it delivers the brief.
+    ...(roleForChild?.roleName && !opts.verbatimPrompt ? { originRoleName: roleForChild.roleName } : {}),
     ...(opts.detached ? {} : { parentSessionId, rootSessionId }),
     ...(opts.spawnedByTurn ? { spawnedByTurn: opts.spawnedByTurn } : {}),
   });
-
-  // The live role can later clear; originRoleName remains the creation record.
-  if (roleForChild?.roleName) sessionManager.setRoleName(newSessionId, roleForChild.roleName);
 
   const child = sessionManager.get(newSessionId);
   if (!child) throw new ServiceError(500, "Failed to read back spawned child session");
@@ -474,7 +555,6 @@ export async function spawnChildSession(
     uploads: undefined,
     permissionMode: undefined,
     postTurn: undefined,
-    systemTurn: undefined,
     automatic: undefined,
     heldId: undefined,
     onTurnComplete: undefined,
@@ -591,68 +671,61 @@ export function buildChildView(
 }
 
 export interface SendChildMessageResult {
-  /** One-based when queued behind a running turn; otherwise zero. */
+  /** Kept for a container whose shim predates the inbox; a message is never queued now. */
   queuePosition: number;
   enqueued: boolean;
-  /** docs/314 — the dispatch's OWN admission, not a guess from the runner's state. */
-  admitted: TurnAdmission;
+  /** docs/328-session-message-inbox — how the recipient's agent learns of the message. */
+  told: InboxTold;
+  /** Why the recipient could not be started, when `told` is `failed`. */
+  error?: string;
 }
 
-// Observe boot failure before acknowledging; timeout still permits dispatch to await readiness itself.
-const CHILD_MESSAGE_WORKER_READY_TIMEOUT_MS = 30_000;
+export interface SessionCardDeps {
+  runnerRegistry: Pick<SessionRunnerRegistry, "get">;
+  chatHistoryManager: { append(sessionId: string, message: PersistedMessage): unknown };
+}
 
-function hasLiveContainer(
-  containerManager: SessionContainerManager,
-  sessionId: string,
-): boolean {
-  const sc = containerManager.get(sessionId);
-  return !!sc && (sc.status === "running" || sc.status === "starting");
+export interface SessionMessageDeps extends SessionCardDeps {
+  sessionInbox: Pick<SessionInbox, "post">;
+}
+
+/**
+ * The user's record, in the recipient's transcript, of what another session sent. A card
+ * with no text: a row with text is replayed to an agent as its own conversation.
+ */
+export function surfaceSessionCard(deps: SessionCardDeps, recipientId: string, card: SessionReportCard): void {
+  deps.chatHistoryManager.append(recipientId, { role: "assistant", text: "", sessionReport: card });
+  deps.runnerRegistry.get(recipientId)?.emitMessage({ type: "session_report_card", sessionId: recipientId, card });
 }
 
 export async function sendChildMessage(
-  sessionManager: SessionManager,
-  runnerRegistry: SessionRunnerRegistry,
+  deps: SessionMessageDeps & { sessionManager: SessionManager },
   parentSessionId: string,
   childSessionId: string,
   text: string,
-  defaultAgentId: AgentId,
-  credentialsDir: string | undefined,
-  credentialStore: CredentialStore | undefined,
-  providerAccountManager?: ProviderAccountManager,
-  containerManager?: SessionContainerManager | null,
 ): Promise<SendChildMessageResult> {
+  const { sessionManager, runnerRegistry } = deps;
   const trimmed = text?.trim();
   if (!trimmed) throw new ServiceError(400, "Message text is required");
   if (trimmed.length > 50_000) {
     throw new ServiceError(400, "Message text exceeds 50,000 characters");
   }
   const child = assertChildOfParent(sessionManager, parentSessionId, childSessionId);
-  if (
-    runnerRegistry.get(child.id)?.running !== true
-    && isSessionDone(child, { hasUnfinishedDescendant: hasVisibleDirectChildren(sessionManager, child.id) })
-  ) {
+  if (isSessionDone(child, {
+    hasUnfinishedDescendant: hasVisibleDirectChildren(sessionManager, child.id),
+    agentWorking: isAgentWorking(runnerRegistry.get(child.id)),
+  })) {
     throw new ResolvedChildMessageError(child);
   }
   if (child.archived) {
     throw new ServiceError(400, "Child session is archived");
   }
 
-  return deliverSessionMessage(
-    sessionManager,
-    runnerRegistry,
-    child,
-    trimmed,
-    {
-      sessionId: parentSessionId,
-      sessionTitle: sessionManager.get(parentSessionId)?.title ?? "Parent session",
-      relation: "parent",
-    },
-    defaultAgentId,
-    credentialsDir,
-    credentialStore,
-    providerAccountManager,
-    containerManager,
-  );
+  return deliverSessionMessage(deps, child, trimmed, {
+    sessionId: parentSessionId,
+    sessionTitle: sessionManager.get(parentSessionId)?.title ?? "Parent session",
+    relation: "parent",
+  });
 }
 
 /**
@@ -660,102 +733,43 @@ export async function sendChildMessage(
  *
  * Every caller decides separately who is allowed to reach `target`:
  * `sendChildMessage` allows a direct child, and docs/314's proposal card allows
- * anything the user approved by clicking. Sharing the body is what stops a
- * change to dispatch — a credential refresh, a readiness wait — from applying
- * to one route and not the other.
+ * anything the user approved by clicking. The message goes to the target's inbox
+ * (docs/328-session-message-inbox); it is not a turn.
  */
 export async function deliverSessionMessage(
-  sessionManager: SessionManager,
-  runnerRegistry: SessionRunnerRegistry,
+  deps: SessionMessageDeps,
   target: SessionInfo,
   text: string,
   origin: SessionMessageOrigin,
-  defaultAgentId: AgentId,
-  credentialsDir: string | undefined,
-  credentialStore: CredentialStore | undefined,
-  providerAccountManager?: ProviderAccountManager,
-  containerManager?: SessionContainerManager | null,
 ): Promise<SendChildMessageResult> {
   if (!target.workspaceDir) {
     throw new ServiceError(400, "Target session has no workspace");
   }
-  const targetSessionId = target.id;
-
-  // A runner can survive its container. Dispose it so getOrCreate starts a fresh worker.
-  if (containerManager) {
-    const stale = runnerRegistry.get(targetSessionId);
-    if (stale && !hasLiveContainer(containerManager, targetSessionId)) {
-      runnerRegistry.dispose(targetSessionId, { force: true });
-    }
-  }
-
-  const runner = runnerRegistry.getOrCreate(targetSessionId, target.workspaceDir, target.agentId ?? defaultAgentId);
-  // getOrCreate ignores the agent argument for an existing runner; reconcile before provisioning.
-  const effectiveAgentId = reconcileRunnerAgent(runner, target.agentId);
-
-  // A queued turn refreshes its own environment when it starts.
-  const wasRunning = runner.running;
-  if (!wasRunning && credentialsDir && credentialStore) {
-    await prepareSessionAgentEnvironment(runner, {
-      sessionId: targetSessionId,
-      agentId: effectiveAgentId,
-      deps: {
-        credentialsDir,
-        credentialStore,
-        sessionManager,
-        ...(providerAccountManager ? { providerAccountManager } : {}),
-      },
-    });
-  }
-  if (runner instanceof ContainerSessionRunner) {
-    await Promise.race([
-      runner.whenWorkerReady(),
-      new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, CHILD_MESSAGE_WORKER_READY_TIMEOUT_MS);
-        t.unref?.();
-      }),
-    ]);
-  }
-  if (runner.disposed) {
-    throw new ServiceError(503, "Could not resume the session container; the message was not delivered.");
-  }
-
-  const handle = runner.dispatch(prepareDispatch({
-    text,
-    agentInterface: undefined,
-    messageOrigin: origin,
-    execution: undefined,
-    activity: undefined,
-    images: undefined,
-    files: undefined,
-    uploads: undefined,
-    permissionMode: undefined,
-    postTurn: undefined,
-    systemTurn: undefined,
-    // A proposal card is delivered by the user's own click; another session's message is not.
-    automatic: origin.relation !== "proposed",
-    heldId: undefined,
-    onTurnComplete: undefined,
-    deliveryId: undefined,
-    dictated: undefined,
-    resetMergedBranch: undefined,
-    compactContext: undefined,
-    silent: undefined,
-  }));
-  return {
-    queuePosition: handle.admitted === "queued" ? runner.queueLength : 0,
-    enqueued: wasRunning,
-    admitted: handle.admitted,
-  };
+  // The agent reads the inbox; this is what the user of that session sees
+  // (docs/314-session-message-proposal req 6).
+  surfaceSessionCard(deps, target.id, {
+    cardId: `session-message-${randomUUID()}`,
+    fromSessionId: origin.sessionId,
+    fromTitle: origin.sessionTitle,
+    relation: origin.relation,
+    body: text,
+    createdAt: new Date().toISOString(),
+  });
+  const { told, error } = await deps.sessionInbox.post(target, { origin, body: text });
+  const toldNow = told === "steered" || told === "started";
+  return { queuePosition: 0, enqueued: !toldNow, told, ...(error ? { error } : {}) };
 }
 
 export interface RegisterMergeWatchResult {
   childId: string;
   state: SessionMergeWatch["state"];
   alreadyArmed: boolean;
+  /** The parent was already told about this PR, or its notice is on its way: the watch does not fire for it. */
+  skipsPr?: number;
 }
 
-// Terminal watches can be explicitly re-armed, including a failed delivery.
+// The child's own `--self` watch is stored apart (`selfMergeWatch`); this never writes it, and
+// reads it only for the log line.
 export function registerMergeWatch(
   sessionManager: SessionManager,
   parentSessionId: string,
@@ -770,19 +784,74 @@ export function registerMergeWatch(
     throw new ServiceError(400, "Parent session is archived");
   }
   const existing = child.mergeWatch;
-  const liveForThisParent =
-    existing?.parentSessionId === parentSessionId
-    && (existing?.state === "armed" || existing?.state === "merge-observed");
-  if (existing && liveForThisParent) {
-    return { childId: childSessionId, state: existing.state, alreadyArmed: true };
+  const own = existing?.parentSessionId === parentSessionId ? existing : undefined;
+  if (own?.state === "armed") {
+    console.log(
+      `[merge-watch] parent ${parentSessionId} armed its watch on ${childSessionId} again: `
+      + "already armed, nothing changed",
+    );
+    return {
+      childId: childSessionId,
+      state: "armed",
+      alreadyArmed: true,
+      ...(own.reportedPr ? { skipsPr: own.reportedPr.prNumber } : {}),
+    };
   }
-  const watch: SessionMergeWatch = {
-    parentSessionId,
-    state: "armed",
-    registeredAt: new Date().toISOString(),
-  };
+  if (own?.state === "merge-observed") {
+    // docs/196-session-notify-on-merge req 3 — only a watch that an older ShipIt left with a
+    // wake turn in delivery is here. It keeps its record, and the manager arms the watch that
+    // follows when this one ends.
+    const deliveringPr = own.mergedPr?.prNumber;
+    const alreadyQueued = own.rearmedAt !== undefined;
+    if (!alreadyQueued) {
+      sessionManager.setMergeWatch(childSessionId, { ...own, rearmedAt: new Date().toISOString() });
+    }
+    const result = alreadyQueued ? "an arm for the next PR was already queued" : "armed for the next PR";
+    console.log(
+      `[merge-watch] parent ${parentSessionId} armed its watch on ${childSessionId} before the notice `
+      + `about PR #${deliveringPr ?? "?"} was stored: ${result}`,
+    );
+    return {
+      childId: childSessionId,
+      state: "merge-observed",
+      alreadyArmed: alreadyQueued,
+      ...(deliveringPr !== undefined ? { skipsPr: deliveringPr } : {}),
+    };
+  }
+  // A terminal watch can be armed again. It hands over the PR that its parent already knows
+  // (req 4) and the ones that it kept for this arm (req 2). A watch whose delivery failed told
+  // nobody, so its own merge goes in front of them.
+  const reportedPr = own?.reportedPr;
+  let owed = own ? unreportedPrs(own) : [];
+  if (own?.state === "delivery-failed" && own.mergedPr) {
+    owed = addUnreportedPr(owed, { outcome: "merged", ...own.mergedPr }, "first");
+  }
+  const watch = withUnreportedPrs(
+    {
+      parentSessionId,
+      watchId: randomUUID(),
+      state: "armed",
+      registeredAt: new Date().toISOString(),
+      ...(reportedPr ? { reportedPr } : {}),
+    },
+    owed,
+  );
   sessionManager.setMergeWatch(childSessionId, watch);
-  return { childId: childSessionId, state: "armed", alreadyArmed: false };
+  const self = child.selfMergeWatch;
+  const replaces = existing ? ` (replaces its ${existing.state} watch)` : "";
+  const skips = reportedPr ? `; PR #${reportedPr.prNumber} was already reported` : "";
+  const beside = self && isLiveMergeWatch(self)
+    ? `; the child also watches its own PR #${self.prNumber ?? "?"}`
+    : "";
+  console.log(
+    `[merge-watch] parent ${parentSessionId} armed a watch on ${childSessionId}${replaces}${skips}${beside}`,
+  );
+  return {
+    childId: childSessionId,
+    state: "armed",
+    alreadyArmed: false,
+    ...(reportedPr ? { skipsPr: reportedPr.prNumber } : {}),
+  };
 }
 
 function isRunnerIdle(runner: SessionRunnerInterface | undefined): boolean {

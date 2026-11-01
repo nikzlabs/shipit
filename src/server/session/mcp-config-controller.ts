@@ -7,6 +7,7 @@ import type {
 } from "./agents/agent-process.js";
 import { resolveBridge } from "./mcp-bridge-paths.js";
 import { substituteMcpPlaceholders } from "../shared/mcp-placeholders.js";
+import type { ServiceMcpServer } from "../shared/types/mcp-types.js";
 import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 
 export interface McpConfigDeps {
@@ -35,6 +36,51 @@ export class McpConfigController {
 
   shipitBridgePaths(): AgentMcpBridge | null {
     return resolveBridge("mcp-shipit-bridge");
+  }
+
+  /**
+   * docs/327 — each declared server becomes an ordinary stdio entry, so every
+   * adapter writes it, and Claude's allowlist covers it, as for an account server.
+   */
+  withServiceMcpServers(params: AgentRunParams): AgentRunParams {
+    const declared = params.serviceMcpServers ?? [];
+    if (declared.length === 0) return params;
+    const entries = this.serviceMcpEntries(declared);
+    if (!entries) {
+      for (const server of declared) {
+        this.deps.broadcast({
+          type: "mcp_server_status",
+          data: { name: server.name, state: "failed", reason: "ShipIt's MCP service proxy is missing from this session image" },
+        });
+      }
+      return params;
+    }
+    const names = new Set(declared.map((s) => s.name.toLowerCase()));
+    return {
+      ...params,
+      mcpServers: [
+        ...(params.mcpServers ?? []).filter((s) => !names.has(s.name.toLowerCase())),
+        ...entries,
+      ],
+    };
+  }
+
+  /** Null when this image has no proxy bundle. */
+  serviceMcpEntries(declared: readonly ServiceMcpServer[]): McpServerConfig[] | null {
+    const proxy = this.serviceProxyPaths();
+    if (!proxy) return null;
+    return declared.map((server) => ({
+      name: server.name,
+      type: "stdio",
+      command: proxy.tsxBin,
+      // An argument, not env: Codex sets an MCP child's env for the whole process.
+      args: [proxy.bridgePath, server.url],
+      enabled: true,
+    }));
+  }
+
+  serviceProxyPaths(): AgentMcpBridge | null {
+    return resolveBridge("mcp-service-proxy");
   }
 
   // Use the adapter's placeholder rules so the connectivity test sends the same credentials.

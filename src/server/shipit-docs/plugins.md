@@ -82,6 +82,7 @@ exports:
         root:
           description: Directory the plugin reads and writes
           default: docs
+      mcp: { service: api, path: /mcp } # See "A plugin's MCP server".
 ```
 
 **A declared credential or host is REQUIRED unless the manifest says
@@ -156,6 +157,54 @@ on loopback, so anything running here can obtain a real GitHub token. Plugin
 code comes from another repository, so it runs where that is not reachable.
 A plugin's command on your `PATH` is therefore a ShipIt wrapper: you run it
 like any other command, and the plugin's own code runs elsewhere.
+
+**A command's first call is slower than the calls that follow it.** On most
+sessions ShipIt builds a network namespace for plugin commands, with this
+session's own egress rules, and keeps it for some minutes for the next call.
+So the first call does not tell you how fast the command is. Each call still
+starts a new container: when you have many items, one call that takes all of
+them is faster than one call for each, if the command accepts that.
+
+To see where one call's time went, set `SHIPIT_PLUGIN_TIMING=1` on it:
+
+```bash
+SHIPIT_PLUGIN_TIMING=1 <command> --help
+```
+
+One line on stderr gives each part in milliseconds. `command` is the time from
+the container's start to its exit, which is the plugin's own program. Every
+other part is ShipIt's: `network` says whether the namespace was `built` or
+`reused`, and `start` is Docker starting the container. When `command` is the
+large part, report it to the plugin (below). When another part is, that is a
+ShipIt bug report, with that line in it.
+
+**A command gets this call's stdin as it arrives.** You can pipe input to a
+plugin's command as you do to a local program. The command gets each part when
+it arrives, and the end of its stdin when yours ends. ShipIt does not wait for
+input that has not arrived before it starts the command: input from a slow
+producer is delivered when it comes, and a command that does not read stdin
+does not wait for it. If ShipIt cannot deliver a part, the call ends with exit
+code 2 and a `Could not deliver stdin` message, and ShipIt stops the command
+(see below). The command can have done a part of its work with the part of the
+input that it had, so do not read that exit as "nothing happened".
+
+The other side of that rule is also the one a local program has: **a command
+that reads stdin to its end waits until your stdin ends.** A shell tool can
+give a call a stdin that stays open and sends nothing. Such a command then
+waits until its time limit, and the timeout message says that its stdin had
+not ended. When you pass no input, run the command with `</dev/null`. Output
+is different: you see it when the command exits, not while it runs.
+
+**A call that ends before its command does stops the command.** When a call
+is interrupted — your shell tool's time limit, `timeout`, Ctrl-C — ShipIt kills
+the command's container. It looks for a lost caller every 2 seconds while the
+command runs, so the command can run for some seconds more, and a command
+that had not started yet can still start before it is killed. The command
+gets no signal that it can handle and does no cleanup, and you get none of
+its output. What it did up to that moment stays done, so check the result
+before you run the command again. For a command that needs more time than your shell
+tool gives a call, run the call in the background: a call that still waits
+keeps its command.
 
 The practical consequence for you: `/plugins/<name>` shows plugin **source**.
 It does not show a plugin's installed dependencies, because those live in a
@@ -243,9 +292,10 @@ those is not a diff you get to read later; by the time you notice it, it may
 already have run. Stop and surface it to the user.
 
 Containment does not limit what a plugin **tells you to do**, and nothing
-could. A plugin's skills are instructions you follow. A plugin CLI's output is
-material you read and may act on. A plugin service serves pages the user's
-browser loads. All three are the feature working as designed.
+could. A plugin's skills are instructions you follow. A plugin CLI's output,
+and what its MCP tools return, is material you read and may act on. A plugin
+service serves pages the user's browser loads. All of these are the feature
+working as designed.
 
 A plugin is a dependency this project declared, and a more contained one than a
 package in `package.json`: its code runs in another container, which holds none
@@ -320,7 +370,8 @@ what an install has to satisfy is in [plugin-authoring.md](plugin-authoring.md)
 A plugin can ship skills. ShipIt copies each imported plugin's skills into
 this session's skill directories, so you discover them exactly like the
 project's own — namespaced `plugins--<alias>--<skill>` so two plugins can ship
-a skill with the same name.
+a skill with the same name. It copies them again whenever the session's
+container starts, so a container restart is enough to bring them back.
 
 They reach **you**, not the user: they are left out of the composer's
 autocomplete, because a plugin's instructions are something the plugin brought
@@ -335,6 +386,79 @@ from the plugin repository, and your change would reach nobody. Fix the skill
 in the plugin's own repository instead.
 
 Removing the `use` entry removes the skills.
+
+## A plugin's MCP server
+
+A plugin can give you MCP tools from one of its services. Its manifest names
+the service, and the path the server answers on (default `/mcp`):
+
+```yaml
+exports:
+  plugins:
+    verseshot:
+      compose: plugins/verseshot/docker-compose.yml
+      mcp: { service: verseshot, path: /mcp }
+```
+
+- **The server has the plugin's name**, not the alias: `verseshot` above, so
+  its tools are `mcp__verseshot__<tool>`. The plugin's web UI uses that name
+  when it sends you a message, so it never changes. A server whose name is
+  taken is not given to you rather than renamed (see below).
+- **Only this project's sessions get it.** It is not an account MCP server: it
+  is not in Settings, uses none of the account's MCP server slots, and no other
+  project's session has it. If an account MCP server has the same name, this
+  project's sessions get the plugin's server instead.
+- **The service needs a port.** The server is on the port this project gives
+  the service — `overrides.services.<service>.port` in the `plugins.use` entry,
+  the same number that makes the service previewable. With no port, you do not
+  get the server, and the plugin's card says which key to set. Adding the port
+  is an edit to this project's `shipit.yaml`, so tell the user.
+
+**When the tools arrive.** With your agent, ShipIt starts a small proxy for
+each such server. The proxy answers at once and connects to the service when
+the service answers, so a new session whose install takes minutes still gets
+the tools. Until the service answers, the server has no tools.
+
+- On a session whose agent process lives across turns (Claude, by default),
+  the tools appear as soon as the service answers — also in the middle of a
+  turn.
+- On an agent that starts a new process each turn (Codex, Grok, OpenCode,
+  OpenCode 2, Antigravity, and Claude with live steering off), they are there from the
+  first turn that starts while the service answers. Do not count on them in
+  the middle of a turn there.
+- A new session often starts its agent before the plugin's version is live. A
+  Claude process that lives across turns then gets the server when the version
+  goes live, also in the middle of a turn. The other agents get it at their
+  next turn.
+- A server that changes or goes away — its port in this project's `shipit.yaml`,
+  a removed `use` entry — reaches a Claude process that lives across turns at
+  its next turn: ShipIt starts a new process, which continues the same
+  conversation.
+
+**When the service restarts**, the tools stay listed. A call while the service
+is down, or a call the service does not answer in 15 minutes, fails with an
+error that names the service and its URL; call again when `shipit service
+list` shows it running. The proxy does not send a failed call again by itself,
+because the service can have done the work.
+
+A restart can also change the tools — a plugin refresh starts the service on
+a new version. The proxy reads the tool list again every minute. On a process
+that lives across turns, the new list reaches you then; on an agent that
+starts a new process each turn, at its next turn.
+
+**No tools listed?** Run `shipit service list`: the service is not running yet,
+was never started (`autostart: false`), or has no port. A server that ShipIt
+does not give you at all is a row on the plugin's card in the Plugins tab and a
+line in `shipit plugin status`:
+
+- its service has no port in this project's `plugins.use` entry;
+- the manifest names a service that its compose fragment does not define;
+- the name is taken: this project's own `mcp` server of the same name wins (see
+  [shipit-yaml.md](shipit-yaml.md) → `mcp`), and so does an earlier
+  `plugins.use` entry that imports the same plugin.
+
+Only tools pass through. The server's resources, prompts and `instructions` do
+not reach you; a plugin gives you its guidance in a skill.
 
 ## Refreshing a plugin repository
 
@@ -509,8 +633,8 @@ root, the reserved egress UIDs, or one inside ShipIt's per-session range.
 
 ## When a declared surface does not appear
 
-The surfaces a manifest can declare — services, CLIs, skills, settings, and the
-per-plugin state directory — are wired into a session. If one of them is not
+The surfaces a manifest can declare — services, CLIs, skills, settings, an MCP
+server, and the per-plugin state directory — are wired into a session. If one of them is not
 there, that is reported rather than silent: the repository's card in the Plugins
 tab names the plugin, the surface, and the reason. A command withheld because
 two plugins claim the name, a settings value that no longer matches the

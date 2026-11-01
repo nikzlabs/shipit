@@ -93,7 +93,10 @@ Same as Path B but `claim-session` creates the session clone synchronously (~1-2
 If the client disconnected before work starts (`request.raw.destroyed`), the
 endpoint short-circuits to avoid creating abandoned sessions.
 
-1. `createSessionDirFull("Warm session")`
+1. `createSessionDirFull("Warm session", { warm: true })` — the row is inserted
+   warm, so no session list shows it during the clone. Spawned children and
+   scheduled runs always take this path (`skipWarm`), so a row inserted visible
+   showed in the sidebar as "Warm session" for the whole clone.
 2. Clone from bare cache + fetch real remote + `checkout -b` (branch from latest)
 3. Configure credentials
 4. Fire-and-forget re-warm of the next session (clone + standby + pre-install)
@@ -128,8 +131,8 @@ worker instead of building one — see the `session-containers` skill.
 ```
 warmSessionForRepo(repoUrl):
   1. Check repo.status === "ready", no existing warm session, no warming in progress
-  2. createSessionDir("Warm session")
-  3. sessionManager.setWarm(appSessionId, true); setRemoteUrl(...)
+  2. createSessionDir("Warm session", { warm: true })  (row inserted warm)
+  3. sessionManager.setRemoteUrl(...)
   4. Remove workspace subdir (clone needs it absent)
   5. cloneFromCache + fetchAndResolveDefaultBranch + checkout -b (real-remote
      fetch so the branch is cut from genuine latest — see W2)

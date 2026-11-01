@@ -313,6 +313,12 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "system_notice",
   "system_user_message",
   "message_steered",
+  // planning#691 — they change the queue strip, and a bubble of the transcript.
+  "message_queued",
+  "queue_updated",
+  "agent_interrupted",
+  // Streamed rows, plan mode and the activity label all belong to the turn's own session.
+  "agent_event",
   "turn_snapshot",
   "voice_note",
 ]);

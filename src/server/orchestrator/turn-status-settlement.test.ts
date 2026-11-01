@@ -348,12 +348,13 @@ describe("settleTurnFacts and the status-card ask (docs/303 req 11–15, 38)", (
     h.runner.dispose({ force: true });
   });
 
+  // One-shot: the successor starts at the predecessor's result, before that process exits.
   it("a predecessor settling after its successor wrote leaves the card current", async () => {
-    const h = harness({ card: { ...seeded }, streaming: true });
+    const h = harness({ card: { ...seeded } });
 
     h.runner.dispatch(testDispatch({ text: "first" }));
     await waitFor(() => h.agents.length === 1, "turn 1 started");
-    h.runner.dispatch(testDispatch({ text: "second", systemTurn: true }));
+    h.runner.dispatch(testDispatch({ text: "second" }), { whenBusy: "queue" });
     expect(h.runner.queueLength).toBe(1);
 
     h.agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
@@ -414,7 +415,7 @@ describe("settleTurnFacts and the status-card ask (docs/303 req 11–15, 38)", (
    * left out entirely: not marked, not counted, not asked about.
    */
   for (const [label, extra] of [
-    ["ShipIt's own, before a post-merge turn", { systemTurn: true, silent: true }],
+    ["ShipIt's own, before a post-merge turn", { automatic: true, silent: true }],
     ["one the user asked for", {}],
   ] as const) {
     it(`leaves a compaction out of the settlement entirely — ${label} (req 36)`, async () => {
@@ -453,7 +454,7 @@ describe("settleTurnFacts and the status-card ask (docs/303 req 11–15, 38)", (
 
     h.runner.dispatch(testDispatch({
       text: "[ShipIt] The pull request for this session was merged.",
-      systemTurn: true,
+      automatic: true,
     }));
     await waitFor(() => h.agents.length === 1, "the wake started");
     finishTurn(h.agents[0]!);
@@ -471,7 +472,7 @@ describe("settleTurnFacts and the status-card ask (docs/303 req 11–15, 38)", (
   it("asks a driver-owned turn (postTurn: none), whose ask waits for a turn with a prompt", async () => {
     const h = harness({ card: { ...seeded } });
 
-    h.runner.dispatch(testDispatch({ text: "rebase step", systemTurn: true, postTurn: "none" }));
+    h.runner.dispatch(testDispatch({ text: "rebase step", postTurn: "none" }));
     await waitFor(() => h.agents.length === 1, "turn started");
     finishTurn(h.agents[0]!);
     await waitFor(() => h.card()!.nudgePending === true, "the ask was recorded");
