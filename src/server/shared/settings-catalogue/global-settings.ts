@@ -76,11 +76,32 @@ export const GLOBAL_SETTINGS = {
     description:
       "Lets the agent compact its context itself with the shipit compact command, at a point it chooses — "
       + "for example between two features — keeping the instructions it names. The compaction "
-      + "runs after the agent's turn. The harness's automatic compaction and your own /compact "
+      + "runs after the agent's turn, and only on a context of 200K tokens or more, except when "
+      + "you ask the agent to compact. The harness's automatic compaction and your own /compact "
       + "work either way.",
     type: bool({ default: false }),
     store: { kind: "credential-store", field: "agentCompaction" },
     wire: "agentCompaction",
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
+  // docs/333-idle-compaction req 5.
+  "advanced.idleCompaction": defineSetting({
+    key: "advanced.idleCompaction",
+    tab: "advanced",
+    section: "Agent",
+    scope: "global",
+    label: "Compact idle sessions before the prompt cache expires",
+    description:
+      "When a session's context is 200K tokens or more and nobody has used it for most of its "
+      + "prompt cache's lifetime, ShipIt compacts the context shortly before the cache expires, "
+      + "so the next message does not read the whole conversation again at full price. The "
+      + "transcript shows each compaction. Only caches that live 30 minutes or more qualify; "
+      + "Grok sessions are not compacted.",
+    type: bool({ default: false }),
+    store: { kind: "credential-store", field: "idleCompaction" },
+    wire: "idleCompaction",
     emits: plain(),
     propose: { kind: "yes" },
   }),
@@ -185,8 +206,10 @@ export const GLOBAL_SETTINGS = {
     description:
       "When you continue a session whose PR already merged and the branch hasn't moved since, "
       + "this does two things before the next turn: resets the branch to the latest base, so the "
-      + "agent builds on current code, and compacts the agent's context, so the shipped work stops "
-      + "filling it. A per-message checkbox lets you skip either one for any one send.",
+      + "agent builds on current code, and compacts the agent's context when it is 200K tokens or "
+      + "more, so the shipped work stops filling it. A checkbox in the composer skips the reset for "
+      + "one message, and another "
+      + "turns the compaction off for that session until you turn it on again.",
     type: bool({ default: true }),
     store: { kind: "credential-store", field: "autoResetMergedBranch" },
     wire: "autoResetMergedBranch",
@@ -207,7 +230,9 @@ export const GLOBAL_SETTINGS = {
       + "services that declare a GPU, and containers the agent starts through Docker. Docker on "
       + "this machine must support GPUs — Docker Desktop with the WSL 2 backend, or Docker Engine "
       + "with the NVIDIA Container Toolkit. When Docker cannot give the GPU, the session starts "
-      + "without it and says why. A running session gets the change when its container next starts.",
+      + "without it and says why. On WSL2 the agent's built-in browser then draws WebGL on the GPU, "
+      + "so its screenshots of WebGL content are not pixel-identical to software-drawn ones. "
+      + "A running session gets the change when its container next starts.",
     type: bool({ default: false }),
     store: { kind: "credential-store", field: "sessionGpu" },
     wire: "sessionGpu",

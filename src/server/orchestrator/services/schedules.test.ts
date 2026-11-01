@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +7,7 @@ import { ScheduleStore } from "../schedule-store.js";
 import { ScheduleNotes } from "../schedule-notes.js";
 import type { CredentialStore } from "../credential-store.js";
 import { MAX_RUNS_PER_READ, type ScheduleRun, type UnfinishedScheduleRun } from "../../shared/types.js";
+import { dueSlots } from "../../shared/schedule-timing.js";
 import {
   createSchedule,
   deleteSchedule,
@@ -115,6 +116,23 @@ describe("createSchedule", () => {
       .toThrow("The SSH destination host-9 does not exist.");
     expect(() => createSchedule(deps, input({ enabled: "yes" }))).toThrow("enabled must be true or false.");
     expect(listSchedules(deps)).toEqual([]);
+  });
+
+  it("checks a once time and sets active_since from one clock read, so a time accepted still runs (req 34)", () => {
+    const ONCE = { kind: "once", date: "2026-10-22", hour: 9, minute: 0 };
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-10-22T08:59:59.999Z") });
+    try {
+      // The spec's checks read the repository between the timing check and the write.
+      deps.repoStore.get = (url: string) => {
+        vi.advanceTimersByTime(2);
+        return url === REPO ? ({ url } as never) : undefined;
+      };
+      const created = createSchedule(deps, input({ timing: ONCE, timeZone: "UTC" }));
+      expect(dueSlots(store.get(created.id)!, null, new Date("2026-10-22T09:00:01Z"))?.latest)
+        .toEqual(new Date("2026-10-22T09:00:00Z"));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("saves a schedule whose repository is not trusted yet; its runs check that (req 18)", () => {

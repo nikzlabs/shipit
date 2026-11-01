@@ -11,6 +11,7 @@ import { parseCompactCommand } from "../../shared/compact-command.js";
 import { parseGoalCommand } from "../../shared/goal-command.js";
 import {
   shouldCompactBeforeTurn,
+  compactionCardBefore,
   noteMissedCompaction,
   POST_MERGE_COMPACT_PROMPT,
 } from "../compact-before-turn.js";
@@ -20,10 +21,12 @@ import { buildBugOutcomeNotice } from "../services/bug-report.js";
 import { prepareCardOutcomeNotices } from "../services/card-kinds.js";
 import { prepareRepoSessionOutcomeNotice } from "../services/repo-session-outcome-notice.js";
 import { prepareSessionMessageOutcomeNotice } from "../services/session-message-outcome-notice.js";
+import { containerPredatesShipIt, prepareInboxNotice } from "../services/session-inbox-notice.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage, takeRunnableQueuedTurn } from "../queue-drain.js";
-import { stoppedByUser } from "../turn-stop-request.js";
+import { requeueDisplacedTurn, type SteerDeliveryDeps } from "../dispatch-steering.js";
+import { nextSendOrder, queueEntryId } from "../queue-identity.js";
 import {
   agentEnvTurnArgs,
   prepareSessionAgentEnvironment,
@@ -37,9 +40,12 @@ import { detectAndReArmMergedSession, detectAndReArmResetSession } from "../serv
 import { buildPostTurnReleaseFlow } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
 import { createPromptRepark, createPromptTakeLedger, type PromptTakeLedger } from "../turn-settlement.js";
+import { claimTakenBeforeSubmit, currentTurnPhase, endOwnClaim } from "../turn-stop-request.js";
 import {
+  releaseResidentOnPendingRewind,
   releaseResidentOnSpawnChange,
   releaseResidentOnStatusCardChange,
+  releaseResidentOnServiceMcpChange,
 } from "../resident-spawn-guard.js";
 import { desiredSpawnIdentity, residentRouteNeedsRelease } from "../service-routing.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
@@ -75,46 +81,32 @@ export async function drainNextQueuedMessage(
   capturedSessionId: string | undefined,
   capturedSessionDir: string | null | undefined,
   emit: (msg: WsServerMessage) => void,
-  compactionTurn = false,
 ): Promise<void> {
   if (!runner) return;
 
-  // A system flow can acquire the session during the awaited commit.
-  if (runner.systemTurnInProgress && !compactionTurn) return;
+  // A rebase or a restart can take the session during the awaited commit; it releases the queue.
+  if (runner.sessionHold) return;
 
-  const messageQueue = runner.messageQueue;
-  if (compactionTurn) {
-    // Clear here: resident reuse can remove finishTurn's listener before done.
-    runner.systemTurnInProgress = false;
-    if (capturedSessionId) noteMissedCompaction(runner, ctx.chatHistoryManager, capturedSessionId);
-  }
-  // A stop discards the queue. docs/322 — a question's own interrupt does not: what the
-  // user queued is their reply, and the take below holds the automatic entries.
-  const questionInterrupt = runner.awaitingUserAnswer && !stoppedByUser(runner);
-  if (runner.wasInterrupted && !questionInterrupt && !compactionTurn) {
-    if (messageQueue.length > 0) {
-      runner.clearQueue();
-      emit({ type: "queue_updated", queue: [] });
-    }
-    return;
-  }
-  if (messageQueue.length === 0) return;
+  // The Stop emptied the queue itself (docs/330): what waits now was sent after it.
+  if (runner.messageQueue.length === 0) return;
 
   // Gate before the entry leaves the queue: past this point it is claimed, not queued.
   const next = takeRunnableQueuedTurn(runner);
   if (!next) return;
   emit({
     type: "queue_updated",
-    queue: messageQueue.map((item, idx) => ({ text: item.text, position: idx + 1 })),
-    dequeued: next.text,
+    sessionId: runner.sessionId,
+    queue: runner.getQueueSnapshot(),
+    dequeued: { id: queueEntryId(next), text: next.text },
   });
   runner.running = true;
+  const claim = currentTurnPhase(runner);
 
   await startQueuedMessage(runner, next, (queued) =>
-    runQueuedInteractiveMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit, queued),
+    runQueuedInteractiveMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit, queued, claim),
   ).catch((err: unknown) => {
     console.error("[queue] Error processing queued message:", getErrorMessage(err));
-    runner.running = false;
+    endOwnClaim(runner, claim);
   });
 }
 
@@ -138,7 +130,17 @@ function isCompactCommandFor(ctx: FullCtx, text: string): boolean {
   return capable && parseCompactCommand(text).match;
 }
 
-// Hold systemTurnInProgress during the decision to prevent steering past compaction.
+/**
+ * planning#700 — before what reads the process's background work, and the spawn guards. Only
+ * where this path reuses a resident process at all: with live steering on.
+ */
+async function attachIdleResidentForTurn(ctx: FullCtx, runner: SessionRunnerInterface | null | undefined): Promise<void> {
+  if (!runner?.residentToAttach) return;
+  const steering = ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities.supportsSteering ?? false;
+  if (ctx.credentialStore.getLiveSteering() && steering) await runner.attachIdleResident?.();
+}
+
+// Runs under the caller's claim on `running`, which keeps other turns out until the compaction.
 export async function decideCompactBeforeTurn(
   ctx: FullCtx,
   runner: SessionRunnerInterface,
@@ -146,36 +148,28 @@ export async function decideCompactBeforeTurn(
   sessionDir: string,
   intent: boolean | undefined,
 ): Promise<boolean> {
-  const held = !runner.systemTurnInProgress;
-  if (held) runner.systemTurnInProgress = true;
-  let compact = false;
-  try {
-    compact = await decide();
-  } finally {
-    if (held && !compact) runner.systemTurnInProgress = false;
-  }
-  return compact;
-
-  function decide(): Promise<boolean> {
-    return shouldCompactBeforeTurn({
+  await attachIdleResidentForTurn(ctx, runner);
+  return shouldCompactBeforeTurn({
     deps: {
       getSession: (id) => ctx.sessionManager.get(id),
       getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
       createGitManager: ctx.createGitManager,
       getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
+      markCompacted: (id, anchor) => ctx.sessionManager.setMergeContinueCompacted(id, anchor),
+      getContextTokens: (id) =>
+        ctx.usageManager.latestContextTokens(id, ctx.chatHistoryManager.latestCompactionCard(id)),
       mergeRecheckDeps: {
         verifyPrState: (id) =>
           ctx.prStatusPoller.forceVerifySessionPrState(id, { armAbsentDebounce: false }),
         awaitMergeHandling: (id) => ctx.prStatusPoller.awaitMergeHandling(id),
       },
     },
-      runner,
-      agentId: ctx.getActiveAgentId(),
-      sessionId,
-      sessionDir,
-      ...(intent !== undefined ? { intent } : {}),
-    });
-  }
+    runner,
+    agentId: ctx.getActiveAgentId(),
+    sessionId,
+    sessionDir,
+    ...(intent !== undefined ? { intent } : {}),
+  });
 }
 
 export async function runCompactionAhead(
@@ -183,11 +177,23 @@ export async function runCompactionAhead(
   runner: SessionRunnerInterface,
   queued: QueuedMessage,
   permissionMode: PermissionMode | undefined,
+  claim: object | undefined,
 ): Promise<void> {
-  runner.messageQueue.unshift({ ...queued, compactContext: false });
-  runner.emitMessage({ type: "message_queued", text: queued.text, position: 1 });
+  const entry = { ...queued, compactContext: false, sendOrder: queued.sendOrder ?? nextSendOrder() };
+  // planning#703 — the decision awaited: a turn of the CLI's own may hold the process now.
+  if (claimTakenBeforeSubmit(runner, claim)) {
+    requeueDisplacedTurn(runner, entry, steerDeliveryDeps(ctx));
+    return;
+  }
+  runner.messageQueue.unshift(entry);
+  runner.emitMessage({
+    type: "message_queued",
+    sessionId: runner.sessionId,
+    id: queueEntryId(entry),
+    text: queued.text,
+    position: 1,
+  });
   runner.running = true;
-  runner.systemTurnInProgress = true;
   await runAgentWithMessage(ctx, {
     userText: POST_MERGE_COMPACT_PROMPT,
     images: undefined,
@@ -197,8 +203,18 @@ export async function runCompactionAhead(
     isNewSession: false,
     compact: true,
     silent: true,
-    systemTurn: true,
+    claim,
   });
+}
+
+function steerDeliveryDeps(ctx: FullCtx): SteerDeliveryDeps {
+  return {
+    steerInputs: () => ({
+      liveSteering: ctx.credentialStore.getLiveSteering(),
+      steeringCapable: ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities.supportsSteering ?? false,
+    }),
+    listenerDeps: { chatHistoryManager: ctx.chatHistoryManager },
+  };
 }
 
 async function runQueuedInteractiveMessage(
@@ -208,12 +224,13 @@ async function runQueuedInteractiveMessage(
   capturedSessionDir: string | null | undefined,
   emit: (msg: WsServerMessage) => void,
   next: QueuedMessage,
+  claim: object | undefined,
 ): Promise<void> {
   if (
     capturedSessionId && capturedSessionDir && !isCompactCommandFor(ctx, next.text)
     && await decideCompactBeforeTurn(ctx, runner, capturedSessionId, capturedSessionDir, next.compactContext)
   ) {
-    await runCompactionAhead(ctx, runner, next, next.permissionMode);
+    await runCompactionAhead(ctx, runner, next, next.permissionMode, claim);
     return;
   }
   const nextImages = next.images && next.images.length > 0 ? next.images : undefined;
@@ -224,7 +241,7 @@ async function runQueuedInteractiveMessage(
     const fileResult = await resolveFileAttachments(nextFileRefs, dir);
     if (fileResult.error) {
       emit({ type: "error", message: fileResult.error });
-      runner.running = false;
+      endOwnClaim(runner, claim);
       return;
     }
     nextValidatedFiles = fileResult.files;
@@ -236,7 +253,7 @@ async function runQueuedInteractiveMessage(
     const uploadResult = await resolveUploadRefs(nextUploadRefs, dir);
     if (uploadResult.error) {
       emit({ type: "error", message: uploadResult.error });
-      runner.running = false;
+      endOwnClaim(runner, claim);
       return;
     }
     nextValidatedFiles = [...nextValidatedFiles, ...uploadResult.files];
@@ -259,10 +276,15 @@ async function runQueuedInteractiveMessage(
       ...(next.dictated ? { dictated: true } : {}),
       ...(next.resetMergedBranch !== undefined ? { resetMergedBranch: next.resetMergedBranch } : {}),
       ...(isCompactCommandFor(ctx, next.text) ? { compact: true } : {}),
+      // A viewer that did not send it has the text alone from `dequeued`; the echo carries
+      // the attachments to the bubble with this id (planning#691).
+      userEcho: { clientRequestId: queueEntryId(next) },
+      queued: next,
+      claim,
     });
   } catch (err) {
     console.error("[queue] Error processing queued message:", getErrorMessage(err));
-    runner.running = false;
+    endOwnClaim(runner, claim);
   }
 }
 
@@ -282,10 +304,13 @@ interface RunAgentWithMessageOpts {
   /** false skips reset; true/undefined follows the global setting. */
   resetMergedBranch?: boolean;
   silent?: boolean;
-  systemTurn?: boolean;
   dictated?: boolean;
-  /** Presence enables echo; omit for queued messages already restored by dequeued. */
+  /** Presence enables echo. */
   userEcho?: { clientRequestId?: string };
+  /** planning#703 — the message as it waits in the queue, when it must wait for a turn after all. */
+  queued?: QueuedMessage;
+  /** planning#703 — the turn phase the caller claimed `running` with, before its own awaits. */
+  claim: object | undefined;
 }
 
 /**
@@ -313,13 +338,13 @@ async function composeAndRunAgentTurn(
   // Capture before awaits: the user can switch sessions during this turn.
   const capturedSessionId = ctx.getActiveAppSessionId();
   const capturedSessionDir = ctx.getActiveSessionDir();
+  const runner = resolveRunner(ctx, capturedSessionId);
+  const { claim } = opts;
   const turnStartHeadHash = capturedSessionDir
     ? await ctx.createGitManager(capturedSessionDir).getHeadHash()
     : null;
 
   if (capturedSessionId) ctx.sessionManager.track(capturedSessionId);
-
-  const runner = resolveRunner(ctx, capturedSessionId);
 
   const agentId = ctx.getActiveAgentId();
 
@@ -328,52 +353,13 @@ async function composeAndRunAgentTurn(
 
   const agentInfo = ctx.agentRegistry.get(agentId);
   const useStreaming = ctx.credentialStore.getLiveSteering() && (agentInfo?.capabilities.supportsSteering ?? false);
-  // Release stale credentials before the executor captures a process to write into.
-  const failoverSession = capturedSessionId ? ctx.sessionManager.get(capturedSessionId) : undefined;
-  if (
-    useStreaming &&
-    residentRouteNeedsRelease(failoverSession, agentId, runner, {
-      credentialStore: ctx.credentialStore,
-      ...(ctx.providerAccountManager ? { providerAccountManager: ctx.providerAccountManager } : {}),
-    })
-  ) {
-    const resident = runner?.getAgent() ?? null;
-    if (resident) {
-      // Settle before removing the listener that handles superseded.
-      resident.emit("superseded");
-      // Late done/error events must not finalize the next turn's state.
-      try {
-        resident.removeAllListeners();
-      } catch {
-        // Best-effort: an adapter without listeners is already the state we want.
-      }
-      try {
-        resident.kill();
-      } catch {
-        // Already gone is the state we wanted.
-      }
-      runner?.setAgent(null);
-    }
-  }
-  if (useStreaming && capturedSessionId) {
-    releaseResidentOnSpawnChange(
-      runner,
-      desiredSpawnIdentity(ctx.sessionManager, capturedSessionId, agentId),
-    );
-  }
-  if (useStreaming) {
-    releaseResidentOnStatusCardChange(runner, ctx.credentialStore.getSessionStatusCard());
-  }
-  const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
-  const currentAgent = existingAgent ?? ctx.agentFactory(agentId);
-  if (!existingAgent && runner) runner.setAgent(currentAgent);
+  await attachIdleResidentForTurn(ctx, runner);
 
   const emit = (m: WsServerMessage): void => {
     if (runner) runner.emitMessage(m);
     else ctx.send(m);
   };
   const sessionId = capturedSessionId ?? runner?.sessionId ?? "";
-  if (existingAgent) existingAgent.removeAllListeners();
 
   const historyImages = images?.map((img) => ({ data: img.data, mediaType: img.mediaType }));
   const historyFiles = validatedFiles.length > 0
@@ -384,9 +370,9 @@ async function composeAndRunAgentTurn(
         endLine: f.endLine,
       }))
     : undefined;
-  const persistUserMessage = (sessionId: string): void => {
-    if (opts.silent) return;
-    ctx.chatHistoryManager.append(sessionId, {
+  const persistUserMessage = (sessionId: string): number | undefined => {
+    if (opts.silent) return undefined;
+    return ctx.chatHistoryManager.append(sessionId, {
       role: "user",
       text: userText,
       images: historyImages,
@@ -462,6 +448,60 @@ async function composeAndRunAgentTurn(
     ));
   }
 
+  // planning#703 — after the last await of the setup, so nothing can come between this and the
+  // take below, and before the spawn guards, which could end that turn's process.
+  if (runner && claimTakenBeforeSubmit(runner, claim)) {
+    requeueDisplacedTurn(runner, opts.queued, steerDeliveryDeps(ctx));
+    if (sessionId) resetHook.ensureRecorded?.(sessionId);
+    return;
+  }
+
+  // Release stale credentials before the executor captures a process to write into.
+  const failoverSession = capturedSessionId ? ctx.sessionManager.get(capturedSessionId) : undefined;
+  if (
+    useStreaming &&
+    residentRouteNeedsRelease(failoverSession, agentId, runner, {
+      credentialStore: ctx.credentialStore,
+      ...(ctx.providerAccountManager ? { providerAccountManager: ctx.providerAccountManager } : {}),
+    })
+  ) {
+    const resident = runner?.getAgent() ?? null;
+    if (resident) {
+      // Settle before removing the listener that handles superseded.
+      resident.emit("superseded");
+      // Late done/error events must not finalize the next turn's state.
+      try {
+        resident.removeAllListeners();
+      } catch {
+        // Best-effort: an adapter without listeners is already the state we want.
+      }
+      try {
+        resident.kill();
+      } catch {
+        // Already gone is the state we wanted.
+      }
+      runner?.setAgent(null);
+    }
+  }
+  if (useStreaming && capturedSessionId) {
+    releaseResidentOnSpawnChange(
+      runner,
+      desiredSpawnIdentity(ctx.sessionManager, capturedSessionId, agentId),
+    );
+    releaseResidentOnPendingRewind(runner, ctx.sessionManager.get(capturedSessionId)?.agentResumeAt);
+  }
+  if (useStreaming) {
+    releaseResidentOnStatusCardChange(runner, ctx.credentialStore.getSessionStatusCard());
+    releaseResidentOnServiceMcpChange(runner, runner?.serviceMcp?.()?.servers ?? null);
+  }
+  const existingAgent = useStreaming ? (runner?.getAgent() ?? null) : null;
+  const currentAgent = existingAgent ?? ctx.agentFactory(agentId);
+  if (!existingAgent && runner) runner.setAgent(currentAgent);
+  if (existingAgent) {
+    existingAgent.emit("reused");
+    existingAgent.removeAllListeners();
+  }
+
   const bugOutcomeNotice =
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
       ? buildBugOutcomeNotice(ctx.chatHistoryManager.consumeUnreportedBugOutcomes(capturedSessionId))
@@ -471,16 +511,11 @@ async function composeAndRunAgentTurn(
   // below is settled by the turn, so an outcome that never reaches the agent
   // rides the next turn instead of being lost.
   //
-  // Not gated on `systemTurn`: req 8 says "the next turn" and names no kind, so
-  // an automatic turn carries it too. The two exclusions left are turns with
-  // nowhere to put it — compaction, whose prompt is an instruction to summarise
-  // and whose result replaces the context, and a verbatim command, which the
-  // harness reads only when the prompt is exactly the command.
-  //
-  // No test distinguishes this line from the one it replaced, and cannot: the
-  // only caller that reaches here with `systemTurn` is `runCompactionAhead`,
-  // which sets `compact` as well. It changes with the other call site so a
-  // future system turn on this path is not silently excluded.
+  // req 8 says "the next turn" and names no kind, so an automatic turn carries it
+  // too. The two exclusions are turns with nowhere to put it — compaction, whose
+  // prompt is an instruction to summarise and whose result replaces the context,
+  // and a verbatim command, which the harness reads only when the prompt is
+  // exactly the command.
   const cardOutcomes =
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
       ? prepareCardOutcomeNotices(
@@ -504,7 +539,14 @@ async function composeAndRunAgentTurn(
     capturedSessionId && !opts.compact && !ridesTurnAsCommand
       ? prepareSessionMessageOutcomeNotice({ chatHistoryManager: ctx.chatHistoryManager }, capturedSessionId)
       : null;
-  const noticeDeliveries = [...cardOutcomes, repoSessionOutcome, sessionMessageOutcome]
+  // docs/328-session-message-inbox — the same again.
+  const inboxNotice =
+    capturedSessionId && ctx.sessionInboxStore && !opts.compact && !ridesTurnAsCommand
+      ? prepareInboxNotice(ctx.sessionInboxStore, capturedSessionId, {
+          inline: containerPredatesShipIt(ctx.containerManager, capturedSessionId),
+        })
+      : null;
+  const noticeDeliveries = [...cardOutcomes, repoSessionOutcome, sessionMessageOutcome, inboxNotice]
     .filter((d) => d !== null);
 
   const activeDir = ctx.getActiveDir();
@@ -527,6 +569,7 @@ async function composeAndRunAgentTurn(
     ...cardOutcomes.map((o) => o.notice),
     repoSessionOutcome?.notice,
     sessionMessageOutcome?.notice,
+    inboxNotice?.notice,
     resetAgentPrefix,
     dependencyPrefix,
     statusContext,
@@ -581,6 +624,7 @@ async function composeAndRunAgentTurn(
       }),
   };
 
+  const continuation = ctx.quotaContinuation;
   const deps: SystemTurnDeps = {
     answerHold: ctx.sessionManager,
     agentFactory: (id) => ctx.agentFactory(id),
@@ -597,6 +641,10 @@ async function composeAndRunAgentTurn(
     },
     scheduleAutoPush: (sessionDir, sessionId) => ctx.scheduleAutoPush(ctx.createGitManager(sessionDir), sessionId),
     statusCardEnabled: () => ctx.credentialStore.getSessionStatusCard(),
+    steerInputs: () => ({
+      liveSteering: ctx.credentialStore.getLiveSteering(),
+      steeringCapable: agentInfo?.capabilities.supportsSteering ?? false,
+    }),
     sessionStatusContext: (sessionId) =>
       sessionStatusTurnContext(
         { sessionManager: ctx.sessionManager, credentialStore: ctx.credentialStore },
@@ -604,7 +652,7 @@ async function composeAndRunAgentTurn(
       ),
     listenerDeps,
     buildRunParams: async (sessionId, id, p, turnRoute) => {
-      // Env preparation can replace agentSessionId; read it again.
+      // At spawn: the CLI may have reported its conversation since this connection read it.
       const session = ctx.sessionManager.get(sessionId);
       return buildAgentRunParams({
         deps: {
@@ -624,6 +672,7 @@ async function composeAndRunAgentTurn(
         ...(session?.agentSessionId !== undefined ? { agentSessionId: session.agentSessionId } : {}),
         ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
         ...(opts.compact ? { compact: true } : {}),
+        serviceMcp: runner?.serviceMcp?.() ?? null,
       });
     },
     prepareAgentEnv: async (sessionId, id, envOpts) => {
@@ -637,8 +686,6 @@ async function composeAndRunAgentTurn(
           credentialStore: ctx.credentialStore,
           sessionManager: ctx.sessionManager,
           providerAccountManager: ctx.providerAccountManager,
-          chatHistoryManager: ctx.chatHistoryManager,
-          sseBroadcast: ctx.sseBroadcast,
           ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
         },
       });
@@ -737,6 +784,13 @@ async function composeAndRunAgentTurn(
     },
     ...(ctx.runRequestedRestart ? { runRequestedRestart: ctx.runRequestedRestart } : {}),
     ...(ctx.runRequestedCompaction ? { runRequestedCompaction: ctx.runRequestedCompaction } : {}),
+    ...(continuation ? {
+      recordStandDown: (args) => continuation.recordStandDown(args),
+      continueAfterStandDown: async (sessionId) => { await continuation.continueNow(sessionId); },
+    } : {}),
+    ...(ctx.reportStoppedBackgroundJobs
+      ? { reportStoppedBackgroundJobs: ctx.reportStoppedBackgroundJobs }
+      : {}),
     postTurnReleaseFlow: buildPostTurnReleaseFlow({
       getReleaseStatusPoller: () => ctx.releaseStatusPoller,
       sessionManager: ctx.sessionManager,
@@ -750,8 +804,18 @@ async function composeAndRunAgentTurn(
     runner.clearTurnEventBuffer();
   };
 
-  const drainNext = (): Promise<void> =>
-    drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit, opts.silent === true);
+  // Once: an adopted turn of the CLI's own drains again, after its reset cleared the cards.
+  let compactionChecked = false;
+  const cardBefore = opts.silent && capturedSessionId
+    ? compactionCardBefore(ctx.chatHistoryManager, capturedSessionId)
+    : null;
+  const drainNext = (): Promise<void> => {
+    if (opts.silent && !compactionChecked && runner && capturedSessionId) {
+      compactionChecked = true;
+      noteMissedCompaction(runner, ctx.chatHistoryManager, capturedSessionId, cardBefore);
+    }
+    return drainNextQueuedMessage(ctx, runner, capturedSessionId, capturedSessionDir, emit);
+  };
 
   // Record the branch move even if the turn fails before the user-row hook.
   try {
@@ -765,7 +829,8 @@ async function composeAndRunAgentTurn(
       ...(insertedStatusContext ? { statusContext: insertedStatusContext } : {}),
       userText,
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
-      ...(opts.systemTurn ? { systemTurn: true } : {}),
+      ...(opts.compact ? { compact: true } : {}),
+      ...(ridesTurnAsCommand ? { verbatimCommand: true } : {}),
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       ...(harnessCommand ? { harnessCommand: true } : {}),
       emitUserEcho: userEcho !== undefined,

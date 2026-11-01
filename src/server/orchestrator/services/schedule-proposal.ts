@@ -13,6 +13,7 @@ import { normalizeCapabilities } from "../../shared/types.js";
 import { START_PARAM_LABELS, type StartParamNames } from "../../shared/session-start-labels.js";
 import { parseSessionStartSpec } from "../../shared/session-start-spec.js";
 import { describeGrants, describeTarget, describeTiming, formatWhen } from "../../shared/schedule-describe.js";
+import { LATEST_TIME_ZONE } from "../../shared/schedule-timing.js";
 import type { PersistedMessage } from "../chat-history.js";
 import { emitChatCard } from "../chat-card-persistence.js";
 import type { ScheduleStore } from "../schedule-store.js";
@@ -161,8 +162,9 @@ function buildCreate(deps: ScheduleProposalDeps, given: ProposedSchedule): Built
   const name = readScheduleName(given.name);
   const timeZone = given.timeZone === undefined ? null : readScheduleTimeZone(given.timeZone);
   const timing = given.timing!;
-  // With no zone named, Confirm uses the browser's; the one-hour check does not depend on it.
-  checkScheduleTiming(timing, timeZone ?? "UTC");
+  // With no zone named, Confirm uses the browser's and checks again. The one-hour check does not
+  // depend on the zone; a once time is refused here only when it has passed in every zone.
+  checkScheduleTiming(timing, timeZone ?? LATEST_TIME_ZONE);
   const spec = readScheduleSpec({
     target: withTarget(undefined, given.target!),
     params: withParams({}, given.params),

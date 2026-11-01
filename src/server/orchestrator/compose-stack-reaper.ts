@@ -6,6 +6,7 @@ import { getMessage, sleep } from "./disk-utils.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 import { stackLabelFilters } from "./stack-label.js";
 import { reapParentlessEgressSidecars } from "./egress-orphan-reaper.js";
+import { releaseSessionNetwork } from "./session-network-release.js";
 
 export const COMPOSE_PROJECT_LABEL = "com.docker.compose.project";
 export const PARENT_SESSION_LABEL = "shipit-parent-session";
@@ -71,10 +72,10 @@ export async function downComposeStackByProject(
   try {
     const networks = await docker.listNetworks({ filters: { label: labels } });
     for (const ni of networks ?? []) {
-      try {
-        await docker.getNetwork(ni.Id).remove();
-      } catch (err) {
-        console.warn(`[compose-reap] failed to remove network ${ni.Name} of ${project}:`, getMessage(err));
+      // The orchestrator joins a session network to route previews, and a plain removal fails on it.
+      const outcome = await releaseSessionNetwork(docker, ni.Id, { names: [ni.Name] });
+      if (outcome === "in-use") {
+        console.warn(`[compose-reap] kept network ${ni.Name} of ${project}: a container still names it`);
       }
     }
   } catch (err) {

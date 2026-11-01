@@ -298,8 +298,12 @@ session-title side-call rides every run (OpenCode-class cost noise); on
   gates `.claude/settings*.json` environment injection on the same flag —
   reported in review from upstream source, not reproduced against 1.0.12.
 - Env: `resolveAgentHome()` (`grokHome()` helper on `GROK_HOME` —
-  relocation verified) → `scrubEnvAuthForScopedHome` → `applyServiceRouting`
-  (order per `claude/process.ts`), plus `GROK_DISABLE_AUTOUPDATER=1`,
+  relocation verified; a scoped home wins over a `GROK_HOME` the worker
+  inherits, as for `CODEX_HOME`, or a user secret with that name sends every
+  consult and every account-scoped run to one directory; a run with no scoped
+  home still uses the inherited value) → `scrubHarnessEnvCredentials` → the
+  routed credential and base URL, set inline (scrub before delivery, the order
+  of `claude/process.ts`), plus `GROK_DISABLE_AUTOUPDATER=1`,
   `DISABLE_TELEMETRY=1`, `DISABLE_ERROR_REPORTING=1`,
   `GROK_OAUTH2_REFERRER=shipit`, and harness-compat toggles: Claude
   **skills/rules stay on** (native `.claude/skills` disclosure, AGENTS.md),
@@ -706,8 +710,9 @@ no container-local `grok login`):
   `SHIPIT_CREDENTIAL_*`. The listing is not that mount: an ordinary
   session can still *name* a grok subscription target, and
   `shipit agent run` — role or explicit — resolves the route
-  server-side and copies the grok account in for the spawn
-  (`provisionSubAgentCredentials`), then wipes auth on the way out.
+  server-side and copies the grok account into a private home for the
+  spawn (`provisionSubAgentSpawnHome`), then releases that home
+  (docs/144-cross-agent-review §4).
   `--role GrokSub` and the explicit four-plus-effort form are the
   same credential path. Do not provision every account into every
   session to make the worker look like the listing.

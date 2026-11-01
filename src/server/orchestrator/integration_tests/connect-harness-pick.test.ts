@@ -19,7 +19,7 @@ import { DatabaseManager } from "../../shared/database.js";
 
 const SHARED_MODEL = "deepseek-flash";
 const CLAUDE_ONLY_MODEL = "claude-opus-5";
-const OPENAI_STYLE_MODEL = "gpt-5.5";
+const OPENAI_STYLE_MODEL = "gpt-6.1-sol";
 
 describe("Integration: WS connect honours an explicit harness pick (planning#389)", () => {
   let app: FastifyInstance;

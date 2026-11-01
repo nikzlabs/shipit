@@ -358,6 +358,33 @@ describe("lifetime and selectors", () => {
     ]);
   });
 
+  it("reports a plugin MCP server whose service has no port on the card (docs/327)", async () => {
+    fs.mkdirSync(path.join(workspaceDir, "tools", "probe"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspaceDir, "tools", "probe", "docker-compose.yml"),
+      "services:\n  probe:\n    image: node:22-alpine\n",
+    );
+    writeConfig([
+      "exports:",
+      "  plugins:",
+      "    probe:",
+      "      compose: tools/probe/docker-compose.yml",
+      "      mcp: { service: probe }",
+      "plugins:",
+      "  repos:",
+      "    - repo: self",
+      "      name: mine",
+      "  use:",
+      "    - plugin: probe",
+      "      from: mine",
+      "",
+    ].join("\n"));
+
+    const snapshot = await assemblePluginSnapshot("sess", workspaceDir, null, {} as unknown as ApiDeps);
+
+    expect(snapshot.repos[0]?.issues).toEqual([expect.stringContaining("`overrides.services.probe.port`")]);
+  });
+
   it("puts the dependency-store reason on the card, beside the problems and not among them", async () => {
     writeConfig(`${declareTools}  use:\n    - plugin: probe\n      from: tools\n`);
     const cold = "Dependencies are installed from scratch in every session and never shared: "

@@ -13,12 +13,18 @@ describe("parseWhen", () => {
     expect(parseWhen({ cron: "0 9 * * 1-5" })).toEqual({ kind: "cron", expression: "0 9 * * 1-5" });
   });
 
+  it("reads one run on a date (req 34); the date's range is checked with the timing", () => {
+    expect(parseWhen("once 2026-10-22 09:00")).toEqual({ kind: "once", date: "2026-10-22", hour: 9, minute: 0 });
+    expect(parseWhen("Once 2026-02-30 7:05")).toEqual({ kind: "once", date: "2026-02-30", hour: 7, minute: 5 });
+  });
+
   it("reads back what `shipit schedule list` shows, so the agent can copy it", () => {
     const timings = [
       { kind: "hourly", minute: 5 },
       { kind: "daily", hour: 9, minute: 0 },
       { kind: "weekdays", hour: 18, minute: 30 },
       { kind: "weekly", weekday: 3, hour: 7, minute: 15 },
+      { kind: "once", date: "2026-10-22", hour: 9, minute: 0 },
       { kind: "cron", expression: "0 9 * * 1-5" },
     ] as const;
     for (const timing of timings) {
@@ -27,7 +33,20 @@ describe("parseWhen", () => {
   });
 
   it("refuses anything else with the forms it takes", () => {
-    for (const value of ["every morning", "daily", "daily 9am", "weekly 09:00", "weekly someday 09:00", 9, { cron: 5 }, { cron: "0 9 * * *", tz: "x" }]) {
+    for (const value of [
+      "every morning",
+      "daily",
+      "daily 9am",
+      "weekly 09:00",
+      "weekly someday 09:00",
+      "once 09:00",
+      "once 2026-10-22",
+      "once 22.10.2026 09:00",
+      "once tomorrow 09:00",
+      9,
+      { cron: 5 },
+      { cron: "0 9 * * *", tz: "x" },
+    ]) {
       expect(() => parseWhen(value)).toThrow(/when must be a preset/);
     }
   });

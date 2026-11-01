@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  BroomIcon,
   CaretDownIcon,
   CheckCircleIcon,
   GitMergeIcon,
@@ -15,7 +16,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/t
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../design-tokens.js";
 import { useGitStore } from "../stores/git-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
-import { useSessionStore } from "../stores/session-store.js";
+import { compactAfterMergeEnabled, useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 
@@ -193,6 +194,23 @@ export function AutoFixPauseToggle({ sessionId }: { sessionId: string }) {
       enabled={!paused}
       onToggle={() => void setAutoFixCiPaused(sessionId, !paused)}
       title={paused ? "Resume CI auto-fixing for this session" : "Pause CI auto-fixing for this session"}
+    />
+  );
+}
+
+/** docs/295-compact-context-on-merge req 16 — the composer's "Compact the context" choice, kept for the session. */
+export function CompactAfterMergeToggle({ sessionId }: { sessionId: string }) {
+  const enabled = useSessionStore((s) => compactAfterMergeEnabled(s, sessionId));
+  const setCompactAfterMerge = useSessionStore((s) => s.setCompactAfterMerge);
+
+  return (
+    <ToggleSwitch
+      label={<span className="inline-flex items-center gap-1"><BroomIcon size={ICON_SIZE.XS} />Compact after merge</span>}
+      enabled={enabled}
+      onToggle={() => void setCompactAfterMerge(sessionId, !enabled)}
+      title={enabled
+        ? "Stop compacting the context when this session continues after a merge"
+        : "Compact the context when this session continues after a merge"}
     />
   );
 }

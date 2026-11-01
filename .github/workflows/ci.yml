@@ -21,6 +21,8 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       egress: ${{ steps.filter.outputs.egress }}
+      claude-probe: ${{ steps.filter.outputs.claude-probe }}
+      codex-probe: ${{ steps.filter.outputs.codex-probe }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -34,6 +36,8 @@ jobs:
             echo "Not a pull request — running the full gates."
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "egress=true" >> "$GITHUB_OUTPUT"
+            echo "claude-probe=true" >> "$GITHUB_OUTPUT"
+            echo "codex-probe=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Compare PR endpoints, not GitHub's synthetic merge commit.
@@ -52,6 +56,18 @@ jobs:
             echo "egress=true" >> "$GITHUB_OUTPUT"
           else
             echo "egress=false" >> "$GITHUB_OUTPUT"
+          fi
+          # The pinned CLIs, and what the probe reads: its command lines come from the refresher.
+          if printf '%s\n' "$changed" | grep -qE '^(docker/agent-cli/(package\.json|package-lock\.json|install-agent-clis\.sh)|scripts/probe-claude-refresh\.mjs|src/server/orchestrator/agents/claude/oauth-refresher\.ts|\.github/workflows/ci\.yml)$'; then
+            echo "claude-probe=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "claude-probe=false" >> "$GITHUB_OUTPUT"
+          fi
+          # The same for Codex: its probe runs the refresher's own tick against the binary.
+          if printf '%s\n' "$changed" | grep -qE '^(docker/agent-cli/(package\.json|package-lock\.json|install-agent-clis\.sh)|scripts/probe-codex-refresh\.mjs|src/server/orchestrator/agents/codex/oauth-refresher\.ts|\.github/workflows/ci\.yml)$'; then
+            echo "codex-probe=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "codex-probe=false" >> "$GITHUB_OUTPUT"
           fi
 
   check:
@@ -114,6 +130,83 @@ jobs:
       - if: steps.node-modules-cache.outputs.cache-hit != 'true'
         run: npm ci
       - run: npm test
+
+  # docs/153: the Claude CLI behaviors that the OAuth refresher depends on, checked against the
+  # pinned binary with synthetic tokens and a local recorder. The job needs no secret.
+  claude-refresh-probe:
+    name: Claude CLI Refresh Probe
+    needs: changes
+    if: needs.changes.outputs.claude-probe == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/cache@v5
+        id: node-modules-cache
+        with:
+          path: node_modules
+          key: node-modules-ubuntu24-node24-${{ hashFiles('package-lock.json') }}
+      - if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        run: npm ci
+      # The images' own install: without its install script the claude binary does not run.
+      - name: Install the pinned Claude CLI as the images do
+        env:
+          AGENT_CLI_DIR: ${{ github.workspace }}/docker/agent-cli
+          BIN_DIR: ${{ runner.temp }}/agent-bin
+          SHIPIT_AGENTS_INSTALL_REPORT: ${{ runner.temp }}/agents-installed.json
+          SHIPIT_HARNESSES: claude
+        run: |
+          mkdir -p "$BIN_DIR"
+          sh docker/agent-cli/install-agent-clis.sh
+      - name: Run the refresh probe
+        env:
+          CLAUDE_BIN: ${{ runner.temp }}/agent-bin/claude
+        run: node --import tsx scripts/probe-claude-refresh.mjs
+
+  # docs/154: the same for the Codex CLI. The probe runs the refresher's own tick against the
+  # pinned binary, with synthetic tokens and a local recorder. The job needs no secret.
+  codex-refresh-probe:
+    name: Codex CLI Refresh Probe
+    needs: changes
+    if: needs.changes.outputs.codex-probe == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/cache@v5
+        id: node-modules-cache
+        with:
+          path: node_modules
+          key: node-modules-ubuntu24-node24-${{ hashFiles('package-lock.json') }}
+      - if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        run: npm ci
+      - name: Install the pinned Codex CLI as the images do
+        env:
+          AGENT_CLI_DIR: ${{ github.workspace }}/docker/agent-cli
+          BIN_DIR: ${{ runner.temp }}/agent-bin
+          SHIPIT_AGENTS_INSTALL_REPORT: ${{ runner.temp }}/agents-installed.json
+          SHIPIT_HARNESSES: codex
+        run: |
+          mkdir -p "$BIN_DIR"
+          sh docker/agent-cli/install-agent-clis.sh
+      - name: Run the refresh probe
+        env:
+          CODEX_BIN: ${{ runner.temp }}/agent-bin/codex
+        run: node --import tsx scripts/probe-codex-refresh.mjs
 
   # Assert the privileged egress image contract, including orchestrator UIDs.
   egress-sidecar-image:
@@ -238,3 +331,28 @@ jobs:
           docker rm -f shipit-ci-agent shipit-ci-service >/dev/null
           docker network rm shipit-ci-session shipit-ci-agent-net >/dev/null
           echo "stale host drop: ok"
+
+  # Runs on every change: the pin it exists to catch is one that no PR touches.
+  image-vulns:
+    name: Image Vulnerability Scan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install Grype
+        env:
+          GRYPE_VERSION: 0.120.1
+          GRYPE_SHA256: 0a9ee97ef5ae2ee953b0a80098105052e846cdbe319a57d808b519c33cd1343d
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/grype.tar.gz" \
+            "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          echo "${GRYPE_SHA256}  $RUNNER_TEMP/grype.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/grype-bin"
+          tar -xzf "$RUNNER_TEMP/grype.tar.gz" -C "$RUNNER_TEMP/grype-bin" grype
+          echo "$RUNNER_TEMP/grype-bin" >> "$GITHUB_PATH"
+      - run: npm run check-image-vulns

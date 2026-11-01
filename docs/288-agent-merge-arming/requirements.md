@@ -31,6 +31,10 @@ part of it.
    working, and a turn does not start while such a merge is in progress. A turn
    held back for that reason starts as soon as the merge has finished.
 7. Sandbox sessions are unchanged.
+8. ShipIt says when a request waits because the session is not idle, and what
+   that means: in the answer to the request, in the transcript while a request
+   waits, and in the agent's documentation for the command. The transcript says
+   so also when the session is not idle because a turn still runs.
 
 ## Open questions
 
@@ -49,3 +53,17 @@ None.
   been stable for many rounds. **Answer: ship the direct merge first and take
   this as its own feature**, so the risky part is reviewed on its own rather than
   as an appendix to work that is already done.
+- 2026-10-10 — A request was recorded and its checks passed, but nothing merged
+  for twenty minutes and the transcript said nothing. The agent had started a
+  background command to look at the pull request later, and a session with a
+  live background command is not idle (req 6). The user, in the incident report:
+  if that is a rule and not a defect, **make ShipIt say so — in the answer to
+  `--auto`, in the transcript when a request waits, and in the agent docs for
+  `gh pr merge`.** (req 8) Requirement 6 is unchanged.
+- 2026-10-10 — The first version of req 8 wrote nothing in the transcript while
+  a turn runs, because the transcript already shows the turn. An agent that
+  waits for the merge inside its turn then holds the request with no word from
+  ShipIt. The offer to the user: write the notice in that case too, after a
+  longer delay than for a session with no turn, so that the usual end of a turn
+  does not cause it. **Answer: yes — the user sent the offer.** (req 8, last
+  sentence) One notice for each request stays the rule.

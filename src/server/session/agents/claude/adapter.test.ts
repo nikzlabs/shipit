@@ -182,6 +182,26 @@ describe("ClaudeAdapter", () => {
     expect((events[0] as any).permissionDenials).toBeUndefined();
   });
 
+  it("carries the turn's model calls and what the CLI answered onto agent_result (planning#222)", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: any[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "sess-count",
+      num_turns: 0,
+      origin: { kind: "task-notification" },
+    } satisfies ClaudeEvent);
+    inner.emit("event", { type: "result", subtype: "success", session_id: "sess-plain" } satisfies ClaudeEvent);
+
+    expect(events[0]).toMatchObject({ type: "agent_result", numTurns: 0, origin: "task-notification" });
+    expect(events[1]).not.toHaveProperty("numTurns");
+    expect(events[1]).not.toHaveProperty("origin");
+  });
+
   describe("background tasks / self-wake (docs/235)", () => {
     function harness() {
       const inner = new FakeInnerProcess();
@@ -302,6 +322,103 @@ describe("ClaudeAdapter", () => {
         last_tool_name: "Bash",
       } as ClaudeEvent);
       expect(events).toHaveLength(0);
+    });
+  });
+
+  // CLI 2.1.284 capture, 2026-10-11: a conversation resumed after its previous process
+  // exited with a background job outstanding (docs/235-agent-self-wake-liveness §8).
+  describe("a task notice left by the previous process", () => {
+    const staleNotice = {
+      type: "system",
+      subtype: "task_notification",
+      task_id: "b4tuj7e58",
+      tool_use_id: "toolu_013ryduPBgJjhL7FRcMLAoMQ",
+      status: "stopped",
+      output_file: "",
+      summary: "Background shell command didn't finish before the previous session ended",
+    } as ClaudeEvent;
+    const init = { type: "system", subtype: "init", session_id: "sess-1" } as ClaudeEvent;
+    const noticeResult = {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 0,
+      stop_reason: null,
+      session_id: "sess-1",
+      origin: { kind: "task-notification" },
+      result: "",
+    } as ClaudeEvent;
+    const promptReplay = {
+      type: "user",
+      isReplay: true,
+      message: { role: "user", content: [{ type: "text", text: "the prompt" }] },
+    } as unknown as ClaudeEvent;
+    const answer = {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "the answer" }] },
+    } as ClaudeEvent;
+    const promptResult = {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 1,
+      session_id: "sess-1",
+      result: "the answer",
+    } as ClaudeEvent;
+
+    function spawned() {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as unknown as ClaudeProcess);
+      const types: string[] = [];
+      adapter.on("event", (e) => types.push(e.type));
+      adapter.run({ prompt: "the prompt", cwd: "/workspace", sessionId: "sess-1" } as AgentRunParams);
+      return { inner, adapter, types };
+    }
+
+    it("does not report the notice's zero-turn result as the end of the spawn prompt's turn", async () => {
+      const { inner, adapter, types } = spawned();
+
+      for (const raw of [staleNotice, init, noticeResult, init]) inner.emit("event", raw);
+
+      expect(types).toEqual(["agent_self_wake", "agent_init", "agent_init"]);
+      // The prompt's turn has not ended, so a goal command must still wait for it.
+      await expect(adapter.goalCommand("sess-1", { action: "get" })).rejects.toThrow(/between turns/);
+
+      for (const raw of [promptReplay, answer, promptResult]) inner.emit("event", raw);
+      expect(types.filter((t) => t === "agent_result")).toHaveLength(1);
+      expect(types.slice(3)).toEqual(["agent_user_replay", "agent_assistant", "agent_result"]);
+    });
+
+    it("drops one result for each notice the previous process left", () => {
+      const { inner, types } = spawned();
+
+      for (const raw of [staleNotice, init, noticeResult, staleNotice, init, noticeResult, init, answer, promptResult]) {
+        inner.emit("event", raw);
+      }
+
+      expect(types.filter((t) => t === "agent_result")).toHaveLength(1);
+    });
+
+    // A wake on an idle session marks it busy in every layer above, and only a result clears that.
+    it("still reports a notice's zero-turn result once the spawn prompt's turn has begun", () => {
+      const { inner, types } = spawned();
+
+      for (const raw of [init, answer, promptResult, staleNotice, init, noticeResult]) inner.emit("event", raw);
+
+      expect(types.filter((t) => t === "agent_result")).toHaveLength(2);
+      expect(types.at(-1)).toBe("agent_result");
+    });
+
+    it("still reports a zero-turn result that is not a notice's, and a notice's result that failed", () => {
+      const { inner, types } = spawned();
+
+      const { origin: _origin, ...commandResult } = noticeResult as ClaudeEvent & { origin?: unknown };
+      inner.emit("event", commandResult as ClaudeEvent);
+      expect(types).toEqual(["agent_result"]);
+
+      const failed = spawned();
+      failed.inner.emit("event", { ...noticeResult, is_error: true, result: "Invalid API key" } as ClaudeEvent);
+      expect(failed.types).toEqual(["agent_result"]);
     });
   });
 
@@ -444,6 +561,40 @@ describe("ClaudeAdapter", () => {
         { type: "tool_use", id: "t1", name: "Write", input: { file_path: "a.ts" } },
       ],
     });
+  });
+
+  it("marks the CLI's own error text, so it is not taken as an answer (docs/007)", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "API Error: 500" }] },
+      is_api_error_message: true,
+    } satisfies ClaudeEvent);
+
+    expect(events[0]).toMatchObject({ type: "agent_assistant", synthetic: true });
+  });
+
+  it("passes on the CLI's id of each message, so a rewind can fork at it (docs/007 req 5)", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", { type: "assistant", message: { content: [{ type: "text", text: "Hi" }] }, uuid: "a-1" } satisfies ClaudeEvent);
+    inner.emit("event", { type: "user", message: { content: [] }, uuid: "r-1" } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "user", message: { content: [{ type: "text", text: "next" }] }, isReplay: true, uuid: "u-1",
+    } satisfies ClaudeEvent);
+
+    expect(events).toEqual([
+      expect.objectContaining({ type: "agent_assistant", messageId: "a-1" }),
+      expect.objectContaining({ type: "agent_tool_result", messageId: "r-1" }),
+      { type: "agent_user_replay", text: "next", messageId: "u-1" },
+    ]);
   });
 
   it("maps user event to agent_tool_result", () => {
@@ -623,6 +774,147 @@ describe("ClaudeAdapter", () => {
       input: 218_500,
       output: 82_700,
       cacheRead: 9_200_000,
+    });
+  });
+
+  describe("per-request usage (docs/329-tiered-model-pricing)", () => {
+    // The CLI 2.1.284 probe's shape: several events per call share an id and a
+    // usage, output reads 1 until the call ends, and only the result's output is final.
+    const call = (id: string, input: number, cacheRead: number, cacheWrite: number): ClaudeEvent => ({
+      type: "assistant",
+      message: {
+        id,
+        content: [{ type: "text", text: id }],
+        usage: {
+          input_tokens: input,
+          output_tokens: 1,
+          cache_read_input_tokens: cacheRead,
+          cache_creation_input_tokens: cacheWrite,
+        },
+      },
+    });
+    const result: ClaudeEvent = {
+      type: "result",
+      subtype: "success",
+      session_id: "s",
+      usage: {
+        input_tokens: 18,
+        output_tokens: 249,
+        cache_read_input_tokens: 35_738,
+        cache_creation_input_tokens: 8_640,
+        iterations: [{ input_tokens: 9, cache_read_input_tokens: 21_000, cache_creation_input_tokens: 1_640 }],
+      },
+    };
+
+    function runTurn(events: ClaudeEvent[]) {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      const results: any[] = [];
+      adapter.on("event", (e) => {
+        if (e.type === "agent_result") results.push(e);
+      });
+      for (const e of events) inner.emit("event", e);
+      return { inner, adapter, results };
+    }
+
+    it("lists each call once by message id, prompt side only, within the totals", () => {
+      const first = call("msg_1", 9, 14_738, 7_000);
+      const second = call("msg_2", 9, 21_000, 1_640);
+      const { results } = runTurn([first, first, first, second, second, result]);
+
+      const requests = results[0].requests;
+      expect(requests).toEqual([
+        { input: 9, cacheRead: 14_738, cacheWrite: 7_000 },
+        { input: 9, cacheRead: 21_000, cacheWrite: 1_640 },
+      ]);
+      const sum = (field: "input" | "cacheRead" | "cacheWrite") =>
+        requests.reduce((n: number, r: Record<string, number>) => n + r[field], 0);
+      expect(sum("input")).toBeLessThanOrEqual(results[0].tokens.input);
+      expect(sum("cacheRead")).toBeLessThanOrEqual(results[0].tokens.cacheRead);
+      expect(sum("cacheWrite")).toBeLessThanOrEqual(results[0].tokens.cacheWrite);
+      expect(requests.every((r: Record<string, unknown>) => r.output === undefined)).toBe(true);
+    });
+
+    it("keeps a call's largest reading when one of its snapshots reads zero", () => {
+      const zero = call("msg_1", 0, 0, 0);
+      const { results } = runTurn([zero, call("msg_1", 9, 14_738, 7_000), zero, result]);
+      expect(results[0].requests).toEqual([{ input: 9, cacheRead: 14_738, cacheWrite: 7_000 }]);
+    });
+
+    it("leaves out sub-agent calls and calls with no id", () => {
+      const nested = { ...call("msg_sub", 5, 50_000, 0), parent_tool_use_id: "toolu_1" } as ClaudeEvent;
+      const noId = { type: "assistant", message: { content: [], usage: { input_tokens: 7 } } } as ClaudeEvent;
+      const { results } = runTurn([nested, noId, call("msg_1", 9, 14_738, 7_000), result]);
+      expect(results[0].requests).toEqual([{ input: 9, cacheRead: 14_738, cacheWrite: 7_000 }]);
+    });
+
+    it("starts each turn's list empty, even after a turn with no result", () => {
+      const { inner, adapter, results } = runTurn([call("msg_old", 9, 1, 1)]);
+      adapter.run({ prompt: "p", cwd: "/workspace" } as AgentRunParams);
+      inner.emit("event", call("msg_new", 9, 2, 2));
+      inner.emit("event", result);
+      expect(results).toHaveLength(1);
+      expect(results[0].requests).toEqual([{ input: 9, cacheRead: 2, cacheWrite: 2 }]);
+    });
+  });
+
+  describe("cache lifetime (docs/333-idle-compaction)", () => {
+    // The 2.1.300 probe's shape: every main-thread call carries the split.
+    const call = (id: string, fiveMinute: number, oneHour: number, parent?: string): ClaudeEvent => ({
+      type: "assistant",
+      message: {
+        id,
+        content: [{ type: "text", text: id }],
+        usage: {
+          input_tokens: 9,
+          cache_creation_input_tokens: fiveMinute + oneHour,
+          cache_creation: { ephemeral_5m_input_tokens: fiveMinute, ephemeral_1h_input_tokens: oneHour },
+        },
+      },
+      ...(parent ? { parent_tool_use_id: parent } : {}),
+    });
+    const result: ClaudeEvent = { type: "result", subtype: "success", session_id: "s" };
+
+    function resultsOf(events: ClaudeEvent[]) {
+      const inner = new FakeInnerProcess();
+      const adapter = new ClaudeAdapter(inner as any);
+      const results: any[] = [];
+      adapter.on("event", (e) => {
+        if (e.type === "agent_result") results.push(e);
+      });
+      for (const e of events) inner.emit("event", e);
+      return { inner, adapter, results };
+    }
+
+    it("reports 1h when every main-thread write was a 1-hour entry", () => {
+      const { results } = resultsOf([call("msg_1", 0, 10_174), call("msg_2", 0, 64), result]);
+      expect(results[0].cacheTtl).toBe("1h");
+    });
+
+    it("reports 5m when any main-thread write was a 5-minute entry", () => {
+      const { results } = resultsOf([call("msg_1", 0, 10_174), call("msg_2", 30, 0), result]);
+      expect(results[0].cacheTtl).toBe("5m");
+    });
+
+    it("ignores a subagent's 5-minute writes", () => {
+      const { results } = resultsOf([call("msg_sub", 500, 0, "toolu_1"), call("msg_1", 0, 64), result]);
+      expect(results[0].cacheTtl).toBe("1h");
+    });
+
+    it("reports nothing for a turn that only read the cache", () => {
+      const { results } = resultsOf([call("msg_1", 0, 0), result]);
+      expect(results[0].cacheTtl).toBeUndefined();
+    });
+
+    it("starts each turn's reading afresh, after a result or a turn with no result", () => {
+      const { inner, adapter, results } = resultsOf([call("msg_1", 30, 0), result]);
+      inner.emit("event", call("msg_2", 0, 64));
+      inner.emit("event", result);
+      inner.emit("event", call("msg_3", 30, 0));
+      adapter.run({ prompt: "p", cwd: "/workspace" } as AgentRunParams);
+      inner.emit("event", call("msg_4", 0, 64));
+      inner.emit("event", result);
+      expect(results.map((r) => r.cacheTtl)).toEqual(["5m", "1h", "1h"]);
     });
   });
 
@@ -1223,6 +1515,64 @@ describe("ClaudeAdapter", () => {
       adapter.setPermissionMode(undefined);
 
       expect(calls).toEqual(["plan", "auto", "default", "default"]);
+    });
+  });
+
+  describe("setLiveMcpServers (docs/327)", () => {
+    const proxyEntry = (name: string) => ({
+      name,
+      type: "stdio" as const,
+      command: "/usr/bin/node",
+      args: ["/proxy.js", `http://${name}:8787/mcp`],
+      enabled: true,
+    });
+
+    async function streamingAdapter() {
+      const { StreamingClaudeProcess } = await import("./process.js");
+      const sent: Record<string, unknown>[] = [];
+      let allowed: string[] | undefined;
+      class FakeStreaming extends StreamingClaudeProcess {
+        override run(opts: { mcpServerNames?: string[] }): void {
+          allowed = opts.mcpServerNames;
+        }
+        override setMcpServers(servers: Record<string, unknown>): Promise<boolean> {
+          sent.push(servers);
+          return Promise.resolve(true);
+        }
+      }
+      const adapter = new ClaudeAdapter(new FakeStreaming() as never);
+      return { adapter, sent, allowed: () => allowed };
+    }
+
+    it("allows a candidate name at spawn, so a server that arrives later needs no permission card", async () => {
+      const { adapter, sent, allowed } = await streamingAdapter();
+      adapter.run({
+        prompt: "p",
+        cwd: "/w",
+        mcpServers: [{ name: "linear", type: "http", url: "https://mcp.linear.app/mcp", enabled: true }],
+        serviceMcpCandidates: ["verseshot"],
+      });
+      expect(allowed()).toEqual(["linear", "verseshot"]);
+
+      expect(await adapter.setLiveMcpServers([proxyEntry("verseshot")])).toBe(true);
+      expect(sent).toEqual([
+        { verseshot: { command: "/usr/bin/node", args: ["/proxy.js", "http://verseshot:8787/mcp"] } },
+      ]);
+    });
+
+    it("refuses a name outside the spawn-time allowlist, and sends nothing", async () => {
+      const { adapter, sent } = await streamingAdapter();
+      adapter.run({ prompt: "p", cwd: "/w", serviceMcpCandidates: ["verseshot"] });
+
+      expect(await adapter.setLiveMcpServers([proxyEntry("verseshot"), proxyEntry("other")])).toBe(false);
+      expect(sent).toEqual([]);
+    });
+
+    it("refuses on a process that ends with its turn", async () => {
+      const adapter = new ClaudeAdapter(new FakeInnerProcess() as any);
+      adapter.run({ prompt: "p", cwd: "/w", serviceMcpCandidates: ["verseshot"] });
+
+      expect(await adapter.setLiveMcpServers([proxyEntry("verseshot")])).toBe(false);
     });
   });
 

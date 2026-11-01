@@ -229,7 +229,7 @@ describe("hasInstallLifecycleScript", () => {
   const write = (pkg: unknown): void =>
     fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(pkg));
 
-  it.each(["preinstall", "install", "postinstall", "prepare", "prepublish"])(
+  it.each(["preinstall", "install", "postinstall", "preprepare", "prepare", "postprepare", "prepublish"])(
     "detects %s — an install RUNS it, so its output is not a function of the hashed inputs",
     (script) => {
       write({ name: "x", scripts: { [script]: "node scripts/build.js" } });

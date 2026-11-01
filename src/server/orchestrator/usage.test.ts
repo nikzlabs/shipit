@@ -176,6 +176,134 @@ describe("UsageManager", () => {
     expect(dialTurns).toHaveLength(1);
     expect(dialTurns[0].contextTokens).toBe(1500);
   });
+
+  it("reads the latest context size from the session's own last turn (docs/295 req 15)", () => {
+    const mgr = new UsageManager(dbManager);
+    expect(mgr.latestContextTokens("sess-1")).toBeUndefined();
+
+    mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 90_000 });
+    mgr.record("sess-1", 0.02, 500, 0, 40, { contextTokens: 12_000 });
+    // A consult has its own context window; it must not stand in for the session's.
+    mgr.record("sess-1", 0.04, 1000, 500, 60, { subAgentId: "codex", contextTokens: 700 });
+
+    expect(mgr.latestContextTokens("sess-1")).toBe(12_000);
+  });
+
+  /**
+   * The case req 15 exists for: a session compacted shortly before. The compaction turn
+   * reads no context — zero usage (Claude, Grok) or no usage row at all (OpenCode).
+   */
+  describe("right after a compaction (docs/295 req 15)", () => {
+    const later = () => new Date(Date.now() + 5_000).toISOString();
+    const earlier = () => new Date(Date.now() - 60_000).toISOString();
+
+    it("answers with the compaction's own size, not the zero its turn reported", () => {
+      const mgr = new UsageManager(dbManager);
+      mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 200_000 });
+      mgr.record("sess-1", 0, 500, 0, 0);
+
+      expect(mgr.latestContextTokens("sess-1", { createdAt: later(), postTokens: 60_000 })).toBe(60_000);
+    });
+
+    it("answers 0 when the harness gave no size, also with no usage row for the compaction", () => {
+      const mgr = new UsageManager(dbManager);
+      mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 90_000 });
+
+      expect(mgr.latestContextTokens("sess-1", { createdAt: later() })).toBe(0);
+    });
+
+    it("keeps the last reading when a turn has run since the compaction", () => {
+      const mgr = new UsageManager(dbManager);
+      mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 80_000 });
+
+      expect(mgr.latestContextTokens("sess-1", { createdAt: earlier(), postTokens: 10_000 })).toBe(80_000);
+    });
+
+    it("does not take a zero-usage turn for a small context when nothing was compacted", () => {
+      const mgr = new UsageManager(dbManager);
+      mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 90_000 });
+      // A `/compact` that failed: zero usage, no card.
+      mgr.record("sess-1", 0, 500, 0, 0);
+
+      expect(mgr.latestContextTokens("sess-1")).toBe(90_000);
+    });
+  });
+});
+
+describe("UsageManager — the idle-compaction record (docs/333-idle-compaction)", () => {
+  const CODEX = { agentId: "codex" as const, model: "gpt-6-luna" };
+  const CLAUDE = { agentId: "claude" as const, model: "claude-sonnet-5-5" };
+  const anchor = (at: number) => ({ ...CODEX, at });
+  let dbManager: DatabaseManager;
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+  });
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  it("reads the newest cache lifetime only from the session's own turns on the same route", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CLAUDE, cacheTtl: "1h", credentialRouteId: "anthropic-sub" });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CLAUDE, cacheTtl: "5m", credentialRouteId: "anthropic-key" });
+    // A turn that only read the cache sets nothing; the earlier reading stands.
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CLAUDE, credentialRouteId: "anthropic-sub" });
+    mgr.record("sess-1", 0, 0, 1, 1, {
+      cacheScope: CLAUDE, cacheTtl: "5m", credentialRouteId: "anthropic-sub", subAgentId: "claude",
+    });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CLAUDE, cacheTtl: "1h" });
+
+    expect(mgr.observedCacheTtl("sess-1", "anthropic-sub", CLAUDE)).toBe("1h");
+    expect(mgr.observedCacheTtl("sess-1", "anthropic-key", CLAUDE)).toBe("5m");
+    expect(mgr.observedCacheTtl("sess-1", "zai", CLAUDE)).toBeUndefined();
+    expect(mgr.observedCacheTtl("sess-1", null, CLAUDE)).toBe("1h");
+    expect(mgr.observedCacheTtl("sess-2", "anthropic-sub", CLAUDE)).toBeUndefined();
+  });
+
+  it("reads a lifetime only for the harness and model that saw it", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CLAUDE, cacheTtl: "5m", credentialRouteId: "gateway" });
+    expect(mgr.observedCacheTtl("sess-1", "gateway", CODEX)).toBeUndefined();
+    expect(mgr.observedCacheTtl("sess-1", "gateway", { agentId: "opencode", model: CLAUDE.model })).toBeUndefined();
+    expect(mgr.observedCacheTtl("sess-1", "gateway", { ...CLAUDE, model: "claude-opus-5-5" })).toBeUndefined();
+    // Without a scope, nothing of the kind is written.
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheTtl: "1h", cacheAnchorAt: 1_000, credentialRouteId: "gateway" });
+    expect(mgr.observedCacheTtl("sess-1", "gateway", CLAUDE)).toBe("5m");
+    expect(mgr.anchoredTurnsSince(0)).toEqual([]);
+  });
+
+  it("tells its listeners about each anchored own turn, and a throwing listener does not stop the write", () => {
+    const mgr = new UsageManager(dbManager);
+    const seen: unknown[] = [];
+    mgr.onAnchoredTurn(() => { throw new Error("boom"); });
+    mgr.onAnchoredTurn((turn) => seen.push(turn));
+
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CODEX, cacheAnchorAt: 1_000, credentialRouteId: "r1" });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CODEX });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CODEX, cacheAnchorAt: 2_000, subAgentId: "codex" });
+    mgr.record("sess-1", 0, 0, 1, 1, { cacheScope: CODEX, cacheAnchorAt: 3_000, backgroundWork: true });
+
+    expect(seen).toEqual([{ sessionId: "sess-1", anchor: anchor(1_000), credentialRouteId: "r1" }]);
+    expect(mgr.getSessionTurns("sess-1")).toHaveLength(4);
+  });
+
+  it("finds each session's newest anchored own turn since a time, past an unanchored compaction", () => {
+    const mgr = new UsageManager(dbManager);
+    const at = (ms: number) => ({ cacheScope: CODEX, cacheAnchorAt: ms });
+    mgr.record("sess-1", 0, 0, 1, 1, at(1_000));
+    mgr.record("sess-1", 0, 0, 1, 1, { ...at(5_000), credentialRouteId: "r1" });
+    // A compaction turn writes no anchor, so it can never start a deadline of its own.
+    mgr.record("sess-1", 0, 0, 0, 0, { cacheScope: CODEX });
+    mgr.record("sess-1", 0, 0, 1, 1, { ...at(9_000), subAgentId: "codex" });
+    mgr.record("sess-2", 0, 0, 1, 1, at(2_000));
+    mgr.record("sess-3", 0, 0, 1, 1, at(7_000));
+
+    const turns = mgr.anchoredTurnsSince(3_000).sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+    expect(turns).toEqual([
+      { sessionId: "sess-1", anchor: anchor(5_000), credentialRouteId: "r1" },
+      { sessionId: "sess-3", anchor: anchor(7_000), credentialRouteId: null },
+    ]);
+  });
 });
 
 describe("UsageManager — cumulative cost → per-turn delta", () => {
@@ -477,7 +605,7 @@ describe("UsageManager — the usage split (docs/252 req 16)", () => {
     expect(mgr.getSessionUsage("s")!.groups!.at(-1)!.key).toBe("legacy");
   });
 
-  it("recomputes at API rates from the rates PERSISTED with each row", () => {
+  it("prices each row at the rates it was recorded with", () => {
     const mgr = new UsageManager(dbManager);
     mgr.record("s", 0, 1000, 1_000_000, 0, {
       costSource: "per-turn",
@@ -489,6 +617,56 @@ describe("UsageManager — the usage split (docs/252 req 16)", () => {
     });
 
     expect(mgr.getSessionUsage("s")!.totals.atApiRatesUsd).toBeCloseTo(9);
+  });
+
+  it("stores each row's figure, so equal totals can owe different amounts (docs/329-tiered-model-pricing)", () => {
+    const tiered = {
+      serviceId: "anthropic",
+      billingMode: "sub" as const,
+      rates: {
+        input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1.25,
+        longPrompt: { aboveTokens: 100_000, input: 5, output: 10, cacheRead: 0.5, cacheWrite: 6.25 },
+      },
+    };
+    const mgr = new UsageManager(dbManager);
+    // Same 200K input in both turns: two short prompts, then one long and one short.
+    mgr.record("s", 0, 1000, 200_000, 0, {
+      costSource: "per-turn", attribution: tiered, requests: [{ input: 100_000 }, { input: 100_000 }],
+    });
+    mgr.record("s", 0, 1000, 200_000, 0, {
+      costSource: "per-turn", attribution: tiered, requests: [{ input: 150_000 }, { input: 50_000 }],
+    });
+
+    const turns = mgr.getSessionTurns("s");
+    expect(turns[0].atApiRatesUsd).toBeCloseTo(0.2, 12);
+    expect(turns[1].atApiRatesUsd).toBeCloseTo(0.8, 12);
+    expect(mgr.getSessionUsage("s")!.totals.atApiRatesUsd).toBeCloseTo(1.0, 12);
+    expect(mgr.getStats().weekly[0].atApiRatesUsd).toBeCloseTo(1.0, 12);
+    expect(mgr.getPerTurnUsage("s").map((t) => t.atApiRatesUsd)).toEqual(turns.map((t) => t.atApiRatesUsd));
+  });
+
+  it("prices what the list leaves out at the tier of the turn's context size", () => {
+    const tiered = {
+      serviceId: "anthropic",
+      billingMode: "sub" as const,
+      rates: {
+        input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1.25,
+        longPrompt: { aboveTokens: 100_000, input: 5, output: 10, cacheRead: 0.5, cacheWrite: 6.25 },
+      },
+    };
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 0, 1000, 150_000, 1_000, {
+      costSource: "per-turn", attribution: tiered, contextTokens: 150_000, requests: [{ input: 150_000 }],
+    });
+    expect(mgr.getSessionTurns("s")[0].atApiRatesUsd).toBeCloseTo((150_000 * 5 + 1_000 * 10) / 1e6, 12);
+  });
+
+  it("stores no at-API-rates figure for a metered or a legacy row", () => {
+    const mgr = new UsageManager(dbManager);
+    mgr.record("s", 0.5, 1000, 1_000, 0, { costSource: "per-turn", attribution: key("deepseek") });
+    mgr.record("s", 2.0, 1000, 100, 100);
+    const stored = dbManager.db.prepare("SELECT at_api_rates_usd FROM usage_turns ORDER BY id").all();
+    expect(stored).toEqual([{ at_api_rates_usd: null }, { at_api_rates_usd: null }]);
   });
 
   it("prices every token class, cache included", () => {

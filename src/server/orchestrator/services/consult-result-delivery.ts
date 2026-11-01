@@ -2,8 +2,11 @@
 
 import type { SubAgentConsultCard } from "../../shared/types.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
-import type { TurnAdmission, TurnHandle, TurnOutcome } from "../turn-settlement.js";
+import { informingWakeMissed, type TurnAdmission, type TurnHandle, type TurnOutcome } from "../turn-settlement.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
+import type { QuotaResumeRecorder } from "./quota-continuation.js";
+
+const NEXT_TURN_DETAIL = "; the result rides the session's next turn";
 
 export interface ConsultDeliveryStore {
   updateSubAgentConsultCard(
@@ -16,6 +19,7 @@ export interface ConsultDeliveryStore {
 
 export interface ConsultResultDeliveryDeps extends WakeSessionDeps {
   chatHistoryManager: ConsultDeliveryStore;
+  quotaContinuation?: QuotaResumeRecorder | undefined;
 }
 
 export interface ConsultResultDeliveryRequest {
@@ -92,16 +96,34 @@ async function decideAndDeliver(
   }
 
   let handle: TurnHandle;
+  const text = buildConsultWakePrompt(card);
   try {
     handle = await wakeSessionWithTurn(deps, session, {
-      text: buildConsultWakePrompt(card),
+      text,
       activity: "Reading a finished background consult…",
       onSettled: (outcome: TurnOutcome) => {
+        // docs/306-quota-continuation — the result rides the turn that quota allows.
+        if (outcome.quotaRefused) {
+          stampDelivery(deps, sessionId, card.cardId, {
+            at: new Date().toISOString(),
+            outcome: "failed",
+            detail: `no connected account had quota left${NEXT_TURN_DETAIL}`,
+          });
+          parkForNextTurn(deps, sessionId, text);
+          deps.quotaContinuation?.recordRefusedWake({ sessionId, resetsAt: outcome.quotaRefused.resetsAt });
+          return;
+        }
+        // planning#695 — the stamp blocks another wake, so a wake the agent may not have read
+        // (a Stop emptied the queue) leaves a note. No turn starts for it.
+        const parked = informingWakeMissed(outcome);
         stampDelivery(deps, sessionId, card.cardId, {
           at: new Date().toISOString(),
           outcome: outcome.status === "completed" ? "delivered" : "failed",
-          ...(outcome.status === "completed" ? {} : { detail: outcome.detail ?? outcome.status }),
+          ...(outcome.status === "completed"
+            ? {}
+            : { detail: `${outcome.detail ?? outcome.status}${parked ? NEXT_TURN_DETAIL : ""}` }),
         });
+        if (parked) parkForNextTurn(deps, sessionId, text);
       },
     });
   } catch (err) {
@@ -109,8 +131,9 @@ async function decideAndDeliver(
     stampDelivery(deps, sessionId, card.cardId, {
       at: new Date().toISOString(),
       outcome: "failed",
-      detail,
+      detail: `${detail}${NEXT_TURN_DETAIL}`,
     });
+    parkForNextTurn(deps, sessionId, text);
     console.error(`[consult-delivery] wake-turn not delivered to ${sessionId}:`, err);
     return { woken: false, reason: "wake-failed", detail };
   }
@@ -161,6 +184,15 @@ function stampDelivery(
     }
   } catch (err) {
     console.warn(`[consult-delivery] could not stamp card ${cardId} of ${sessionId}:`, err);
+  }
+}
+
+// Append, never set: a notice recorded meanwhile must survive this.
+function parkForNextTurn(deps: ConsultResultDeliveryDeps, sessionId: string, text: string): void {
+  try {
+    deps.sessionManager.appendPendingAgentNotice(sessionId, `[System] ${text}`);
+  } catch (err) {
+    console.error(`[consult-delivery] parking the result notice for ${sessionId} failed:`, err);
   }
 }
 

@@ -181,7 +181,9 @@ export class LocalBackgroundHarnessRunner implements BackgroundHarnessRunner {
     try {
       // Every adapter reads the routed credential out of the environment inside
       // run(), synchronously; the value goes back before anything can await.
-      withRoutedCredential(req, () => { agent.run(buildSubAgentRunParams(opts)); });
+      withRoutedCredential(req, () => {
+        handle.start(() => { agent.run(buildSubAgentRunParams(opts)); });
+      });
       // cancel() does not settle the promise — the process does. Awaiting it is
       // what lets the spawn home outlive a CLI that is still shutting down.
       return await handle.promise;

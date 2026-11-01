@@ -105,6 +105,43 @@ describe("ServiceManager.snapshotLogs", () => {
     }
   });
 
+  async function seededManager(storeRoot: string, lineCount: number): Promise<ServiceManager> {
+    const logStore = new LogStore(storeRoot);
+    const mgr = makeManager(logStore);
+    const stored = Array.from({ length: lineCount }, (_, i) => `line ${i + 1}\n`).join("");
+    logStore.append("test-session", "service:web", stored);
+    await logStore.drain();
+    return mgr;
+  }
+
+  it("returns only the last `lines` lines of the LogStore snapshot", async () => {
+    const storeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "svc-snap-tail-"));
+    try {
+      const mgr = await seededManager(storeRoot, 10);
+
+      expect(await mgr.snapshotLogs("web", 3)).toBe("line 8\nline 9\nline 10\n");
+      expect(await mgr.snapshotLogs("web", 50)).toBe(
+        Array.from({ length: 10 }, (_, i) => `line ${i + 1}\n`).join(""),
+      );
+      expect(spawnCalls.find((a) => a.includes("logs"))).toBeUndefined();
+    } finally {
+      fs.rmSync(storeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("applies no line limit to the LogStore snapshot when `lines` is not given", async () => {
+    const storeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "svc-snap-default-"));
+    try {
+      const mgr = await seededManager(storeRoot, 2500);
+
+      const out = await mgr.snapshotLogs("web");
+      expect(out.split("\n").filter(Boolean)).toHaveLength(2500);
+      expect(out.startsWith("line 1\n")).toBe(true);
+    } finally {
+      fs.rmSync(storeRoot, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to `docker logs` before the store is seeded", async () => {
     const storeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "svc-snap-empty-"));
     try {
@@ -112,7 +149,9 @@ describe("ServiceManager.snapshotLogs", () => {
       snapshotStdout = "from docker\n";
       const out = await mgr.snapshotLogs("web");
       expect(out).toBe("from docker\n");
-      expect(spawnCalls.find((a) => a.includes("logs"))).toBeDefined();
+      const snapArgs = spawnCalls.find((a) => a.includes("logs"));
+      expect(snapArgs).toBeDefined();
+      expect(snapArgs![snapArgs!.indexOf("--tail") + 1]).toBe("2000");
     } finally {
       fs.rmSync(storeRoot, { recursive: true, force: true });
     }
@@ -131,5 +170,16 @@ describe("ServiceManager.snapshotLogs", () => {
 
     snapshotShouldError = true;
     await expect(mgr.snapshotLogs("web")).resolves.toBe("buffered fallback\n");
+  });
+
+  it.each([
+    ["errors", true],
+    ["prints nothing", false],
+  ])("applies `lines` to the in-memory fallback when the snapshot command %s", async (_case, shouldError) => {
+    const mgr = makeManager();
+    (mgr as unknown as { logBuffers: Map<string, string> }).logBuffers.set("web", "one\ntwo\nthree\n");
+
+    snapshotShouldError = shouldError;
+    await expect(mgr.snapshotLogs("web", 1)).resolves.toBe("three\n");
   });
 });

@@ -2,7 +2,7 @@
 // The orchestrator persists cards from broker events.
 
 import { randomUUID } from "node:crypto";
-import type { AgentEvent, PermissionDecision, PermissionRequestInput } from "../shared/types.js";
+import type { AgentEvent, PermissionDecision, PermissionRequestInput, PermissionSubagent } from "../shared/types.js";
 
 interface PendingRequest {
   settle: (decision: PermissionDecision) => void;
@@ -11,6 +11,9 @@ interface PendingRequest {
   result?: PermissionDecision;
   path?: string;
   toolUseId?: string;
+  summary: string;
+  /** `performance.now()`: a wall-clock change must not alter the measured wait. */
+  openedAt: number;
 }
 
 export const DEFAULT_PERMISSION_POLL_MS = 25_000;
@@ -48,6 +51,68 @@ export function toolResultIds(content: unknown): string[] {
     if (type === "tool_result" && typeof id === "string") ids.push(id);
   }
   return ids;
+}
+
+function toolUseIds(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  const ids: string[] = [];
+  for (const block of content as unknown[]) {
+    if (typeof block !== "object" || block === null) continue;
+    const { type, id } = block as { type?: unknown; id?: unknown };
+    if (type === "tool_use" && typeof id === "string") ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * Whose call a gated tool_use is. A harness's permission request names the call and not its
+ * caller, but the event stream gives each subagent call the id of the Agent call it runs under.
+ */
+export class SubagentCallTracker {
+  private openMainCalls = new Set<string>();
+  private subagentCalls = new Map<string, string>();
+  private waiters = new Map<string, () => void>();
+
+  opened(content: unknown, parentToolUseId: string | null | undefined): void {
+    for (const id of toolUseIds(content)) {
+      if (parentToolUseId) this.subagentCalls.set(id, parentToolUseId);
+      else this.openMainCalls.add(id);
+      this.waiters.get(id)?.();
+    }
+  }
+
+  closed(toolUseId: string): void {
+    this.openMainCalls.delete(toolUseId);
+    this.subagentCalls.delete(toolUseId);
+  }
+
+  // The stream and the permission request travel apart, and a call with a large input can
+  // reach the permission endpoint first. `callerOf` is right only once the stream showed it.
+  async whenOpened(toolUseId: string, timeoutMs: number): Promise<void> {
+    if (this.openMainCalls.has(toolUseId) || this.subagentCalls.has(toolUseId)) return;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.waiters.delete(toolUseId);
+        resolve();
+      };
+      const timer = setTimeout(done, timeoutMs);
+      this.waiters.set(toolUseId, done);
+    });
+  }
+
+  // A background Agent call returns when it starts its subagent; a foreground one stays open.
+  callerOf(toolUseId: string): PermissionSubagent | undefined {
+    const agentCall = this.subagentCalls.get(toolUseId);
+    if (!agentCall) return undefined;
+    return this.openMainCalls.has(agentCall) ? "foreground" : "background";
+  }
+
+  clear(): void {
+    this.openMainCalls.clear();
+    this.subagentCalls.clear();
+    for (const done of [...this.waiters.values()]) done();
+  }
 }
 
 export const PERMISSION_DETAILS_CHARS = 4_000;
@@ -94,7 +159,7 @@ export class PermissionBroker {
     if (!entry) return Promise.resolve({ behavior: "deny" });
     const { signal } = input;
     if (signal) {
-      const onAbort = () => this.expire(requestId);
+      const onAbort = () => this.expire(requestId, true);
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
       void entry.decision.finally(() => signal.removeEventListener("abort", onAbort));
@@ -136,6 +201,8 @@ export class PermissionBroker {
       settled: false,
       ...(path ? { path } : {}),
       ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
+      summary,
+      openedAt: performance.now(),
     });
     if (input.toolUseId) this.byToolUse.set(input.toolUseId, requestId);
 
@@ -147,6 +214,7 @@ export class PermissionBroker {
       summary,
       ...(details ? { details } : {}),
       ...(input.agentId ? { agentId: input.agentId } : {}),
+      ...(input.subagent ? { subagent: input.subagent } : {}),
     });
 
     return { requestId };
@@ -211,7 +279,7 @@ export class PermissionBroker {
   // ends the call without cancelling it, and the bridge would otherwise poll forever.
   endToolUse(toolUseId: string): void {
     const requestId = this.byToolUse.get(toolUseId);
-    if (requestId) this.expire(requestId);
+    if (requestId) this.expire(requestId, true);
   }
 
   // The agent exited, so no held call can be answered any more.
@@ -222,13 +290,18 @@ export class PermissionBroker {
   }
 
   // An unanswered request the agent abandoned. A later poll for its id fails closed.
-  private expire(requestId: string): void {
+  private expire(requestId: string, callEnded = false): void {
     const entry = this.pending.get(requestId);
     if (!entry || entry.settled) return;
     entry.settled = true;
     entry.settle({ behavior: "deny" });
     this.drop(requestId);
-    this.broadcast({ type: "agent_permission_resolved", requestId, behavior: "deny" });
+    this.broadcast({
+      type: "agent_permission_resolved",
+      requestId,
+      behavior: "deny",
+      ...(callEnded ? { callEnded: { summary: entry.summary, waitedMs: Math.round(performance.now() - entry.openedAt) } } : {}),
+    });
   }
 
   get pendingCount(): number {

@@ -7,6 +7,12 @@ import type { Socket } from "node:net";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { WorkerAbortedError } from "./worker-http.js";
 import { clearActivationState, getPluginPrepareFailures } from "./services/plugin-activation.js";
+import {
+  forgetServiceMcpSpawn,
+  recordServiceMcpSpawn,
+  serviceMcpSetKey,
+  serviceMcpSpawnKey,
+} from "./service-mcp.js";
 import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
 import {
   hasTokenWriteBackWatch,
@@ -14,6 +20,7 @@ import {
   stopAllTokenWriteBackWatches,
 } from "./session-token-publisher.js";
 import type { WsServerMessage } from "../shared/types.js";
+import { BACKGROUND_TASK_TTL_MS } from "./background-task-tracker.js";
 import {
   DEFAULT_SUB_AGENT_TIMEOUT_MS,
   SUB_AGENT_TRANSPORT_TIMEOUT_MS,
@@ -691,9 +698,11 @@ describe("ContainerSessionRunner — sub-agent spawn cancellation (planning#280)
       depth: 0,
       model: "claude-opus-5",
       homeDir: "/credentials/sub-agent-homes/spawn-2",
+      sandbox: true,
     });
     expect(result.status).toBe("success");
     expect(seen.body?.homeDir).toBe("/credentials/sub-agent-homes/spawn-2");
+    expect(seen.body?.sandbox).toBe(true);
     for (const s of sockets) s.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
@@ -724,6 +733,59 @@ describe("ContainerSessionRunner — background-work marker", () => {
     expect(runner.backgroundWorkDescriptions).toEqual([]);
 
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  // planning#710 — the SSE announcement reaches the sidebar only, so the open chat kept its row.
+  function recordTaskMessages(runner: ContainerSessionRunner): WsServerMessage[] {
+    const seen: WsServerMessage[] = [];
+    runner.on("message", (m) => { if (m.type === "background_tasks") seen.push(m); });
+    return seen;
+  }
+  const drained = { type: "background_tasks", sessionId: "s1", count: 0, descriptions: [] };
+
+  it("tells the open chat when a kill site clears the task list", () => {
+    const runner = makeRunner();
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
+    const seen = recordTaskMessages(runner);
+    // The kill sites that clear drop the streaming flag first, which already announced over SSE.
+    runner.isStreamingActive = false;
+    runner.clearBackgroundTasks();
+    expect(seen).toEqual([drained]);
+    runner.clearBackgroundTasks();
+    expect(seen).toHaveLength(1);
+  });
+
+  it("names the consult that still runs instead of the cleared task", () => {
+    const runner = makeRunner();
+    runner.isStreamingActive = true;
+    runner.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
+    (runner as unknown as { _subAgentAborts: Map<string, unknown> })._subAgentAborts
+      .set("spawn-1", { controller: new AbortController(), agentId: "codex" });
+    const seen = recordTaskMessages(runner);
+    runner.clearBackgroundTasks();
+    expect(seen).toEqual([{ type: "background_tasks", sessionId: "s1", count: 1, descriptions: ["Codex consult"] }]);
+  });
+
+  it("announces the list the one-hour expiry drops, to the chat and the sidebar", () => {
+    vi.useFakeTimers();
+    try {
+      const runner = makeRunner();
+      runner.isStreamingActive = true;
+      runner.setBackgroundTasks([{ id: "t1", description: "until ! pgrep -f job; do sleep 1; done" }]);
+      const seen = recordTaskMessages(runner);
+      const announced: string[][] = [];
+      runner.on("background_work", () => announced.push(runner.backgroundWorkDescriptions));
+      vi.advanceTimersByTime(BACKGROUND_TASK_TTL_MS - 1);
+      expect(seen).toEqual([]);
+      expect(announced).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(seen).toEqual([drained]);
+      expect(announced).toEqual([[]]);
+      expect(runner.agentBusy).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -1031,5 +1093,139 @@ describe("ContainerSessionRunner — token write-back watch release (docs/153)",
 
     runner.isStreamingActive = false;
     expect(hasTokenWriteBackWatch("s1")).toBe(false);
+  });
+});
+
+describe("ContainerSessionRunner — syncServiceMcp (docs/327)", () => {
+  const SESSION = "service-mcp-session";
+  const verseshot = { name: "verseshot", url: "http://verseshot:8787/mcp" };
+
+  async function withWorker(
+    answer: { live: unknown },
+    run: (runner: ContainerSessionRunner, requests: { path: string; body: unknown }[]) => Promise<void>,
+    opts: { agent?: boolean } = {},
+  ): Promise<void> {
+    const requests: { path: string; body: unknown }[] = [];
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        requests.push({ path: req.url ?? "", body: JSON.parse(Buffer.concat(chunks).toString("utf8") || "null") });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    const runner = new ContainerSessionRunner({
+      sessionId: SESSION,
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude",
+      workerUrl: `http://127.0.0.1:${addr.port}`,
+    });
+    runner.serviceMcp = () => ({ servers: [verseshot], candidates: ["verseshot"] });
+    if (opts.agent ?? true) (runner as unknown as { _agent: unknown })._agent = {};
+    try {
+      await run(runner, requests);
+    } finally {
+      (runner as unknown as { _agent: unknown })._agent = null;
+      runner.dispose({ force: true });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+
+  beforeEach(() => forgetServiceMcpSpawn(SESSION));
+  afterEach(() => forgetServiceMcpSpawn(SESSION));
+
+  it("sends the worker a set the agent was not spawned with, and records what the agent now holds", async () => {
+    recordServiceMcpSpawn(SESSION, []);
+    await withWorker({ live: [verseshot] }, async (runner, requests) => {
+      await runner.syncServiceMcp();
+
+      expect(requests).toEqual([{ path: "/agent/service-mcp", body: { serviceMcpServers: [verseshot] } }]);
+      expect(serviceMcpSpawnKey(SESSION)).toBe(serviceMcpSetKey([verseshot]));
+    });
+  });
+
+  it("keeps the old set on record when the agent could not take the new one, so the next turn respawns", async () => {
+    recordServiceMcpSpawn(SESSION, []);
+    await withWorker({ live: [] }, async (runner) => {
+      await runner.syncServiceMcp();
+      expect(serviceMcpSpawnKey(SESSION)).toBe(serviceMcpSetKey([]));
+    });
+  });
+
+  it("learns what an adopted agent holds, which the orchestrator has no record of", async () => {
+    await withWorker({ live: [] }, async (runner, requests) => {
+      await runner.syncServiceMcp();
+      expect(requests).toHaveLength(1);
+      expect(serviceMcpSpawnKey(SESSION)).toBe(serviceMcpSetKey([]));
+    });
+  });
+
+  it("asks nothing when the agent already holds the set, or when no agent runs", async () => {
+    recordServiceMcpSpawn(SESSION, [verseshot]);
+    await withWorker({ live: [verseshot] }, async (runner, requests) => {
+      await runner.syncServiceMcp();
+      expect(requests).toEqual([]);
+    });
+    forgetServiceMcpSpawn(SESSION);
+    await withWorker({ live: null }, async (runner, requests) => {
+      await runner.syncServiceMcp();
+      expect(requests).toEqual([]);
+      expect(serviceMcpSpawnKey(SESSION)).toBeUndefined();
+    }, { agent: false });
+  });
+
+  it("drops an answer about a process that was replaced while the request was on its way", async () => {
+    recordServiceMcpSpawn(SESSION, []);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const server = http.createServer((req, res) => {
+      req.resume();
+      void (async () => {
+        await held;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ live: [] }));
+      })();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    const runner = new ContainerSessionRunner({
+      sessionId: SESSION,
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude",
+      workerUrl: `http://127.0.0.1:${port}`,
+    });
+    runner.serviceMcp = () => ({ servers: [verseshot], candidates: [] });
+    const slot = runner as unknown as { _agent: unknown };
+    slot._agent = { process: "A" };
+    try {
+      const sync = runner.syncServiceMcp();
+      await new Promise((r) => setTimeout(r, 50));
+      // The next turn retired A and spawned B with the new set.
+      slot._agent = { process: "B" };
+      recordServiceMcpSpawn(SESSION, [verseshot]);
+      release();
+      await sync;
+
+      expect(serviceMcpSpawnKey(SESSION)).toBe(serviceMcpSetKey([verseshot]));
+    } finally {
+      release();
+      slot._agent = null;
+      runner.dispose({ force: true });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("leaves the record alone when the worker has no agent process", async () => {
+    recordServiceMcpSpawn(SESSION, []);
+    await withWorker({ live: null }, async (runner) => {
+      await runner.syncServiceMcp();
+      expect(serviceMcpSpawnKey(SESSION)).toBe(serviceMcpSetKey([]));
+    });
   });
 });

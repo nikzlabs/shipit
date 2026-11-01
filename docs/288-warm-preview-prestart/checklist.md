@@ -30,6 +30,19 @@
       cannot currently substantiate the before/after below.
 - [ ] Measure a warm claim before and after: `preview.first-connect` should stop
       being paid on the warm path.
+- [x] A claim that moves HEAD keeps the install marker, so a source-only move
+      skips the install and the pre-started stack stays up (reqs 1, 5).
+- [x] Child, headless and plugin-install claims use `skipWarm` (req 12).
+- [x] Log the memory skips, the claim's `preview=` state and the activation's
+      `install-decision … warm-stack=` (req 11).
+- [x] A lifecycle script stops a matching dependency hash from standing in for a
+      different commit (marker match and overlay pre-stamp).
+- [x] The sweep's preview repair passes the trust and install gates (req 2).
+- [x] A request that joins a running install is re-checked against its own tree
+      when that install ends, and installs again on a mismatch (planning#702).
+- [x] Keep the warm clone current with the default branch, for recent repos
+      (req 13): `refreshWarmSession` in the sweep, `refreshWarm` under the claim
+      lock.
 - [ ] Detect a preview whose CONTAINERS were removed while its manager is still
       registered (req 10, residual). The sweep now repairs a missing manager —
       a failed pre-start, a tier-0 reclaim — but a stack the manager still

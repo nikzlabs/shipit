@@ -2,7 +2,9 @@
  * PrActionsMenu — the reusable PR-scoped overflow (`⋮`) menu.
  *
  * Holds only actions that act on the *pull request / branch*: arm auto-merge,
- * sync the branch onto its base, copy the branch name, and close the PR. It is
+ * sync the branch onto its base, copy the branch name, and close the PR — plus
+ * this session's switches for what happens around the PR (auto-fix CI, the
+ * compaction after a merge). It is
  * fully self-contained — everything is derived from `sessionId` + the stores —
  * so it can be dropped, verbatim, into both the inline `PrLifecycleCard` and the
  * detail-panel header (`PrDetailHeader`) and stay in sync.
@@ -23,7 +25,13 @@ import { useSessionDefaultBranch } from "../utils/default-branch.js";
 import { copyText } from "../utils/copy-text.js";
 import { OverflowMenu } from "./ui/overflow-menu.js";
 import { DropdownMenuItem, DropdownMenuSeparator } from "./ui/dropdown-menu.js";
-import { AutoFixPauseToggle, AutoMergeToggle, ClosePrDropdownItem, useClosePr } from "./PrStatusControls.js";
+import {
+  AutoFixPauseToggle,
+  AutoMergeToggle,
+  ClosePrDropdownItem,
+  CompactAfterMergeToggle,
+  useClosePr,
+} from "./PrStatusControls.js";
 
 export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
@@ -71,6 +79,13 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
 
   const showAutoFixPause = canAutoMerge && globalAutoFixCi;
 
+  // docs/295-compact-context-on-merge req 16 — hidden where the composer control could never show (reqs 10, 11).
+  const autoResetMergedBranch = useSettingsStore((s) => s.autoResetMergedBranch);
+  const agentSupportsCompaction = useUiStore(
+    (s) => s.agentList.find((a) => a.id === (session?.agentId ?? s.activeAgentId))?.supportsCompaction ?? false,
+  );
+  const showCompactAfterMerge = autoResetMergedBranch && agentSupportsCompaction;
+
   return (
     <OverflowMenu
       label="Pull request actions"
@@ -93,6 +108,14 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
         <>
           <div className="px-2 py-1">
             <AutoFixPauseToggle sessionId={sessionId} />
+          </div>
+          <DropdownMenuSeparator />
+        </>
+      )}
+      {showCompactAfterMerge && (
+        <>
+          <div className="px-2 py-1">
+            <CompactAfterMergeToggle sessionId={sessionId} />
           </div>
           <DropdownMenuSeparator />
         </>

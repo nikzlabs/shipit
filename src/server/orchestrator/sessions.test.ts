@@ -210,7 +210,6 @@ describe("SessionManager", () => {
     mgr.holdTurn("sess-1", {
       text: "[ci-fix] CI failed",
       execution: "dispatched",
-      systemTurn: true,
       automatic: true,
       onTurnComplete: (o) => settled.push(o.status),
     });
@@ -220,7 +219,7 @@ describe("SessionManager", () => {
 
     const held = mgr.heldTurns("sess-1");
     expect(held.map((m) => m.text)).toEqual(["[ci-fix] CI failed", "Child PR #42 merged"]);
-    expect(held[0]).toMatchObject({ systemTurn: true, automatic: true });
+    expect(held[0]).toMatchObject({ execution: "dispatched", automatic: true });
     held[0]!.onTurnComplete?.({ status: "completed" } as never);
     expect(settled).toEqual(["completed"]);
     expect(mgr.hasHeldDelivery("sess-1", "watch-1:1")).toBe(true);
@@ -538,6 +537,17 @@ describe("SessionManager", () => {
       expect(mgr.clearMerged("sess-1", breadcrumb)).toBe(true);
       expect(mgr.get("sess-1")?.mergeContinueDeclinedAnchor).toBeUndefined();
     });
+
+    it("drops the compacted anchor too, so the next merge can compact (docs/218 req 6)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.markMerged("sess-1");
+      mgr.setMergeContinueCompacted("sess-1", "anchor-of-the-first-merge");
+      expect(mgr.get("sess-1")?.mergeContinueCompactedAnchor).toBe("anchor-of-the-first-merge");
+
+      expect(mgr.clearMerged("sess-1", breadcrumb)).toBe(true);
+      expect(mgr.get("sess-1")?.mergeContinueCompactedAnchor).toBeUndefined();
+    });
   });
 
   describe("clearPriorPrRecord (unarchive drops the previous PR entirely)", () => {
@@ -550,6 +560,7 @@ describe("SessionManager", () => {
       mgr.setMergedHeadSha("sess-1", "abc123def456");
 
       mgr.setMergeContinueDeclined("sess-1", "anchor-of-the-first-merge");
+      mgr.setMergeContinueCompacted("sess-1", "anchor-of-the-first-merge");
 
       mgr.clearPriorPrRecord("sess-1");
       const s = mgr.get("sess-1");
@@ -558,6 +569,7 @@ describe("SessionManager", () => {
       expect(s?.previousMergedPr).toBeUndefined();
       // docs/218 req 6 — as with clearMerged: the decline dies with its merge.
       expect(s?.mergeContinueDeclinedAnchor).toBeUndefined();
+      expect(s?.mergeContinueCompactedAnchor).toBeUndefined();
     });
 
     it("clears a breadcrumb left by an earlier re-arm, which clearMerged cannot", () => {
@@ -641,6 +653,8 @@ describe("SessionManager", () => {
 
       mgr.setPendingCompaction("sess-1", { instructions: "keep the API", note: "start B" });
       expect(mgr.getPendingCompaction("sess-1")).toEqual({ instructions: "keep the API", note: "start B" });
+      mgr.setPendingCompaction("sess-1", { userAsked: true });
+      expect(mgr.getPendingCompaction("sess-1")).toEqual({ userAsked: true });
       mgr.setPendingCompaction("sess-1", {});
       expect(mgr.getPendingCompaction("sess-1")).toEqual({});
       mgr.setPendingCompaction("sess-1", null);
@@ -663,11 +677,36 @@ describe("SessionManager", () => {
     it("Stop drops only the note (req 10)", () => {
       const mgr = new SessionManager(dbManager);
       mgr.track("sess-1", "Test");
-      mgr.setPendingCompaction("sess-1", { instructions: "keep the API", note: "start B" });
+      mgr.setPendingCompaction("sess-1", { instructions: "keep the API", note: "start B", userAsked: true });
       mgr.dropPendingCompactionNote("sess-1");
-      expect(mgr.getPendingCompaction("sess-1")).toEqual({ instructions: "keep the API" });
+      expect(mgr.getPendingCompaction("sess-1")).toEqual({ instructions: "keep the API", userAsked: true });
       mgr.dropPendingCompactionNote("sess-2");
       expect(mgr.getPendingCompaction("sess-2")).toBeUndefined();
+    });
+  });
+
+  describe("docs/306-quota-continuation: quota resume", () => {
+    it("round-trips, is listed only while set, and survives a new manager over the same database", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.track("sess-2", "Other");
+      const resume = {
+        agentId: "claude" as const,
+        cause: "wake" as const,
+        lastUsedAt: "2026-10-11T16:00:00.000Z",
+        wakeAttempts: 0,
+        notBefore: "2026-10-11T17:01:00.000Z",
+        quotaRefusals: 1,
+      };
+
+      mgr.setQuotaResume("sess-1", resume);
+
+      const restarted = new SessionManager(dbManager);
+      expect(restarted.getQuotaResume("sess-1")).toEqual(resume);
+      expect(restarted.listQuotaResumes()).toEqual([{ sessionId: "sess-1", resume }]);
+      restarted.setQuotaResume("sess-1", null);
+      expect(restarted.getQuotaResume("sess-1")).toBeUndefined();
+      expect(restarted.listQuotaResumes()).toEqual([]);
     });
   });
 
@@ -1042,10 +1081,23 @@ describe("SessionManager", () => {
         merged("reused", "2024-01-01 04:00:00", "2024-01-03 00:00:00"),
       ];
       const visible = new Set(filterVisibleInSidebar(sessions, 1).map((s) => s.id));
-      const isDone = doneSessionTest(sessions);
+      const isDone = doneSessionTest(sessions, () => false);
       const hidden = sessions.filter((s) => !visible.has(s.id));
       expect(hidden.map((s) => s.id).sort()).toEqual(["closed", "plain"]);
       for (const s of hidden) expect(isDone(s)).toBe(true);
+    });
+
+    it("docs/316-done-sessions-return-memory req 11: never hides a session an agent works in", () => {
+      const sessions = [
+        merged("new", "2024-01-05 09:00:00"),
+        merged("working", "2024-01-01 09:00:00"),
+        { ...merged("kid", "2024-01-01 08:00:00"), parentSessionId: "root", rootSessionId: "root" },
+        merged("root", "2024-01-01 07:00:00"),
+      ];
+      const working = new Set(["working", "kid"]);
+      const visible = filterVisibleInSidebar(sessions, 1, (id) => working.has(id)).map((s) => s.id).sort();
+      expect(visible).toEqual(["kid", "new", "root", "working"]);
+      expect(filterVisibleInSidebar(sessions, 1).map((s) => s.id)).toEqual(["new"]);
     });
 
     it("docs/241: keeps a reserved session visible through the merged cap", () => {
@@ -1270,8 +1322,8 @@ describe("SessionManager", () => {
           { ...active("low"), parentSessionId: "mid", rootSessionId: "root" },
         ];
         const visible = filterVisibleInSidebar(sessions, 1);
-        const onServer = doneSessionTest(sessions);
-        const inBrowser = doneSessionTest(visible);
+        const onServer = doneSessionTest(sessions, () => false);
+        const inBrowser = doneSessionTest(visible, () => false);
         expect(visible.map((s) => s.id).sort()).toEqual(["low", "other", "root"]);
         expect(inBrowser(sessions[0])).toBe(false);
         for (const s of visible) expect(inBrowser(s)).toBe(onServer(s));
@@ -1305,6 +1357,23 @@ describe("SessionManager", () => {
         .run("2024-06-01T00:00:00.000Z", "target");
 
       expect(mgr.list().map((s) => s.id)).toContain("target");
+    });
+
+    it("docs/316-done-sessions-return-memory req 11: keeps an old merged session in the list while an agent works in it", () => {
+      const mgr = new SessionManager(dbManager);
+      seedMerged(mgr, "target", "2024-01-01 09:00:00", "2024-01-01 09:00:00");
+      for (let i = 0; i < MAX_MERGED_SESSIONS_PER_REPO; i++) {
+        const day = String(i + 2).padStart(2, "0");
+        seedMerged(mgr, `m${i + 2}`, `2024-01-${day} 09:00:00`, `2024-01-${day} 09:00:00`);
+      }
+      expect(mgr.list().map((s) => s.id)).not.toContain("target");
+
+      let working = true;
+      mgr.setAgentWorkingTest((id) => working && id === "target");
+      expect(mgr.list().map((s) => s.id)).toContain("target");
+
+      working = false;
+      expect(mgr.list().map((s) => s.id)).not.toContain("target");
     });
 
     it("archiving a visible merged session lowers the count without surfacing a demoted one", () => {
@@ -1532,15 +1601,16 @@ describe("setSessionStatus (docs/303 req 10)", () => {
     expect(mgr.get("c1")?.sessionStatus).toBeUndefined();
   });
 
-  it("marks the card stale when the conversation is reset or rewound", () => {
+  it("marks the card stale on a rewind and keeps the stored conversation", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("c1");
     mgr.setSessionStatus("c1", card);
     mgr.setAgentSessionId("c1", "thread-1");
 
     // The card is kept, not cleared: a rewind can remove the work it describes.
-    mgr.clearAgentSessionId("c1");
+    mgr.markRewound("c1", { chat: false });
     expect(mgr.get("c1")?.sessionStatus).toEqual({ ...card, fresh: false });
+    expect(mgr.get("c1")?.agentSessionId).toBe("thread-1");
   });
 
   it("reads a corrupt or shapeless card as no card", () => {
@@ -1588,14 +1658,18 @@ describe("setAgentGoal (docs/154 req 6)", () => {
     expect(mgr.agentGoalChecked("g1")).toBe(true);
   });
 
-  it("forgets the goal with the conversation", () => {
+  it("forgets the shown goal on a chat rewind, which forks the conversation", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("g1");
     mgr.setAgentSessionId("g1", "thread-1");
     mgr.setAgentGoal("g1", goal);
-    mgr.clearAgentSessionId("g1");
+    mgr.markRewound("g1", { chat: false });
+    expect(mgr.get("g1")?.agentGoal).toEqual(goal);
+
+    mgr.markRewound("g1", { chat: true });
     expect(mgr.get("g1")?.agentGoal).toBeUndefined();
     expect(mgr.agentGoalChecked("g1")).toBe(false);
+    expect(mgr.get("g1")?.agentSessionId).toBe("thread-1");
   });
 });
 
@@ -1613,10 +1687,11 @@ describe("session list rows", () => {
     mgr.setSessionStatus("s1", card);
     mgr.setAgentGoal("s1", goal);
     mgr.setConversationReplay("s1", "User: the whole transcript");
+    mgr.setAgentResumeAt("s1", "msg-7");
     mgr.setPendingAgentNotice("s1", "A notice for the agent.");
   }
 
-  it("leave out the card, the goal, the replay and the notice", () => {
+  it("leave out the card, the goal, the replay, the rewind point and the notice", () => {
     const mgr = new SessionManager(dbManager);
     heavySession(mgr);
 
@@ -1624,6 +1699,7 @@ describe("session list rows", () => {
       expect(row).not.toHaveProperty("sessionStatus");
       expect(row).not.toHaveProperty("agentGoal");
       expect(row).not.toHaveProperty("conversationReplay");
+      expect(row).not.toHaveProperty("agentResumeAt");
       expect(row).not.toHaveProperty("pendingAgentNotice");
     }
     expect(mgr.get("s1")).toMatchObject({ sessionStatus: card, agentGoal: goal });
@@ -1636,6 +1712,86 @@ describe("session list rows", () => {
   });
 });
 
+describe("the conversation replay (docs/007)", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  it("stays stored until the CLI reports the conversation it started", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("fork");
+    mgr.setConversationReplay("fork", "User: the parent's transcript");
+
+    // Reading it for a spawn that then fails leaves it for the next spawn.
+    expect(mgr.get("fork")?.conversationReplay).toBe("User: the parent's transcript");
+    expect(mgr.get("fork")?.conversationReplay).toBe("User: the parent's transcript");
+
+    mgr.setAgentSessionId("fork", "cli-reported-id");
+    expect(mgr.get("fork")?.agentSessionId).toBe("cli-reported-id");
+    expect(mgr.get("fork")?.conversationReplay).toBeUndefined();
+  });
+});
+
+describe("a rewind point (docs/007 req 4)", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  it("survives the stored conversation resumed, and goes with the fork the CLI reports", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    mgr.setAgentSessionId("s1", "thread-1");
+    mgr.setAgentResumeAt("s1", "msg-7");
+
+    // A resume reports the stored id again: the fork has not happened yet.
+    mgr.setAgentSessionId("s1", "thread-1");
+    expect(mgr.get("s1")?.agentResumeAt).toBe("msg-7");
+
+    mgr.setAgentSessionId("s1", "thread-2");
+    expect(mgr.get("s1")).toMatchObject({ agentSessionId: "thread-2" });
+    expect(mgr.get("s1")?.agentResumeAt).toBeUndefined();
+  });
+
+  it("is cleared by an undo, and the stored id stays", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    mgr.setAgentSessionId("s1", "thread-1");
+    mgr.setAgentResumeAt("s1", "msg-7");
+    mgr.setAgentResumeAt("s1", null);
+    expect(mgr.get("s1")?.agentResumeAt).toBeUndefined();
+    expect(mgr.get("s1")?.agentSessionId).toBe("thread-1");
+  });
+});
+
+describe("removePendingAgentNotice (docs/007 req 3)", () => {
+  let dbManager: DatabaseManager;
+  beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
+  afterEach(() => { dbManager.close(); });
+
+  it("takes out exactly its own line and keeps the others", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    mgr.appendPendingAgentNotice("s1", "Earlier notice.\n\nWith a paragraph.");
+    mgr.appendPendingAgentNotice("s1", "Rolled back to abc1234.");
+    mgr.appendPendingAgentNotice("s1", "Rolled back to def5678.");
+
+    mgr.removePendingAgentNotice("s1", "Rolled back to def5678.");
+    expect(mgr.get("s1")?.pendingAgentNotice).toBe("Earlier notice.\n\nWith a paragraph.\n\nRolled back to abc1234.");
+
+    mgr.removePendingAgentNotice("s1", "Rolled back to abc1234.");
+    expect(mgr.get("s1")?.pendingAgentNotice).toBe("Earlier notice.\n\nWith a paragraph.");
+  });
+
+  it("leaves no empty notice behind", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    mgr.appendPendingAgentNotice("s1", "Rolled back to abc1234.");
+    mgr.removePendingAgentNotice("s1", "Rolled back to abc1234.");
+    expect(mgr.get("s1")?.pendingAgentNotice).toBeUndefined();
+    expect(mgr.consumePendingAgentNotice("s1")).toBeUndefined();
+  });
+});
+
 describe("onDetailsChanged", () => {
   let dbManager: DatabaseManager;
   beforeEach(() => { dbManager = new DatabaseManager(":memory:"); });
@@ -1644,7 +1800,7 @@ describe("onDetailsChanged", () => {
   const goal = { objective: "Ship it", status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, updatedAt: 1 };
   const card = { status: "Routes done.", actions: [], fresh: true, writeSeq: 1, turnSeq: 0 };
 
-  it("names the session on each card write, shown goal change and conversation clear", () => {
+  it("names the session on each card write, shown goal change and rewind", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("s1");
     const changed: string[] = [];
@@ -1654,7 +1810,7 @@ describe("onDetailsChanged", () => {
     mgr.setAgentGoal("s1", goal);
     // Only the token count moved, which the chip does not show.
     mgr.setAgentGoal("s1", { ...goal, tokensUsed: 50 });
-    mgr.clearAgentSessionId("s1");
+    mgr.markRewound("s1", { chat: true });
 
     expect(changed).toEqual(["s1", "s1", "s1"]);
   });
@@ -1727,6 +1883,22 @@ describe("docs/324-scheduled-sessions — a run's session fields", () => {
     mgr.setRunStoppedAt("plain", null);
     mgr.setLastTurnOutcome("plain", null);
     for (const field of fields) expect(mgr.get("plain")).not.toHaveProperty(field);
+  });
+
+  it("keep why the last turn ended empty, and clear it with the next outcome (planning#222)", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("s1");
+    const reason = () =>
+      (dbManager.db.prepare("SELECT last_turn_empty_reason FROM sessions WHERE id = ?").get("s1") as
+        { last_turn_empty_reason: string | null }).last_turn_empty_reason;
+    expect(reason()).toBeNull();
+
+    mgr.setLastTurnOutcome("s1", "ok", "prompt-not-echoed");
+    expect(reason()).toBe("prompt-not-echoed");
+    expect(mgr.get("s1")!.lastTurnOutcome).toBe("ok");
+
+    mgr.setLastTurnOutcome("s1", "ok");
+    expect(reason()).toBeNull();
   });
 
   it("keep one notes grant per schedule (req 30)", () => {
@@ -1863,5 +2035,84 @@ describe("docs/324-scheduled-sessions — a run's session fields", () => {
       expect(filterVisibleInSidebar([...sessions.filter((s) => s.id !== "kid"), working], 5).map((s) => s.id))
         .toEqual(expect.arrayContaining(["r0", "kid"]));
     });
+  });
+});
+
+describe("docs/239-self-merge-wake — a self-watch stored by older code moves to its own column", () => {
+  let dbManager: DatabaseManager;
+
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+  });
+
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  const SELF = {
+    parentSessionId: "s", kind: "self" as const, watchId: "w-old", prNumber: 251,
+    state: "merge-observed" as const, registeredAt: "t0", observedAt: "t1", deliveryAttempts: 1, deliveryId: "w-old:1",
+  };
+  const PARENT = { parentSessionId: "coordinator", state: "armed" as const, registeredAt: "t0" };
+
+  // The older code wrote both kinds of watch into this one column.
+  function storeAsOlderCode(id: string, mergeWatch: string): void {
+    new SessionManager(dbManager).track(id, "S", `/ws/${id}`);
+    dbManager.db.prepare("UPDATE sessions SET merge_watch = ? WHERE id = ?").run(mergeWatch, id);
+  }
+
+  it("moves a session's own watch on the next start and leaves a parent's watch in place", () => {
+    storeAsOlderCode("s", JSON.stringify(SELF));
+    storeAsOlderCode("child", JSON.stringify(PARENT));
+
+    const mgr = new SessionManager(dbManager);
+
+    expect(mgr.getSelfMergeWatch("s")).toEqual(SELF);
+    expect(mgr.getMergeWatch("s")).toBeUndefined();
+    expect(mgr.getMergeWatch("child")).toEqual(PARENT);
+    expect(mgr.getSelfMergeWatch("child")).toBeUndefined();
+    expect(mgr.listPendingMergeWatches().map((e) => `${e.childSessionId}:${e.watch.kind ?? "parent"}`).sort())
+      .toEqual(["child:parent", "s:self"]);
+  });
+
+  it("does it on every start, so a rollback to the older code and back loses nothing", () => {
+    const beforeRollback = new SessionManager(dbManager);
+    beforeRollback.track("s", "S", "/ws/s");
+    beforeRollback.setSelfMergeWatch("s", { ...SELF, watchId: "w-before-rollback", prNumber: 250 });
+    // The older code runs for a while: it cannot see the new column, and the session arms again.
+    dbManager.db.prepare("UPDATE sessions SET merge_watch = ? WHERE id = 's'").run(JSON.stringify(SELF));
+
+    const afterRollForward = new SessionManager(dbManager);
+
+    // The watch the older code stored is the newer arming, so it wins, as a re-arm does.
+    expect(afterRollForward.getSelfMergeWatch("s")).toEqual(SELF);
+    expect(afterRollForward.getMergeWatch("s")).toBeUndefined();
+  });
+
+  it("also moves a watch the older code already delivered, which it stored without `kind`", () => {
+    const beforeRollback = new SessionManager(dbManager);
+    beforeRollback.track("s", "S", "/ws/s");
+    beforeRollback.setSelfMergeWatch("s", { ...SELF, state: "armed" });
+    const delivered = { parentSessionId: "s", state: "delivered" as const, registeredAt: "t0", deliveredAt: "t2" };
+    dbManager.db.prepare("UPDATE sessions SET merge_watch = ? WHERE id = 's'").run(JSON.stringify(delivered));
+
+    const afterRollForward = new SessionManager(dbManager);
+
+    // Without the move, the armed watch from before the rollback would wake the session again.
+    expect(afterRollForward.getSelfMergeWatch("s")).toEqual(delivered);
+    expect(afterRollForward.getMergeWatch("s")).toBeUndefined();
+    expect(afterRollForward.listPendingMergeWatches()).toEqual([]);
+  });
+
+  it("reads JSON with any spacing, and leaves corrupt JSON where it is", () => {
+    storeAsOlderCode("spaced", JSON.stringify(SELF, null, 2));
+    storeAsOlderCode("corrupt", '{"kind":"self"');
+
+    const mgr = new SessionManager(dbManager);
+
+    expect(mgr.getSelfMergeWatch("spaced")).toEqual(SELF);
+    expect(mgr.getSelfMergeWatch("corrupt")).toBeUndefined();
+    expect(dbManager.db.prepare("SELECT merge_watch FROM sessions WHERE id = 'corrupt'").get())
+      .toEqual({ merge_watch: '{"kind":"self"' });
   });
 });

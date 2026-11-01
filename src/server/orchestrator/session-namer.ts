@@ -6,14 +6,18 @@ import os from "node:os";
 import path from "node:path";
 import type { AgentId, ServiceRouting } from "../shared/types.js";
 import { isHarnessInstalled } from "../shared/installed-harnesses.js";
+import { killProcessTree } from "../shared/kill-child.js";
 import {
+  SHIPIT_PROVIDER_ID,
   applyServiceRouting,
+  claudeCliModelId,
   codexProviderArgs,
   scrubHarnessEnvCredentials,
 } from "../shared/spawn-routing.js";
 import { disjointCodexTokens } from "../shared/codex-token-usage.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
-import { opencodeModelArg, opencodeProviderConfig, isOpenCodeAccountRouting, opencodeAccountConfig, prepareOpenCodeAccountEnv } from "../shared/opencode-spawn-shaping.js";
+import { opencode2ModelArg, opencodeModelArg, opencodeProviderConfig, isOpenCodeAccountRouting, opencodeAccountConfig, prepareOpenCodeAccountEnv } from "../shared/opencode-spawn-shaping.js";
+import { openCode2CredentialImport, readOpenCodeAccount } from "../shared/opencode-account.js";
 import { parseOpencodeLine, OpencodeTurnAccumulator } from "../shared/opencode-stream.js";
 import {
   ANTIGRAVITY_SPAWN_ENV,
@@ -56,6 +60,8 @@ export interface SessionNamingTarget {
   credentialSecret?: string | undefined;
   /** Omission uses the orchestrator home, which can select a different account. */
   credentialRoot?: string | undefined;
+  /** Claude: run the CLI in a private copy of the account's credentials, not in `credentialRoot` (docs/153). */
+  inCredentialCopy?: (<T>(run: (home: string) => Promise<T>) => Promise<T>) | undefined;
 }
 
 const PROMPT_TEMPLATE = loadPrompt(import.meta.url, "./session-naming-prompt.md");
@@ -141,9 +147,11 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
   switch (harnessId) {
     case "claude": {
       // JSON output includes usage and cost.
-      const args = ["-p", prompt, "--output-format", "json"];
-      if (model) args.push("--model", model);
-      const raw = await callCli("claude", args, target);
+      const args = ["-p", prompt, "--output-format", "json", "--no-session-persistence"];
+      if (model) args.push("--model", claudeCliModelId(model));
+      const raw = target.inCredentialCopy
+        ? await target.inCredentialCopy((home) => callCli("claude", args, { ...target, credentialRoot: home }))
+        : await callCli("claude", args, target);
       if (raw.text === null) return raw;
       const parsed = parseClaudeJson(raw.text);
       if (!parsed.usage) return { ...raw, text: parsed.text };
@@ -153,8 +161,9 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
     case "codex": {
       // Serialize first-run initialization with turns using the same home.
       await ensureCodexHomeInitialized(path.join(namingHome(target), ".codex"));
-      // Naming runs from /tmp, outside a trusted repository.
-      const args = ["exec", "--json", "--skip-git-repo-check", ...codexProviderArgs(serviceRouting)];
+      // Naming runs from /tmp, outside a trusted repository. Without --ephemeral each run
+      // leaves a rollout in the account home, which every new session copies (planning#698).
+      const args = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", ...codexProviderArgs(serviceRouting)];
       if (model) args.push("--model", model);
       args.push(prompt);
       const raw = await callCli("codex", args, target);
@@ -230,6 +239,61 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
         revokeOpenCodeAccount(target.credentialRoot ?? "", dataHome);
         cleanupConfig?.();
         try { fs.rmSync(dataHome, { recursive: true, force: true }); } catch { /* ignore */ }
+      }
+    }
+    case "opencode2": {
+      // Naming starts no MCP server, so the first-step race that rules out --standalone for turns cannot occur.
+      const args = ["run", "--standalone", "--format", "json", "--auto"];
+      const config: Record<string, unknown> = { $schema: "https://opencode.ai/config.json", tools: { "*": false } };
+      const account = isOpenCodeAccountRouting(serviceRouting);
+      if (account && model) {
+        if (!target.credentialRoot) return { text: null, failure: "ChatGPT account credentials are unavailable." };
+        Object.assign(config, opencodeAccountConfig(model, "opencode2"));
+        args.push("--model", opencode2ModelArg("openai", model));
+      } else if (serviceRouting && model) {
+        const provider = opencodeProviderConfig(serviceRouting, model, "opencode2");
+        if (!provider) {
+          return { text: null, failure: `OpenCode 2 cannot run ${serviceRouting.serviceId} over style ${serviceRouting.style}.` };
+        }
+        config.provider = provider;
+        args.push("--model", opencode2ModelArg(SHIPIT_PROVIDER_ID, model));
+      } else if (model) {
+        args.push("--model", model);
+      }
+      args.push(prompt);
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "opencode2-naming-"));
+      const extraEnv: Record<string, string> = {
+        PWD: "/tmp",
+        XDG_DATA_HOME: path.join(root, "data"),
+        XDG_STATE_HOME: path.join(root, "state"),
+        OPENCODE_CONFIG_DIR: path.join(root, "config"),
+        OPENCODE_DISABLE_AUTOUPDATE: "1",
+        OPENCODE_DISABLE_MODELS_FETCH: "1",
+      };
+      const configPath = path.join(root, "opencode.json");
+      extraEnv.OPENCODE_CONFIG = configPath;
+      const accountHome = path.join(root, "account");
+      const isolated = { ...target, credentialRoot: root };
+      try {
+        fs.writeFileSync(configPath, JSON.stringify(config));
+        if (account) {
+          provisionOpenCodeAccount(target.credentialRoot!, target.credentialRoot!, serviceRouting.credentialTarget.accountId, accountHome, "opencode2");
+          const { id, json } = openCode2CredentialImport(readOpenCodeAccount(accountHome, serviceRouting.credentialTarget.accountId));
+          const importFile = path.join(root, "credential.json");
+          fs.writeFileSync(importFile, json, { mode: 0o600 });
+          for (const authArgs of [["import", importFile], ["switch", "openai", id]]) {
+            const imported = await callCli("opencode2", ["auth", ...authArgs, "--standalone"], isolated, extraEnv, { quiet: true, killTree: true });
+            if (imported.text === null) return { text: null, failure: "ChatGPT credentials could not be delivered to OpenCode 2." };
+          }
+        }
+        const raw = await callCli("opencode2", args, account ? isolated : target, extraEnv, { killTree: true });
+        if (raw.text === null) return raw;
+        const parsed = parseOpencodeJsonl(raw.text);
+        if (!parsed.usage) return { ...raw, text: parsed.text };
+        return { text: parsed.text, usage: { ...parsed.usage, durationMs: raw.usage?.durationMs ?? 0 } };
+      } finally {
+        if (account) revokeOpenCodeAccount(target.credentialRoot ?? "", accountHome, "opencode2");
+        try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
       }
     }
     case "grok": {
@@ -490,11 +554,21 @@ function namingHome(target: SessionNamingTarget): string {
   return target.credentialRoot ?? process.env.HOME ?? "/root";
 }
 
+interface CliOptions {
+  /** Report only the exit: the command's output can echo a credential. */
+  quiet?: boolean;
+  /** The CLI starts a child server; a timeout must stop the whole tree (docs/289). */
+  killTree?: boolean;
+}
+
+const CLI_TIMEOUT_MS = 15_000;
+
 function callCli(
   binary: string,
   args: string[],
   target: SessionNamingTarget,
   extraEnv?: Record<string, string>,
+  opts: CliOptions = {},
 ): Promise<CliRun> {
   const { harnessId, serviceRouting, credentialSecret, credentialRoot } = target;
   return new Promise((resolve) => {
@@ -512,6 +586,8 @@ function callCli(
     if (extraEnv) Object.assign(env, extraEnv);
     // Ambient API keys can override the selected subscription's login.
     if (credentialRoot) scrubHarnessEnvCredentials(env, harnessId);
+    // With this set, the Claude CLI ignores HOME and so the private copy.
+    if (target.inCredentialCopy && harnessId === "claude") delete env.CLAUDE_CONFIG_DIR;
     if (serviceRouting && !isOpenCodeAccountRouting(serviceRouting)) {
       // Routing reads the storage variable and writes the harness variable.
       if (credentialSecret && serviceRouting.credentialSourceEnv) env[serviceRouting.credentialSourceEnv] = credentialSecret;
@@ -528,12 +604,23 @@ function callCli(
 
     if (isOpenCodeAccountRouting(serviceRouting)) prepareOpenCodeAccountEnv(env);
     try {
+      let treeTimer: NodeJS.Timeout | undefined;
       const child = execFile(
         binary,
         args,
-        { timeout: 15_000, cwd: "/tmp", env, maxBuffer: 1024 * 1024 },
+        // In tree mode the tree timer bounds the run: execFile's own timeout or buffer
+        // kill would signal the CLI alone and orphan its child server.
+        opts.killTree
+          ? { cwd: "/tmp", env, maxBuffer: Infinity }
+          : { timeout: CLI_TIMEOUT_MS, cwd: "/tmp", env, maxBuffer: 1024 * 1024 },
         (error, stdout, stderr) => {
+          if (treeTimer) clearTimeout(treeTimer);
           if (error) {
+            if (opts.quiet) {
+              console.warn(`[session-namer] ${harnessId} ${args.slice(0, 2).join(" ")} failed (exit ${String(error.code ?? "unknown")})`);
+              finish({ text: null, failure: `${binary} ${args.slice(0, 2).join(" ")} failed.` });
+              return;
+            }
             const stderrTail = typeof stderr === "string" ? stderr.slice(-200).trim() : "";
             console.warn(
               `[session-namer] ${harnessId} CLI failed:`,
@@ -552,6 +639,12 @@ function callCli(
 
       // Close stdin so the CLI does not wait for piped input.
       child.stdin?.end();
+      if (opts.killTree) {
+        treeTimer = setTimeout(() => {
+          killProcessTree(child, "SIGTERM", { label: `${harnessId}-naming` });
+          finish({ text: null, failure: `${binary} timed out after ${String(CLI_TIMEOUT_MS / 1000)}s.` });
+        }, CLI_TIMEOUT_MS);
+      }
 
       child.on("error", (err) => {
         console.warn(`[session-namer] ${harnessId} CLI spawn error:`, err.message);

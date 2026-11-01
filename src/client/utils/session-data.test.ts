@@ -325,6 +325,18 @@ describe("loadSessionHistory — modelInfo seeding", () => {
                   remembered: true,
                 },
               },
+              {
+                role: "assistant",
+                text: "",
+                permissionPrompt: {
+                  requestId: "perm-unanswered",
+                  phase: "denied",
+                  toolName: "Bash",
+                  summary: "Bash: rm -f ~/.gitconfig",
+                  createdAt: "2026-06-11T00:00:00.000Z",
+                  unanswered: { waitedMs: 1_800_000 },
+                },
+              },
             ],
             commits: [],
             fileTree: [],
@@ -342,6 +354,7 @@ describe("loadSessionHistory — modelInfo seeding", () => {
     expect(card?.phase).toBe("approved");
     expect(card?.remembered).toBe(true);
     expect(card?.path).toBe(".npmrc");
+    expect(usePermissionStore.getState().cards["perm-unanswered"]?.unanswered).toEqual({ waitedMs: 1_800_000 });
   });
 });
 
@@ -936,9 +949,13 @@ describe("loadSessionHistory — the file tree is session-scoped", () => {
     useSessionStore.getState().setSessionId("A");
     const loadA = loadSessionHistory("A");
     await vi.waitFor(() => expect(treeResolvers.A).toBeDefined());
-    treeResolvers.A(ok({ tree: [{ name: "a.txt", path: "a.txt", type: "file" }] }));
+    treeResolvers.A(ok({
+      tree: [{ name: "a.txt", path: "a.txt", type: "file" }],
+      persist: [{ name: "p.md", path: "/persist/p.md", type: "file" }],
+    }));
     await loadA;
     expect(useFileStore.getState().tree.map((n) => n.name)).toEqual(["a.txt"]);
+    expect(useFileStore.getState().persistTree.map((n) => n.path)).toEqual(["/persist/p.md"]);
   });
 
   it("does not lose the transcript when the tree request fails", async () => {

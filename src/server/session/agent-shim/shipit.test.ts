@@ -1,7 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { runShim, parseFlags, type ShimIO } from "./shipit.js";
 import {
   UNTRUSTED_OPEN_MARKER,
@@ -1034,11 +1035,11 @@ describe("shipit session message", () => {
     expect(out.stderr).toContain("child session id is required");
   });
 
-  it("requires -m/--message", async () => {
+  it("requires -m/--message or --body-file", async () => {
     const { run } = makeRunner();
     const out = await run(["session", "message", "ses_a"]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("--message is required");
+    expect(out.stderr).toContain("-m/--message (or --body-file -) is required");
   });
 
   it("rejects an oversized message client-side", async () => {
@@ -1048,7 +1049,113 @@ describe("shipit session message", () => {
     expect(out.stderr).toContain("exceeds 50,000");
   });
 
-  it("posts to /agent-ops/session/message/:childId and prints queue position when enqueued", async () => {
+  it("reads the message from --body-file without shell-interpreting backticks", async () => {
+    const file = await promptFile("Rename `getUser` and keep $(literal) intact.\n");
+    const { run } = makeRunner();
+    const out = await run(["session", "message", "ses_a", "--body-file", file], {
+      "POST /agent-ops/session/message/ses_a": { status: 200, body: { queuePosition: 0, enqueued: false } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toEqual({ text: "Rename `getUser` and keep $(literal) intact.\n" });
+  });
+
+  it("rejects an empty or oversized --body-file before calling the broker", async () => {
+    const { run } = makeRunner();
+    const empty = await run(["session", "message", "ses_a", "-F", await promptFile("\n")]);
+    expect(empty.exitCode).not.toBe(0);
+    expect(empty.stderr).toMatch(/the message in .*prompt\.txt is empty/);
+
+    const big = await run(["session", "message", "ses_a", "-F", await promptFile("x".repeat(50_001))]);
+    expect(big.exitCode).not.toBe(0);
+    expect(big.stderr).toContain("exceeds 50,000");
+    expect([...empty.calls, ...big.calls]).toHaveLength(0);
+  });
+
+  it("names the unreadable --body-file", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "message", "ses_a", "--body-file", "/no/such/message.txt"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("could not read body file /no/such/message.txt");
+  });
+
+  describe("--body-file -", () => {
+    function useStdin(opts: { tty?: boolean } = {}): PassThrough {
+      const stdin = new PassThrough();
+      if (opts.tty) Object.assign(stdin, { isTTY: true });
+      vi.spyOn(process, "stdin", "get").mockReturnValue(stdin as unknown as typeof process.stdin);
+      return stdin;
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("reads the message from piped stdin", async () => {
+      useStdin().end("From a heredoc with `backticks` and $(literal).\n");
+      const { run } = makeRunner();
+      const out = await run(["session", "message", "ses_a", "--body-file", "-"], {
+        "POST /agent-ops/session/message/ses_a": { status: 200, body: { queuePosition: 0, enqueued: false } },
+      });
+      expect(out.exitCode).toBe(0);
+      expect(out.calls[0].body).toEqual({ text: "From a heredoc with `backticks` and $(literal).\n" });
+    });
+
+    it("refuses a terminal on stdin, and an empty stdin, before calling the broker", async () => {
+      useStdin({ tty: true });
+      const { run } = makeRunner();
+      const tty = await run(["session", "message", "ses_a", "--body-file", "-"]);
+      expect(tty.exitCode).not.toBe(0);
+      expect(tty.stderr).toContain("no body on stdin");
+
+      vi.restoreAllMocks();
+      useStdin().end("\n");
+      const empty = await run(["session", "message", "ses_a", "-F", "-"]);
+      expect(empty.exitCode).not.toBe(0);
+      expect(empty.stderr).toContain("the message in stdin is empty");
+      expect([...tty.calls, ...empty.calls]).toHaveLength(0);
+    });
+  });
+
+  it.each([
+    ["steered", "was told during its running turn"],
+    ["started", "a turn started to tell its agent"],
+    ["later", "is told when the child is free"],
+  ])("says that the message is in the child's inbox and that its agent %s", async (told, phrase) => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "message", "ses_a", "-m", "Also do X"],
+      {
+        "POST /agent-ops/session/message/ses_a": {
+          status: 200,
+          body: { queuePosition: 0, enqueued: told === "later", told },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("in the child's inbox");
+    expect(out.stdout).toContain(phrase);
+    expect(out.stdout).not.toContain("queued (position");
+  });
+
+  // The message is stored, so the exit is 0: an error exit invites a second copy.
+  it("says so when the child could not be started, and does not ask for a resend", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "message", "ses_a", "-m", "Also do X"],
+      {
+        "POST /agent-ops/session/message/ses_a": {
+          status: 200,
+          body: { queuePosition: 0, enqueued: true, told: "failed", error: "container could not be resumed" },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("in the child's inbox");
+    expect(out.stdout).toContain("container could not be resumed");
+    expect(out.stdout).toContain("do not send the message again");
+  });
+
+  it("posts to /agent-ops/session/message/:childId; an orchestrator without the inbox reports a queue position", async () => {
     const { run } = makeRunner();
     const out = await run(
       ["session", "message", "ses_a", "-m", "Also do X"],
@@ -1068,7 +1175,7 @@ describe("shipit session message", () => {
     expect(out.calls[0].body).toEqual({ text: "Also do X" });
   });
 
-  it("prints 'starting turn' when the runner accepts the message directly", async () => {
+  it("prints 'starting turn' for an orchestrator without the inbox that accepted the message directly", async () => {
     const { run } = makeRunner();
     const out = await run(
       ["session", "message", "ses_a", "-m", "Hi"],
@@ -1584,6 +1691,54 @@ describe("shipit session rename (docs/250)", () => {
   });
 });
 
+describe("shipit session notify-on-merge <child> (docs/196-session-notify-on-merge)", () => {
+  const ROUTE = "POST /agent-ops/session/notify-on-merge/ses_child";
+  const armWith = async (body: Record<string, unknown>) => {
+    const { run } = makeRunner();
+    return run(["session", "notify-on-merge", "ses_child"], { [ROUTE]: { status: 200, body } });
+  };
+
+  it("reports a first arm and a repeated arm", async () => {
+    const armed = await armWith({ armed: true, state: "armed", alreadyArmed: false });
+    expect(armed.exitCode).toBe(0);
+    expect(armed.stdout).toContain("notify-on-merge: armed\n");
+
+    const again = await armWith({ armed: true, state: "armed", alreadyArmed: true });
+    expect(again.stdout).toContain("notify-on-merge: already armed\n");
+  });
+
+  it("docs/328-session-message-inbox req 6: says where the notice arrives", async () => {
+    const armed = await armWith({ armed: true, state: "armed", alreadyArmed: false });
+    expect(armed.stdout).toContain("on merge/close:");
+    expect(armed.stdout).toContain("shipit session inbox");
+  });
+
+  it("req 3: says that an arm made while an older notice is in delivery applies to the next pull request", async () => {
+    const out = await armWith({ armed: true, state: "merge-observed", alreadyArmed: false, skipsPr: 12 });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain(
+      "notify-on-merge: armed for the next PR; the notice about PR #12 is still in delivery\n",
+    );
+
+    const again = await armWith({ armed: true, state: "merge-observed", alreadyArmed: true, skipsPr: 12 });
+    expect(again.stdout).toContain("notify-on-merge: already armed for the next PR; the notice about PR #12");
+  });
+
+  it("req 4: names the pull request that the watch does not report again", async () => {
+    const out = await armWith({ armed: true, state: "armed", alreadyArmed: false, skipsPr: 12 });
+    expect(out.stdout).toContain(
+      "notify-on-merge: armed for the next PR; PR #12 was already reported to this session\n",
+    );
+  });
+
+  it("--json passes the response through", async () => {
+    const { run } = makeRunner();
+    const body = { armed: true, state: "armed", alreadyArmed: false, skipsPr: 12 };
+    const out = await run(["session", "notify-on-merge", "ses_child", "--json"], { [ROUTE]: { status: 200, body } });
+    expect(JSON.parse(out.stdout)).toEqual(body);
+  });
+});
+
 describe("shipit session continue-after-rebase (docs/303)", () => {
   const ARMED = { status: 200, body: { armed: true, notes: 1 } };
 
@@ -1720,6 +1875,16 @@ describe("shipit compact (docs/324-agent-requested-compaction)", () => {
     expect(out.calls[0]?.body).toEqual({});
   });
 
+  it("sends --user-asked, and says that no minimum applies (req 13)", async () => {
+    const { run } = makeRunner();
+    let out = await run(["compact", "--user-asked"], { "POST /agent-ops/compact": REQUESTED });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]?.body).toEqual({ userAsked: true });
+    expect(out.stdout).toMatch(/^minimum: none/m);
+    out = await run(["compact"], { "POST /agent-ops/compact": REQUESTED });
+    expect(out.stdout).not.toMatch(/^minimum: none/m);
+  });
+
   it("refuses an empty --note rather than silently not continuing", async () => {
     const { run } = makeRunner();
     const out = await run(["compact", "--note", "  "]);
@@ -1785,8 +1950,28 @@ describe("shipit session report", () => {
       to: "parent",
       subject: "regen",
     });
-    expect(out.stdout).toContain("delivered: 1/1 recipient(s) woken");
-    expect(out.stdout).toContain("parent Spell catalogs (ses_parent): woken");
+    // An orchestrator without the inbox sends no `told`: the report was a wake turn.
+    expect(out.stdout).toContain("delivered: parent Spell catalogs (ses_parent) — woken");
+  });
+
+  it("says that the report is in the parent's inbox and how its agent is told", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "regen wipes every catalog"], {
+      "POST /agent-ops/session/report": {
+        status: 200,
+        body: {
+          reportId: "r-1",
+          severity: "fyi",
+          to: "parent",
+          recipients: [
+            { sessionId: "ses_parent", title: "Spell catalogs", relation: "child", woken: true, told: "later" },
+          ],
+        },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("in the parent's inbox");
+    expect(out.stdout).toContain("is told when the parent is free");
   });
 
   it("defaults to severity fyi and the parent target", async () => {
@@ -1864,7 +2049,7 @@ describe("shipit session report", () => {
     expect(badTarget.calls).toHaveLength(0);
   });
 
-  it("exits non-zero when no recipient's agent could be woken", async () => {
+  it("exits non-zero when an orchestrator without the inbox could not wake the parent", async () => {
     const { run } = makeRunner();
     const out = await run(["session", "report", "-b", "x"], {
       "POST /agent-ops/session/report": {
@@ -1878,8 +2063,84 @@ describe("shipit session report", () => {
       },
     });
     expect(out.exitCode).toBe(1);
-    expect(out.stdout).toContain("NOT woken (container could not be resumed)");
+    expect(out.stdout).toContain("NOT delivered (container could not be resumed)");
     expect(out.stdout).toContain("the card was still posted");
+  });
+});
+
+describe("shipit session inbox (docs/328-session-message-inbox)", () => {
+  const TWO = {
+    status: 200,
+    body: {
+      all: false,
+      messages: [
+        { id: 4, createdAt: "2026-10-11T10:00:00.000Z", text: "[Agent message from CHILD session]\nthe regen command is broken" },
+        { id: 5, createdAt: "2026-10-11T10:05:00.000Z", text: "Child PR #7 merged" },
+      ],
+    },
+  };
+
+  it("prints every unread message in one call, oldest first", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "inbox"], { "POST /agent-ops/session/inbox": TWO });
+
+    expect(out.exitCode).toBe(0);
+    expect(out.calls).toEqual([expect.objectContaining({ method: "POST", path: "/agent-ops/session/inbox", body: { all: false } })]);
+    expect(out.stdout).toContain("2 unread message(s)");
+    expect(out.stdout).toContain("the regen command is broken");
+    expect(out.stdout).toContain("Child PR #7 merged");
+    expect(out.stdout.indexOf("the regen command is broken")).toBeLessThan(out.stdout.indexOf("Child PR #7 merged"));
+    expect(out.stdout).toContain("message 4 · sent 2026-10-11T10:00:00.000Z");
+  });
+
+  it("asks for every message with --all", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "inbox", "--all"], {
+      "POST /agent-ops/session/inbox": { status: 200, body: { ...TWO.body, all: true } },
+    });
+
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toEqual({ all: true });
+    expect(out.stdout).toContain("2 message(s) were sent to this session");
+    expect(out.stdout).not.toContain("marked as read");
+  });
+
+  it("says that nothing is unread, and names --all", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "inbox"], {
+      "POST /agent-ops/session/inbox": { status: 200, body: { all: false, messages: [] } },
+    });
+
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("No unread messages");
+    expect(out.stdout).toContain("--all");
+  });
+
+  it("refuses a session id: an agent reads its own inbox and no other", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "inbox", "ses_child"]);
+
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("takes no session id");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("--json prints the broker response verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "inbox", "--json"], { "POST /agent-ops/session/inbox": TWO });
+
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual(TWO.body);
+  });
+
+  it("surfaces a broker failure", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "inbox"], {
+      "POST /agent-ops/session/inbox": { status: 503, body: { error: "Session messages are not available on this ShipIt instance." } },
+    });
+
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("not available");
   });
 
   it("surfaces a 400 'no parent' rejection from the orchestrator", async () => {
@@ -3394,6 +3655,51 @@ describe("runShim — agent run", () => {
     expect(out.exitCode).toBe(1);
   });
 
+  it("prints why a failed run failed", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const reason = "The agent process exited before it reported a result. Exit code 2. Last stderr: error: config.toml is not valid";
+    const out = await run(["agent", "run", "--role", "reviewer", "--prompt-file", file], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "error", text: "", truncated: false, durationMs: 147, costUsd: 0, spawnId: "run-9", statusDetail: reason },
+      },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("shipit agent run: sub-agent error.");
+    expect(out.stderr).toContain(`shipit agent run: ${reason}`);
+    expect(out.stdout).toBe("");
+  });
+
+  it("names the output-size limit when that limit cut the output, and no cost limit", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run(["agent", "run", "--role", "reviewer", "--prompt-file", file], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "success", text: "a long review", truncated: true, outputLimitChars: 32_000, durationMs: 10, costUsd: 0 },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stderr).toContain("output-size limit (32,000 characters)");
+    expect(out.stderr).not.toMatch(/cost/i);
+  });
+
+  it("names the time limit when a timeout left the output incomplete", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run(["agent", "run", "--role", "reviewer", "--prompt-file", file], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "timeout", text: "partial...", truncated: true, durationMs: 1_800_000, costUsd: 0 },
+      },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("time limit");
+    expect(out.stderr).not.toContain("output-size limit");
+    expect(out.stderr).not.toMatch(/cost/i);
+  });
+
   it("prints the raw result object with --json", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
@@ -3700,6 +4006,35 @@ describe("shipit agent result — exit codes (docs/248)", () => {
     });
     expect(out.stderr).toContain("ShipIt restarted while this consult was running");
     expect(out.stdout).not.toContain("ShipIt restarted");
+  });
+
+  it("prints why a failed run failed when it reads the run back", async () => {
+    const { run } = makeRunner();
+    const reason = "The agent CLI reported that its credential is missing or was refused.";
+    const out = await run(["agent", "result", "run-77"], {
+      "GET /agent-ops/agent/result": {
+        status: 200,
+        body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "error", statusDetail: reason, createdAt: "x" },
+      },
+    });
+    expect(out.exitCode).toBe(3);
+    expect(out.stderr).toContain(`shipit agent result: ${reason}`);
+    expect(out.stdout).toBe("");
+  });
+
+  it("says which limit cut the output of a run that it reads back", async () => {
+    const { run } = makeRunner();
+    const cut = await run(["agent", "result"], { "GET /agent-ops/agent/result": card("success", { truncated: true }) });
+    expect(cut.exitCode).toBe(0);
+    expect(cut.stderr).toContain("output-size limit");
+    expect(cut.stderr).not.toMatch(/cost/i);
+
+    const timedOut = await run(["agent", "result"], { "GET /agent-ops/agent/result": card("timeout", { truncated: true }) });
+    expect(timedOut.stderr).toContain("time limit");
+    expect(timedOut.stderr).not.toContain("output-size limit");
+
+    const whole = await run(["agent", "result"], { "GET /agent-ops/agent/result": card("success") });
+    expect(whole.stderr).not.toContain("limit");
   });
 
   it("surfaces the explanation to a --json caller too", async () => {

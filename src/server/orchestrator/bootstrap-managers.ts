@@ -15,8 +15,8 @@ import { globalSystemPromptForTurn, type SystemPromptScope } from "./global-syst
 import { LogStore } from "./log-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import { ReleaseStatusPoller } from "./release-status-poller.js";
-import type { SessionRunnerRegistry } from "./session-runner.js";
-import { sessionHasLiveAgent } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
+import { isAgentWorking, sessionHasLiveAgent } from "./session-runner.js";
 import { releaseQueuedTurn } from "./queue-drain.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
@@ -48,6 +48,8 @@ import {
   createDepCacheDirHelper,
   createWarmPool,
   createWarmPreviewStarter,
+  warmPreviewState,
+  warmPreviewWanted,
   runRepoMigration,
   runRemoteCredentialScrub,
   clearUnrecordedRepoAddresses,
@@ -68,6 +70,8 @@ import { ScheduleStore } from "./schedule-store.js";
 import { ScheduleRunner } from "./schedule-runner.js";
 import { mountableRunDir, ScheduleNotes } from "./schedule-notes.js";
 import { ScheduleNotesRequestStore } from "./schedule-notes-request-store.js";
+import { SessionInboxStore } from "./session-inbox-store.js";
+import { SessionInbox } from "./services/session-inbox.js";
 import { ScheduleProposalStore } from "./schedule-proposal-store.js";
 import type { TurnEnd } from "./turn-settlement.js";
 import { createClaimSessionService } from "./services/claim-session.js";
@@ -84,6 +88,10 @@ import { MergeWatchManager } from "./merge-watch.js";
 import { QuotaContinuationManager } from "./services/quota-continuation.js";
 import { runRequestedRestart, type RequestedRestartTurn } from "./services/agent-restart-request.js";
 import { runRequestedCompaction } from "./services/agent-compaction-request.js";
+import { IdleCompaction } from "./services/idle-compaction.js";
+import { bootSessionRunner } from "./wake-session.js";
+import { nextTurnRouteId } from "./session-agent-env.js";
+import { reportStoppedBackgroundJobs, type StoppedBackgroundJobsReport } from "./services/stopped-background-jobs.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { CleanupContainerManager, CLEANUP_CONTAINER_SESSION_ID } from "./cleanup-container.js";
 import {
@@ -104,9 +112,7 @@ import { buildVerifiedPnpmBase } from "./pnpm-base-builder.js";
 import type { ContainerSessionRunner } from "./container-session-runner.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { CodexOAuthRefresher } from "./agents/codex/oauth-refresher.js";
-import { repushAgentToken, repushProviderAccountToken,
-  readSessionAccountMarker,
-} from "./session-credentials.js";
+import { createOAuthAccountRepush } from "./oauth-account-repush.js";
 import { MarketplaceStore } from "./marketplace-store.js";
 import type { UpdateMode } from "./services/updates.js";
 import type { VersionInfo } from "../shared/types.js";
@@ -125,7 +131,9 @@ import {
   trackComposeStop,
   type ComposeHelperConfig,
 } from "./service-manager-setup.js";
+import { releaseSessionNetworkQueued } from "./session-network-release.js";
 import { composeRegistryLoginDir } from "./compose-helper.js";
+import { dockerDesktopCheck } from "./compose-persist.js";
 import { createPluginInstallRunner, PLUGIN_INSTALL_NETWORK } from "./plugin-install.js";
 import { registerExistingPluginNetworks } from "./plugin-container.js";
 import { createGenerationDeletionLease } from "./plugin-leases.js";
@@ -253,6 +261,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
 
   containerManager?.on("container_destroyed", (sessionId, previewsStopped) => {
     if (previewsStopped) announcePreviewsStopped(sessionId);
+    // The agent can be the last container on the network of a stack that stopped before it (docs/091).
+    releaseSessionNetworkQueued(
+      containerManager.getDockerClient(), sessionId, () => serviceManagers.has(sessionId),
+    );
   });
   if (containerManager) announceEgressOnContainerStart(containerManager, sseBroadcast);
 
@@ -268,6 +280,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       sessionManager,
     });
   }
+  // docs/333-idle-compaction — built once the registry exists; the enforcer reads it at call time.
+  const idleCompactionRef: { ref: IdleCompaction | null } = { ref: null };
   // Reuse the enforcer: its state prevents repeated reclaim against a stale memory reading.
   let idleEnforcer: (() => void) | null = null;
   const enforceIdleContainerLimit = () => {
@@ -295,6 +309,13 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       poolWarmSessionIds: () => new Set(
         repoStore.list().flatMap((repo) => (repo.warmSessionId ? [repo.warmSessionId] : [])),
       ),
+      idleCompaction: {
+        isWaiting: (sessionId) => idleCompactionRef.ref?.isWaiting(sessionId) ?? false,
+        fire: (sessionId) => idleCompactionRef.ref?.fire(sessionId) ?? Promise.resolve(),
+        wokenSessions: () => idleCompactionRef.ref?.wokenSessions() ?? new Map(),
+        forgetWoken: (sessionId) => idleCompactionRef.ref?.forgetWoken(sessionId),
+        isStarting: (sessionId) => idleCompactionRef.ref?.isStarting(sessionId) ?? false,
+      },
     });
     idleEnforcer();
   };
@@ -307,7 +328,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     chatHistoryManager,
     usageManager,
     ...(credentialsDir ? { credentialsDir } : {}),
-    sessionManager,
     fallback: (prompt, cwd, opts) => generateText(prompt, cwd, opts),
   });
 
@@ -345,6 +365,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     getRunner: (sessionId) => registryHolder.ref?.get(sessionId) ?? null,
     broadcastLog,
     chatHistory: chatHistoryManager,
+    sessionManager,
     notifyAutoPush: (sessionId) => prStatusPollerRef.ref?.notifyAutoPush(sessionId),
     destructiveGitGuarded: (sessionId) => Boolean(sessionManager.get(sessionId)?.mergedHeadSha),
   });
@@ -485,6 +506,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       });
   };
 
+  const pluginDockerDesktop = containerManager ? dockerDesktopCheck(containerManager.dockerClient) : undefined;
   const resolvePluginServices = (
     sessionId: string,
     workspaceDir: string,
@@ -495,6 +517,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       ...(containerManager?.workspaceVolumeName
         ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
         : {}),
+      ...(pluginDockerDesktop ? { isDockerDesktop: pluginDockerDesktop } : {}),
       containEgress: containerManager?.isEgressContained(sessionId) ?? false,
       stackName: process.env.DOCKER_STACK,
       projectCompose: projectComposeAccess(sessionId, workspaceDir),
@@ -662,6 +685,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const settingsProposals = new SettingsProposalStore(databaseManager);
   const scheduleProposals = new ScheduleProposalStore(databaseManager);
   const scheduleNotesRequests = new ScheduleNotesRequestStore(databaseManager);
+  // Its rows reference `sessions`, so it uses the session manager's database.
+  const sessionInboxStore = new SessionInboxStore(sessionManager.database);
+  const sessionInboxRef: { ref: SessionInbox | null } = { ref: null };
 
   const quotaContinuationRef: { ref: QuotaContinuationManager | null } = { ref: null };
   const restoreWorkspace = (sessionId: string) =>
@@ -681,6 +707,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       providerAccountManager,
       containerManager,
       restoreWorkspace,
+      quotaContinuation: quotaContinuationRef.ref ?? undefined,
     }, turn);
   };
   const runRequestedCompactionForTurn = async (turn: RequestedRestartTurn): Promise<void> => {
@@ -691,7 +718,25 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       runnerRegistry: registry,
       chatHistoryManager,
       isEnabled: () => credentialStore.getAgentCompaction(),
+      getContextTokens: (id) => usageManager.latestContextTokens(id, chatHistoryManager.latestCompactionCard(id)),
     }, turn);
+  };
+
+  const reportStoppedBackgroundJobsForTurn = async (report: StoppedBackgroundJobsReport): Promise<void> => {
+    const registry = registryHolder.ref;
+    if (!registry) return;
+    await reportStoppedBackgroundJobs({
+      sessionManager,
+      runnerRegistry: registry,
+      chatHistoryManager,
+      defaultAgentId,
+      credentialsDir,
+      credentialStore,
+      providerAccountManager,
+      containerManager,
+      restoreWorkspace,
+      quotaContinuation: quotaContinuationRef.ref ?? undefined,
+    }, report);
   };
 
   const runnerRegistry = createRunnerRegistry({
@@ -705,6 +750,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     getQuotaContinuation: () => quotaContinuationRef.ref ?? undefined,
     runRequestedRestart: runRequestedRestartForTurn,
     runRequestedCompaction: runRequestedCompactionForTurn,
+    reportStoppedBackgroundJobs: reportStoppedBackgroundJobsForTurn,
     markCredentialRouteAuthFailed,
     clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh,
@@ -716,6 +762,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     settingsProposals,
     scheduleProposals,
     scheduleNotesRequests,
+    sessionInboxStore,
+    getSessionInbox: () => sessionInboxRef.ref ?? undefined,
     scheduledRuns: { store: scheduleStore, notes: scheduleNotes },
     logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
@@ -746,6 +794,34 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     },
   });
   registryHolder.ref = runnerRegistry;
+  sessionManager.setAgentWorkingTest((sessionId) => isAgentWorking(runnerRegistry.get(sessionId)));
+
+  const idleCompaction = new IdleCompaction({
+    isEnabled: () => credentialStore.getIdleCompaction(),
+    defaultAgentId,
+    sessionManager,
+    usageManager,
+    chatHistoryManager,
+    runnerRegistry,
+    containerManager,
+    wake: (session) => bootSessionRunner(
+      { sessionManager, runnerRegistry, defaultAgentId, containerManager, restoreWorkspace },
+      session,
+    ),
+    ...(credentialsDir ? {
+      nextTurnRouteId: (session: SessionInfo, agentId: AgentId, runner: SessionRunnerInterface | undefined) => nextTurnRouteId(
+        agentId,
+        session,
+        { credentialsDir, credentialStore, ...(providerAccountManager ? { providerAccountManager } : {}) },
+        runner,
+        usageManager.lastTurnCredentialRouteId(session.id),
+      ),
+    } : {}),
+    hasPreview: (sessionId) => serviceManagers.has(sessionId),
+  });
+  idleCompactionRef.ref = idleCompaction;
+  // Before any turn can end: an adopted turn's result arms a deadline too.
+  usageManager.onAnchoredTurn((turn) => idleCompaction.arm(turn));
 
   const repoPrefetcher: RepoPrefetcher | null = isTestMode ? null : createRepoPrefetcher({
     repoStore, getBareCacheDir, createRepoGit, githubAuthManager,
@@ -761,6 +837,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const quotaContinuationManager = new QuotaContinuationManager({
     sessionManager,
     runnerRegistry,
+    chatHistoryManager,
     defaultAgentId,
     credentialsDir,
     credentialStore,
@@ -773,10 +850,25 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   });
   quotaContinuationRef.ref = quotaContinuationManager;
 
+  const sessionInbox = new SessionInbox({
+    store: sessionInboxStore,
+    sessionManager,
+    runnerRegistry,
+    defaultAgentId,
+    credentialsDir,
+    credentialStore,
+    providerAccountManager,
+    containerManager,
+    restoreWorkspace,
+    probeLiveWork: (sessionId) => workerHasLiveWork(containerManager, sessionId),
+  });
+  sessionInboxRef.ref = sessionInbox;
+
   const mergeWatchManager = new MergeWatchManager({
     sessionManager,
     runnerRegistry,
     chatHistoryManager,
+    sessionInbox,
     defaultAgentId,
     credentialsDir,
     credentialStore,
@@ -835,29 +927,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   });
 
   if (!isTestMode) {
-    const repushOAuthAccountToken = (logPrefix: string) => (agentId: AgentId, accountId: string): void => {
-      let healed = 0;
-      for (const session of sessionManager.list()) {
-        if (!session.agentPinned || session.agentId !== agentId) continue;
-        // Use the credential subtree's account marker; routing may have changed.
-        const marked = readSessionAccountMarker(credentialsDir, session.id)[agentId];
-        if (marked !== undefined && marked !== accountId) continue;
-        try {
-          // Credential repair unlinks files and would interrupt a live CLI.
-          const opts = { repairLeakedSubtrees: !sessionHasLiveAgent(runnerRegistry, session.id) };
-          const wrote =
-            marked !== undefined
-              ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId, undefined, undefined, opts)
-              : repushAgentToken(credentialsDir, session.id, agentId, undefined, undefined, opts);
-          if (wrote) healed++;
-        } catch (err) {
-          console.error(`[${logPrefix}] repush failed for session ${session.id}:`, err);
-        }
-      }
-      if (healed > 0) {
-        console.log(`[${logPrefix}] propagated refreshed ${agentId}/${accountId} token to ${healed} pinned session(s)`);
-      }
-    };
+    const repushOAuthAccountToken = (logPrefix: string) => createOAuthAccountRepush({
+      credentialsDir,
+      listSessions: () => sessionManager.list(),
+      hasLiveAgent: (sessionId) => sessionHasLiveAgent(runnerRegistry, sessionId),
+    }, logPrefix);
     const refresher = new ClaudeOAuthRefresher({
       credentialsDir,
       providerAccountManager,
@@ -866,6 +940,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       runtimeMode,
     });
     claudeOAuthRefresherRef.ref = refresher;
+    // Local mode keeps naming in the account root, where its turn CLIs run as well.
+    if (runtimeMode === "containerized") {
+      providerAccountManager.attachClaudeCredentialCopy((accountId, run) => refresher.runInPrivateCopy(accountId, run));
+    }
     refresher.start();
     refresher.on("account_unauthenticated", (accountId: string) => {
       markProviderAccountUnauthenticated({
@@ -1022,13 +1100,20 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       })
     : undefined;
 
-  const { warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession } = createWarmPool({
+  const {
+    warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession, repairWarmPreview, refreshWarmSession,
+  } = createWarmPool({
     repoStore, sessionManager, createRepoGit,
     githubAuthManager, containerManager,
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
     oomBreaker,
     getMemoryStats: () => latestMemoryStats.value,
     ...(preStartWarmPreview ? { preStartPreview: preStartWarmPreview } : {}),
+    previewWanted: (target) => warmPreviewWanted(target, { repoStore, serviceManagers }),
+    // The claim service is built below and needs this pool; the sweep calls this only after startup.
+    refreshWarmClone: (repoUrl: string, sessionId: string) =>
+      claimSessionService.refreshWarm(repoUrl, sessionId),
+    previewGate: (sessionId: string) => serviceManagers.get(sessionId),
   });
 
   // Scrub before migration creates repo rows; move directories keyed by the old URL hash too.
@@ -1065,6 +1150,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     ...(repoPrefetcher ? { shouldSkipClaimFetch: (url: string) => repoPrefetcher.coveredRecently(url) } : {}),
     ...(containerManager ? { containerManager } : {}),
     egressAllowlistStore,
+    previewState: (sessionId: string) => warmPreviewState(serviceManagers.get(sessionId)),
   });
 
   // docs/324-scheduled-sessions — runs start through the same headless start as Quick Capture.
@@ -1128,7 +1214,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         scheduleAutoPush: (git, id) => autoPushScheduler.schedule(git, id ?? sessionId),
         sseBroadcast,
       },
-    }, runnerRegistry.get(sessionId) ?? null),
+    }, runnerRegistry.get(sessionId) ?? null) === "turn",
     statusCardEnabled: () => credentialStore.getSessionStatusCard(),
     notes: scheduleNotes,
   });
@@ -1146,6 +1232,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     });
   } catch (err: unknown) {
     console.error("[turn-reattach] startup sweep failed:", err);
+  }
+  // After adoption: a fire that is due at once must see the turns the sweep adopted as running.
+  try {
+    idleCompaction.rederive();
+  } catch (err: unknown) {
+    console.error("[idle-compaction] re-deriving the deadlines at boot failed:", err);
   }
   void reconcileAgentMergeClaims({
     claims: agentMergeClaims,
@@ -1167,6 +1259,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     runnerRegistry,
   });
   agentMergeExecutor.start();
+
+  sessionInbox.start();
+  quotaContinuationManager.start();
 
   void (async () => {
     try {
@@ -1230,16 +1325,20 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     repoPrefetcher,
     drainQueueForSession,
     mergeWatchManager,
+    sessionInbox,
+    sessionInboxStore,
     quotaContinuationManager,
     runRequestedRestartForTurn,
     runRequestedCompactionForTurn,
+    reportStoppedBackgroundJobsForTurn,
+    idleCompaction,
     prStatusPoller,
     releaseStatusPoller,
     limitsRegistry,
     recordAgentRateLimits,
     markSessionAccountExhausted,
     createSessionDir,
-    warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession, preStartWarmPreview,
+    warmSessionForRepo, waitForWarmSession, ensureStandbyForWarmSession, repairWarmPreview, refreshWarmSession,
     migratedRepoUrls,
     startupTimer,
     agentMergeClaims,

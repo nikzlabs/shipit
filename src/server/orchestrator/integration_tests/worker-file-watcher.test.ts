@@ -76,6 +76,47 @@ describe("Worker File Watcher Endpoints", () => {
   });
 });
 
+describe("Worker /persist watcher", () => {
+  it("reports /persist changes as absolute paths and stops both watchers", async () => {
+    const watchers: StubWatcher[] = [];
+    const worker = new SessionWorker({
+      agentFactory: () => new FakeWorkerAgent(),
+      port: 0,
+      host: "127.0.0.1",
+      workspaceDir: "/workspace",
+      persistDir: "/persist",
+      createFileWatcher: () => {
+        const w = new StubWatcher();
+        watchers.push(w);
+        return w as unknown as FileWatcher;
+      },
+    });
+    const address = await worker.start();
+    const match = /:(\d+)$/.exec(address);
+    const events: { type: string; data: unknown }[] = [];
+    const sse = collectSSE(`http://127.0.0.1:${match ? match[1] : 0}`, (type, data) => events.push({ type, data }));
+    await new Promise((r) => setTimeout(r, 100));
+
+    await worker.getApp().inject({ method: "POST", url: "/files/watch" });
+    const [workspaceWatcher, persistWatcher] = watchers;
+    expect(watchers.map((w) => w.lastPath)).toEqual(["/workspace", "/persist"]);
+
+    persistWatcher.simulateChanges(["notes/plan.md"]);
+    workspaceWatcher.simulateChanges(["src/App.tsx"]);
+    await waitFor(() => events.filter((e) => e.type === "file_changes").length === 2, 2000, "file_changes SSE");
+    expect(events.filter((e) => e.type === "file_changes").map((e) => e.data)).toEqual([
+      { paths: ["/persist/notes/plan.md"] },
+      { paths: ["src/App.tsx"] },
+    ]);
+
+    await worker.getApp().inject({ method: "POST", url: "/files/unwatch" });
+    expect(watchers.every((w) => w.stopCalled)).toBe(true);
+
+    sse.close();
+    await worker.stop();
+  });
+});
+
 describe("ContainerSessionRunner File Watcher Proxy", () => {
   let worker: SessionWorker;
   let lastWatcher: StubWatcher;

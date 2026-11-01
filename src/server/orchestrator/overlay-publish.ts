@@ -5,7 +5,7 @@ import type { Readable } from "node:stream";
 
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
-import { computeInstallDepsHash, hasInstallLifecycleScript } from "../shared/deps-hash.js";
+import { computeInstallDepsHash, contentKeyDescribesTree as describesTree } from "../shared/deps-hash.js";
 import {
   isOverlayEnabled,
   isPnpmRepo,
@@ -169,9 +169,7 @@ export async function publishDepDirOverlayBases(
       installCommands: args.installCommands,
       depsHash: computeInstallDepsHash(workspaceDir, args.installCommands, installInputs),
     };
-    // Lifecycle scripts may read unhashed files; reuse requires an explicit input list in that case.
-    contentKeyDescribesTree =
-      (installInputs !== null && installInputs.length > 0) || !hasInstallLifecycleScript(workspaceDir);
+    contentKeyDescribesTree = describesTree(workspaceDir, installInputs);
   }
 
   const repoGit = deps.createRepoGit(deps.getBareCacheDir(scope.repoUrl));

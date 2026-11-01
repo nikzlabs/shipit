@@ -3,12 +3,12 @@ import { sendChildMessage, deliverSessionMessage } from "./child-sessions.js";
 import { ServiceError } from "./types.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
-import type { AgentId, SessionInfo } from "../../shared/types.js";
-import { TURN_COMPLETED, type TurnAdmission } from "../turn-settlement.js";
+import type { SessionInfo } from "../../shared/types.js";
+import type { InboxTold, SessionInbox } from "./session-inbox.js";
 
 /**
- * docs/314 req 7 — the delivery body is now shared with the proposal card's
- * route, so this pins the thing that must NOT have travelled with it:
+ * docs/314 req 7 — the delivery body is shared with the proposal card's route,
+ * so this pins the thing that must NOT have travelled with it:
  * `sendChildMessage` still admits a direct child and nothing else.
  */
 
@@ -22,6 +22,7 @@ const ROOT: SessionInfo = {
 
 const SIBLING: SessionInfo = { ...ROOT, id: "sibling-1", parentSessionId: "other-parent" };
 const GRANDCHILD: SessionInfo = { ...ROOT, id: "gc-1", parentSessionId: "child-1" };
+const ORIGIN = { sessionId: "reporter-1", sessionTitle: "Reporter", relation: "proposed" as const };
 
 function stubSessionManager(sessions: SessionInfo[]): SessionManager {
   return {
@@ -30,23 +31,17 @@ function stubSessionManager(sessions: SessionInfo[]): SessionManager {
   } as unknown as SessionManager;
 }
 
-function stubRegistry(agentId: AgentId = "claude", admitted: TurnAdmission = "started") {
-  // The caller reads the handle's admission; a bare vi.fn() would hide it.
-  const runner = {
-    agentId,
-    running: false,
-    disposed: false,
-    dispatch: vi.fn((_opts: unknown) => (
-      { admitted, settled: Promise.resolve(TURN_COMPLETED) }
-    )),
-  };
+function stubDeps(told: InboxTold = "started") {
+  const post = vi.fn<SessionInbox["post"]>(async () => ({ told }));
+  const append = vi.fn();
   return {
-    runner,
-    registry: {
-      getOrCreate: vi.fn(() => runner),
-      get: vi.fn(() => runner),
-      dispose: vi.fn(),
-    } as unknown as SessionRunnerRegistry,
+    post,
+    append,
+    deps: {
+      sessionInbox: { post },
+      runnerRegistry: { get: () => undefined } as unknown as SessionRunnerRegistry,
+      chatHistoryManager: { append, replaceInProgress: vi.fn() },
+    },
   };
 }
 
@@ -56,76 +51,72 @@ describe("sendChildMessage reach, after the docs/314 extraction", () => {
     ["a sibling", SIBLING],
     ["a grandchild", GRANDCHILD],
   ])("still refuses %s", async (_label, target) => {
-    const { registry, runner } = stubRegistry();
+    const { deps, post, append } = stubDeps();
     await expect(sendChildMessage(
-      stubSessionManager([target]),
-      registry,
+      { ...deps, sessionManager: stubSessionManager([target]) },
       "parent-1",
       target.id,
       "report back",
-      "claude",
-      undefined,
-      undefined,
     )).rejects.toMatchObject({ statusCode: 404 });
-    expect(runner.dispatch).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
   });
 });
 
 describe("deliverSessionMessage", () => {
-  it("dispatches into a session with no link to the caller, carrying the origin", async () => {
-    const { registry, runner } = stubRegistry();
-    const result = await deliverSessionMessage(
-      stubSessionManager([ROOT]),
-      registry,
-      ROOT,
-      "PR is open.",
-      { sessionId: "reporter-1", sessionTitle: "Reporter", relation: "proposed" },
-      "claude",
-      undefined,
-      undefined,
-    );
+  it("stores the message in the inbox of a session with no link to the caller, carrying the origin", async () => {
+    const { deps, post } = stubDeps();
+    const result = await deliverSessionMessage(deps, ROOT, "PR is open.", ORIGIN);
 
-    expect(result).toMatchObject({ queuePosition: 0, admitted: "started" });
-    expect(runner.dispatch).toHaveBeenCalledTimes(1);
-    expect(runner.dispatch.mock.calls[0][0]).toMatchObject({
-      text: "PR is open.",
-      messageOrigin: { sessionId: "reporter-1", relation: "proposed" },
+    expect(result).toEqual({ queuePosition: 0, enqueued: false, told: "started" });
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post).toHaveBeenCalledWith(ROOT, { origin: ORIGIN, body: "PR is open." });
+  });
+
+  // docs/314-session-message-proposal req 6 — the user of the receiving session sees the
+  // message and its sender in the transcript, whenever the agent reads its inbox.
+  it("puts a card with the message and the sender's name in the recipient's transcript", async () => {
+    const { deps, append } = stubDeps("later");
+    await deliverSessionMessage(deps, ROOT, "PR is open.", ORIGIN);
+
+    expect(append).toHaveBeenCalledTimes(1);
+    const [recipient, row] = append.mock.calls[0]!;
+    expect(recipient).toBe("root-1");
+    // No text: a row with text is replayed to an agent as part of its own conversation.
+    expect(row).toMatchObject({ role: "assistant", text: "" });
+    expect(row.sessionReport).toMatchObject({
+      fromSessionId: "reporter-1",
+      fromTitle: "Reporter",
+      relation: "proposed",
+      body: "PR is open.",
     });
+    expect(row.sessionReport).not.toHaveProperty("severity");
   });
 
   /**
-   * A STEERED message reaches a running target immediately. Reporting it as
-   * queued — which reading `runner.running` would do — puts "Queued behind…" on
-   * a card whose message has already arrived.
+   * A steered notice reaches a running target at once. Reporting it as waiting
+   * puts "its agent is told when it is free" on a card whose notice has arrived.
    */
-  it("reports a steered dispatch as steered, not queued", async () => {
-    const { registry } = stubRegistry("claude", "steered");
-    const result = await deliverSessionMessage(
-      stubSessionManager([ROOT]),
-      registry,
-      ROOT,
-      "PR is open.",
-      { sessionId: "reporter-1", sessionTitle: "Reporter", relation: "proposed" },
-      "claude",
-      undefined,
-      undefined,
-    );
-    expect(result.admitted).toBe("steered");
-    expect(result.queuePosition).toBe(0);
+  it.each([
+    ["steered", false],
+    ["started", false],
+    ["later", true],
+    ["failed", true],
+  ] as const)("reports a recipient that was told %s as waiting=%s", async (told, waiting) => {
+    const result = await deliverSessionMessage(stubDeps(told).deps, ROOT, "PR is open.", ORIGIN);
+    expect(result.told).toBe(told);
+    expect(result.enqueued).toBe(waiting);
   });
 
-  it("refuses a target with no workspace rather than creating a runner for it", async () => {
-    const { registry, runner } = stubRegistry();
+  it("refuses a target with no workspace rather than storing a message for it", async () => {
+    const { deps, post, append } = stubDeps();
     await expect(deliverSessionMessage(
-      stubSessionManager([]),
-      registry,
+      deps,
       { ...ROOT, workspaceDir: undefined } as unknown as SessionInfo,
       "hi",
-      { sessionId: "reporter-1", sessionTitle: "Reporter", relation: "proposed" },
-      "claude",
-      undefined,
-      undefined,
+      ORIGIN,
     )).rejects.toBeInstanceOf(ServiceError);
-    expect(runner.dispatch).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
   });
 });

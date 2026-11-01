@@ -2,8 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 /** Use an account-scoped home; credential-less spawns need scratch XDG_DATA_HOME. */
-export function ensureOpencodeDataDir(home: string): string | null {
-  const dir = path.join(home, ".local", "share", "opencode");
+export function ensureOpencodeDataDir(home: string, rel = path.join(".local", "share", "opencode")): string | null {
+  const dir = path.join(home, rel);
 
   // mkdir on a dangling symlink fails; inspect the link and create its target.
   const stat = fs.lstatSync(dir, { throwIfNoEntry: false });

@@ -25,9 +25,9 @@ async function bundleBridge(basename: string, outdir: string): Promise<string> {
   return path.join(outdir, `${basename}.js`);
 }
 
-function handshake(bundlePath: string, cwd: string, tools: string): Promise<string> {
+function handshake(bundlePath: string, cwd: string, tools: string, args: string[] = []): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(process.execPath, [bundlePath], {
+    const proc = spawn(process.execPath, [bundlePath, ...args], {
       stdio: ["pipe", "pipe", "pipe"],
       cwd,
       env: { ...process.env, WORKER_PORT: "9999", SHIPIT_MCP_TOOLS: tools },
@@ -74,6 +74,24 @@ describe("precompiled MCP bridge bundle (docs/199, planning#130)", () => {
       expect(out).toContain("permission_prompt");
       // Match the name key: another tool's description mentions AskUserQuestion.
       expect(out).not.toContain('"name":"AskUserQuestion"');
+    } finally {
+      fs.rmSync(buildDir, { recursive: true, force: true });
+      fs.rmSync(runDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("runs the service proxy under node with no node_modules, before its service answers (docs/327)", async () => {
+    const buildDir = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-build-"));
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "proxy-run-"));
+    try {
+      const built = await bundleBridge("mcp-service-proxy", buildDir);
+      const bundle = path.join(runDir, "mcp-service-proxy.js");
+      fs.copyFileSync(built, bundle);
+
+      // Port 1 refuses at once: the agent must still get an answer and an empty list.
+      const out = await handshake(bundle, runDir, "", ["http://127.0.0.1:1/mcp"]);
+      expect(out).toContain('"listChanged":true');
+      expect(out).toContain('"tools":[]');
     } finally {
       fs.rmSync(buildDir, { recursive: true, force: true });
       fs.rmSync(runDir, { recursive: true, force: true });

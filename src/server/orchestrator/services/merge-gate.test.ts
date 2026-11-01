@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  decideMerge, readMergeObservation, githubRefusalClearsByItself, mergeFlushRefusal, type MergeObservation,
+  decideMerge, describeBackgroundWork, readMergeObservation, githubRefusalClearsByItself, mergeFlushRefusal,
+  type MergeObservation,
 } from "./merge-gate.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
@@ -98,6 +99,14 @@ describe("readMergeObservation", () => {
   it("reads an absent rollup and an explicit null rollup the same way", async () => {
     const explicit = await readMergeObservation(manager(prNode({}, null)), "o", "r", 7);
     expect(explicit).toMatchObject({ rollupState: null });
+  });
+});
+
+describe("describeBackgroundWork", () => {
+  it("bounds what the agent wrote: one line each, three at most", () => {
+    expect(describeBackgroundWork(["sleep 1200;\n  gh pr view 7"])).toBe('"sleep 1200; gh pr view 7"');
+    expect(describeBackgroundWork(["x".repeat(200)])).toBe(`"${"x".repeat(79)}…"`);
+    expect(describeBackgroundWork(["a", "b", "c", "d", "e"])).toBe('"a", "b", "c" and 2 more');
   });
 });
 

@@ -138,6 +138,16 @@ export function githubRefusalClearsByItself(message: string): boolean {
     && !/\b(?:fail(?:ing|ed)?|error(?:ed)?|cancel(?:led|ed))\b/i.test(text);
 }
 
+/** The agent wrote these descriptions; bound them so one long command cannot fill a message. */
+export function describeBackgroundWork(work: string[]): string {
+  const shown = work.slice(0, 3).map((w) => {
+    const line = w.replace(/\s+/g, " ").trim();
+    return `"${line.length > 80 ? `${line.slice(0, 79)}…` : line}"`;
+  });
+  const more = work.length - shown.length;
+  return shown.join(", ") + (more > 0 ? ` and ${more} more` : "");
+}
+
 export type MergeDecision =
   | { action: "merge"; sha: string }
   | { action: "arm"; sha: string }

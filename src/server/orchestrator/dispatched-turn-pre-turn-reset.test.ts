@@ -182,7 +182,7 @@ describe("dispatched turn — pre-turn merged-branch reset (planning#333)", () =
 
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
-    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none" }));
     await flushTurn();
 
     expect(calls).toHaveLength(0);
@@ -274,7 +274,7 @@ describe("dispatched turn — the parked sync notice (docs/221, nikzlabs/shipit#
 
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
-    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none" }));
     await flushTurn();
 
     expect(consumed).toEqual([]);
@@ -372,7 +372,7 @@ describe("dispatched turn — a resolved bug-report card (nikzlabs/shipit#2350)"
     expect(promptSeen).toContain("carry on");
   });
 
-  it("does NOT consume it for a system turn — that is ShipIt talking to itself", async () => {
+  it("does NOT consume it for a driver-owned turn — that is ShipIt talking to itself", async () => {
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);
     const consumed: string[] = [];
@@ -385,7 +385,7 @@ describe("dispatched turn — a resolved bug-report card (nikzlabs/shipit#2350)"
 
     runner = makeRunner();
     runner.setSystemTurnDeps(deps);
-    runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none" }));
     await flushTurn();
 
     expect(consumed).toEqual([]);
@@ -407,5 +407,34 @@ describe("dispatched turn — a resolved bug-report card (nikzlabs/shipit#2350)"
     await flushTurn();
 
     expect(promptSeen).toBe("keep going");
+  });
+});
+
+// planning#695 — the drain of a dispatched turn ran the next turn's setup with no catch, so
+// the sender of a queued turn whose setup threw never heard of it.
+describe("dispatched turn — a queued turn whose setup fails when this turn drains it", () => {
+  let runner: SessionRunner;
+  afterEach(() => { runner?.dispose({ force: true }); vi.restoreAllMocks(); });
+
+  it("tells its sender that it failed to start", async () => {
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    const spawn = deps.agentFactory;
+    deps.agentFactory = (agentId) => {
+      if (agents.length === 1) throw new Error("container unreachable");
+      return spawn(agentId);
+    };
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "first" }));
+    await flushTurn();
+    const queued = runner.dispatch(testDispatch({ text: "a wake" }));
+    expect(queued.admitted).toBe("queued");
+
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "after" });
+    const outcome = await queued.settled;
+
+    expect(outcome.status).toBe("errored");
+    expect(outcome.detail).toBe("dispatched turn failed to start: container unreachable");
   });
 });

@@ -1,5 +1,9 @@
 import { usePrStore } from "../stores/pr-store.js";
-import { useSessionStore } from "../stores/session-store.js";
+import {
+  compactAfterMergeEnabled,
+  contextUnderCompactionMinimum,
+  useSessionStore,
+} from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { isCompactCommand } from "../../server/shared/compact-command.js";
@@ -28,9 +32,9 @@ import { getSavedMergeContinueOptOut, readOptOutSessionKey } from "./local-stora
  * decides". A card button is pressed by the user, in the view the checkbox is
  * in, often in the same breath as unticking it — the checkbox is right there,
  * and req 5 says an untick applies to the user's next message. So these frames
- * honour it. A continuation with genuinely no checkbox — a wake turn, a
- * `shipit session message`, a click inside an agent-built page — never reaches
- * this function and is unaffected.
+ * honour it, and so does a message from an agent-built page (req 14). A
+ * continuation with genuinely no checkbox — a wake turn, a `shipit session
+ * message` — never reaches this function and is unaffected.
  *
  * Only an opt-out is carried. A ticked control needs no field: absent and
  * `true` both mean "do it", and the server's own eligibility gates still apply.
@@ -38,6 +42,13 @@ import { getSavedMergeContinueOptOut, readOptOutSessionKey } from "./local-stora
  * authority over state the composer and the sender now share: with the control
  * shown and ticked it said `true`, and an omitted field means the same thing to
  * the server. One reader, one rule.
+ *
+ * The compaction half is different: the choice is kept for the session on the
+ * server (docs/295 req 5), which reads it for itself. The frame carries it only
+ * while the user's last click is still being saved, in either direction, so a
+ * send made right after a click cannot overtake the write that records it. A
+ * message that waits in the queue then follows the saved choice at its drain,
+ * including a change made in the PR card menu meanwhile.
  */
 export interface MergeContinueFrameFields {
   resetMergedBranch?: boolean;
@@ -47,13 +58,13 @@ export interface MergeContinueFrameFields {
 export function mergeContinueFrameFields(
   sessionId: string | undefined,
 ): MergeContinueFrameFields {
-  const optOut = sessionId
-    ? usePrStore.getState().mergeContinueOptOutBySession[sessionId]
-      ?? getSavedMergeContinueOptOut(sessionId)
-    : {};
+  if (!sessionId) return {};
+  const optOut = usePrStore.getState().mergeContinueOptOutBySession[sessionId]
+    ?? getSavedMergeContinueOptOut(sessionId);
+  const unsavedCompact = useSessionStore.getState().pendingCompactAfterMerge[sessionId];
   return {
     ...(optOut.reset ? { resetMergedBranch: false } : {}),
-    ...(optOut.compact ? { compactContext: false } : {}),
+    ...(unsavedCompact !== undefined ? { compactContext: unsavedCompact } : {}),
   };
 }
 
@@ -64,11 +75,11 @@ export function mergeContinueFrameFields(
  * running, so it belongs in the queue strip from the first frame rather than as
  * a bubble that collapses into one (`utils/predicted-queue.ts`).
  *
- * It answers from the only evidence the user has — the state of the controls
- * they are looking at — so it is true exactly when the composer is offering the
+ * It answers from the evidence the user has: the composer is offering the
  * compaction control (`MessageInput`'s `showCompactControl`) with its box still
- * ticked. It reads that tick through `mergeContinueFrameFields` rather than the
- * store, so the prediction and the frame cannot disagree about it.
+ * ticked, and the context dial does not show a context under the minimum
+ * (docs/295-compact-context-on-merge req 15). It reads that tick through
+ * `compactAfterMergeEnabled`, which is what the box itself shows.
  *
  * The server decides for real, in `shouldCompactBeforeTurn`, and the clauses it
  * adds are invisible here: a replay seed, background work the resident process
@@ -95,18 +106,22 @@ export function compactRunsBeforeTurn(sessionId: string | undefined, text: strin
   if (isCompactCommand(trimmed) || isGoalCommand(trimmed)) return false;
   if (useSessionStore.getState().isLoading) return false;
   if (!usePrStore.getState().resetEligibleBySession[sessionId]) return false;
+  if (usePrStore.getState().compactionSpentBySession[sessionId]) return false;
   if (!useSettingsStore.getState().autoResetMergedBranch) return false;
   const ui = useUiStore.getState();
   const supportsCompaction =
     ui.agentList.find((a) => a.id === ui.activeAgentId)?.supportsCompaction ?? false;
   if (!supportsCompaction) return false;
-  return mergeContinueFrameFields(sessionId).compactContext !== false;
+  if (contextUnderCompactionMinimum(useSessionStore.getState(), sessionId)) return false;
+  return compactAfterMergeEnabled(useSessionStore.getState(), sessionId);
 }
 
 /**
- * The untick applied to ONE message (req 5), and this is where that message is
- * declared gone. Called only on a send that actually reached the wire, so a
- * refused or dropped send leaves the user's choice intact for their retry.
+ * The reset untick applied to ONE message (docs/218), and this is where that
+ * message is declared gone. Called only on a send that actually reached the
+ * wire, so a refused or dropped send leaves the user's choice intact for their
+ * retry. The compaction untick is the session's kept choice (docs/295 req 5),
+ * so a send never spends it.
  *
  * Paired with `mergeContinueFrameFields` on purpose: read and consume live in
  * one module, and `sendUserTurn` / `dispatchAgentMessage` are the only callers,
@@ -123,9 +138,7 @@ export function consumeMergeContinueIntent(
   // path snapshots the intent, awaits a response, and would otherwise delete an
   // untick the user made WHILE the request was in flight — a choice that send
   // never carried, for a message that has not gone yet.
-  const store = usePrStore.getState();
-  if (carried.resetMergedBranch === false) store.setMergeContinueOptOut(sessionId, "reset", false);
-  if (carried.compactContext === false) store.setMergeContinueOptOut(sessionId, "compact", false);
+  if (carried.resetMergedBranch === false) usePrStore.getState().setMergeContinueOptOut(sessionId, "reset", false);
 }
 
 /**

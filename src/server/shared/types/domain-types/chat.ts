@@ -315,6 +315,12 @@ export interface RepoSessionProposalCard {
   createdAt: string;
   /** Absent until the user clicks. */
   state?: "starting" | "started" | "failed" | "declined";
+  /**
+   * The session a start allocated, recorded before its prompt is sent. It is what lets a
+   * later click find a session whose start never reported back, instead of making a second.
+   * It can name a session that is gone; `startedSessionId` replaces it once the start is recorded.
+   */
+  pendingSessionId?: string;
   startedSessionId?: string;
   startedAt?: string;
   declinedAt?: string;

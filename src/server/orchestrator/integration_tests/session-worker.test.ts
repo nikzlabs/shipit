@@ -513,7 +513,8 @@ describe("Integration: Session Worker IPC", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    const proxy = await runner.startAgentOnWorker("codex", { prompt: "edit .npmrc", cwd: "/workspace" });
+    // The fake reports itself as Claude, which asks for no approval in Auto mode (docs/193-sensitive-file-permission req 9).
+    const proxy = await runner.startAgentOnWorker("codex", { prompt: "edit .npmrc", cwd: "/workspace", permissionMode: "guarded" });
 
     interface PermEvent { type: string; requestId?: string; path?: string; behavior?: string }
     let cardRequestId: string | undefined;
@@ -562,6 +563,55 @@ describe("Integration: Session Worker IPC", () => {
     runner.dispose();
   });
 
+  it("marks the request of a background subagent's call, and leaves the main agent's unmarked (docs/193 req 3)", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-perm-subagent",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "codex",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const proxy = await runner.startAgentOnWorker("codex", { prompt: "write", cwd: "/workspace", permissionMode: "guarded" });
+    const requests: { toolName?: string; subagent?: string }[] = [];
+    proxy.on("event", (event: { type: string }) => {
+      if (event.type === "agent_permission_request") requests.push(event as { type: string; subagent?: string });
+    });
+
+    const use = (id: string, name: string) => [{ type: "tool_use" as const, id, name, input: {} }];
+    lastAgent.emit("event", { type: "agent_assistant", content: use("agent-1", "Agent") });
+    lastAgent.emit("event", { type: "agent_tool_result", content: [{ type: "tool_result", tool_use_id: "agent-1", content: "launched" }] });
+    lastAgent.emit("event", { type: "agent_assistant", content: use("sub-write", "Write"), parentToolUseId: "agent-1" });
+    lastAgent.emit("event", { type: "agent_assistant", content: use("main-write", "Write") });
+
+    for (const toolUseId of ["sub-write", "main-write"]) {
+      const res = await fetch(`${workerUrl}/agent-ops/permission/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toolName: "Write", input: { file_path: `link/${toolUseId}.txt` }, toolUseId }),
+      });
+      expect(res.status).toBe(200);
+    }
+
+    await waitFor(() => requests.length === 2, 3000, "both permission requests");
+    expect(requests.map((r) => r.subagent)).toEqual(["background", undefined]);
+
+    // The request can reach the worker before the stream shows its call.
+    const early = fetch(`${workerUrl}/agent-ops/permission/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ toolName: "Write", input: { file_path: "link/early.txt" }, toolUseId: "sub-early" }),
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    lastAgent.emit("event", { type: "agent_assistant", content: use("sub-early", "Write"), parentToolUseId: "agent-1" });
+    expect((await early).status).toBe(200);
+    await waitFor(() => requests.length === 3, 3000, "the early permission request");
+    expect(requests[2]!.subagent).toBe("background");
+
+    runner.dispose();
+  });
+
   it("a duplicated permission open re-attaches to one card (idempotent on toolUseId, Thread B)", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-perm-idem",
@@ -572,7 +622,7 @@ describe("Integration: Session Worker IPC", () => {
     runner.attachViewer();
     await new Promise((r) => setTimeout(r, 200));
 
-    const proxy = await runner.startAgentOnWorker("codex", { prompt: "edit .npmrc", cwd: "/workspace" });
+    const proxy = await runner.startAgentOnWorker("codex", { prompt: "edit .npmrc", cwd: "/workspace", permissionMode: "guarded" });
 
     let cards = 0;
     proxy.on("event", (event: { type: string }) => {
@@ -595,6 +645,101 @@ describe("Integration: Session Worker IPC", () => {
     expect(second.requestId).toBe(first.requestId);
     await new Promise((r) => setTimeout(r, 50));
     expect(cards).toBe(1);
+
+    runner.dispose();
+  });
+
+  it("allows a request of Claude in Auto mode at once, with no card, asks again in the mode the CLI reports, and allows a waiting card when Auto applies (docs/193-sensitive-file-permission req 9)", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-perm-auto",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const proxy = await runner.startAgentOnWorker("claude", { prompt: "edit .claude/skills/x/SKILL.md", cwd: "/workspace" });
+    let cards = 0;
+    proxy.on("event", (event: { type: string }) => {
+      if (event.type === "agent_permission_request") cards += 1;
+    });
+
+    const open = async (toolUseId: string): Promise<{ requestId?: string; behavior?: string }> => {
+      const r = await fetch(`${workerUrl}/agent-ops/permission/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toolName: "Write", input: { file_path: ".claude/skills/x/SKILL.md" }, toolUseId }),
+      });
+      return (await r.json()) as { requestId?: string; behavior?: string };
+    };
+    const init = (permissionMode: string) =>
+      lastAgent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "cli-1", model: "opus", tools: [], permissionMode });
+
+    expect(await open("auto-1")).toEqual({ behavior: "allow" });
+
+    init("plan");
+    const inPlan = await open("plan-1");
+    expect(inPlan.requestId).toBeTruthy();
+    await waitFor(() => cards === 1, 3000, "the plan-mode card");
+
+    init("default");
+    const waited = await fetch(`${workerUrl}/agent-ops/permission/await`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId: inPlan.requestId, timeoutMs: 1000 }),
+    });
+    expect(await waited.json()).toEqual({ behavior: "allow" });
+
+    expect(await open("auto-2")).toEqual({ behavior: "allow" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(cards).toBe(1);
+
+    // The endpoint waits for the stream to show an unseen call; Auto can apply in that wait.
+    init("plan");
+    const unseen = open("unseen-1");
+    await new Promise((r) => setTimeout(r, 30));
+    init("default");
+    expect(await unseen).toEqual({ behavior: "allow" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(cards).toBe(1);
+
+    runner.dispose();
+  });
+
+  it("opens no card for a request whose agent is killed while the endpoint waits for its call (docs/193)", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-perm-kill",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const proxy = await runner.startAgentOnWorker("claude", { prompt: "write", cwd: "/workspace", permissionMode: "guarded" });
+    let cards = 0;
+    proxy.on("event", (event: { type: string }) => {
+      if (event.type === "agent_permission_request") cards += 1;
+    });
+
+    // The stream never shows this call, so the endpoint waits for it.
+    const waiting = fetch(`${workerUrl}/agent-ops/permission/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ toolName: "Write", input: { file_path: "link/f.txt" }, toolUseId: "killed-1" }),
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    const killed = await fetch(`${workerUrl}/agent/kill`, { method: "POST" });
+    expect(await killed.json()).toEqual({ killed: true });
+
+    const reply = (await (await waiting).json()) as { behavior?: string; requestId?: string };
+    expect(reply.behavior).toBe("deny");
+    expect(reply.requestId).toBeUndefined();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(cards).toBe(0);
+    const status = (await (await fetch(`${workerUrl}/agent/status`)).json()) as { pendingPermissionIds?: string[] };
+    expect(status.pendingPermissionIds ?? []).toEqual([]);
 
     runner.dispose();
   });
@@ -729,9 +874,9 @@ describe("Integration: Session Worker IPC", () => {
     expect(runner.turnSummary).toBe("Did stuff");
 
     expect(runner.queueLength).toBe(0);
-    runner.enqueue({ text: "msg1", execution: "interactive" });
+    runner.enqueue({ text: "msg1", execution: "interactive", clientRequestId: "r1" });
     expect(runner.queueLength).toBe(1);
-    expect(runner.getQueueSnapshot()).toEqual([{ text: "msg1", position: 1 }]);
+    expect(runner.getQueueSnapshot()).toEqual([{ id: "r1", text: "msg1", position: 1 }]);
 
     const dequeued = runner.dequeue();
     expect(dequeued?.text).toBe("msg1");

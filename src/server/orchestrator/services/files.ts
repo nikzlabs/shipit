@@ -1,14 +1,29 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { constants, type ReadStream } from "node:fs";
 import { scanFileTree } from "../../shared/file-tree.js";
+import { openWithinRoot, readFileWithinRoot } from "../session-file-open.js";
 import { findMarkdownFiles } from "../markdown.js";
 import type { DocEntry } from "../../shared/types.js";
 import { ServiceError } from "./types.js";
 import type { UploadedFile } from "../../shared/types.js";
 import { chownToSessionWorker } from "../session-worker-uid.js";
+import { sessionScratchDirForWorkspace } from "../session-state-dir.js";
+import { CONTAINER_PERSIST_DIR } from "../../shared/fs-constants.js";
 
 export async function getFileTree(dir: string) {
   return scanFileTree(dir);
+}
+
+/** The session's /persist tree, with absolute paths (`/persist/notes.md`). */
+export async function getPersistTree(workspaceDir: string) {
+  let scratchDir: string;
+  try {
+    scratchDir = sessionScratchDirForWorkspace(workspaceDir);
+  } catch {
+    return [];
+  }
+  return scanFileTree(scratchDir, CONTAINER_PERSIST_DIR);
 }
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
@@ -21,58 +36,64 @@ function getMimeType(ext: string): string {
   return `image/${ext}`;
 }
 
-export function getRawFilePath(
+/** A read stream over a regular file under `dir`; the stream closes the file when it ends. */
+export async function openFileForDownload(
   dir: string,
   filePath: string,
-): { safePath: string; filename: string } {
-  const safePath = path.resolve(dir, filePath);
-  if (!safePath.startsWith(`${dir}/`)) {
-    throw new ServiceError(400, "Invalid path");
+): Promise<{ stream: ReadStream; filename: string }> {
+  const handle = await openWithinRoot(dir, filePath);
+  try {
+    if (!(await handle.stat()).isFile()) throw new ServiceError(400, "Path is not a file");
+  } catch (err) {
+    await handle.close().catch(() => {});
+    throw err;
   }
-  return { safePath, filename: path.basename(safePath) };
+  return { stream: handle.createReadStream(), filename: path.basename(filePath) };
 }
 
 export async function getFileContent(
   dir: string,
   filePath: string,
 ): Promise<{ content: string; size: number; isBinary?: boolean; isImage?: boolean }> {
-  const safePath = path.resolve(dir, filePath);
-  if (!safePath.startsWith(`${dir  }/`)) {
-    throw new ServiceError(400, "Invalid path");
-  }
-  const stat = await fs.stat(safePath);
-  const size = stat.size;
-  const ext = path.extname(filePath).slice(1).toLowerCase();
+  const handle = await openWithinRoot(dir, filePath);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new ServiceError(400, "Path is not a file");
+    const size = stat.size;
+    const ext = path.extname(filePath).slice(1).toLowerCase();
 
-  if (IMAGE_EXTENSIONS.has(ext)) {
-    if (size > MAX_IMAGE_SIZE) {
+    if (IMAGE_EXTENSIONS.has(ext)) {
+      if (size > MAX_IMAGE_SIZE) {
+        return {
+          content: `Image is too large to preview (${(size / 1_048_576).toFixed(1)} MB). Maximum supported size is 10 MB.`,
+          size,
+          isBinary: true,
+        };
+      }
+      const buf = await handle.readFile();
+      const mime = getMimeType(ext);
       return {
-        content: `Image is too large to preview (${(size / 1_048_576).toFixed(1)} MB). Maximum supported size is 10 MB.`,
+        content: `data:${mime};base64,${buf.toString("base64")}`,
+        size,
+        isImage: true,
+      };
+    }
+
+    if (size > MAX_TEXT_SIZE) {
+      return {
+        content: `File is too large to display (${(size / 1_048_576).toFixed(1)} MB). Maximum supported size is 1 MB.`,
         size,
         isBinary: true,
       };
     }
-    const buf = await fs.readFile(safePath);
-    const mime = getMimeType(ext);
-    return {
-      content: `data:${mime};base64,${buf.toString("base64")}`,
-      size,
-      isImage: true,
-    };
+    const buf = await handle.readFile();
+    if (buf.includes(0)) {
+      return { content: "Binary file — cannot display.", size, isBinary: true };
+    }
+    return { content: buf.toString("utf-8"), size };
+  } finally {
+    await handle.close().catch(() => {});
   }
-
-  if (size > MAX_TEXT_SIZE) {
-    return {
-      content: `File is too large to display (${(size / 1_048_576).toFixed(1)} MB). Maximum supported size is 1 MB.`,
-      size,
-      isBinary: true,
-    };
-  }
-  const buf = await fs.readFile(safePath);
-  if (buf.includes(0)) {
-    return { content: "Binary file — cannot display.", size, isBinary: true };
-  }
-  return { content: buf.toString("utf-8"), size };
 }
 
 export async function writeFileContent(
@@ -87,38 +108,43 @@ export async function writeFileContent(
     throw new ServiceError(413, `File content is too large to save (maximum ${(MAX_TEXT_SIZE / 1_048_576).toFixed(0)} MB)`);
   }
 
-  const safePath = path.resolve(dir, filePath);
-  if (!safePath.startsWith(`${dir}/`)) {
-    throw new ServiceError(400, "Invalid path");
-  }
-
-  let stat;
+  let handle;
   try {
-    stat = await fs.stat(safePath);
+    handle = await openWithinRoot(dir, filePath, constants.O_RDWR);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") throw new ServiceError(404, "File not found");
+    if (code === "EISDIR") throw new ServiceError(400, "Path is not a file");
     throw err;
   }
-  if (!stat.isFile()) {
-    throw new ServiceError(400, "Path is not a file");
-  }
-  if (stat.size > MAX_TEXT_SIZE) {
-    throw new ServiceError(413, `File is too large to edit (${(stat.size / 1_048_576).toFixed(1)} MB). Maximum supported size is 1 MB.`);
-  }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) {
+      throw new ServiceError(400, "Path is not a file");
+    }
+    if (stat.size > MAX_TEXT_SIZE) {
+      throw new ServiceError(413, `File is too large to edit (${(stat.size / 1_048_576).toFixed(1)} MB). Maximum supported size is 1 MB.`);
+    }
 
-  const ext = path.extname(filePath).slice(1).toLowerCase();
-  if (IMAGE_EXTENSIONS.has(ext)) {
-    throw new ServiceError(415, "Image files cannot be edited as text");
-  }
+    const ext = path.extname(filePath).slice(1).toLowerCase();
+    if (IMAGE_EXTENSIONS.has(ext)) {
+      throw new ServiceError(415, "Image files cannot be edited as text");
+    }
 
-  const current = await fs.readFile(safePath);
-  if (current.includes(0)) {
-    throw new ServiceError(415, "Binary files cannot be edited as text");
-  }
+    const current = await handle.readFile();
+    if (current.includes(0)) {
+      throw new ServiceError(415, "Binary files cannot be edited as text");
+    }
 
-  await fs.writeFile(safePath, content, "utf-8");
-  return { path: filePath, size: Buffer.byteLength(content, "utf8") };
+    const bytes = Buffer.from(content, "utf-8");
+    await handle.truncate(0);
+    for (let written = 0; written < bytes.length;) {
+      written += (await handle.write(bytes, written, bytes.length - written, written)).bytesWritten;
+    }
+    return { path: filePath, size: bytes.length };
+  } finally {
+    await handle.close().catch(() => {});
+  }
 }
 
 export async function listDocs(dir: string): Promise<DocEntry[]> {
@@ -129,11 +155,7 @@ export async function getDocContent(
   dir: string,
   docPath: string,
 ): Promise<string> {
-  const safePath = path.resolve(dir, docPath);
-  if (!safePath.startsWith(`${dir  }/`)) {
-    throw new ServiceError(400, "Invalid path");
-  }
-  return fs.readFile(safePath, "utf-8");
+  return (await readFileWithinRoot(dir, docPath)).toString("utf-8");
 }
 
 export const MAX_UPLOAD_FILE_SIZE = 50 * 1024 * 1024;

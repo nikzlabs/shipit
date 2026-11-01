@@ -68,7 +68,7 @@ not "Services" — that is only its internal id.
 | **Keyboard** | Rebind shortcuts |
 | **Voice** | Dictation and spoken voice notes — providers, keys, language, voice, speed, delivery |
 | **Network** | The workspace default for outbound network access, and the host allowlist |
-| **Advanced** | Updates and release channel, live steering, PR automations — auto-create-PR, auto-fix CI, auto-resolve conflicts, reset after a merge — multi-agent sessions, letting the agent compact its own context, compacted turns, notifications, GPU access, the memory budget, and a full reset |
+| **Advanced** | Updates and release channel, live steering, PR automations — auto-create-PR, auto-fix CI, auto-resolve conflicts, reset after a merge — multi-agent sessions, letting the agent compact its own context, compacting idle sessions before the prompt cache expires, compacted turns, notifications, GPU access, the memory budget, and a full reset |
 
 Several of those are covered in depth elsewhere: Skills and MCP servers in
 `/shipit-docs/skills.md` and `/shipit-docs/plugins.md`, Voice in
@@ -164,8 +164,12 @@ never finished, signed out, refused — reads *Connect*, and one mid-sign-in rea
 
 ## Harnesses, and why there is no control for them
 
-A harness is the agent CLI that actually runs a turn. Five exist: **Claude
-Code**, **Codex**, **OpenCode**, **Grok Build** and **Antigravity**.
+A harness is the agent CLI that actually runs a turn. Six exist: **Claude
+Code**, **Codex**, **OpenCode**, **OpenCode 2**, **Grok Build** and
+**Antigravity**. OpenCode 1 and OpenCode 2 are separate harnesses that can be
+installed side by side; when ShipIt picks a harness for a model both of them
+run, it picks OpenCode 2, unless the reviewer rule or a parent session's
+harness decides first.
 
 **Which of them a given install has is decided when the image is built, and
 there is no control in Settings — or anywhere else — that adds one.** The
@@ -287,6 +291,12 @@ Advanced, *"Allow spawning another agent for a sub-task"*
 it — a review written by the model that wrote the work is not a second opinion,
 so when the brokered run cannot happen, tell the user why instead of reviewing
 it yourself.
+
+**Reviews are limited by how many run at once, not by how many a turn makes.** A
+session can have 16 runs in progress at the same time unless the operator
+changed the number. A call past that is refused until a run finishes: wait, then
+run it again. Every run shares the memory of the session's container, so on a
+machine with little memory the user can tell you to start fewer at a time.
 
 ## SSH hosts
 
@@ -410,6 +420,13 @@ context window, token totals, every turn listed newest first, and a weekly trend
 chart that toggles between metered spend, spend at API rates, and tokens. The
 dial's own popover — before you open the dialog — carries the context bar and a
 *Largest turns* top three.
+
+Some models cost more per token once a request's prompt passes a size — Haiku
+5.5 above 100K tokens, for example. Spend at API rates, and the spend of a key
+whose harness reports no cost of its own, price each such request at that
+higher rate. Turns recorded before tiered pricing keep the figure they had. The
+**Supported models** dialog shows the higher price under a model's standard
+one, such as *5× above 100K*.
 
 ## Themes
 

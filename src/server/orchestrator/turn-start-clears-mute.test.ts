@@ -100,9 +100,10 @@ describe("docs/277 — a started turn clears the mute", () => {
     expect(eventsBeforeRun).toContain("session_list");
   });
 
-  it("does not broadcast when the session was not muted", async () => {
+  it("sends only the list that follows the agent's start when the session was not muted", async () => {
     const { setMuted, eventsBeforeRun } = await startTurn(false);
     expect(setMuted).toHaveBeenCalledWith("s1", null);
-    expect(eventsBeforeRun).not.toContain("session_list");
+    expect(eventsBeforeRun.filter((e) => e === "session_list")).toHaveLength(1);
+    expect(eventsBeforeRun.indexOf("session_list")).toBeGreaterThan(eventsBeforeRun.indexOf("session_agent_started"));
   });
 });

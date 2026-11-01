@@ -1155,13 +1155,97 @@ const MIGRATIONS: Migration[] = [
     }
     addSessionColumnIfMissing(db, "run_time_zone");
   },
+  // docs/239-self-merge-wake — a session's own merge-watch gets its own column. Both kinds used
+  // to share `merge_watch`, so a parent's arm overwrote the self-watch of the child it watched.
+  // The rows are moved by SessionManager on every start, not here: see adoptLegacySelfMergeWatches.
+  (db) => {
+    addSessionColumnIfMissing(db, "self_merge_watch");
+  },
+  // docs/328-session-message-inbox — every message sent to a session, and how far its agent
+  // has read and has been told.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_inbox (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        from_session_id TEXT,
+        from_title      TEXT,
+        relation        TEXT,
+        body            TEXT NOT NULL,
+        created_at      TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_inbox_session ON session_inbox(session_id, id);
+      CREATE TABLE IF NOT EXISTS session_inbox_state (
+        session_id       TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        read_through     INTEGER NOT NULL DEFAULT 0,
+        notified_through INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+  },
+  // docs/218 req 6 — identifies the merge whose compaction offer is spent (started, or unticked).
+  (db) => {
+    addSessionColumnIfMissing(db, "merge_continue_compacted_anchor");
+  },
+  // docs/329-tiered-model-pricing — a subscription row's at-API-rates figure is stored, because a
+  // long-prompt price makes it depend on each request and not only on the totals. Existing rows
+  // get the figure they showed before, their flat rates times their totals (req 5).
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(usage_turns)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "at_api_rates_usd")) return;
+    db.exec(`
+      ALTER TABLE usage_turns ADD COLUMN at_api_rates_usd REAL;
+      UPDATE usage_turns SET at_api_rates_usd = (
+        COALESCE(input_tokens, 0) * rate_input
+        + COALESCE(output_tokens, 0) * rate_output
+        + COALESCE(cache_read_tokens, 0) * rate_cache_read
+        + COALESCE(cache_create_tokens, 0) * rate_cache_write
+      ) / 1000000.0
+      WHERE billing_mode = 'sub' AND rate_input IS NOT NULL;
+    `);
+  },
+  // docs/306-quota-continuation — a session that ShipIt resumes once quota returns. Persisted, so
+  // a restart during the wait does not leave the session stopped.
+  (db) => {
+    addSessionColumnIfMissing(db, "quota_resume");
+  },
+  // docs/007-threads-checkpoints reqs 4, 5 — the CLI's id of each chat message, and the message
+  // a rewind left for the next spawn to fork the stored conversation at.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "agent_message_id")) {
+      db.exec("ALTER TABLE messages ADD COLUMN agent_message_id TEXT");
+    }
+    addSessionColumnIfMissing(db, "agent_resume_at");
+  },
+  // docs/295-compact-context-on-merge req 5 — the user's compaction choice, kept for the session.
+  (db) => {
+    addSessionColumnIfMissing(db, "compact_after_merge_off", "INTEGER NOT NULL DEFAULT 0");
+  },
+  // docs/333-idle-compaction — the lifetime of the cache a turn wrote, and when its last model
+  // request started and on which harness and model: the record an idle compaction's deadline is
+  // derived from, also at boot.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(usage_turns)").all() as { name: string }[];
+    for (const [column, type] of [
+      ["cache_ttl", "TEXT"],
+      ["cache_anchor_at", "INTEGER"],
+      ["cache_agent_id", "TEXT"],
+      ["cache_model", "TEXT"],
+    ] as const) {
+      if (!columns.some((c) => c.name === column)) db.exec(`ALTER TABLE usage_turns ADD COLUMN ${column} ${type}`);
+    }
+  },
+  // planning#222 — why the last turn ended with no reply and no tool call.
+  (db) => {
+    addSessionColumnIfMissing(db, "last_turn_empty_reason");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */
-function addSessionColumnIfMissing(db: DatabaseInstance, column: string): void {
+function addSessionColumnIfMissing(db: DatabaseInstance, column: string, type = "TEXT"): void {
   const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
   if (columns.some((c) => c.name === column)) return;
-  db.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
+  db.exec(`ALTER TABLE sessions ADD COLUMN ${column} ${type}`);
 }
 
 /** Frozen zero-based indices; tests must not count backward from the changing tip. */
@@ -1186,6 +1270,10 @@ export const SCHEDULE_PROPOSALS_MIGRATION = 108;
 export const SCHEDULE_NOTES_ACCESS_MIGRATION = 109;
 
 export const SCHEDULE_RUN_TIME_ZONE_MIGRATION = 110;
+
+export const SELF_MERGE_WATCH_MIGRATION = 111;
+
+export const AT_API_RATES_MIGRATION = 114;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;

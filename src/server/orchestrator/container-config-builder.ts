@@ -63,6 +63,7 @@ export function readAgentConfig(workspaceDir: string): ShipitConfig {
       issues: { trackers: [] },
       plugins: { declared: false, repos: [], uses: [] },
       pluginExports: [],
+      mcp: [],
       warnings: [],
     };
   }

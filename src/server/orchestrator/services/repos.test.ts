@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { RepoStore } from "../repo-store.js";
 import { REPO_COLOR_COUNT } from "../../shared/repo-colors.js";
-import { addRepo, ensureRepoReady, setRepoColorIndex, assertValidRepoColorIndex, setRepoHidden } from "./repos.js";
+import { addRepo, ensureRepoReady, grantRepoTrust, setRepoColorIndex, assertValidRepoColorIndex, setRepoHidden } from "./repos.js";
 import { ServiceError } from "./types.js";
 
 let dbManager: DatabaseManager;
@@ -171,5 +171,59 @@ describe("ensureRepoReady", () => {
     expect(key).toBe("https://github.com/acme/shipit.git");
     expect(added).toEqual(["https://github.com/acme/shipit.git"]);
     expect(JSON.stringify({ key, added, clonedFrom })).not.toContain("x-access-token");
+  });
+});
+
+describe("grantRepoTrust", () => {
+  function deps(sessions: Record<string, string | undefined>) {
+    const reruns: string[] = [];
+    const sseBroadcast = vi.fn();
+    const warmSessionForRepo = vi.fn().mockResolvedValue(undefined);
+    return {
+      reruns,
+      sseBroadcast,
+      warmSessionForRepo,
+      deps: {
+        repoStore,
+        sessionManager: { get: (id: string) => (id in sessions ? { remoteUrl: sessions[id] } : undefined) },
+        runnerRegistry: {
+          ids: () => Object.keys(sessions),
+          get: (id: string) => ({ rerunServiceSetup: () => { reruns.push(id); } }),
+        },
+        sseBroadcast,
+        warmSessionForRepo,
+      },
+    };
+  }
+
+  it("trusts the repository and announces the new repository list", () => {
+    const h = deps({});
+
+    grantRepoTrust(h.deps, url);
+
+    expect(repoStore.isTrusted(url)).toBe(true);
+    expect(h.sseBroadcast).toHaveBeenCalledWith("repo_list", {
+      repos: [expect.objectContaining({ url, trusted: true })],
+    });
+    expect(h.warmSessionForRepo).toHaveBeenCalledWith(url);
+  });
+
+  it("re-runs the deferred setup only for live sessions on that repository", () => {
+    const h = deps({
+      same: "https://github.com/owner/repo",
+      other: "https://github.com/owner/other.git",
+      local: undefined,
+    });
+
+    grantRepoTrust(h.deps, url);
+
+    expect(h.reruns).toEqual(["same"]);
+  });
+
+  it("refuses a repository that ShipIt does not know, and trusts nothing", () => {
+    const h = deps({});
+
+    expect(() => grantRepoTrust(h.deps, "https://github.com/owner/unknown.git")).toThrow(ServiceError);
+    expect(h.sseBroadcast).not.toHaveBeenCalled();
   });
 });

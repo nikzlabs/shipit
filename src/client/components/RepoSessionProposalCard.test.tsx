@@ -2,7 +2,9 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { RepoSessionProposalCard } from "./RepoSessionProposalCard.js";
 import { useSessionStore } from "../stores/session-store.js";
-import type { RepoSessionProposalCard as CardData } from "../../server/shared/types.js";
+import { useRepoStore } from "../stores/repo-store.js";
+import { ApiError } from "../hooks/useApi.js";
+import type { RepoInfo, RepoSessionProposalCard as CardData } from "../../server/shared/types.js";
 
 function card(over: Partial<CardData> = {}): CardData {
   return {
@@ -17,8 +19,15 @@ function card(over: Partial<CardData> = {}): CardData {
   };
 }
 
+function targetRepo(trusted: boolean): RepoInfo {
+  const now = "2026-10-10T10:00:00.000Z";
+  return { url: "https://github.com/acme/api.git", status: "ready", addedAt: now, lastUsedAt: now, trusted };
+}
+
 beforeEach(() => {
   useSessionStore.setState({ sessions: [], sessionId: undefined });
+  // Trusted unless a test says otherwise: a target the list does not have needs the consent.
+  useRepoStore.setState({ repos: [targetRepo(true)] });
 });
 afterEach(() => cleanup());
 
@@ -168,6 +177,7 @@ describe("RepoSessionProposalCard — declining", () => {
   it("says it was declined, and offers neither a start nor a decline", () => {
     render(<RepoSessionProposalCard card={card({ state: "declined", registered: false, readOnly: true })} />);
     expect(screen.getByTestId("repo-session-proposal-status")).toHaveTextContent(/Declined/);
+    expect(screen.queryByTestId("repo-session-proposal-trust")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Start in/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Decline/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/not in ShipIt yet/)).not.toBeInTheDocument();
@@ -185,5 +195,89 @@ describe("RepoSessionProposalCard — declining", () => {
       expect(screen.getByTestId("repo-session-proposal-error")).toHaveTextContent("already starting"),
     );
     expect(screen.getByRole("button", { name: /Decline/ })).not.toBeDisabled();
+  });
+});
+
+// docs/303 req 12.
+describe("RepoSessionProposalCard — an untrusted target", () => {
+  it("says so before the click, and sends the consent from the button that names it", async () => {
+    useRepoStore.setState({ repos: [targetRepo(false)] });
+    const onStart = vi.fn<(cardId: string, options?: { trust: true }) => Promise<void>>(async () => {});
+    render(<RepoSessionProposalCard card={card()} onStart={onStart} />);
+
+    expect(screen.getByTestId("repo-session-proposal-trust")).toHaveTextContent(/acme\/api is not trusted yet/);
+    expect(screen.queryByRole("button", { name: /^Start in/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Trust and start in acme/api" }));
+
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith("rsp-1", { trust: true }));
+  });
+
+  it("asks for the consent on a repository the click adds, which starts untrusted", () => {
+    useRepoStore.setState({ repos: [] });
+    render(<RepoSessionProposalCard card={card({ registered: false })} />);
+    expect(screen.getByTestId("repo-session-proposal-trust")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Trust and start in acme/api" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["proposed", {}],
+    ["reloaded after a failed start", { state: "failed", errorMessage: "boom" }],
+  ] as const)("asks for it when the repository was removed after the card was written (%s)", (_when, over) => {
+    useRepoStore.setState({ repos: [] });
+    render(<RepoSessionProposalCard card={card({ registered: true, ...over })} />);
+
+    expect(screen.getByTestId("repo-session-proposal-trust")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Trust and start in acme/api" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Try again|^Start in/ })).not.toBeInTheDocument();
+  });
+
+  it("sends no consent for a repository that is trusted by now", async () => {
+    const onStart = vi.fn<(cardId: string, options?: { trust: true }) => Promise<void>>(async () => {});
+    render(<RepoSessionProposalCard card={card({ registered: false })} onStart={onStart} />);
+
+    expect(screen.queryByTestId("repo-session-proposal-trust")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Start in acme\/api/ }));
+
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith("rsp-1"));
+  });
+
+  it("keeps the consent on the button after a failed start, never a bare retry", () => {
+    useRepoStore.setState({ repos: [targetRepo(false)] });
+    render(<RepoSessionProposalCard card={card({ state: "failed", errorMessage: "boom" })} />);
+
+    expect(screen.getByRole("button", { name: "Trust and start in acme/api" })).not.toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Try again/ })).not.toBeInTheDocument();
+  });
+
+  it("offers the consent when the server refuses for trust and the repository list is behind", async () => {
+    const onStart = vi.fn<(cardId: string, options?: { trust: true }) => Promise<void>>()
+      .mockRejectedValueOnce(new ApiError(403, "acme/api is not trusted yet", "repository_untrusted"))
+      .mockResolvedValueOnce(undefined);
+    render(<RepoSessionProposalCard card={card()} onStart={onStart} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Start in acme\/api/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Trust and start in acme/api" }));
+
+    await waitFor(() => expect(onStart).toHaveBeenLastCalledWith("rsp-1", { trust: true }));
+  });
+
+  it("stops asking once a later start fails for another reason, and the list decides again", async () => {
+    const onStart = vi.fn<(cardId: string, options?: { trust: true }) => Promise<void>>()
+      .mockRejectedValueOnce(new ApiError(403, "acme/api is not trusted yet", "repository_untrusted"))
+      .mockRejectedValueOnce(new ApiError(400, "Repository is still cloning"));
+    render(<RepoSessionProposalCard card={card()} onStart={onStart} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^Start in acme\/api/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Trust and start in acme/api" }));
+
+    expect(await screen.findByRole("button", { name: /^Start in acme\/api/ })).not.toBeDisabled();
+    expect(screen.queryByTestId("repo-session-proposal-trust")).not.toBeInTheDocument();
+    expect(screen.getByTestId("repo-session-proposal-error")).toHaveTextContent("still cloning");
+  });
+
+  it("drops the notice once the session started", () => {
+    useRepoStore.setState({ repos: [targetRepo(false)] });
+    render(<RepoSessionProposalCard card={card({ state: "started", startedSessionId: "ses_child" })} />);
+    expect(screen.queryByTestId("repo-session-proposal-trust")).not.toBeInTheDocument();
   });
 });

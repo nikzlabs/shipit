@@ -1,4 +1,4 @@
-import type { AgentEvent, ClaudeContentBlockToolUse, PermissionMode, WsServerMessage } from "../../shared/types.js";
+import type { AgentEvent, ClaudeContentBlockToolUse, WsServerMessage } from "../../shared/types.js";
 import type { ToolResultEntry } from "../session-runner.js";
 
 // Adapters can pass bare string content despite the declared array type.
@@ -95,20 +95,7 @@ export function summarizeCrashReason(content: string): string {
   return firstLine.length > MAX ? `${firstLine.slice(0, MAX - 1)}…` : firstLine;
 }
 
-export function cliPermissionModeToApplied(
-  cliMode: string | undefined,
-): PermissionMode | undefined | "unrecognized" {
-  switch (cliMode) {
-    case "plan":
-      return "plan";
-    case "auto":
-      return "guarded";
-    case "default":
-      return undefined;
-    default:
-      return "unrecognized";
-  }
-}
+export { cliPermissionModeToApplied } from "../../shared/cli-permission-mode.js";
 
 export interface AgentToolTracker {
   recordToolUses(blocks: readonly { id: string; name: string }[]): void;

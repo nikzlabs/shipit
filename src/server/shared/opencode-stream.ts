@@ -1,3 +1,5 @@
+import type { AgentRequestUsage } from "./types/agent-types.js";
+
 /** step_finish token classes do not overlap. */
 export interface OpencodeTokens {
   total?: number;
@@ -45,7 +47,14 @@ export interface OpencodeEvent {
     | OpencodeToolPart
     | { type?: string }
   );
-  error?: { name?: string; data?: { message?: string; statusCode?: number; isRetryable?: boolean } };
+  /** v1 nests `data`; v2 is flat, e.g. `{type: "provider.auth", message, status: 401}`. */
+  error?: {
+    name?: string;
+    data?: { message?: string; statusCode?: number; isRetryable?: boolean };
+    type?: string;
+    message?: string;
+    status?: number;
+  };
 }
 
 export function parseOpencodeLine(line: string): OpencodeEvent | null {
@@ -76,6 +85,8 @@ export class OpencodeTurnAccumulator {
   cacheRead = 0;
   cacheWrite = 0;
   contextTokens: number | undefined;
+  /** One entry per step, which is one model call (docs/329-tiered-model-pricing). */
+  readonly requests: AgentRequestUsage[] = [];
 
   observe(event: OpencodeEvent): void {
     if (!this.sessionId && typeof event.sessionID === "string") {
@@ -93,26 +104,49 @@ export class OpencodeTurnAccumulator {
         this.sawStepFinish = true;
         if (part?.reason !== "tool-calls") this.sawFinalStop = true;
         if (typeof part?.cost === "number") this.costUsd += part.cost;
-        const t = part?.tokens;
-        if (t) {
-          this.input += t.input ?? 0;
-          this.output += t.output ?? 0;
-          this.cacheRead += t.cache?.read ?? 0;
-          this.cacheWrite += t.cache?.write ?? 0;
-          const context =
-            (t.input ?? 0) + (t.reasoning ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0);
-          if (context > 0) this.contextTokens = context;
-        }
+        if (part?.tokens) this.addStep(part.tokens);
         break;
       }
       case "error": {
         const data = event.error?.data;
         this.errorMessage =
-          data?.message ?? event.error?.name ?? "OpenCode reported an error";
+          data?.message ?? event.error?.message ?? event.error?.name ?? "OpenCode reported an error";
         break;
       }
       default:
         break;
     }
+  }
+
+  /** OpenCode 2's stream drops the last step_finish; its server's message list has every step. */
+  replaceSteps(steps: readonly { tokens?: OpencodeTokens; cost?: number }[]): void {
+    this.costUsd = 0;
+    this.input = 0;
+    this.output = 0;
+    this.cacheRead = 0;
+    this.cacheWrite = 0;
+    this.contextTokens = undefined;
+    this.requests.length = 0;
+    for (const step of steps) {
+      if (typeof step.cost === "number") this.costUsd += step.cost;
+      if (step.tokens) this.addStep(step.tokens);
+    }
+  }
+
+  private addStep(t: OpencodeTokens): void {
+    // Reasoning is generated, so it bills as output and is no part of the prompt.
+    const request: AgentRequestUsage = {
+      input: t.input ?? 0,
+      output: (t.output ?? 0) + (t.reasoning ?? 0),
+      cacheRead: t.cache?.read ?? 0,
+      cacheWrite: t.cache?.write ?? 0,
+    };
+    this.requests.push(request);
+    this.input += request.input;
+    this.output += request.output ?? 0;
+    this.cacheRead += request.cacheRead ?? 0;
+    this.cacheWrite += request.cacheWrite ?? 0;
+    const context = request.input + (request.cacheRead ?? 0) + (request.cacheWrite ?? 0);
+    if (context > 0) this.contextTokens = context;
   }
 }

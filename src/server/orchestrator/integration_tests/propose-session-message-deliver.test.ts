@@ -19,6 +19,7 @@ import {
 import type { DatabaseManager } from "../../shared/database.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { WsSessionMessageProposalUpdate, WsSystemUserMessage } from "../../shared/types.js";
+import { INBOX_TURN_TEXT } from "../services/session-inbox-notice.js";
 
 /**
  * docs/314 — the user's click is the delivery. `shipit session message` cannot
@@ -99,6 +100,11 @@ describe("Integration: session-message proposal delivery", () => {
       url: `/api/sessions/${sessionId}/session-message-proposals/${cardId}/deliver`,
     });
 
+  // `all` reads without marking, so the read does not change what the target's agent sees.
+  const inboxOf = async (id: string) =>
+    (await app.inject({ method: "POST", url: `/api/sessions/${id}/inbox/read`, payload: { all: true } }))
+      .json().messages as { text: string; from?: unknown }[];
+
   const decline = (cardId: string) =>
     app.inject({
       method: "POST",
@@ -124,15 +130,25 @@ describe("Integration: session-message proposal delivery", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ ok: true });
 
+    // docs/328-session-message-inbox — the turn says that a message waits; the text is in the inbox.
     const arrived = (await targetClient.receiveType("system_user_message")) as WsSystemUserMessage;
-    expect(arrived.text).toBe(message);
-    // req 6 — the receiving session is told where this came from.
-    expect(arrived.messageOrigin).toEqual({
-      sessionId,
-      sessionTitle: "Reporter",
-      relation: "proposed",
-    });
+    expect(arrived.text).toBe(INBOX_TURN_TEXT);
     targetClient.close();
+    const stored = await inboxOf(targetId);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.text).toContain(message);
+    // req 6 — the receiving session is told where this came from: its agent in the inbox,
+    // and its user in the transcript.
+    const origin = { sessionId, sessionTitle: "Reporter", relation: "proposed" };
+    expect(stored[0]!.from).toEqual(origin);
+    expect(chatHistory.load(targetId).flatMap((m) => m.sessionReport ?? [])).toEqual([
+      expect.objectContaining({
+        fromSessionId: sessionId,
+        fromTitle: "Reporter",
+        relation: "proposed",
+        body: message,
+      }),
+    ]);
 
     const persisted = chatHistory.findSessionMessageProposalCard(sessionId, cardId);
     expect(persisted?.state).toBe("delivered");
@@ -150,15 +166,15 @@ describe("Integration: session-message proposal delivery", () => {
 
     expect((await deliver(cardId)).statusCode).toBe(200);
 
-    const arrived = (await siblingClient.receiveType("system_user_message")) as WsSystemUserMessage;
-    expect(arrived.text).toBe("Parser slice done.");
+    await siblingClient.receiveType("system_user_message");
     siblingClient.close();
+    expect((await inboxOf(siblingId)).map((m) => m.text)).toEqual([expect.stringContaining("Parser slice done.")]);
   });
 
   /**
-   * The card's "queued" line is read off the DISPATCH's own admission, not
-   * guessed from whether the target was running: a running, steerable target
-   * takes the message immediately, so "Queued behind…" would be a lie.
+   * The card's "queued" line is read off how the target was TOLD, not guessed
+   * from whether it was running: a running target that takes the notice at once
+   * was told, so "its agent is told when it is free" would be a lie.
    */
   it("reports an idle target's delivery as not queued", async () => {
     const cardId = await propose("Report.");
@@ -226,9 +242,9 @@ describe("Integration: session-message proposal delivery", () => {
       && (m as WsSessionMessageProposalUpdate).state === "delivered")).toBe(true);
 
     // The message really did land, and the card was not downgraded to `failed`.
-    const arrived = (await targetClient.receiveType("system_user_message")) as WsSystemUserMessage;
-    expect(arrived.text).toBe("Exactly once.");
+    await targetClient.receiveType("system_user_message");
     targetClient.close();
+    expect((await inboxOf(targetId)).map((m) => m.text)).toEqual([expect.stringContaining("Exactly once.")]);
     expect(chatHistory.findSessionMessageProposalCard(sessionId, cardId)?.state)
       .not.toBe("failed");
 
@@ -357,7 +373,7 @@ describe("Integration: session-message proposal delivery", () => {
       chatHistory.updateSessionMessageProposalCard(sessionId, cardId, { state: "delivered", queued: false });
 
       const prompt = await answeredTurn("Carry on");
-      expect(prompt).toContain("DELIVERED by the user; it started a turn there.");
+      expect(prompt).toContain("DELIVERED by the user; it is in that session's inbox, and its agent was told.");
     });
 
     it("says nothing about a card the user has not acted on", async () => {

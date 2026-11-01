@@ -1,0 +1,5 @@
+# What the probe builds and makes. plan.md, "To repeat the upload measurement", gives the commands.
+/upload-direct
+/gl-call-times.so
+/results*.txt
+/raw/

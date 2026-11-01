@@ -1,6 +1,8 @@
 
-import { describe, it, expect } from "vitest";
-import { spawnSync } from "node:child_process";
+import { afterEach, describe, it, expect } from "vitest";
+import { spawn, spawnSync } from "node:child_process";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,19 +18,78 @@ const HOOK_SCRIPT = path.resolve(
   "block-branch-ops.mjs",
 );
 
-function runHook(payload: unknown, env?: Record<string, string>): { status: number | null; stderr: string } {
-  // Isolate test policy from the enclosing ShipIt session's hook settings.
+// Nothing listens on this port, so the hook gets no answer and the destructive rules take
+// the value the process started with.
+const NO_WORKER = { SHIPIT_AGENT_OPS_URL: "http://127.0.0.1:1" };
+
+function hookEnv(env?: Record<string, string>): NodeJS.ProcessEnv {
+  // Isolate test policy from the enclosing ShipIt session's hook settings and worker.
   const {
     SHIPIT_GUARD_DESTRUCTIVE_GIT: _guard,
     SHIPIT_SANDBOX: _sandbox,
+    SHIPIT_AGENT_OPS_URL: _url,
+    WORKER_PORT: _port,
     ...ambient
   } = process.env;
+  return { ...ambient, ...NO_WORKER, ...env };
+}
+
+function runHook(payload: unknown, env?: Record<string, string>): { status: number | null; stderr: string } {
   const r = spawnSync("node", [HOOK_SCRIPT], {
     input: typeof payload === "string" ? payload : JSON.stringify(payload),
     encoding: "utf8",
-    env: { ...ambient, ...env },
+    env: hookEnv(env),
   });
   return { status: r.status, stderr: r.stderr };
+}
+
+// `spawnSync` blocks this process, so a worker that this test serves needs the async form.
+function runHookAsync(
+  payload: unknown,
+  env: Record<string, string>,
+): Promise<{ status: number | null; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("node", [HOOK_SCRIPT], { env: hookEnv(env), stdio: ["pipe", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stderr }));
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+
+interface FakeWorker {
+  url: string;
+  port: number;
+  requests: string[];
+  close(): Promise<void>;
+}
+
+async function startWorker(answer: (res: http.ServerResponse) => void): Promise<FakeWorker> {
+  const requests: string[] = [];
+  const server = http.createServer((req, res) => {
+    requests.push(`${req.method} ${req.url}`);
+    answer(res);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    port,
+    requests,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
+
+function answering(status: number, body: string) {
+  return (res: http.ServerResponse): void => {
+    res.writeHead(status, { "Content-Type": "application/json" });
+    res.end(body);
+  };
 }
 
 function bash(command: string) {
@@ -220,6 +281,144 @@ describe("block-branch-ops.mjs", () => {
       expect(r.status).toBe(2);
       expect(r.stderr).toContain("dedicated branch");
       expect(r.stderr).not.toContain("shipit branch reset-to-base");
+    });
+  });
+
+  describe("planning#694 — the merged state is read at each call, not only at spawn", () => {
+    const GUARD_READ = "GET /agent-ops/branch/destructive-git-guard";
+    const RESET = bash("git reset --hard origin/main");
+    let worker: FakeWorker | undefined;
+    let proxy: FakeWorker | undefined;
+
+    afterEach(async () => {
+      await worker?.close();
+      await proxy?.close();
+      worker = undefined;
+      proxy = undefined;
+    });
+
+    it("blocks on a process that started before the merge", async () => {
+      worker = await startWorker(answering(200, '{"guarded":true}'));
+      const r = await runHookAsync(RESET, { SHIPIT_AGENT_OPS_URL: worker.url });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("shipit branch reset-to-base");
+      expect(worker.requests).toEqual([GUARD_READ]);
+    });
+
+    it("allows on a process that started on a merged branch, after the branch is reset", async () => {
+      worker = await startWorker(answering(200, '{"guarded":false}'));
+      const r = await runHookAsync(RESET, {
+        SHIPIT_AGENT_OPS_URL: worker.url,
+        SHIPIT_GUARD_DESTRUCTIVE_GIT: "1",
+      });
+      expect(r).toEqual({ status: 0, stderr: "" });
+      expect(worker.requests).toEqual([GUARD_READ]);
+    });
+
+    it("finds the worker on WORKER_PORT when no address is given", async () => {
+      worker = await startWorker(answering(200, '{"guarded":true}'));
+      const r = await runHookAsync(RESET, { SHIPIT_AGENT_OPS_URL: "", WORKER_PORT: String(worker.port) });
+      expect(r.status).toBe(2);
+      expect(worker.requests).toEqual([GUARD_READ]);
+    });
+
+    // Under these variables Node sends `fetch` and the default `http` agent to the proxy.
+    it("reaches the worker when the environment sends HTTP requests to a proxy", async () => {
+      worker = await startWorker(answering(200, '{"guarded":true}'));
+      proxy = await startWorker(answering(403, ""));
+      const r = await runHookAsync(RESET, {
+        SHIPIT_AGENT_OPS_URL: worker.url,
+        NODE_USE_ENV_PROXY: "1",
+        HTTP_PROXY: proxy.url,
+        http_proxy: proxy.url,
+        NO_PROXY: "",
+        no_proxy: "",
+      });
+      expect(r.status).toBe(2);
+      expect(worker.requests).toEqual([GUARD_READ]);
+    });
+
+    it("asks once for a command with several destructive forms", async () => {
+      worker = await startWorker(answering(200, '{"guarded":false}'));
+      const r = await runHookAsync(
+        bash("git reset --hard origin/main; git push --force; git rebase origin/main"),
+        { SHIPIT_AGENT_OPS_URL: worker.url },
+      );
+      expect(r.status).toBe(0);
+      expect(worker.requests).toEqual([GUARD_READ]);
+    });
+
+    it("asks nothing for a command the destructive rules would not refuse", async () => {
+      worker = await startWorker(answering(200, '{"guarded":true}'));
+      const env = { SHIPIT_AGENT_OPS_URL: worker.url };
+      expect((await runHookAsync(bash("git status && git push && npm test"), env)).status).toBe(0);
+      expect((await runHookAsync(bash("git rebase --abort"), env)).status).toBe(0);
+      expect((await runHookAsync(bash("git checkout -b feature/foo"), env)).status).toBe(2);
+      expect(worker.requests).toEqual([]);
+    });
+
+    it("docs/211 — asks nothing in a sandbox session", async () => {
+      worker = await startWorker(answering(200, '{"guarded":true}'));
+      const r = await runHookAsync(RESET, { SHIPIT_AGENT_OPS_URL: worker.url, SHIPIT_SANDBOX: "1" });
+      expect(r).toEqual({ status: 0, stderr: "" });
+      expect(worker.requests).toEqual([]);
+    });
+
+    describe("takes the value the process started with when the worker gives no answer", () => {
+      const noAnswer: [string, (res: http.ServerResponse) => void][] = [
+        ["a status that is not 2xx, whatever its body says", answering(403, '{"guarded":true}')],
+        ["a body that is not JSON", answering(200, "<html>")],
+        ["a body with no answer", answering(200, "{}")],
+        ["an answer that is not a boolean", answering(200, '{"guarded":"yes"}')],
+        ["a null body", answering(200, "null")],
+        [
+          "a body longer than an answer can be",
+          answering(200, JSON.stringify({ pad: "x".repeat(2000), guarded: true })),
+        ],
+      ];
+      for (const [name, answer] of noAnswer) {
+        it(name, async () => {
+          worker = await startWorker(answer);
+          const env = { SHIPIT_AGENT_OPS_URL: worker.url };
+          expect((await runHookAsync(RESET, { ...env, SHIPIT_GUARD_DESTRUCTIVE_GIT: "1" })).status).toBe(2);
+          expect((await runHookAsync(RESET, env)).status).toBe(0);
+          expect(worker.requests).toEqual([GUARD_READ, GUARD_READ]);
+        });
+      }
+
+      it("an address where nothing listens", async () => {
+        const gone = await startWorker(answering(200, '{"guarded":true}'));
+        await gone.close();
+        const env = { SHIPIT_AGENT_OPS_URL: gone.url };
+        expect((await runHookAsync(RESET, { ...env, SHIPIT_GUARD_DESTRUCTIVE_GIT: "1" })).status).toBe(2);
+        expect(await runHookAsync(RESET, env)).toEqual({ status: 0, stderr: "" });
+      });
+
+      it("an address that is not a URL", async () => {
+        const env = { SHIPIT_AGENT_OPS_URL: "worker" };
+        expect((await runHookAsync(RESET, { ...env, SHIPIT_GUARD_DESTRUCTIVE_GIT: "1" })).status).toBe(2);
+        expect(await runHookAsync(RESET, env)).toEqual({ status: 0, stderr: "" });
+      });
+
+      const neverDone: [string, (res: http.ServerResponse) => void][] = [
+        ["a worker that does not answer in time", () => { /* holds the request open */ }],
+        ["a worker whose body does not finish", (res) => { res.writeHead(200); res.write('{"guarded":'); }],
+      ];
+      for (const [name, answer] of neverDone) {
+        it(name, async () => {
+          worker = await startWorker(answer);
+          const env = { SHIPIT_AGENT_OPS_URL: worker.url };
+          const began = Date.now();
+          const [guarded, free] = await Promise.all([
+            runHookAsync(RESET, { ...env, SHIPIT_GUARD_DESTRUCTIVE_GIT: "1" }),
+            runHookAsync(RESET, env),
+          ]);
+          expect(guarded.status).toBe(2);
+          expect(free).toEqual({ status: 0, stderr: "" });
+          expect(worker.requests).toEqual([GUARD_READ, GUARD_READ]);
+          expect(Date.now() - began).toBeLessThan(10_000);
+        }, 20_000);
+      }
     });
   });
 
@@ -476,6 +675,23 @@ describe("block-branch-ops.mjs", () => {
       expect(r.stderr).toContain("signals your own");
       // The pgrep advice is about waiting, and none of it applies to a kill.
       expect(r.stderr).not.toContain("Wait on the artifact");
+    });
+
+    // planning#710 — Monitor runs its `command` in the same `bash -c` wrapper as Bash.
+    it("judges a Monitor command the same way, and says which tool ran it", () => {
+      const monitor = (command: string) => ({
+        hook_event_name: "PreToolUse",
+        tool_name: "Monitor",
+        tool_input: { command, description: "wait for the job", timeout_ms: 60_000 },
+      });
+      const r = runHook(monitor('until ! pgrep -f "my-job"; do sleep 1; done; echo done'));
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("matches ITSELF");
+      expect(r.stderr).toContain("The Monitor tool runs a command");
+      expect(runHook(monitor("git checkout -b feature/foo")).status).toBe(2);
+      expect(runHook(monitor("tail -f /tmp/run.log | grep --line-buffered FAIL")).status).toBe(0);
+      expect(runHook({ hook_event_name: "PreToolUse", tool_name: "Monitor", tool_input: { ws: { url: "wss://x" } } }).status)
+        .toBe(0);
     });
 
     it("applies to a sandbox session, whose branch exemption is not about this", () => {

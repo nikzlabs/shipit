@@ -99,6 +99,8 @@ export function resumeSessionInternal(sessionId: string) {
   session.setIsLoading(false);
   session.setActivity(undefined);
   session.setQueuedMessages([]);
+  // A file chip names a file of the outgoing session's workspace, not of this one's.
+  useSettingsStore.getState().clearPendingFiles();
   session.setContainerFreshness(null);
   session.setRestartScheduled(false);
 

@@ -9,7 +9,7 @@ import {
   type AutoFixResult,
   type FetchAndFixCb,
 } from "./auto-fix-manager.js";
-import { turnDropped, turnInterrupted, TURN_STEERED } from "./turn-settlement.js";
+import { DISPATCH_SETUP_FAILURE, turnDropped, turnErrored, turnInterrupted, TURN_STEERED } from "./turn-settlement.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { GraphQLPrNode } from "./pr-status-parser.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
@@ -442,6 +442,7 @@ describe("AutoFixManager", () => {
     it("only a turn that never ran is a noop", () => {
       expect(autoFixResultForOutcome(turnDropped("runner disposed mid-turn")).outcome).toBe("noop");
       expect(autoFixResultForOutcome(TURN_STEERED).outcome).toBe("noop");
+      expect(autoFixResultForOutcome(turnErrored(`${DISPATCH_SETUP_FAILURE}: no worker`)).outcome).toBe("noop");
     });
   });
 

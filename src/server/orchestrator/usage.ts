@@ -2,9 +2,11 @@ import type {
   UsageTurn, SessionUsage, UsageStats, TurnUsage, WeeklyUsage, UsageGroup,
 } from "../shared/types.js";
 import { usageTotalsFrom } from "../shared/types/usage-types.js";
+import { latestContextTokens } from "../shared/compaction-threshold.js";
 import type { DatabaseManager } from "../shared/database.js";
+import type { AgentId, AgentRequestUsage } from "../shared/types/agent-types.js";
 import type { BillingMode, ModelPrice } from "../shared/catalogue/types.js";
-import { costFromRates } from "./turn-attribution.js";
+import { atApiRatesFor } from "./turn-attribution.js";
 
 const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
 
@@ -41,7 +43,12 @@ interface UsageRow {
   rate_output: number | null;
   rate_cache_read: number | null;
   rate_cache_write: number | null;
+  at_api_rates_usd: number | null;
   background_work: number;
+  cache_ttl: string | null;
+  cache_anchor_at: number | null;
+  cache_agent_id: string | null;
+  cache_model: string | null;
   created_at: string;
 }
 
@@ -64,6 +71,8 @@ export interface RecordedTurn {
   model?: string;
   /** Last API call's context occupancy, not the turn-wide token sum. */
   contextTokens?: number;
+  /** Each model call, where the harness lists them; prices a subscription row only. */
+  requests?: readonly AgentRequestUsage[];
   subAgentId?: string;
   /**
    * Background work — session naming, pull-request descriptions, voice cleanup.
@@ -77,6 +86,33 @@ export interface RecordedTurn {
   attribution?: TurnAttribution;
   /** Preserve the harness total across billing-mode changes, even when costUsd has another source. */
   cumulativeSnapshot?: number;
+  /**
+   * docs/333-idle-compaction — the harness and model whose cache the turn read. A cache is
+   * theirs alone, so it scopes the two fields below; neither is written without it.
+   */
+  cacheScope?: CacheScope;
+  /** The lifetime of the cache entries the turn wrote. */
+  cacheTtl?: CacheTtl;
+  /** When the turn's last model request started (epoch ms). Only for an ordinary own turn. */
+  cacheAnchorAt?: number;
+}
+
+export type CacheTtl = "5m" | "1h";
+
+export interface CacheScope {
+  agentId: AgentId;
+  model: string | null;
+}
+
+export interface CacheAnchor extends CacheScope {
+  at: number;
+}
+
+/** docs/333-idle-compaction — the record an idle compaction's deadline is derived from. */
+export interface AnchoredTurn {
+  sessionId: string;
+  anchor: CacheAnchor;
+  credentialRouteId: string | null;
 }
 
 export type RecordedTurnExtra = Omit<
@@ -84,14 +120,13 @@ export type RecordedTurnExtra = Omit<
   "costUsd" | "durationMs" | "inputTokens" | "outputTokens"
 >;
 
-// Group by persisted rates as well as service/mode so price changes remain distinct.
 // `install_level` keeps spend belonging to no session in a row of its own rather
 // than folded into a session-attributed group for the same provider.
 const SPLIT_COLUMNS = `
   service_id, billing_mode,
-  rate_input, rate_output, rate_cache_read, rate_cache_write,
   session_id IS NULL AS install_level,
   SUM(cost_usd) AS cost,
+  SUM(at_api_rates_usd) AS at_api_rates,
   SUM(COALESCE(input_tokens, 0)) AS input_tokens,
   SUM(COALESCE(output_tokens, 0)) AS output_tokens,
   SUM(COALESCE(cache_read_tokens, 0)) AS cache_read_tokens,
@@ -100,19 +135,15 @@ const SPLIT_COLUMNS = `
   GROUP_CONCAT(DISTINCT model) AS models
 `;
 const SPLIT_GROUP_BY = `
-  GROUP BY service_id, billing_mode, rate_input, rate_output, rate_cache_read, rate_cache_write,
-           install_level
+  GROUP BY service_id, billing_mode, install_level
 `;
 
 interface SplitRow {
   service_id: string | null;
   billing_mode: string | null;
   install_level: number;
-  rate_input: number | null;
-  rate_output: number | null;
-  rate_cache_read: number | null;
-  rate_cache_write: number | null;
   cost: number | null;
+  at_api_rates: number | null;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
@@ -154,22 +185,7 @@ function foldSplitRows(rows: SplitRow[]): UsageGroup[] {
     group.turns += r.turns;
     group.tokens += r.input_tokens + r.output_tokens + r.cache_read_tokens + r.cache_create_tokens;
     if (billingMode !== "sub") group.costUsd += r.cost ?? 0;
-    if (billingMode === "sub" && r.rate_input !== null) {
-      group.atApiRatesUsd += costFromRates(
-        {
-          input: r.rate_input,
-          output: r.rate_output ?? 0,
-          cacheRead: r.rate_cache_read ?? 0,
-          cacheWrite: r.rate_cache_write ?? 0,
-        },
-        {
-          input: r.input_tokens,
-          output: r.output_tokens,
-          cacheRead: r.cache_read_tokens,
-          cacheWrite: r.cache_create_tokens,
-        },
-      );
-    }
+    if (billingMode === "sub") group.atApiRatesUsd += r.at_api_rates ?? 0;
     for (const model of (r.models ?? "").split(",")) {
       if (model !== "") group.modelSet.add(model);
     }
@@ -184,6 +200,7 @@ function foldSplitRows(rows: SplitRow[]): UsageGroup[] {
       || a.key.localeCompare(b.key));
 }
 
+
 export class UsageManager {
   private db;
   private stmtInsert;
@@ -194,6 +211,9 @@ export class UsageManager {
   private stmtSessionTokens;
   private stmtSessionTurns;
   private stmtDeleteBySession;
+  private stmtObservedCacheTtl;
+  private stmtAnchoredSince;
+  private anchoredTurnListeners: ((turn: AnchoredTurn) => void)[] = [];
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
@@ -205,9 +225,27 @@ export class UsageManager {
         sub_agent_id, cumulative_cost_usd,
         service_id, billing_mode,
         rate_input, rate_output, rate_cache_read, rate_cache_write,
-        credential_route_id, background_work
+        at_api_rates_usd, credential_route_id, background_work,
+        cache_ttl, cache_anchor_at, cache_agent_id, cache_model
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    // Caches are per account and endpoint, so a reading speaks only for its own route.
+    this.stmtObservedCacheTtl = this.db.prepare(`
+      SELECT cache_ttl FROM usage_turns
+      WHERE session_id = ? AND sub_agent_id IS NULL AND background_work = 0
+        AND credential_route_id IS ? AND cache_agent_id = ? AND cache_model IS ?
+        AND cache_ttl IS NOT NULL
+      ORDER BY id DESC LIMIT 1
+    `);
+    this.stmtAnchoredSince = this.db.prepare(`
+      SELECT session_id, cache_anchor_at, cache_agent_id, cache_model, credential_route_id FROM usage_turns
+      WHERE id IN (
+        SELECT MAX(id) FROM usage_turns
+        WHERE session_id IS NOT NULL AND sub_agent_id IS NULL AND background_work = 0
+          AND cache_anchor_at >= ?
+        GROUP BY session_id
+      )
     `);
     // Consults and background work route independently and must not change the
     // session's account notice. Background work is named by its own column: a
@@ -259,6 +297,8 @@ export class UsageManager {
     extra?: RecordedTurnExtra,
   ): number {
     const ownTurn = extra?.subAgentId === undefined && !extra?.backgroundWork;
+    const scope = ownTurn ? extra?.cacheScope : undefined;
+    const anchor = scope && extra?.cacheAnchorAt !== undefined ? { ...scope, at: extra.cacheAnchorAt } : undefined;
     const costSource: TurnCostSource =
       extra?.costSource ?? (ownTurn ? "cumulative" : "per-turn");
     let perTurnCost = costUsd;
@@ -278,6 +318,13 @@ export class UsageManager {
         prevCum !== undefined && cumulative >= prevCum ? cumulative - prevCum : cumulative;
     }
     const attribution = extra?.attribution;
+    // Stored, not recomputed on read: two turns with the same totals can owe
+    // different amounts once a model prices by prompt length (docs/329-tiered-model-pricing).
+    const atApiRates = atApiRatesFor(attribution, {
+      tokens: { input: inputTokens, output: outputTokens, cacheRead: extra?.cacheRead, cacheWrite: extra?.cacheCreate },
+      requests: extra?.requests,
+      contextTokens: extra?.contextTokens,
+    });
     this.stmtInsert.run(
       sessionId,
       perTurnCost,
@@ -296,15 +343,70 @@ export class UsageManager {
       attribution?.rates.output ?? null,
       attribution?.rates.cacheRead ?? null,
       attribution?.rates.cacheWrite ?? null,
+      atApiRates ?? null,
       extra?.credentialRouteId ?? null,
       extra?.backgroundWork ? 1 : 0,
+      scope ? extra?.cacheTtl ?? null : null,
+      anchor?.at ?? null,
+      scope?.agentId ?? null,
+      scope?.model ?? null,
     );
+    if (anchor && sessionId !== null) {
+      this.notifyAnchoredTurn({ sessionId, anchor, credentialRouteId: extra?.credentialRouteId ?? null });
+    }
     return perTurnCost;
+  }
+
+  /** docs/333-idle-compaction — told after each anchored own-turn row is written. */
+  onAnchoredTurn(listener: (turn: AnchoredTurn) => void): void {
+    this.anchoredTurnListeners.push(listener);
+  }
+
+  // The caller is a turn's result listener, which must go on to finalize the turn.
+  private notifyAnchoredTurn(turn: AnchoredTurn): void {
+    for (const listener of this.anchoredTurnListeners) {
+      try {
+        listener(turn);
+      } catch (err) {
+        console.error(`[usage] an anchored-turn listener for ${turn.sessionId} threw:`, err);
+      }
+    }
+  }
+
+  /** docs/333-idle-compaction — the newest cache lifetime the session's own turns saw on the route, harness and model. */
+  observedCacheTtl(sessionId: string, credentialRouteId: string | null, scope: CacheScope): CacheTtl | undefined {
+    const row = this.stmtObservedCacheTtl.get(sessionId, credentialRouteId, scope.agentId, scope.model) as
+      { cache_ttl: string } | undefined;
+    return row?.cache_ttl === "5m" || row?.cache_ttl === "1h" ? row.cache_ttl : undefined;
+  }
+
+  /** docs/333-idle-compaction — each session's newest anchored own turn, anchored at or after `sinceMs`. */
+  anchoredTurnsSince(sinceMs: number): AnchoredTurn[] {
+    const rows = this.stmtAnchoredSince.all(sinceMs) as {
+      session_id: string;
+      cache_anchor_at: number;
+      cache_agent_id: string | null;
+      cache_model: string | null;
+      credential_route_id: string | null;
+    }[];
+    return rows.flatMap((r) => (r.cache_agent_id === null ? [] : [{
+      sessionId: r.session_id,
+      anchor: { at: r.cache_anchor_at, agentId: r.cache_agent_id as AgentId, model: r.cache_model },
+      credentialRouteId: r.credential_route_id,
+    }]));
   }
 
   lastTurnCredentialRouteId(sessionId: string): string | undefined {
     const row = this.stmtLastRoute.get(sessionId) as { credential_route_id: string } | undefined;
     return row?.credential_route_id ?? undefined;
+  }
+
+  /** The size the compaction minimum is compared to (`shared/compaction-threshold.ts`). */
+  latestContextTokens(
+    sessionId: string,
+    lastCompaction?: { createdAt: string; postTokens?: number },
+  ): number | undefined {
+    return latestContextTokens(this.getPerTurnUsage(sessionId), lastCompaction);
   }
 
   getSessionUsage(sessionId: string): SessionUsage | undefined {
@@ -464,19 +566,6 @@ export class UsageManager {
 function applyAttribution(turn: TurnUsage | UsageTurn, row: UsageRow): void {
   if (row.billing_mode !== "sub" && row.billing_mode !== "key") return;
   turn.billingMode = row.billing_mode;
-  if (row.billing_mode !== "sub" || row.rate_input === null) return;
-  turn.atApiRatesUsd = costFromRates(
-    {
-      input: row.rate_input,
-      output: row.rate_output ?? 0,
-      cacheRead: row.rate_cache_read ?? 0,
-      cacheWrite: row.rate_cache_write ?? 0,
-    },
-    {
-      input: row.input_tokens ?? 0,
-      output: row.output_tokens ?? 0,
-      cacheRead: row.cache_read_tokens ?? 0,
-      cacheWrite: row.cache_create_tokens ?? 0,
-    },
-  );
+  if (row.billing_mode !== "sub" || row.at_api_rates_usd === null) return;
+  turn.atApiRatesUsd = row.at_api_rates_usd;
 }

@@ -9,6 +9,8 @@ function normalizeRepoUrl(u: string): string {
 }
 
 export interface RepoTrust {
+  /** Whether the URL resolves to a repository in the list; `untrusted` is false for one that does not. */
+  known: boolean;
 
   untrusted: boolean;
 
@@ -38,5 +40,5 @@ export function useRepoTrust(repoUrl: string | undefined): RepoTrust {
     }
   };
 
-  return { untrusted: repo?.trusted === false, trusting, trust };
+  return { known: repo !== undefined, untrusted: repo?.trusted === false, trusting, trust };
 }

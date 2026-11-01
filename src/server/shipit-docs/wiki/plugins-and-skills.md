@@ -7,8 +7,9 @@ largest:
 - **A plugin repository** — a whole toolkit that lives in *another* repository:
   services, commands, skills and settings, declared once in this project's
   `shipit.yaml`.
-- **An MCP server** — tools from a running server, connected once per account
-  and available in every session.
+- **An MCP server** — tools from a running server: connected once per account
+  and available in every session, or declared by a project or a plugin on one
+  of its own Compose services and available in that project's sessions only.
 
 This page is what the **user** sees and decides. Writing a plugin is a
 different job and a different page: `/shipit-docs/plugin-authoring.md`. How you
@@ -30,11 +31,11 @@ files, where they came from, and who can invoke them:
 
 | Kind | Lives in | Invoked as | Who may edit it |
 |---|---|---|---|
-| **Written here** | `.claude/skills/<name>/` in the project — on a Codex session `.codex/skills/`, on Grok `.grok/skills/`, on OpenCode `.opencode/skills/`, and on Antigravity `.claude/skills/` again | `/<name>` | Anyone — it is an ordinary file in the repository |
+| **Written here** | `.claude/skills/<name>/` in the project — on a Codex session `.codex/skills/`, on Grok `.grok/skills/`, on OpenCode and OpenCode 2 `.opencode/skills/`, and on Antigravity `.claude/skills/` again | `/<name>` | Anyone — it is an ordinary file in the repository |
 | **Installed from a catalogue** | `<agent dir>/skills/<plugin>__<skill>/`, with a `.shipit-installed.json` marker recording its source, version and a checksum of the body | `/<plugin>:<skill>` | Leave it alone — fork it into a new directory instead |
 | **Brought by a plugin** | Materialized by ShipIt outside git, marked `.shipit-plugin-skill.json` | Disclosed to you under a namespaced name (`plugins--<alias>--<skill>-…`) — **yours to run, not the user's**; the transcript shows it as `<alias>/<skill>` | Nobody here: fix it in the plugin's own repository |
 
-The invocation prefix follows the harness: `/` on Claude, OpenCode, Grok and
+The invocation prefix follows the harness: `/` on Claude, both OpenCodes, Grok and
 Antigravity, and **`$` on a Codex session**. On a Codex session the menu also
 lists the skills that CLI bundles, alongside the project's own.
 
@@ -127,8 +128,14 @@ What an activated plugin gives this project, all from its manifest:
   own value, higher or lower, for one command in its `plugins.use` entry —
   when a heavy command is killed for
   memory, that edit is yours to make here, without waiting for the plugin's
-  author.
+  author. A command takes piped input as a local program does, when it arrives;
+  one that reads its stdin to the end waits until yours ends, so give it
+  `</dev/null` when you pass no input. A call that you stop, or that hits your
+  shell tool's time limit, stops its command too.
 - **Skills**, which reach you and not the composer's menu.
+- **An MCP server** on one of its services, named after the plugin, which
+  reaches you only in this project's sessions — once this project gives that
+  service a `port:`. See "MCP servers on a project's services", below.
 - **Settings** the consuming project sets, and a state directory of the
   plugin's own.
 - **Declarations of what it needs** — credential names and external hosts —
@@ -314,6 +321,25 @@ process is still resident may therefore keep running without a server the user
 just added or enabled; the next process picks it up. A stdio server's npm
 package is installed during session setup, so that one can need a new session
 before its command exists at all.
+
+### MCP servers on a project's services
+
+A project can also bring its own MCP server, on one of its Compose services:
+the project declares it in `shipit.yaml` (`mcp:`), and a plugin declares it in
+its manifest (`mcp:` under its export). Neither is in Settings, neither uses an
+account slot, and only that project's sessions get it. Declaring one is your
+edit to `shipit.yaml`, like any other — the schema is
+`/shipit-docs/shipit-yaml.md` → `mcp`, and a plugin's server is
+`/shipit-docs/plugins.md` → A plugin's MCP server.
+
+The service can start after you do: ShipIt connects when the service answers,
+and again after it restarts, and nobody restarts you for it. On a process that
+lives across turns (Claude, by default) the tools appear as soon as the service
+answers; on an agent that starts a new process each turn, at the first turn
+that starts while the service answers. So "the tools are missing" in a new
+session usually means the service is not running yet — `shipit service list`
+answers it. A plugin server that ShipIt does not
+give at all is a problem row on the plugin's card, which names the reason.
 
 ## Who does what
 

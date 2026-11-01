@@ -465,6 +465,7 @@ export class StubGitHubAuthManager extends EventEmitter {
     this.mergePullRequestCalls.push({
       owner, repo, pullNumber, method, ...(expectedSha ? { expectedSha } : {}),
     });
+    await this._onMergeAttempt?.();
     if (this._mergeAttempt) return this._mergeAttempt;
     const legacy = this._mergeResult;
     if (legacy && !legacy.success) return { outcome: "refused" as const, message: legacy.message };
@@ -479,6 +480,11 @@ export class StubGitHubAuthManager extends EventEmitter {
 
   setMergeAttempt(attempt: typeof this._mergeAttempt) {
     this._mergeAttempt = attempt;
+  }
+
+  private _onMergeAttempt: (() => Promise<void>) | null = null;
+  setOnMergeAttempt(fn: (() => Promise<void>) | null) {
+    this._onMergeAttempt = fn;
   }
 
   private _prByNumber: Record<number, unknown> = {};
@@ -600,7 +606,7 @@ export class StubGitHubAuthManager extends EventEmitter {
 
   private _findPrAnyStateResult: {
     url: string; number: number; base: string; title: string; body: string;
-    state: "open" | "closed"; merged_at: string | null;
+    state: "open" | "closed"; merged_at: string | null; head_sha?: string | null;
     additions: number; deletions: number;
   } | null = null;
   async findPullRequestAnyState(_owner: string, _repo: string, _head: string) {
@@ -687,6 +693,7 @@ export class FakeClaudeProcess extends EventEmitter {
   public runCalled = false;
   public lastPrompt = "";
   public lastSessionId: string | undefined;
+  public lastResumeAt: string | undefined;
   public lastSystemPrompt: string | undefined;
   public lastImages: { data: string; mediaType: string; filename?: string }[] | undefined;
   public lastCwd: string | undefined;
@@ -696,6 +703,7 @@ export class FakeClaudeProcess extends EventEmitter {
   public lastModel: string | undefined;
   public lastReasoningEffort: string | undefined;
   public lastMcpServers: unknown[] | undefined;
+  public lastServiceMcpServers: unknown[] | undefined;
   public lastAutoCreatePr: boolean | undefined;
   public lastSessionStatusCard: boolean | undefined;
   public lastServiceRouting: { serviceId: string; billingMode: string; baseUrl: string } | undefined;
@@ -729,6 +737,7 @@ export class FakeClaudeProcess extends EventEmitter {
   run(params: {
     prompt: string;
     sessionId?: string;
+    resumeAt?: string;
     systemPrompt?: string;
     images?: { data: string; mediaType: string; filename?: string }[];
     cwd?: string;
@@ -738,6 +747,7 @@ export class FakeClaudeProcess extends EventEmitter {
     model?: string;
     reasoningEffort?: string;
     mcpServers?: unknown[];
+    serviceMcpServers?: unknown[];
     autoCreatePr?: boolean;
     sessionStatusCard?: boolean;
     compact?: boolean;
@@ -747,6 +757,7 @@ export class FakeClaudeProcess extends EventEmitter {
     this.lastCompact = params.compact;
     this.lastPrompt = params.prompt;
     this.lastSessionId = params.sessionId;
+    this.lastResumeAt = params.resumeAt;
     this.lastSystemPrompt = params.systemPrompt;
     this.lastImages = params.images;
     this.lastCwd = params.cwd;
@@ -756,6 +767,7 @@ export class FakeClaudeProcess extends EventEmitter {
     this.lastModel = params.model;
     this.lastReasoningEffort = params.reasoningEffort;
     this.lastMcpServers = params.mcpServers;
+    this.lastServiceMcpServers = params.serviceMcpServers;
     this.lastAutoCreatePr = params.autoCreatePr;
     this.lastSessionStatusCard = params.sessionStatusCard;
     this.lastServiceRouting = params.serviceRouting;
@@ -807,6 +819,8 @@ interface RawClaudeEvent {
   message?: { content?: unknown[] };
   subtype?: string;
   is_error?: boolean;
+  is_api_error_message?: boolean;
+  uuid?: string;
   total_cost_usd?: number | null;
   usage?: {
     input_tokens?: number;
@@ -845,6 +859,8 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
         type: "agent_assistant",
         content: raw.message?.content ?? [],
         parentToolUseId: raw.parent_tool_use_id,
+        ...(raw.is_api_error_message === true ? { synthetic: true } : {}),
+        ...(raw.uuid ? { messageId: raw.uuid } : {}),
       };
     case "user":
       if (raw.isReplay) {
@@ -858,12 +874,13 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
               .map((b) => b.text)
               .join("")
           : "";
-        return { type: "agent_user_replay", text };
+        return { type: "agent_user_replay", text, ...(raw.uuid ? { messageId: raw.uuid } : {}) };
       }
       return {
         type: "agent_tool_result",
         content: raw.message?.content ?? [],
         parentToolUseId: raw.parent_tool_use_id,
+        ...(raw.uuid ? { messageId: raw.uuid } : {}),
       };
     case "result": {
       const u = raw.usage;
@@ -1024,9 +1041,15 @@ export function seedRepoCacheWithLocalBare(opts: {
   tmpDir: string;
   repoUrl: string;
   seedFiles?: Record<string, string>;
+  /**
+   * Seed a real bare cache, with the remote as a sibling working repo. The claim's clone path
+   * (`ensureBareCache`) re-clones a cache that is not bare, which empties the default fixture.
+   */
+  bare?: boolean;
 }): void {
   const { tmpDir, repoUrl, seedFiles } = opts;
-  const repoDir = getRepoCacheDir(tmpDir, repoUrl);
+  const cacheDir = getRepoCacheDir(tmpDir, repoUrl);
+  const repoDir = opts.bare ? `${cacheDir}.origin` : cacheDir;
   fs.mkdirSync(repoDir, { recursive: true });
   execSync("git init -b main", { cwd: repoDir, stdio: "ignore" });
 
@@ -1040,6 +1063,10 @@ export function seedRepoCacheWithLocalBare(opts: {
   );
   execSync(`git remote add origin ${repoUrl}`, { cwd: repoDir, stdio: "ignore" });
   execSync("git update-ref refs/remotes/origin/main HEAD", { cwd: repoDir, stdio: "ignore" });
+  if (opts.bare) {
+    execSync(`git clone -q --bare "${repoDir}" "${cacheDir}"`, { stdio: "ignore" });
+    execSync(`git remote set-url origin ${repoUrl}`, { cwd: cacheDir, stdio: "ignore" });
+  }
 
   const gitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
   if (!gitConfigGlobal) {

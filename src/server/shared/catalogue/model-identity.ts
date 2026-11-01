@@ -33,6 +33,7 @@ export const MODEL_IDENTITIES = {
   sonnet5: identity("claude-sonnet-5", "claude"),
   sonnet55: identity("claude-sonnet-5.5", "claude"),
   haiku45: identity("claude-haiku-4.5", "claude"),
+  haiku55: identity("claude-haiku-5.5", "claude"),
   fable5: identity("claude-fable-5", "claude"),
   fable51: identity("claude-fable-5.1", "claude"),
 
@@ -40,15 +41,6 @@ export const MODEL_IDENTITIES = {
   gpt6sol: identity("gpt-6-sol", "gpt"),
   gpt6luna: identity("gpt-6-luna", "gpt"),
   gpt6astra: identity("gpt-6-astra", "gpt"),
-  gpt56sol: identity("gpt-5.6-sol", "gpt"),
-  gpt56terra: identity("gpt-5.6-terra", "gpt"),
-  gpt56luna: identity("gpt-5.6-luna", "gpt"),
-  gpt55: identity("gpt-5.5", "gpt"),
-  gpt54: identity("gpt-5.4", "gpt"),
-  gpt54mini: identity("gpt-5.4-mini", "gpt"),
-  gpt53codex: identity("gpt-5.3-codex", "gpt"),
-  gpt53codexSpark: identity("gpt-5.3-codex-spark", "gpt"),
-  gpt52: identity("gpt-5.2", "gpt"),
 
   deepseekV4Flash: identity("deepseek-v4-flash", "deepseek"),
   // V4.1 Flash is a DISTINCT canonical model, not a spelling of V4 Flash — the
@@ -79,6 +71,7 @@ export const MODEL_IDENTITIES = {
 export const MODEL_ID_ALIASES: Record<string, string> = {
   haiku: "claude-haiku-4.5",
   "claude-haiku-4-5": "claude-haiku-4.5",
+  "claude-haiku-5-5": "claude-haiku-5.5",
   "claude-fable-5-1": "claude-fable-5.1",
   "claude-opus-5-5": "claude-opus-5.5",
   "claude-sonnet-5-5": "claude-sonnet-5.5",

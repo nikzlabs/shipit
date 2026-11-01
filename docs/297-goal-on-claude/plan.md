@@ -123,8 +123,11 @@ no gain.
     `local_command_source` / `result` string, never on model prose.
   - `runClaudeGoalControl({ threadId, command, cwd, env })` — a short-lived
     `claude --print … --resume <threadId>` whose whole prompt is the `/goal`
-    text. It reads the `result` event and ends the process tree. 15 s limit, the
-    same as Codex's control process.
+    text. It reads the command's `result` event and ends the process tree. A
+    thread whose previous process left a background job answers with one more
+    `result` first, for that job's notice, and the read skips it
+    (docs/235-agent-self-wake-liveness §8). 15 s limit, the same as Codex's
+    control process.
 - `ClaudeAdapter.goalCommand(threadId, command)` picks one of three paths:
   - **A turn is running** → refused, for the concurrency reason above. The
     orchestrator turns that into the "wait for the turn to finish" notice.

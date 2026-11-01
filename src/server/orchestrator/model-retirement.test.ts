@@ -28,9 +28,9 @@ describe("applyModelRetirement", () => {
 
     const model = applyModelRetirement(mgr, mgr.get("s1"), "codex");
 
-    expect(model).toBe("gpt-5.6-sol");
+    expect(model).toBe("gpt-6.1-sol");
     const session = mgr.get("s1");
-    expect(session?.model).toBe("gpt-5.6-sol");
+    expect(session?.model).toBe("gpt-6.1-sol");
     expect(session?.serviceId).toBe("openai");
     expect(session?.billingMode).toBe("sub");
   });
@@ -38,7 +38,7 @@ describe("applyModelRetirement", () => {
   it("keeps the billing mode, so included work never becomes billed work", () => {
     pinRetired({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.6" });
 
-    expect(applyModelRetirement(mgr, mgr.get("s1"), "codex")).toBe("gpt-5.6-sol");
+    expect(applyModelRetirement(mgr, mgr.get("s1"), "codex")).toBe("gpt-6.1-sol");
     expect(mgr.get("s1")?.billingMode).toBe("key");
   });
 
@@ -56,13 +56,13 @@ describe("applyModelRetirement", () => {
       .prepare("UPDATE sessions SET model = ?, service_id = NULL, billing_mode = NULL WHERE id = ?")
       .run("gpt-5.6", "s1");
 
-    expect(applyModelRetirement(mgr, mgr.get("s1"), "codex")).toBe("gpt-5.6-sol");
+    expect(applyModelRetirement(mgr, mgr.get("s1"), "codex")).toBe("gpt-6.1-sol");
     expect(mgr.get("s1")?.serviceId).toBe("openai");
   });
 
   it("is a no-op for a current model, an unknown model, and no model at all", () => {
-    mgr.setModel("s1", "gpt-5.6-sol");
-    expect(applyModelRetirement(mgr, mgr.get("s1"), "codex")).toBe("gpt-5.6-sol");
+    mgr.setModel("s1", "gpt-6.1-sol");
+    expect(applyModelRetirement(mgr, mgr.get("s1"), "codex")).toBe("gpt-6.1-sol");
 
     mgr.setModel("s1", "gpt-5.5-2025-01-01");
     expect(applyModelRetirement(mgr, mgr.get("s1"), "codex")).toBe("gpt-5.5-2025-01-01");
@@ -93,7 +93,7 @@ describe("applyModelRetirement", () => {
       "codex",
     );
 
-    expect(model).toBe("gpt-5.6-sol");
+    expect(model).toBe("gpt-6.1-sol");
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -102,7 +102,7 @@ describe("applyModelRetirement", () => {
     const writer = { setModelSelection: vi.fn() };
     applyModelRetirement(
       writer,
-      { id: "s1", model: "gpt-5.6-sol", serviceId: "openai", billingMode: "sub" },
+      { id: "s1", model: "gpt-6.1-sol", serviceId: "openai", billingMode: "sub" },
       "codex",
     );
     expect(writer.setModelSelection).not.toHaveBeenCalled();

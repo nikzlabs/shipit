@@ -6,7 +6,7 @@ import { doneSessionTest } from "../../../server/shared/session-resolution.js";
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
 
 const computeRepoGroups = (repos: RepoInfo[], sessions: SessionInfo[]) =>
-  computeWith(repos, sessions, doneSessionTest(sessions));
+  computeWith(repos, sessions, doneSessionTest(sessions, () => false));
 
 function session(over: Partial<SessionInfo>): SessionInfo {
   return {

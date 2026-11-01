@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent, ToolResultEntry } from "./session-runner.js";
-import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, RepoSessionProposalCard, SessionMessageProposalCard, PresentInlineCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, SessionSettingsChangeCard, SettingsProposalCard, ScheduleProposalCard, ScheduleNotesAccessCard, NonTurnFailureCard, SshHostKeyCard, SessionMessageOrigin } from "../shared/types.js";
+import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, RepoSessionProposalCard, SessionMessageProposalCard, PresentInlineCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, SessionSettingsChangeCard, SettingsProposalCard, ScheduleProposalCard, ScheduleNotesAccessCard, NonTurnFailureCard, SshHostKeyCard, SessionMessageOrigin, PermissionUnanswered } from "../shared/types.js";
 import type { ReleaseStatusSummary } from "../shared/types/release-types.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { retireBackgroundSubagentResult } from "./subagent-completion.js";
@@ -51,12 +51,17 @@ export interface PersistedPermissionRequest {
   agentId?: string;
   createdAt: string;
   remembered?: boolean;
+  unanswered?: PermissionUnanswered;
 }
 
+/**
+ * docs/007 — `resumeAt` is the rewind point pending before a chat rewind, restored by its
+ * undo; `agentNotice` is the line a code rewind queued, removed by its undo.
+ */
 export type RewindSnapshotPayload =
-  | { action: "chat"; messages: PersistedMessage[] }
-  | { action: "code"; headHash: string; flippedMessageIds: number[] }
-  | { action: "both"; messages: PersistedMessage[]; headHash: string }
+  | { action: "chat"; messages: PersistedMessage[]; resumeAt?: string | null }
+  | { action: "code"; headHash: string; flippedMessageIds: number[]; agentNotice?: string }
+  | { action: "both"; messages: PersistedMessage[]; headHash: string; resumeAt?: string | null }
   | { action: "fork"; childSessionId: string; breadcrumbMessageId: number };
 
 export interface RewindSnapshotInfo {
@@ -108,6 +113,8 @@ export interface PersistedMessage {
   uploadPaths?: string[];
   /** Deduplicates user-message echoes across history loads. */
   clientRequestId?: string;
+  /** docs/007 — the CLI's id of the last message of its conversation this row covers. */
+  agentMessageId?: string;
   notice?: boolean;
   noticeLevel?: "info" | "warn";
   rolledBack?: boolean;
@@ -116,7 +123,7 @@ export interface PersistedMessage {
   voiceNote?: {
     id: string;
     headline: string;
-    kind: "authored" | "ask" | "plan";
+    kind: "authored" | "ask" | "plan" | "permission";
     createdAt: string;
   };
   bugReport?: PersistedBugReport;
@@ -192,6 +199,7 @@ interface MessageRow {
   tool_results: string | null;
   upload_paths: string | null;
   client_request_id: string | null;
+  agent_message_id: string | null;
   rolled_back: number;
   notice: number;
   notice_level: string | null;
@@ -237,15 +245,15 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, client_request_id, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, non_turn_failure, action_checklist, repo_session_proposal, session_message_proposal, present_inline, branch_auto_reset, branch_synced, session_renamed, session_settings_change, ssh_host_key, settings_proposal, schedule_proposal, schedule_notes_access, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @client_request_id, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @non_turn_failure, @action_checklist, @repo_session_proposal, @session_message_proposal, @present_inline, @branch_auto_reset, @branch_synced, @session_renamed, @session_settings_change, @ssh_host_key, @settings_proposal, @schedule_proposal, @schedule_notes_access, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, client_request_id, agent_message_id, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, non_turn_failure, action_checklist, repo_session_proposal, session_message_proposal, present_inline, branch_auto_reset, branch_synced, session_renamed, session_settings_change, ssh_host_key, settings_proposal, schedule_proposal, schedule_notes_access, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @client_request_id, @agent_message_id, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @non_turn_failure, @action_checklist, @repo_session_proposal, @session_message_proposal, @present_inline, @branch_auto_reset, @branch_synced, @session_renamed, @session_settings_change, @ssh_host_key, @settings_proposal, @schedule_proposal, @schedule_notes_access, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
 `;
 
 const UPDATE_SQL = `
   UPDATE messages SET role=@role, content=@content, tool_use=@tool_use, images=@images,
     files=@files, is_error=@is_error, commit_hash=@commit_hash, parent_commit_hash=@parent_commit_hash,
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
-    client_request_id=@client_request_id,
+    client_request_id=@client_request_id, agent_message_id=@agent_message_id,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
     voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, non_turn_failure=@non_turn_failure, action_checklist=@action_checklist, repo_session_proposal=@repo_session_proposal, session_message_proposal=@session_message_proposal, present_inline=@present_inline, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, session_renamed=@session_renamed, session_settings_change=@session_settings_change, ssh_host_key=@ssh_host_key, settings_proposal=@settings_proposal, schedule_proposal=@schedule_proposal, schedule_notes_access=@schedule_notes_access, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
@@ -282,6 +290,7 @@ export class ChatHistoryManager {
   private stmtLoadDecisionCardRows;
   private stmtLoadRepoSessionProposalRows;
   private stmtLoadSessionMessageProposalRows;
+  private stmtLoadSelfMergeWatchRows;
   private stmtLoadPermissionRows;
   private stmtLoadById;
   private stmtLoadSubAgentCards;
@@ -324,6 +333,9 @@ export class ChatHistoryManager {
     );
     this.stmtLoadSessionMessageProposalRows = this.db.prepare(
       "SELECT id, session_message_proposal FROM messages WHERE session_id = ? AND session_message_proposal IS NOT NULL ORDER BY id",
+    );
+    this.stmtLoadSelfMergeWatchRows = this.db.prepare(
+      "SELECT * FROM messages WHERE session_id = ? AND self_merge_watch IS NOT NULL ORDER BY id",
     );
     this.stmtLoadPermissionRows = this.db.prepare(
       "SELECT id, permission_prompt FROM messages WHERE session_id = ? AND permission_prompt IS NOT NULL ORDER BY id",
@@ -390,6 +402,7 @@ export class ChatHistoryManager {
       tool_results: msg.toolResults ? JSON.stringify(msg.toolResults) : null,
       upload_paths: msg.uploadPaths ? JSON.stringify(msg.uploadPaths) : null,
       client_request_id: msg.clientRequestId ?? null,
+      agent_message_id: msg.agentMessageId ?? null,
       turn_usage: null,
       subagent_events: msg.subagentEvents ? JSON.stringify(msg.subagentEvents) : null,
       rolled_back: msg.rolledBack ? 1 : 0,
@@ -448,6 +461,7 @@ export class ChatHistoryManager {
     if (row.parent_commit_hash) msg.parentCommitHash = row.parent_commit_hash;
     if (row.upload_paths) msg.uploadPaths = JSON.parse(row.upload_paths) as string[];
     if (row.client_request_id) msg.clientRequestId = row.client_request_id;
+    if (row.agent_message_id) msg.agentMessageId = row.agent_message_id;
     if (row.subagent_events) msg.subagentEvents = JSON.parse(row.subagent_events) as PersistedMessage["subagentEvents"];
     if (row.notice) msg.notice = true;
     if (row.notice_level === "info" || row.notice_level === "warn") msg.noticeLevel = row.notice_level;
@@ -517,6 +531,34 @@ export class ChatHistoryManager {
   load(sessionId: string): PersistedMessage[] {
     const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
     return rows.map((r) => this.fromRow(r));
+  }
+
+  /** Transcript order. `createdAt` is when the row was inserted: a chat rewind inserts the kept rows again. */
+  listRowTimes(sessionId: string): { id: number; createdAt: string | null }[] {
+    return this.db.prepare(
+      "SELECT id, created_at AS createdAt FROM messages WHERE session_id = ? ORDER BY id",
+    ).all(sessionId) as { id: number; createdAt: string | null }[];
+  }
+
+  loadRowById(sessionId: string, id: number): PersistedMessage | undefined {
+    const row = this.db.prepare("SELECT * FROM messages WHERE session_id = ? AND id = ?").get(sessionId, id) as
+      | MessageRow
+      | undefined;
+    return row ? this.fromRow(row) : undefined;
+  }
+
+  latestCompactionCard(sessionId: string): CompactionCard | undefined {
+    const row = this.db.prepare(
+      "SELECT compaction FROM messages WHERE session_id = ? AND compaction IS NOT NULL ORDER BY id DESC LIMIT 1",
+    ).get(sessionId) as { compaction: string } | undefined;
+    return row ? JSON.parse(row.compaction) as CompactionCard : undefined;
+  }
+
+  /** A user row with exactly this text that no rollback has marked. */
+  hasUserMessage(sessionId: string, text: string): boolean {
+    return this.db.prepare(
+      "SELECT 1 FROM messages WHERE session_id = ? AND role = 'user' AND content = ? AND rolled_back = 0 LIMIT 1",
+    ).get(sessionId, text) !== undefined;
   }
 
   loadLatestAssistantText(sessionId: string): string | undefined {
@@ -961,6 +1003,35 @@ export class ChatHistoryManager {
     })();
   }
 
+  /** The arm card of one arming; a session keeps the cards of its earlier watches too. */
+  findSelfMergeWatchCard(sessionId: string, watchId: string): SelfMergeWatchCard | null {
+    const rows = this.stmtLoadSelfMergeWatchRows.all(sessionId) as MessageRow[];
+    for (const row of rows) {
+      const card = JSON.parse(row.self_merge_watch!) as SelfMergeWatchCard;
+      if (card.watchId === watchId) return card;
+    }
+    return null;
+  }
+
+  updateSelfMergeWatchCard(
+    sessionId: string,
+    watchId: string,
+    patch: Partial<SelfMergeWatchCard>,
+  ): boolean {
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadSelfMergeWatchRows.all(sessionId) as MessageRow[];
+      for (const row of rows) {
+        const card = JSON.parse(row.self_merge_watch!) as SelfMergeWatchCard;
+        if (card.watchId !== watchId) continue;
+        const msg = this.fromRow(row);
+        msg.selfMergeWatch = { ...card, ...patch };
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return true;
+      }
+      return false;
+    })();
+  }
+
   findActionChecklistCard(sessionId: string, cardId: string): ActionChecklistCard | null {
     const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
     for (const row of rows) {
@@ -1035,6 +1106,13 @@ export class ChatHistoryManager {
       `).run(firstId, codeRollbackHash, sessionId, firstId);
       return targetRows.map((r) => r.id);
     })();
+  }
+
+  /** docs/007 req 5 — the CLI echoed the turn's prompt; a retry's echo replaces an earlier one. */
+  recordUserMessageAgentId(sessionId: string, messageId: number, agentMessageId: string): void {
+    this.db.prepare(
+      "UPDATE messages SET agent_message_id = ? WHERE session_id = ? AND id = ? AND role = 'user'",
+    ).run(agentMessageId, sessionId, messageId);
   }
 
   clearRolledBack(sessionId: string, messageIds: number[]): void {

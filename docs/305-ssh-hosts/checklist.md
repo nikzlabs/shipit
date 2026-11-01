@@ -28,6 +28,7 @@ All twelve requirements are resolved and the design is reviewed. Implementation 
 ## Docs and prompt
 - [x] Static prompt fragment (points at `~/.ssh/config`) + `shipit-docs/ssh.md` (aliases, revocation limits, local-mode caveat) + the wiki page
 - [x] Tests listed in `plan.md`, each signer rule proven red alone
+- [x] Ops texts (system prompt, `shipit-docs/ops-session.md`, ops workspace README) no longer say "no SSH", which contradicted req 6; guarded in `templates.test.ts` and `agent-instructions.test.ts`
 
 ## The design's own guarantees, after review
 

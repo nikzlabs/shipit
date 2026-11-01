@@ -1,6 +1,6 @@
 import type { AgentId, AgentEvent, AgentReasoningCapability } from "../agent-types.js";
 import type { EligibleModel } from "../../agent-registry.js";
-import type { PermissionMode } from "../attachment-types.js";
+import type { FileContextRef, PermissionMode } from "../attachment-types.js";
 import type { PersistedMessage } from "../../../orchestrator/chat-history.js";
 import type { ToolResultEntry } from "../../../orchestrator/session-runner.js";
 import type { AgentInterfaceProvenance } from "../../agent-interface-sdk/protocol.js";
@@ -8,6 +8,8 @@ import type { SessionMessageOrigin } from "../domain-types.js";
 
 export interface WsAgentEvent {
   type: "agent_event";
+  /** The session whose turn produced it: the client drops one of another session. */
+  sessionId: string;
   event: AgentEvent;
 }
 
@@ -62,18 +64,48 @@ export interface WsModelSelectionChanged {
   notice?: string;
 }
 
+/**
+ * One queued message. `id` is also the `clientRequestId` of the message's bubble: the
+ * sender's request id, or one ShipIt made (planning#691).
+ */
+export interface WsQueueRow {
+  id: string;
+  text: string;
+  /** One-based. */
+  position: number;
+}
+
 export interface WsMessageQueued {
   type: "message_queued";
+  sessionId: string;
+  id: string;
   /** One-based. */
   position: number;
   text: string;
 }
 
+/**
+ * docs/330-stop-returns-queued-messages — a message of the user's that a Stop took out of the
+ * queue. `id` is the id of its queue row. `files` holds its file references and its uploads
+ * (paths under `/uploads/`).
+ */
+export interface WsReturnedQueueMessage {
+  id: string;
+  text: string;
+  files?: FileContextRef[];
+}
+
 export interface WsQueueUpdated {
   type: "queue_updated";
-  queue: { text: string; position: number }[];
-  /** Absent on cancel or clear. */
-  dequeued?: string;
+  sessionId: string;
+  queue: WsQueueRow[];
+  /** A message that leaves the queue for a turn of its own; absent on cancel, clear or steer. */
+  dequeued?: { id: string; text: string };
+  /**
+   * Every message that waits for an input box to take it, not only the new ones. Absent when
+   * the event says nothing about them; the viewer answers with `queue_returned_taken`.
+   */
+  returned?: WsReturnedQueueMessage[];
 }
 
 /** Persist before emitting so attachment URLs resolve. */
@@ -81,6 +113,8 @@ export interface WsMessageSteered {
   type: "message_steered";
   text: string;
   sessionId: string;
+  /** The bubble's identity, shared with the queue row the message came from (planning#691). */
+  clientRequestId: string;
   images?: { data?: string; mediaType: string; src?: string }[];
   files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
   uploadPaths?: string[];
@@ -110,4 +144,6 @@ export interface WsAgentListMessage {
 
 export interface WsAgentInterrupted {
   type: "agent_interrupted";
+  /** It clears the queue strip and closes the streaming bubble, so it is session-scoped. */
+  sessionId: string;
 }

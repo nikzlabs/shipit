@@ -7,7 +7,7 @@ import {
   addRepo,
   removeRepo,
   reorderRepos,
-  setRepoTrusted,
+  grantRepoTrust,
   applyRepoSettings,
   assertValidRepoColorIndex,
   createRepoWithTemplate,
@@ -18,7 +18,7 @@ import {
   ClaimAbortedError,
   refreshRepoDefaultBranch,
 } from "./services/index.js";
-import { canonicalRepoKey, hasUrlCredentials, repoId } from "./git-utils.js";
+import { hasUrlCredentials, repoId } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
 import { stopWarmPreview } from "./warm-preview.js";
 
@@ -157,20 +157,7 @@ export async function registerSessionReposRoutes(
     async (request, reply) => {
       try {
         const url = request.body?.url?.trim();
-        setRepoTrusted(deps.repoStore, url);
-        deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
-        // The runner registry includes claimed warm sessions that sessionManager.list omits.
-        const key = canonicalRepoKey(url!);
-        for (const sessionId of deps.runnerRegistry.ids()) {
-          const session = sessionManager.get(sessionId);
-          if (session?.remoteUrl && canonicalRepoKey(session.remoteUrl) === key) {
-            const runner = deps.runnerRegistry.get(sessionId) as
-              | { rerunServiceSetup?: () => void }
-              | undefined;
-            runner?.rerunServiceSetup?.();
-          }
-        }
-        void deps.warmSessionForRepo?.(url!);
+        grantRepoTrust(deps, url);
         return { repo: deps.repoStore.get(url!) ?? null, trusted: true };
       } catch (err) {
         if (err instanceof ServiceError) {

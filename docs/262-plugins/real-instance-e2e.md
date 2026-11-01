@@ -130,6 +130,35 @@ Open a session on the **consumer** project.
 - **PASS:** the counter is the same number on both surfaces and moves in both
   directions. That is the shared state directory working across the CLI and the
   service (req 18).
+- **Do:** give the command stdin in three ways, with a UTF-8 text file
+  `big.txt` larger than 1 MiB: `printf 'once\n' | probe --stdin`, then
+  `probe --stdin < <(sleep 3; echo first; sleep 2; echo second)`, then
+  `probe --stdin < big.txt`.
+- **PASS:** in each report, `stdin.bytes` and `stdin.sha256` equal the input's
+  `wc -c` and `sha256sum`. For the second input, `bytes` is 13 and `endAfterMs`
+  is about 2000 more than `firstByteAfterMs`: the probe read the first line
+  while the caller's stdin was still open. That is stdin delivered while the
+  command runs (req 17; plan §2, "Stdin is delivered when it arrives").
+- **Failure modes:** 0 bytes for the second input is a shim that stops waiting
+  for a first byte. 13 bytes with the two times equal is a shim that holds
+  stdin until its end. Do not judge by the time of the whole call: a call that
+  builds the network namespace takes 2 to 3 s by itself.
+- **Do:** run `timeout 3 probe --hold 20 </dev/null`, wait 25 s, and run
+  `probe </dev/null`. `--hold 20` makes the command run for 20 s and record,
+  four times in a second, how long it has run.
+- **PASS:** `timeout` exits 124 after 3 s. The last report's `hold` has this
+  run's `startedAt`, `finished: false`, and a `ranMs` of some thousands: the
+  3 s that the caller lived, and then the time that ShipIt needed to stop the
+  command. That is a command stopped when its caller went away (req 32; plan
+  §2, "A lost caller stops the command").
+- **Failure mode:** `finished: true` with a `ranMs` of about 20000. The
+  command ran to its end with nobody to receive its result, which is
+  planning#683 and what a build without req 32 reports (Run 5). The check is
+  safe on such a build: the command ends by itself after its 20 s.
+- **Do not** use a command that waits for stdin (`timeout 3 probe --stdin <
+  <(sleep 60)`) for this check. A build that only ended the command's stdin
+  would pass it, and on a build without req 32 that command waits until its
+  15-minute limit.
 - **Failure modes:** `501 … no container runtime` is the wiring defect #2263
   fixed — the route hook is not forwarded. A wrapper that is not on `PATH` at all
   means the container prepare pass did not run or a command collision withheld
@@ -533,3 +562,118 @@ failure: on the **self** fixture `settings.greeting` is now
 `hello from the consuming project`, and the service page renders that rather
 than "the `greeting` default". Run 1's rows recorded the default because no
 override existed then. The consumer fixture's expected value is unchanged.
+
+---
+
+## Run 4 — 2026-10-10, self fixture, real deployment — stdin delivery
+
+Narrow by design: the one thing nikzlabs/shipit#3143 (planning#678) could not
+measure. That change made stdin follow the call, and its session had no Docker,
+so delivery through a real daemon's attach connection was unverified. The
+fixture could not measure it either, because no export read stdin; `probe
+--stdin` was added for this run. Run from a session container against a build
+that carries #3143, with `repo: self`, so the working tree's `probe.mjs` is the
+code that ran (`mode: self-or-unprovided`, `checkout.writable: true`).
+
+Recorded fields, not verdicts. "Call" is the wall-clock time of the whole
+command; the two `stdin` times count from the probe's start.
+
+| Input | `stdin` in the report | Call |
+|---|---|---|
+| `/dev/null` | `bytes: 0`, `firstByteAfterMs: null` | 2.40 s (the call that built the network namespace) |
+| `printf 'once\n' \|` | `bytes: 5`, hash equal | 0.75 s |
+| starts 3 s after the call (`< <(sleep 3; echo late)`) | `bytes: 5`, hash equal, `firstByteAfterMs: 2348` | 3.14 s |
+| two lines, 1 s and 2.5 s after the call | `bytes: 13`, hash equal, `firstByteAfterMs: 488`, `endAfterMs: 1989` | 2.68 s |
+| 202,632 bytes of text (more than one part) | bytes and hash equal | 0.81 s |
+| 400,000 bytes of non-ASCII text (2, 3 and 4-byte characters) | bytes and hash equal | 1.02 s |
+| 6,754,388 bytes of text | bytes and hash equal, `firstByteAfterMs: 140`, `endAfterMs: 579` | 1.36 s |
+| open for 8 s, no data (`< <(sleep 8)`) | `bytes: 0`, `endAfterMs: 6611` | 8.17 s |
+| the same, without `--stdin` | no `stdin` field | 1.43 s |
+
+What the rows say together: input arrives whole on both transport paths — with
+the call (the 5 bytes that ended at once), and after it in numbered parts (the
+late inputs, and every input above 128 Ki characters, of which the 6.75 MB one
+needs at least 52 parts). The probe reads a part when the caller wrote it, not
+when the caller's stdin ends: the two-line row has 1.5 s between its first byte
+and its end. And a command that does not read stdin does not wait for it.
+
+The orchestrator answered after every call, and every call after the first
+reported `network … (reused)` in its timing line. That pool is in the
+orchestrator's memory, so it did not restart between the first call and the
+last.
+
+The probe then changed after review: it starts to read stdin before anything
+else, so that a slow `--host-check` cannot delay the two times. The three inputs
+of step 3, with the probe as committed:
+
+| Input | `stdin` in the report | Call |
+|---|---|---|
+| `printf 'once\n' \|` | `bytes: 5`, hash equal | 3.02 s (built the network namespace) |
+| first line 3 s after the call, second line 5 s after it | `bytes: 13`, hash equal, `firstByteAfterMs: 2220`, `endAfterMs: 4224` | 5.15 s |
+| 6,754,388 bytes of text | bytes and hash equal, `firstByteAfterMs: 158`, `endAfterMs: 2829` | 4.23 s |
+
+The same 5 bytes took 0.75 s in one call and 3.02 s in another, which is why
+step 3 does not judge by the time of the whole call.
+
+**Not run, deliberately:** a caller that goes away while a `--stdin` call
+waits. If the shim dies before it sent the end of stdin, nothing else sends it
+and nothing stops the command short of its 15-minute limit or the session's
+archive. That is read from the code and filed as planning#683; running it
+would leave a container on a live instance.
+
+**Not shown by these inputs:** the paths that only a failure reaches. A part
+that arrives before its call, a part that is sent twice, a part that the
+command no longer takes (`accepted: false`), the refusals (409), and a reader
+slow enough to hold the producer back. Those have unit tests and no run on a
+real daemon. Also not run: the consumer fixture, which shares this path from
+the wrapper on.
+
+## Run 5 — 2026-10-10, self fixture, real deployment — input that nobody reads
+
+Narrow again: the first of Run 4's paths that were not shown. A command that
+exits without reading a large stdin breaks the daemon's attach connection
+under a write, and the orchestrator has no handler of last resort, so a defect
+there ends the orchestrator and not the call. The user accepted that risk for
+this run. The command was `probe` without `--stdin`, which never reads stdin.
+The build carries nikzlabs/shipit#3143 and not the fix for planning#683.
+
+Each call ran with `SHIPIT_PLUGIN_TIMING=1`. After each one, `shipit service
+list` answered and one more `probe </dev/null` gave the last column.
+
+| Input | Exit | Call | stderr | The next call's timing line |
+|---|---|---|---|---|
+| `/dev/null` (baseline, second call) | 0 | 1027 ms | timing line only | `network 59 ms (reused)` |
+| 202,632 bytes of text from a file | 0 | 1016 ms | timing line only | `network 23 ms (reused)` |
+| 6,754,388 bytes of text from a file | 0 | 1122 ms | timing line only | `network 31 ms (reused)` |
+| `yes \| head -c 3000000` | 0 | 882 ms | timing line only | `network 18 ms (reused)` |
+| 50,000,000 bytes from `head \| tr` | 0 | 688 ms | timing line only | `network 17 ms (reused)` |
+
+Every call printed the complete report, and none printed `Could not deliver
+stdin`. The `command` phase stayed between 131 and 255 ms, as with no input. In
+the last row both producer processes ended with status 141 (SIGPIPE) and the
+call took 688 ms: the shim stopped reading its stdin when the command had its
+result. All calls were within 2 minutes of the namespace's build, so `(reused)`
+on each one says that the orchestrator did not restart.
+
+**Not visible from a session:** which step ended the forwarding in each call —
+the `accepted: false` answer to a part, or the call's own answer, after which
+the shim exits — and whether a write to the attach connection failed and was
+handled, or none failed. The caller sees the same result for each.
+
+**The lost-caller check, before req 32.** `probe --hold` was added later the
+same day, and step 3's check was then run one time on the same build, which
+does not carry req 32:
+
+| When | What |
+|---|---|
+| the call | `timeout 3 probe --hold 20 </dev/null` exited 124 after 3013 ms, with no output |
+| about 4 s after the command's start | `hold: { ranMs: 4014, finished: false }`, and this call's timing line said `network 1109 ms (built)` |
+| about 26 s after the command's start | `hold: { ranMs: 20062, finished: true }`, and this call's timing line said `network 21 ms (reused)` |
+
+That is planning#683 on a real daemon: the command ran for 17 s after its
+caller was gone, and held its namespace for that time, so the call in between
+built a second one.
+
+**Not run:** the same check on a build that carries req 32. A session container
+has no Docker to run that build before the merge, so the stop itself (the kill
+of a real container) has unit tests and no run on a real daemon.

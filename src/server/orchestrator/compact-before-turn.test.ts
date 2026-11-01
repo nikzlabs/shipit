@@ -68,6 +68,8 @@ function ask(over: {
   backgroundWork?: string[];
   conversationReplay?: string;
   unsettled?: boolean;
+  marked?: string[];
+  context?: number;
 } = {}): Promise<boolean> {
   const unsettled = over.unsettled === true;
   const sessionRef = {
@@ -95,6 +97,8 @@ function ask(over: {
           })
         : makeGit()),
       getAutoResetMergedBranch: () => over.setting ?? true,
+      markCompacted: (_id: string, anchor: string) => { over.marked?.push(anchor); },
+      getContextTokens: () => over.context,
       mergeRecheckDeps: {
         verifyPrState: () => {
           if (unsettled) sessionRef.value = makeSession();
@@ -123,7 +127,56 @@ describe("shouldCompactBeforeTurn", () => {
   });
 
   it("says no when the user unticked the control for this message (req 5)", async () => {
-    expect(await ask({ intent: false })).toBe(false);
+    const marked: string[] = [];
+    expect(await ask({ intent: false, marked })).toBe(false);
+    // The untick answers this merge's compaction offer, so a later message must not compact.
+    expect(marked).toHaveLength(1);
+  });
+
+  it("says no on every path when the user turned it off for the session (reqs 5, 17)", async () => {
+    const off = makeSession({ compactAfterMergeOff: true });
+    const marked: string[] = [];
+    expect(await ask({ session: off, marked })).toBe(false);
+    expect(await ask({ session: off, intent: undefined, context: 200_000 })).toBe(false);
+    expect(marked).toHaveLength(1);
+  });
+
+  it("follows a re-tick the send carried before its write reached the session", async () => {
+    expect(await ask({ session: makeSession({ compactAfterMergeOff: true }), intent: true })).toBe(true);
+  });
+
+  it("records nothing for an untick on a session with no offer", async () => {
+    const marked: string[] = [];
+    const notMerged = makeSession({ mergedAt: undefined });
+    expect(await ask({ session: notMerged, intent: false, marked })).toBe(false);
+    expect(marked).toEqual([]);
+  });
+
+  it("records the merge when it says yes, and says no for that merge from then on (docs/218 req 6)", async () => {
+    const session = makeSession();
+    const marked: string[] = [];
+    expect(await ask({ session, marked })).toBe(true);
+    expect(marked).toHaveLength(1);
+
+    // Same merge, still merged, clean and on the merged head: the reset did not happen.
+    expect(await ask({ session: { ...session, mergeContinueCompactedAnchor: marked[0] }, marked })).toBe(false);
+    expect(marked).toHaveLength(1);
+
+    // An anchor from an earlier merge does not stop this one.
+    expect(await ask({ session: { ...session, mergeContinueCompactedAnchor: "an-earlier-merge" } })).toBe(true);
+  });
+
+  it("says no under 200K tokens, also with the box ticked, and spends nothing (req 15)", async () => {
+    const marked: string[] = [];
+    expect(await ask({ intent: true, context: 199_999, marked })).toBe(false);
+    expect(await ask({ intent: undefined, context: 199_999, marked })).toBe(false);
+    // Nothing was compacted, so a later message of the same merge can still compact.
+    expect(marked).toEqual([]);
+  });
+
+  it("says yes at 200K tokens, or when the size is not known", async () => {
+    expect(await ask({ intent: true, context: 200_000 })).toBe(true);
+    expect(await ask({ intent: true })).toBe(true);
   });
 
   it("says no when the shared setting is off (req 11)", async () => {

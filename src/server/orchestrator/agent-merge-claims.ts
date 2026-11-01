@@ -78,6 +78,20 @@ export class AgentMergeClaimStore {
     return this.mergeCancelled.has(sessionId);
   }
 
+  // One settler per session: two would each force the PR's merge effects, and a
+  // reconciliation during a direct merge's request would read that merge as open.
+  private readonly settling = new Set<string>();
+
+  beginSettlement(sessionId: string): boolean {
+    if (this.settling.has(sessionId)) return false;
+    this.settling.add(sessionId);
+    return true;
+  }
+
+  endSettlement(sessionId: string): void {
+    this.settling.delete(sessionId);
+  }
+
   claim(claim: Omit<AgentMergeClaim, "state" | "origin" | "createdAt">): boolean {
     return this.write(claim, "merging", "direct");
   }

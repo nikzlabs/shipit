@@ -15,6 +15,8 @@ export const AGENT_CREDENTIAL_PATHS: Record<AgentId, readonly string[]> = {
   claude: [".claude", ".claude.json"],
   codex: [".codex"],
   opencode: [".local/share/opencode"],
+  // Never v1's root: pointed at it, OpenCode 2 migrates v1's database (docs/269 req 2).
+  opencode2: [".local/share/opencode2"],
   grok: [".grok"],
   // The token sits a level below, at .gemini/antigravity-cli/antigravity-oauth-token.
   antigravity: [".gemini"],
@@ -98,48 +100,6 @@ export function writeSessionAccountMarker(
   fs.renameSync(tmp, file);
 }
 
-// Preserve the displaced account and distinguish a borrowed legacy route from a lost marker.
-// Overlapping borrows share one subtree, so the record tracks its HOLDERS, not a
-// count of begin calls: one consult re-provisions per failover attempt.
-// `displaced` is what the session held before the FIRST borrow.
-const outstandingBorrows = new Map<string, { holders: Set<string>; displaced: string | undefined }>();
-
-const borrowKey = (sessionId: string, agentId: AgentId): string => `${sessionId}:${agentId}`;
-
-// Repeated borrows retain the first displaced account, not the borrowed account.
-export function beginSubtreeBorrow(credentialsRoot: string, sessionId: string, agentId: AgentId, holderId: string): void {
-  const key = borrowKey(sessionId, agentId);
-  const open = outstandingBorrows.get(key);
-  if (open) {
-    open.holders.add(holderId);
-    return;
-  }
-  outstandingBorrows.set(key, {
-    holders: new Set([holderId]),
-    displaced: readSessionAccountMarker(credentialsRoot, sessionId)[agentId],
-  });
-}
-
-/** `last` is false while another spawn holds the subtree; no record reads as last. */
-export function endSubtreeBorrow(sessionId: string, agentId: AgentId, holderId: string): { last: boolean; displaced?: string } {
-  const key = borrowKey(sessionId, agentId);
-  const borrow = outstandingBorrows.get(key);
-  if (!borrow) return { last: true };
-  borrow.holders.delete(holderId);
-  if (borrow.holders.size > 0) return { last: false };
-  outstandingBorrows.delete(key);
-  return { last: true, ...(borrow.displaced !== undefined ? { displaced: borrow.displaced } : {}) };
-}
-
-export function subtreeBorrowInFlight(sessionId: string, agentId: AgentId): boolean {
-  return outstandingBorrows.has(borrowKey(sessionId, agentId));
-}
-
-/** Test cleanup only. */
-export function clearSubtreeBorrows(): void {
-  outstandingBorrows.clear();
-}
-
 export function perSessionCredentialsSubpath(sessionId: string): string {
   return path.posix.join(SESSION_CREDENTIALS_SUBDIR, sessionId);
 }
@@ -162,13 +122,24 @@ function materializeCredentialDestination(dest: string): void {
   );
 }
 
-export function copyCredentialPath(srcRoot: string, destRoot: string, rel: string): void {
+export function copyCredentialPath(
+  srcRoot: string,
+  destRoot: string,
+  rel: string,
+  exclude: readonly string[] = [],
+): void {
   const src = path.join(srcRoot, rel);
   if (!fs.existsSync(src)) return;
   const dest = path.join(destRoot, rel);
   materializeCredentialDestination(dest);
+  const excluded = new Set(exclude.map((sub) => path.join(src, sub)));
   // Absolute source links would resolve to different files inside the session's subpath mount.
-  fs.cpSync(src, dest, { recursive: true, force: true, dereference: true });
+  fs.cpSync(src, dest, {
+    recursive: true,
+    force: true,
+    dereference: true,
+    filter: (source) => !excluded.has(source),
+  });
 }
 
 export function ensureSessionCredentialsScaffold(credentialsRoot: string, sessionId: string): void {

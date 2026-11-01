@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import {
-  clearConversationThread,
   formatSessionStatusCardFull,
   formatSessionStatusContext,
   MAX_STATUS_CONTEXT_CHARS,
@@ -337,15 +336,6 @@ describe("runStatusExclusive", () => {
       status: "Ready to merge.",
       fresh: true,
     });
-  });
-});
-
-describe("clearConversationThread", () => {
-  it("clears the thread", () => {
-    const cleared: string[] = [];
-    const sessions = { clearAgentSessionId: (id: string) => { cleared.push(id); } };
-    clearConversationThread({ sessionManager: sessions as never }, "s1");
-    expect(cleared).toEqual(["s1"]);
   });
 });
 

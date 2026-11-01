@@ -5,6 +5,7 @@ import {
   ServiceError,
   resolveShipitFixTarget,
   ensureRepoReady,
+  grantRepoTrust,
   buildShipitFixPrompt,
 } from "./services/index.js";
 
@@ -80,6 +81,14 @@ export async function prepareShipitFixSpawn(
       ensureBareCache: (cacheDir, url) => ensureBareCache(cacheDir, url, deps.createRepoGit),
     });
     repoUrlOverride = readyRepoUrl;
+    // docs/243-agent-messaging-trust-gate req 7: the host already runs this repository's code,
+    // so the two checks above are the consent. Untrusted, the child's first turn is refused.
+    if (!deps.repoStore.isTrusted(readyRepoUrl)) {
+      grantRepoTrust(deps, readyRepoUrl);
+      console.log(
+        `[shipit-fix] Trusted the ShipIt source repository ${parsed.owner}/${parsed.repo} for Ops session ${parentId}`,
+      );
+    }
     sourceBase = target.ref;
     const diagnosisSummary = (body.prompt ?? "").trim().split(/\r?\n/)[0]?.slice(0, 200);
     shipitFixMeta = {

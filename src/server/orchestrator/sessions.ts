@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { LastTurnOutcome, PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionListRow, SessionMergeWatch, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
+import type { LastTurnOutcome, PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionListRow, SessionMergeWatch, SessionQuotaResume, SessionSecretBlock, SessionStatus, SessionTitleSource, WorkspaceBlockKind } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
 import { doneSessionTest, isWorkResolved, scheduledViewTest, workResolvedAt } from "../shared/session-resolution.js";
 import { dataDeletionTimeMs, type DataRetentionConfig } from "../shared/session-retention.js";
@@ -14,7 +14,7 @@ import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import { allHarnesses, resolveModelSelection, sameCredentialOwner } from "../shared/catalogue/index.js";
 import { repoId, stripRemoteUrlCredentials } from "./git-utils.js";
 import type { QueuedMessage } from "./session-runner.js";
-import type { TurnOutcome } from "./turn-settlement.js";
+import type { EmptyTurnReason, TurnOutcome } from "./turn-settlement.js";
 
 // Bill by the actual route, which can differ from the session's requested mode.
 export function billingModeForRoute(
@@ -37,6 +37,7 @@ interface SessionRow {
   workspace_dir: string | null;
   remote_url: string | null;
   conversation_replay: string | null;
+  agent_resume_at: string | null;
   archived: number;
   disk_tier: string;
   user_archived: number;
@@ -76,12 +77,15 @@ interface SessionRow {
   keep_preview_running: number;
   muted_at: string | null;
   merge_watch: string | null;
+  self_merge_watch: string | null;
   secret_block: string | null;
   workspace_block: string | null;
   merge_issue_effects: string | null;
   previous_merged_pr: string | null;
   merged_head_sha: string | null;
   merge_continue_declined_anchor: string | null;
+  merge_continue_compacted_anchor: string | null;
+  compact_after_merge_off: number;
   pending_agent_notice: string | null;
   pr_repo_id: string | null;
   pr_number: number | null;
@@ -101,7 +105,7 @@ const LAST_TURN_OUTCOMES: readonly LastTurnOutcome[] = ["ok", "errored", "quota-
 
 /** A held turn as stored: everything but the process-bound callback and its own row id. */
 function serializeHeldTurn(entry: QueuedMessage): string {
-  const { onTurnComplete: _callback, heldId: _heldId, ...stored } = entry;
+  const { onTurnComplete: _callback, heldId: _heldId, sendOrder: _sendOrder, ...stored } = entry;
   return JSON.stringify(stored);
 }
 
@@ -182,6 +186,8 @@ function safeParseCapabilities(json: string): unknown {
 export interface PendingCompaction {
   instructions?: string;
   note?: string;
+  /** req 13 — the user asked for it, so it compacts under the req 12 minimum, as `/compact` does. */
+  userAsked?: true;
 }
 
 export interface DiskLadderThresholds {
@@ -207,12 +213,27 @@ export function assertDiskLadderOrdering(t: DiskLadderThresholds): void {
   }
 }
 
+function parseQuotaResume(json: string | null): SessionQuotaResume | undefined {
+  if (!json) return undefined;
+  try {
+    return JSON.parse(json) as SessionQuotaResume;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Not yet terminal: such a watch can still deliver, and holds the PR polling gate open. */
+export function isLiveMergeWatch(watch: SessionMergeWatch): boolean {
+  return watch.state === "armed" || watch.state === "merge-observed";
+}
+
 /** The same session as a list row, for an event that carries one session to every tab. */
 export function toListRow(session: SessionInfo): SessionListRow {
   const {
     sessionStatus: _sessionStatus,
     agentGoal: _agentGoal,
     conversationReplay: _conversationReplay,
+    agentResumeAt: _agentResumeAt,
     pendingAgentNotice: _pendingAgentNotice,
     ...row
   } = session;
@@ -222,6 +243,7 @@ export function toListRow(session: SessionInfo): SessionListRow {
 export function filterVisibleInSidebar<T extends SessionListRow>(
   sessions: T[],
   maxMerged = MAX_MERGED_SESSIONS_PER_REPO,
+  isAgentWorking: (sessionId: string) => boolean = () => false,
 ): T[] {
   // Archived rows keep their rank so archiving does not promote an older session.
   // docs/324-scheduled-sessions — each view has its own cap, so daily runs never
@@ -249,7 +271,7 @@ export function filterVisibleInSidebar<T extends SessionListRow>(
   // sessions, so a hidden session is always one the idle enforcer may stop.
   // A root with unfinished work below it is not done, so it stays; a done
   // member stays with its root so the spawn tree is not torn apart.
-  const isDone = doneSessionTest(sessions);
+  const isDone = doneSessionTest(sessions, isAgentWorking);
   const byId = new Map(sessions.map((s) => [s.id, s]));
   const shownOnItsOwn = (s: T | undefined): boolean =>
     !!s && !s.userArchived && (!isDone(s) || topResolvedIds.has(s.id));
@@ -270,12 +292,53 @@ export class SessionManager {
 
   readonly dataRetention: DataRetentionConfig;
 
+  // The runner registry is built after this manager, so bootstrap sets the test later.
+  private agentWorkingTest: (sessionId: string) => boolean = () => false;
+  readonly isAgentWorking = (sessionId: string): boolean => this.agentWorkingTest(sessionId);
+
   constructor(dbManager: DatabaseManager, opts: { dataRetention?: DataRetentionConfig } = {}) {
     this.db = dbManager.db;
     this.dataRetention = opts.dataRetention ?? dataRetentionConfigFromEnv();
+    this.adoptLegacySelfMergeWatches();
   }
 
-  /** Runs after each write of a session's status card or goal; returns the unsubscribe. */
+  setAgentWorkingTest(test: (sessionId: string) => boolean): void {
+    this.agentWorkingTest = test;
+  }
+
+  /** For a store whose rows reference `sessions`: they must be in this database, not in another. */
+  get database(): Pick<DatabaseManager, "db"> {
+    return { db: this.db };
+  }
+
+  /**
+   * docs/239-self-merge-wake — a session's own watch belongs in `self_merge_watch`. Code older than
+   * that column wrote it into `merge_watch`, and does so again after a rollback, so this runs on
+   * every start and not as a one-time migration. Such a value is always the newer state (only the
+   * older code writes it, and only while this code does not run), so it replaces what the new
+   * column holds, as a re-arm does. A session is never its own parent, so `parentSessionId` also
+   * identifies a watch the older code already delivered, which it stored without `kind`.
+   */
+  private adoptLegacySelfMergeWatches(): void {
+    const rows = this.db
+      .prepare("SELECT id, merge_watch, self_merge_watch FROM sessions WHERE merge_watch IS NOT NULL")
+      .all() as { id: string; merge_watch: string; self_merge_watch: string | null }[];
+    for (const row of rows) {
+      try {
+        const watch = JSON.parse(row.merge_watch) as SessionMergeWatch;
+        if (watch.kind !== "self" && watch.parentSessionId !== row.id) continue;
+      } catch {
+        continue;
+      }
+      this.db
+        .prepare("UPDATE sessions SET self_merge_watch = ?, merge_watch = NULL WHERE id = ?")
+        .run(row.merge_watch, row.id);
+      const replaced = row.self_merge_watch ? "; it replaces an older self-watch there" : "";
+      console.log(`[merge-watch] moved the self-watch of ${row.id} to its own column${replaced}`);
+    }
+  }
+
+  /** Runs after each write of a session's status card, goal or compaction choice; returns the unsubscribe. */
   onDetailsChanged(listener: (sessionId: string) => void): () => void {
     this.detailsListeners.add(listener);
     return () => {
@@ -296,7 +359,9 @@ export class SessionManager {
   private fromRow(row: SessionRow): SessionInfo {
     const info: SessionInfo = this.listRowFromRow(row);
     if (row.conversation_replay) info.conversationReplay = row.conversation_replay;
+    if (row.agent_resume_at) info.agentResumeAt = row.agent_resume_at;
     if (row.pending_agent_notice) info.pendingAgentNotice = row.pending_agent_notice;
+    if (row.compact_after_merge_off) info.compactAfterMergeOff = true;
     if (row.agent_goal) {
       const goal = parseAgentGoal(row.agent_goal);
       if (goal) info.agentGoal = goal;
@@ -379,6 +444,13 @@ export class SessionManager {
         // Ignore corrupt JSON.
       }
     }
+    if (row.self_merge_watch) {
+      try {
+        info.selfMergeWatch = JSON.parse(row.self_merge_watch) as SessionInfo["selfMergeWatch"];
+      } catch {
+        // Ignore corrupt JSON.
+      }
+    }
     if (row.previous_merged_pr) {
       try {
         info.previousMergedPr = JSON.parse(row.previous_merged_pr) as SessionInfo["previousMergedPr"];
@@ -397,6 +469,9 @@ export class SessionManager {
     if (row.merged_head_sha) info.mergedHeadSha = row.merged_head_sha;
     if (row.merge_continue_declined_anchor) {
       info.mergeContinueDeclinedAnchor = row.merge_continue_declined_anchor;
+    }
+    if (row.merge_continue_compacted_anchor) {
+      info.mergeContinueCompactedAnchor = row.merge_continue_compacted_anchor;
     }
     // Partial provenance must not authorize a merge.
     if (row.pr_number && row.pr_repo_id) {
@@ -425,14 +500,18 @@ export class SessionManager {
     const rows = this.db.prepare(
       "SELECT * FROM sessions WHERE warm = 0 ORDER BY last_used_at DESC, rowid DESC",
     ).all() as SessionRow[];
-    return filterVisibleInSidebar(this.withDataDeletionDates(rows.map((r) => this.listRowFromRow(r))));
+    return filterVisibleInSidebar(
+      this.withDataDeletionDates(rows.map((r) => this.listRowFromRow(r))),
+      MAX_MERGED_SESSIONS_PER_REPO,
+      this.isAgentWorking,
+    );
   }
 
   // docs/323-archived-session-data-retention req 7 — needs the whole list, because
   // "done" is decided from it.
   private withDataDeletionDates(sessions: SessionListRow[]): SessionListRow[] {
     if (!sessions.some((s) => (s.retainedDataBytes ?? 0) > 0)) return sessions;
-    const isDone = doneSessionTest(sessions);
+    const isDone = doneSessionTest(sessions, this.isAgentWorking);
     for (const s of sessions) {
       if (!s.retainedDataBytes) continue;
       const at = dataDeletionTimeMs(s, isDone(s), this.dataRetention);
@@ -468,7 +547,8 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET last_used_at = ? WHERE id = ?").run(new Date().toISOString(), id);
   }
 
-  track(id: string, title?: string, workspaceDir?: string): SessionInfo {
+  /** `warm` applies only to a new row, so it is warm from its first read. */
+  track(id: string, title?: string, workspaceDir?: string, opts?: { warm?: boolean }): SessionInfo {
     const now = new Date().toISOString();
     const existing = this.get(id);
     if (existing) {
@@ -488,9 +568,9 @@ export class SessionManager {
     }
 
     this.db.prepare(`
-      INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, title || "New session", now, now, workspaceDir ?? null);
+      INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, warm)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, title || "New session", now, now, workspaceDir ?? null, opts?.warm ? 1 : 0);
     return this.get(id)!;
   }
 
@@ -502,8 +582,24 @@ export class SessionManager {
     ).run(now, now, id);
   }
 
+  /**
+   * Only the CLI-reported id is written here. The conversation it names now holds any
+   * armed replay, so the replay is retired in the same write (docs/007). A rewind point is
+   * retired only by a different id: the fork it asked for reports one, a resume does not.
+   */
   setAgentSessionId(id: string, agentSessionId: string): void {
-    this.db.prepare("UPDATE sessions SET agent_session_id = ? WHERE id = ?").run(agentSessionId, id);
+    this.db.prepare(`
+      UPDATE sessions
+         SET agent_resume_at = CASE WHEN agent_session_id IS ? THEN agent_resume_at ELSE NULL END,
+             agent_session_id = ?,
+             conversation_replay = NULL
+       WHERE id = ?
+    `).run(agentSessionId, agentSessionId, id);
+  }
+
+  /** docs/007 req 4 — the message the next spawn forks the stored conversation at; null clears it. */
+  setAgentResumeAt(id: string, messageId: string | null): void {
+    this.db.prepare("UPDATE sessions SET agent_resume_at = ? WHERE id = ?").run(messageId, id);
   }
 
   /**
@@ -542,26 +638,6 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET conversation_replay = ? WHERE id = ?").run(replay, id);
   }
 
-  /**
-   * A take: the replay is spent by the run parameters that carry it into a system prompt.
-   * An attempt that then fails without reaching the agent leaves the session threadless
-   * AND replayless, which is what `reseedConversationForRetry` (`turn-executor.ts`) puts
-   * back before a retry spawns.
-   */
-  consumeConversationReplay(id: string): string | undefined {
-    let replay: string | undefined;
-    this.db.transaction(() => {
-      const row = this.db.prepare(
-        "SELECT conversation_replay FROM sessions WHERE id = ?",
-      ).get(id) as { conversation_replay: string | null } | undefined;
-      if (row?.conversation_replay) {
-        this.db.prepare("UPDATE sessions SET conversation_replay = NULL WHERE id = ?").run(id);
-        replay = row.conversation_replay;
-      }
-    })();
-    return replay;
-  }
-
   // Branch movement supersedes earlier notices, including appended ones.
   setPendingAgentNotice(id: string, notice: string): void {
     this.db.prepare("UPDATE sessions SET pending_agent_notice = ? WHERE id = ?").run(notice, id);
@@ -576,6 +652,19 @@ export class SessionManager {
       if (existing.includes(notice)) return;
       const combined = existing ? `${existing}\n\n${notice}` : notice;
       this.db.prepare("UPDATE sessions SET pending_agent_notice = ? WHERE id = ?").run(combined, id);
+    })();
+  }
+
+  /** docs/007 req 3 — an undone code rewind takes back its line if no turn has read it yet. */
+  removePendingAgentNotice(id: string, notice: string): void {
+    this.db.transaction(() => {
+      const row = this.db.prepare(
+        "SELECT pending_agent_notice FROM sessions WHERE id = ?",
+      ).get(id) as { pending_agent_notice: string | null } | undefined;
+      const existing = row?.pending_agent_notice;
+      if (!existing?.includes(notice)) return;
+      const remaining = existing.split("\n\n").filter((part) => part !== notice).join("\n\n");
+      this.db.prepare("UPDATE sessions SET pending_agent_notice = ? WHERE id = ?").run(remaining || null, id);
     })();
   }
 
@@ -615,6 +704,29 @@ export class SessionManager {
     ).run(id);
   }
 
+  // docs/306-quota-continuation — QuotaContinuationManager's registry.
+  setQuotaResume(id: string, resume: SessionQuotaResume | null): void {
+    this.db.prepare("UPDATE sessions SET quota_resume = ? WHERE id = ?")
+      .run(resume ? JSON.stringify(resume) : null, id);
+  }
+
+  getQuotaResume(id: string): SessionQuotaResume | undefined {
+    const row = this.db.prepare(
+      "SELECT quota_resume FROM sessions WHERE id = ?",
+    ).get(id) as { quota_resume: string | null } | undefined;
+    return parseQuotaResume(row?.quota_resume ?? null);
+  }
+
+  listQuotaResumes(): { sessionId: string; resume: SessionQuotaResume }[] {
+    const rows = this.db.prepare(
+      "SELECT id, quota_resume FROM sessions WHERE quota_resume IS NOT NULL",
+    ).all() as { id: string; quota_resume: string }[];
+    return rows.flatMap((row) => {
+      const resume = parseQuotaResume(row.quota_resume);
+      return resume ? [{ sessionId: row.id, resume }] : [];
+    });
+  }
+
   // docs/324-agent-requested-compaction — one compaction per request: a later one replaces it.
   setPendingCompaction(id: string, request: PendingCompaction | null): void {
     this.db.prepare("UPDATE sessions SET pending_compaction = ? WHERE id = ?")
@@ -631,6 +743,7 @@ export class SessionManager {
       return {
         ...(typeof parsed.instructions === "string" ? { instructions: parsed.instructions } : {}),
         ...(typeof parsed.note === "string" ? { note: parsed.note } : {}),
+        ...(parsed.userAsked === true ? { userAsked: true as const } : {}),
       };
     } catch {
       return {};
@@ -641,7 +754,8 @@ export class SessionManager {
   dropPendingCompactionNote(id: string): void {
     const request = this.getPendingCompaction(id);
     if (request?.note === undefined) return;
-    this.setPendingCompaction(id, request.instructions !== undefined ? { instructions: request.instructions } : {});
+    const { note: _dropped, ...kept } = request;
+    this.setPendingCompaction(id, kept);
   }
 
   /**
@@ -679,12 +793,12 @@ export class SessionManager {
 
   /**
    * docs/303 — the card is marked stale rather than cleared: after a rewind it may describe
-   * work that is gone, and "Stale" is how it says so. The mark lives here, with the goal's
-   * clear, because every conversation reset and rewind reaches this one method.
+   * work that is gone, and "Stale" is how it says so. A chat rewind also drops the shown
+   * goal, which the forked conversation may not have. The stored agent session id is never
+   * cleared (docs/007 req 2).
    */
-  clearAgentSessionId(id: string): void {
-    // The goal belonged to the old conversation's thread.
-    this.db.prepare("UPDATE sessions SET agent_session_id = NULL, agent_goal = NULL WHERE id = ?").run(id);
+  markRewound(id: string, opts: { chat: boolean }): void {
+    if (opts.chat) this.db.prepare("UPDATE sessions SET agent_goal = NULL WHERE id = ?").run(id);
     const card = this.get(id)?.sessionStatus;
     if (card?.fresh) this.setSessionStatus(id, { ...card, fresh: false });
     else this.detailsChanged(id);
@@ -790,11 +904,18 @@ export class SessionManager {
     ).run(anchor, id);
   }
 
+  /** docs/218 req 6 — this merge's compaction offer is spent; a later message must not compact. */
+  setMergeContinueCompacted(id: string, anchor: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET merge_continue_compacted_anchor = ? WHERE id = ?",
+    ).run(anchor, id);
+  }
+
   clearMerged(id: string, previousMergedPr: PreviousMergedPr | null): boolean {
     const json = previousMergedPr === null ? null : JSON.stringify(previousMergedPr);
     const result = this.db.prepare(
       "UPDATE sessions SET merged_at = NULL, previous_merged_pr = ?, merged_head_sha = NULL, "
-      + "merge_continue_declined_anchor = NULL, "
+      + "merge_continue_declined_anchor = NULL, merge_continue_compacted_anchor = NULL, "
       + "pr_number = NULL, pr_repo_id = NULL WHERE id = ? AND merged_at IS NOT NULL",
     ).run(json, id);
     return result.changes > 0;
@@ -804,7 +925,7 @@ export class SessionManager {
   clearPriorPrRecord(id: string): void {
     this.db.prepare(
       "UPDATE sessions SET merged_at = NULL, merged_head_sha = NULL, previous_merged_pr = NULL, "
-      + "merge_continue_declined_anchor = NULL, "
+      + "merge_continue_declined_anchor = NULL, merge_continue_compacted_anchor = NULL, "
       + "pr_number = NULL, pr_repo_id = NULL WHERE id = ?",
     ).run(id);
   }
@@ -1026,6 +1147,11 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET auto_fix_ci_paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
   }
 
+  setCompactAfterMergeOff(id: string, off: boolean): void {
+    this.db.prepare("UPDATE sessions SET compact_after_merge_off = ? WHERE id = ?").run(off ? 1 : 0, id);
+    this.detailsChanged(id);
+  }
+
   /** docs/322 — the agent's last turn ended waiting for the user, so automatic turns wait too. */
   isAwaitingAnswer(id: string): boolean {
     const row = this.db.prepare("SELECT awaiting_answer FROM sessions WHERE id = ?").get(id) as
@@ -1101,8 +1227,11 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET run_stopped_at = ? WHERE id = ?").run(at, id);
   }
 
-  setLastTurnOutcome(id: string, outcome: LastTurnOutcome | null): void {
-    this.db.prepare("UPDATE sessions SET last_turn_outcome = ? WHERE id = ?").run(outcome, id);
+  /** `emptyReason` is null for a turn that replied, used a tool, or failed (planning#222). */
+  setLastTurnOutcome(id: string, outcome: LastTurnOutcome | null, emptyReason: EmptyTurnReason | null = null): void {
+    this.db
+      .prepare("UPDATE sessions SET last_turn_outcome = ?, last_turn_empty_reason = ? WHERE id = ?")
+      .run(outcome, emptyReason, id);
   }
 
   /** Req 30 — one approval covers one schedule, so a grant is per schedule id. */
@@ -1344,6 +1473,15 @@ export class SessionManager {
     return this.get(id)?.mergeWatch;
   }
 
+  setSelfMergeWatch(id: string, watch: SessionMergeWatch | null): void {
+    const json = watch === null ? null : JSON.stringify(watch);
+    this.db.prepare("UPDATE sessions SET self_merge_watch = ? WHERE id = ?").run(json, id);
+  }
+
+  getSelfMergeWatch(id: string): SessionMergeWatch | undefined {
+    return this.get(id)?.selfMergeWatch;
+  }
+
   setSecretBlock(id: string, block: SessionSecretBlock | null): void {
     const json = block === null ? null : JSON.stringify(block);
     this.db.prepare("UPDATE sessions SET secret_block = ? WHERE id = ?").run(json, id);
@@ -1365,20 +1503,23 @@ export class SessionManager {
     return true;
   }
 
-  // Archived children can still owe a merge notification.
+  // Archived children can still owe a merge notification. One session can appear twice:
+  // once for its parent's watch and once for its own (`watch.kind === "self"`).
   listPendingMergeWatches(): { childSessionId: string; watch: SessionMergeWatch }[] {
     const rows = this.db.prepare(
-      "SELECT id, merge_watch FROM sessions WHERE merge_watch IS NOT NULL",
-    ).all() as { id: string; merge_watch: string }[];
+      "SELECT id, merge_watch, self_merge_watch FROM sessions "
+      + "WHERE merge_watch IS NOT NULL OR self_merge_watch IS NOT NULL",
+    ).all() as { id: string; merge_watch: string | null; self_merge_watch: string | null }[];
     const out: { childSessionId: string; watch: SessionMergeWatch }[] = [];
     for (const row of rows) {
-      try {
-        const watch = JSON.parse(row.merge_watch) as SessionMergeWatch;
-        if (watch.state === "armed" || watch.state === "merge-observed") {
-          out.push({ childSessionId: row.id, watch });
+      for (const json of [row.merge_watch, row.self_merge_watch]) {
+        if (!json) continue;
+        try {
+          const watch = JSON.parse(json) as SessionMergeWatch;
+          if (isLiveMergeWatch(watch)) out.push({ childSessionId: row.id, watch });
+        } catch {
+          // Skip corrupt JSON.
         }
-      } catch {
-        // Skip corrupt JSON.
       }
     }
     return out;

@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createShipitBridgeServer, selectTools, TOOL_REGISTRY } from "./mcp-shipit-bridge.js";
 import type { ToolDescriptor } from "./mcp-tools/types.js";
+import { MAX_STATUS_LEN } from "../shared/session-status-validation.js";
 
 const WORKER = "http://worker.test";
 const deps = { workerUrl: WORKER, sleep: () => Promise.resolve() };
@@ -349,7 +350,7 @@ describe("session_status (docs/303)", () => {
 
     const result = await bridge.client.callTool({
       name: "session_status",
-      arguments: { status: "x".repeat(2000) },
+      arguments: { status: "x".repeat(MAX_STATUS_LEN + 1) },
     });
 
     expect(fetchMock).not.toHaveBeenCalled();

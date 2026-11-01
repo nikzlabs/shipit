@@ -160,6 +160,68 @@ describe("runClaudeGoalControl", () => {
     await expect(run).rejects.toThrow(/exited \(1\) before answering/);
   });
 
+  // CLI 2.1.284 capture, 2026-10-11: the thread's previous process left a background job
+  // (docs/235-agent-self-wake-liveness §8), and the CLI closes that job's notice first.
+  describe("on a thread whose previous process left a background job", () => {
+    const line = (event: unknown): string => `${JSON.stringify(event)}\n`;
+    const staleNotice = line({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "bzzlbwofs",
+      status: "stopped",
+      output_file: "",
+      summary: "Background shell command didn't finish before the previous session ended",
+    });
+    const init = line({ type: "system", subtype: "init", session_id: "t1" });
+    const noticeResult = line({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 0,
+      stop_reason: null,
+      session_id: "t1",
+      origin: { kind: "task-notification" },
+      result: "",
+      result_index: 0,
+    });
+    const commandResult = (result: string): string => line({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 0,
+      session_id: "t1",
+      result,
+      local_command: "goal",
+      result_index: 1,
+    });
+
+    it("answers from the command's own result, not from the notice's", async () => {
+      const cli = fakeCli();
+      const run = runClaudeGoalControl({
+        threadId: "t", command: { action: "get" }, cwd: "/w", env: {},
+        spawnProcess: () => cli.proc,
+      });
+      cli.stdout.write(staleNotice + init + noticeResult + init);
+      cli.stdout.write(commandResult("Goal active: ship it (not yet evaluated)"));
+
+      await expect(run).resolves.toEqual({
+        goal: expect.objectContaining({ objective: "ship it", status: "active" }),
+      });
+    });
+
+    it("still fails when the CLI exits after the notice without answering", async () => {
+      const cli = fakeCli();
+      const run = runClaudeGoalControl({
+        threadId: "t", command: { action: "get" }, cwd: "/w", env: {},
+        spawnProcess: () => cli.proc,
+      });
+      cli.stdout.write(staleNotice + init + noticeResult);
+      cli.proc.emit("close", 0);
+
+      await expect(run).rejects.toThrow(/exited \(0\) before answering/);
+    });
+  });
+
   it("gives up rather than waiting on a CLI that never answers", async () => {
     const cli = fakeCli();
     await expect(runClaudeGoalControl({

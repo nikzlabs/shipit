@@ -1,11 +1,11 @@
 # Runs the Compose commands that read a session's project files, confined to that session
 # (docs/318-compose-remaining-escapes, Mechanism 1). A symlink in a project can reach this image's
 # own files, so it holds nothing of ShipIt's and stays as small as practical (requirements Q10).
-FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS keyring
+FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS keyring
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
     && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /docker.gpg
 
-FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
 
 COPY --from=keyring /docker.gpg /etc/apt/keyrings/docker.gpg
 # The Docker packages and flags of docker/Dockerfile.prod, so Compose builds as it does there; all

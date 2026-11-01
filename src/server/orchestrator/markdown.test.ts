@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import {
   findMarkdownFiles,
   parseChecklistProgress,
@@ -21,6 +22,31 @@ describe("findMarkdownFiles", () => {
   it("returns an empty array for an empty directory", async () => {
     const docs = await findMarkdownFiles(tmpDir);
     expect(docs).toEqual([]);
+  });
+
+  it("reads no frontmatter through a symlink that leads outside the scanned directory", async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-md-outside-"));
+    try {
+      fs.writeFileSync(path.join(outside, "secret.md"), "---\ntitle: Do not show\n---\n");
+      fs.symlinkSync(path.join(outside, "secret.md"), path.join(tmpDir, "leak.md"));
+      fs.writeFileSync(path.join(tmpDir, "real.md"), "---\ntitle: Real title\n---\n");
+      fs.symlinkSync(path.join(tmpDir, "real.md"), path.join(tmpDir, "alias.md"));
+
+      const docs = await findMarkdownFiles(tmpDir);
+      expect(docs.find((d) => d.path === "leak.md")?.title).toBe("Leak");
+      expect(docs.find((d) => d.path === "alias.md")?.title).toBe("Real title");
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("lists a FIFO named .md without blocking on it", async () => {
+    execFileSync("mkfifo", [path.join(tmpDir, "pipe.md")]);
+    const docs = await Promise.race([
+      findMarkdownFiles(tmpDir),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("blocked on a FIFO")), 2000)),
+    ]);
+    expect(docs.map((d) => d.path)).toEqual(["pipe.md"]);
   });
 
   it("finds .md files in the root directory", async () => {

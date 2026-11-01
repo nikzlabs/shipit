@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import type { WsClientMessage, ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
-import { validateImages, imageAttachmentRefusal, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
+import { validateImages, imageAttachmentRefusal, resolveFileAttachments, resolveUploadRefs } from "../validation.js";
 import { parseCompactCommand } from "../../shared/compact-command.js";
 import { parseGoalCommand } from "../../shared/goal-command.js";
 import { emitGoalNotice, handleGoalCommand } from "./goal-command.js";
@@ -12,17 +12,21 @@ import { markIssueStartedFromSeed } from "../issue-lifecycle.js";
 import { recordSteeredMessage, persistTurnInProgress } from "./agent-listeners.js";
 import { persistCardTransition } from "../chat-card-persistence.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
-import { decideCompactBeforeTurn, runCompactionAhead, runAgentWithMessage, saveImagesToUploadsDir, assembleAgentPrompt } from "./agent-execution.js";
+import { decideCompactBeforeTurn, runCompactionAhead, runAgentWithMessage } from "./agent-execution.js";
 import { resolveRunner } from "./resolve-runner.js";
-import { shouldSteerMessage } from "../dispatch-steering.js";
-import { resetSubAgentSpawnBudget } from "../session-runner.js";
+import { prepareSteer, shouldSteerMessage, userMessageWaits } from "../dispatch-steering.js";
+import { currentTurnPhase, turnInSetup, turnTakesMessages } from "../turn-stop-request.js";
+import { releaseQueuedTurn } from "../queue-drain.js";
+import { turnCommitSettled } from "../turn-admission.js";
 import { settleNetworkModeWrites } from "../services/network-mode-writes.js";
-import { prepareDispatch } from "../prepared-dispatch.js";
+import { prepareDispatch, type PreparedDispatch } from "../prepared-dispatch.js";
 import { toQueuedMessage } from "../session-runner.js";
 import { agentAdmissionError } from "../services/agent-auth-gate.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 import { acquireTurnClaimGate } from "./turn-claim-gate.js";
 import { takeOfferedActions } from "../services/session-status.js";
+import { nextSendOrder } from "../queue-identity.js";
+import { returnLateEntry, sentBeforeStop } from "../queue-return.js";
 
 export { CONTEXT_WINDOW_TOKENS, wireAgentListeners, extractToolResults } from "./agent-listeners.js";
 export { runAgentWithMessage } from "./agent-execution.js";
@@ -174,9 +178,11 @@ export async function handleSendMessage(
    * the session. No target session means no turn can be claimed at all: that
    * send is refused inside.
    */
+  // Before the gate, which can wait: a Stop tells what was sent before it by this order.
+  const sendOrder = nextSendOrder();
   const releaseTurnClaim = await acquireSendGate(targetSessionId);
   try {
-    await decideAndRunSend(ctx, msg, { images, isCompactRequest, compactParsed, releaseTurnClaim });
+    await decideAndRunSend(ctx, msg, { images, isCompactRequest, compactParsed, releaseTurnClaim, sendOrder });
   } finally {
     releaseTurnClaim();
   }
@@ -188,6 +194,8 @@ interface GatedSend {
   compactParsed: { match: boolean; instructions?: string };
   /** Call as soon as the turn is claimed; the `finally` covers every other exit. */
   releaseTurnClaim: () => void;
+  /** planning#691 — when the message reached ShipIt. */
+  sendOrder: number;
 }
 
 /** The release is called twice on the normal path; the gate documents that as harmless. */
@@ -199,7 +207,7 @@ async function acquireSendGate(sessionId: string | undefined): Promise<() => voi
 async function decideAndRunSend(
   ctx: FullCtx,
   msg: WsSendMessage,
-  { images, isCompactRequest, compactParsed, releaseTurnClaim }: GatedSend,
+  { images, isCompactRequest, compactParsed, releaseTurnClaim, sendOrder }: GatedSend,
 ): Promise<void> {
   const runnerForQueue = resolveRunner(ctx);
   if (runnerForQueue) runnerForQueue.assertCanDispatch();
@@ -218,15 +226,40 @@ async function decideAndRunSend(
     }
     recordSessionStatusOffersTaken(ctx, msg.sessionStatusOfferIds);
   };
+  // The message as a dispatch: queued, put behind a compaction, or returned after a Stop.
+  const typedDispatch = (): PreparedDispatch => prepareDispatch({
+    text: msg.text,
+    agentInterface: undefined,
+    execution: "interactive",
+    // Raw inputs; the turn resolves uploads again.
+    images: msg.images,
+    files: msg.files,
+    uploads: msg.uploads,
+    permissionMode: msg.permissionMode,
+    activity: undefined,
+    postTurn: undefined,
+    automatic: undefined,
+    heldId: undefined,
+    onTurnComplete: undefined,
+    deliveryId: undefined,
+    dictated: msg.dictated,
+    resetMergedBranch: msg.resetMergedBranch,
+    compactContext: msg.compactContext,
+    silent: undefined,
+    clientRequestId: msg.requestId,
+    sendOrder,
+  });
   const heldByMerge = runnerForQueue?.mergeHold === true;
-  if (runnerForQueue?.running || runnerForQueue?.systemTurnInProgress || heldByMerge) {
+  if (runnerForQueue?.running || runnerForQueue?.sessionHold || heldByMerge) {
     const actuallyRunning = heldByMerge ? false : await runnerForQueue.verifyRunningState();
     // Recovery can start a queued turn; re-read the runner after verification.
     if (
-      actuallyRunning || runnerForQueue.running || runnerForQueue.systemTurnInProgress
+      actuallyRunning || runnerForQueue.running || runnerForQueue.sessionHold
       || runnerForQueue.mergeHold
     ) {
-      if (isCompactRequest) {
+      // Compacts the agent in the middle of its turn. A hold or a turn in setup also reaches
+      // this branch; there the command waits its turn as a message.
+      if (isCompactRequest && turnTakesMessages(runnerForQueue)) {
         const compactAgent = runnerForQueue.getAgent();
         if (compactAgent?.compact) {
           compactAgent.compact(compactParsed.instructions);
@@ -242,18 +275,25 @@ async function decideAndRunSend(
         }
         return;
       }
+      // docs/303 — the dispatch queues the message, and a full queue still
+      // throws: accept only once it is taken, so a refused message marks
+      // nothing taken and submits no card.
+      const queueTypedMessage = (): void => {
+        if (runnerForQueue.dispatch(typedDispatch()).admitted !== "refused") checklistAccepted();
+      };
       // Adapter capability does not prove the current process was started in streaming mode.
       const agentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
       const steeringCapable = agentInfo?.capabilities.supportsSteering ?? false;
       const liveSteering = ctx.credentialStore.getLiveSteering();
       const streamingActive = runnerForQueue.isStreamingActive;
-      const systemTurnInProgress = runnerForQueue.systemTurnInProgress;
 
-      if (!heldByMerge && shouldSteerMessage({
+      // A newer message does not pass an earlier one that still waits: the queue keeps the
+      // order, and the delivery gives both to the turn (`deliverWaitingMessages`).
+      if (!heldByMerge && !userMessageWaits(runnerForQueue) && shouldSteerMessage({
         steeringCapable,
         liveSteering,
         streamingActive,
-        systemTurnInProgress,
+        takesMessages: turnTakesMessages(runnerForQueue),
       })) {
         const steeringAgent = runnerForQueue.getAgent();
         console.log(
@@ -263,84 +303,67 @@ async function decideAndRunSend(
           const capturedSessionId = ctx.getActiveAppSessionId();
 
           const steerDir = ctx.getActiveSessionDir() ?? ctx.workspaceDir;
-          let steerFiles: FileAttachment[] = [];
-          if (msg.files && msg.files.length > 0) {
-            const result = await resolveFileAttachments(msg.files, steerDir);
-            if (result.error) {
-              ctx.send({ type: "error", message: result.error });
-              return;
-            }
-            steerFiles = result.files;
-          }
-          let steerImages: ImageAttachment[] | undefined = images;
-          if (msg.uploads && msg.uploads.length > 0) {
-            const uploadResult = await resolveUploadRefs(msg.uploads, steerDir);
-            if (uploadResult.error) {
-              ctx.send({ type: "error", message: uploadResult.error });
-              return;
-            }
-            steerFiles = [...steerFiles, ...uploadResult.files];
-            if (uploadResult.images.length > 0) {
-              steerImages = [...(steerImages ?? []), ...uploadResult.images];
-            }
-          }
-          const steerUploadPaths = msg.uploads && msg.uploads.length > 0
-            ? msg.uploads.map((u) => u.path)
-            : undefined;
-
-          const fileContext = steerFiles.length > 0 ? formatFileContext(steerFiles) : "";
-          const imageContext = steerImages && steerImages.length > 0
-            ? saveImagesToUploadsDir(steerImages, steerDir)
-            : "";
-          const steerPrompt = assembleAgentPrompt({
-            userText: msg.text,
-            fileContext,
-            imageContext,
+          const prepared = await prepareSteer(steerDir, {
+            text: msg.text,
+            images,
+            files: msg.files,
+            uploads: msg.uploads,
             dictated: msg.dictated,
           });
+          if ("error" in prepared) {
+            ctx.send({ type: "error", message: prepared.error });
+            return;
+          }
+          const steerPrompt = prepared.prompt;
+          // The turn can end during the attachment reads above, and another can start, so the
+          // steer is decided again. A steer into an idle agent starts a turn of the CLI's own
+          // while the finished one commits; the message takes admission instead. A turn that
+          // can take the steer gets it here, because a dispatch steers the text alone.
+          const steerTarget = runnerForQueue.getAgent();
+          const steerableNow = steerTarget !== null && !runnerForQueue.mergeHold
+            && !sentBeforeStop(runnerForQueue, sendOrder)
+            && !userMessageWaits(runnerForQueue) && shouldSteerMessage({
+            steeringCapable,
+            liveSteering,
+            streamingActive: runnerForQueue.isStreamingActive,
+            takesMessages: turnTakesMessages(runnerForQueue),
+          });
+          if (!steerableNow) {
+            queueTypedMessage();
+            return;
+          }
           // Steering bypasses turn setup; update permission mode before sending.
           if (
             runnerForQueue.appliedPermissionMode !== msg.permissionMode &&
-            steeringAgent.setPermissionMode
+            steerTarget.setPermissionMode
           ) {
-            steeringAgent.setPermissionMode(msg.permissionMode);
+            steerTarget.setPermissionMode(msg.permissionMode);
             runnerForQueue.appliedPermissionMode = msg.permissionMode;
           }
-          steeringAgent.sendUserMessage(steerPrompt);
+          steerTarget.sendUserMessage(steerPrompt);
 
-          // Refill the human-message budget without clearing the running turn's history.
-          resetSubAgentSpawnBudget(runnerForQueue);
-
-          const historyImages = steerImages?.map((img) => ({
-            data: img.data,
-            mediaType: img.mediaType,
-          }));
-          const historyFiles = steerFiles.length > 0
-            ? steerFiles.map((f) => ({
-                path: f.path,
-                contentPreview: f.content.slice(0, 200),
-                startLine: f.startLine,
-                endLine: f.endLine,
-              }))
-            : undefined;
+          const historyImages = prepared.images;
+          const historyFiles = prepared.files;
+          const steerUploadPaths = prepared.uploadPaths;
 
           checklistAccepted();
 
           if (capturedSessionId) {
-            recordSteeredMessage(runnerForQueue, msg.text, {
+            const clientRequestId = recordSteeredMessage(runnerForQueue, msg.text, {
               images: historyImages,
               files: historyFiles,
               uploadPaths: steerUploadPaths,
               assembledPrompt: steerPrompt,
+              ...(msg.requestId ? { clientRequestId: msg.requestId } : {}),
+              sendOrder,
             });
             persistTurnInProgress(ctx.chatHistoryManager, runnerForQueue, capturedSessionId);
-          }
-          // Persist before emitting image URLs that resolve against the stored row.
-          if (capturedSessionId) {
+            // Persist before emitting image URLs that resolve against the stored row.
             runnerForQueue.emitMessage({
               type: "message_steered",
               text: msg.text,
               sessionId: capturedSessionId,
+              clientRequestId,
               images: historyImages?.map((img) => ({
                 mediaType: img.mediaType,
                 src: imageUrl(capturedSessionId, imageHash(img.data)),
@@ -353,30 +376,7 @@ async function decideAndRunSend(
         }
       }
 
-      // docs/303 — the dispatch queues the message, and a full queue still
-      // throws: accept only once it is taken, so a refused message marks
-      // nothing taken and submits no card.
-      runnerForQueue.dispatch(prepareDispatch({
-        text: msg.text,
-        agentInterface: undefined,
-        execution: "interactive",
-        images: msg.images,
-        files: msg.files,
-        uploads: msg.uploads,
-        permissionMode: msg.permissionMode,
-        activity: undefined,
-        postTurn: undefined,
-        systemTurn: undefined,
-        automatic: undefined,
-        heldId: undefined,
-        onTurnComplete: undefined,
-        deliveryId: undefined,
-        dictated: msg.dictated,
-        resetMergedBranch: msg.resetMergedBranch,
-        compactContext: msg.compactContext,
-        silent: undefined,
-      }));
-      checklistAccepted();
+      queueTypedMessage();
       return;
     }
   }
@@ -430,7 +430,7 @@ async function decideAndRunSend(
       const previousRunner = ctx.getRunnerRegistry().get(previousSessionId);
       if (previousRunner && previousRunner.messageQueue.length > 0) {
         previousRunner.clearQueue();
-        ctx.send({ type: "queue_updated", queue: [] });
+        ctx.send({ type: "queue_updated", sessionId: previousSessionId, queue: [] });
       }
     }
     // Another viewer can change network mode and rebuild the container before this send.
@@ -536,31 +536,18 @@ async function decideAndRunSend(
   // workspace checked. What follows queues or dispatches the message — and the
   // queue itself can still refuse it, so each branch accepts after its own
   // dispatch has been taken.
+  // The last turn's commit can still be open. Wait rather than queue behind it: the message
+  // keeps the typed path and its own turn.
+  await turnCommitSettled(resolveRunner(ctx));
   const turnRunner = resolveRunner(ctx);
-  // A turn, merge or system hold (docs/321's restart) can start during the awaits above.
-  if (turnRunner?.mergeHold || turnRunner?.running || turnRunner?.systemTurnInProgress) {
-    turnRunner.dispatch(prepareDispatch({
-      text: userText,
-      agentInterface: undefined,
-      resetMergedBranch: msg.resetMergedBranch,
-      compactContext: msg.compactContext,
-      silent: undefined,
-      execution: "interactive",
-      // Queue raw inputs; the drain resolves uploads again.
-      images: msg.images,
-      files: msg.files,
-      uploads: msg.uploads,
-      permissionMode: msg.permissionMode,
-      activity: undefined,
-      postTurn: undefined,
-      systemTurn: undefined,
-      automatic: undefined,
-      heldId: undefined,
-      onTurnComplete: undefined,
-      deliveryId: undefined,
-      dictated: msg.dictated,
-    }));
-    checklistAccepted();
+  // A turn, a merge or a session hold (a rebase, docs/321's restart) can start during the awaits above.
+  if (turnRunner?.mergeHold || turnRunner?.running || turnRunner?.sessionHold) {
+    if (turnRunner.dispatch(typedDispatch()).admitted !== "refused") checklistAccepted();
+    return;
+  }
+  // A Stop that came during the awaits above: the message gets its rule, not a turn (docs/330).
+  if (turnRunner && sentBeforeStop(turnRunner, sendOrder)) {
+    returnLateEntry(turnRunner, toQueuedMessage(typedDispatch()));
     return;
   }
   checklistAccepted();
@@ -568,47 +555,53 @@ async function decideAndRunSend(
   // The claim is visible now: the next send should see it and queue, not wait
   // out the turn. No await may come between the claim and this release.
   releaseTurnClaim();
-  if (
-    turnRunner && activeId && activeDir && !isCompactRequest
-    && await decideCompactBeforeTurn(ctx, turnRunner, activeId, activeDir, msg.compactContext)
-  ) {
-    await runCompactionAhead(ctx, turnRunner, toQueuedMessage(prepareDispatch({
-      text: userText,
-      agentInterface: undefined,
-      resetMergedBranch: msg.resetMergedBranch,
-      compactContext: msg.compactContext,
-      silent: undefined,
-      execution: "interactive",
-      images: msg.images,
-      files: msg.files,
-      uploads: msg.uploads,
-      permissionMode: msg.permissionMode,
-      activity: undefined,
-      postTurn: undefined,
-      systemTurn: undefined,
-      automatic: undefined,
-      heldId: undefined,
-      onTurnComplete: undefined,
-      deliveryId: undefined,
-      dictated: msg.dictated,
-    })), msg.permissionMode);
-    return;
-  }
+  await endClaimIfSetupFails(turnRunner, async (claim) => {
+    if (
+      turnRunner && activeId && activeDir && !isCompactRequest
+      && await decideCompactBeforeTurn(ctx, turnRunner, activeId, activeDir, msg.compactContext)
+    ) {
+      await runCompactionAhead(ctx, turnRunner, toQueuedMessage(typedDispatch()), msg.permissionMode, claim);
+      return;
+    }
 
-  await runAgentWithMessage(ctx, {
-    userText,
-    images: allImages,
-    validatedFiles,
-    agentSessionId,
-    permissionMode: msg.permissionMode,
-    isNewSession: !msg.sessionId,
-    uploadPaths,
-    ...(msg.userReview ? { userReview: msg.userReview } : {}),
-    ...(msg.resetMergedBranch !== undefined ? { resetMergedBranch: msg.resetMergedBranch } : {}),
-    ...(msg.dictated ? { dictated: true } : {}),
-    compact: isCompactRequest,
-    userEcho: { ...(msg.requestId ? { clientRequestId: msg.requestId } : {}) },
+    await runAgentWithMessage(ctx, {
+      userText,
+      images: allImages,
+      validatedFiles,
+      agentSessionId,
+      permissionMode: msg.permissionMode,
+      isNewSession: !msg.sessionId,
+      uploadPaths,
+      ...(msg.userReview ? { userReview: msg.userReview } : {}),
+      ...(msg.resetMergedBranch !== undefined ? { resetMergedBranch: msg.resetMergedBranch } : {}),
+      ...(msg.dictated ? { dictated: true } : {}),
+      compact: isCompactRequest,
+      userEcho: { ...(msg.requestId ? { clientRequestId: msg.requestId } : {}) },
+      queued: toQueuedMessage(typedDispatch()),
+      claim,
+    });
   });
+}
+
+/**
+ * A typed turn that throws before its prompt is submitted leaves a claim with no turn
+ * behind it. `verifyRunningState` leaves a claim in setup alone
+ * (docs/329-user-steers-every-turn), so the claim ends here.
+ */
+async function endClaimIfSetupFails(
+  runner: SessionRunnerInterface | null | undefined,
+  run: (claim: object | undefined) => Promise<void>,
+): Promise<void> {
+  const claim = runner ? currentTurnPhase(runner) : undefined;
+  try {
+    await run(claim);
+  } catch (err) {
+    if (runner?.running && turnInSetup(runner) && currentTurnPhase(runner) === claim) {
+      runner.running = false;
+      releaseQueuedTurn(runner);
+    }
+    throw err;
+  }
 }
 
 export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion): Promise<void> {
@@ -624,52 +617,55 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   const runnerEarly = resolveRunner(ctx);
   if (runnerEarly) runnerEarly.assertCanDispatch();
 
-  if (runnerEarly?.mergeHold) {
-    runnerEarly.dispatch(prepareDispatch({
-      text: answerText,
-      agentInterface: undefined,
-      // docs/295 — an answer is the user's next message; a merge hold must not
-      // eat the untick they made for it.
-      resetMergedBranch: msg.resetMergedBranch,
-      compactContext: msg.compactContext,
-      silent: undefined,
-      execution: "interactive",
-      images: undefined,
-      files: undefined,
-      uploads: undefined,
-      permissionMode: msg.permissionMode ?? runnerEarly.appliedPermissionMode,
-      activity: undefined,
-      postTurn: undefined,
-      systemTurn: undefined,
-      automatic: undefined,
-      heldId: undefined,
-      onTurnComplete: undefined,
-      deliveryId: undefined,
-      dictated: msg.dictated,
-    }));
-    return;
-  }
+  const answerDispatch = (runner: SessionRunnerInterface) => prepareDispatch({
+    text: answerText,
+    agentInterface: undefined,
+    // docs/295 — an answer is the user's next message; a hold must not eat the untick
+    // they made for it.
+    resetMergedBranch: msg.resetMergedBranch,
+    compactContext: msg.compactContext,
+    silent: undefined,
+    execution: "interactive",
+    images: undefined,
+    files: undefined,
+    uploads: undefined,
+    permissionMode: msg.permissionMode ?? runner.appliedPermissionMode,
+    activity: undefined,
+    postTurn: undefined,
+    automatic: undefined,
+    heldId: undefined,
+    onTurnComplete: undefined,
+    deliveryId: undefined,
+    dictated: msg.dictated,
+    clientRequestId: msg.requestId,
+  });
 
-  // Do not let stale-process cleanup kill a system flow's agent.
-  if (runnerEarly?.systemTurnInProgress) {
-    ctx.send({
-      type: "error",
-      message: "The agent is busy with a system operation (rebase or CI fix). Try again once it finishes.",
-    });
+  // docs/329-user-steers-every-turn — an answer is a message from the user. A hold keeps it,
+  // and a turn that did not ask takes it; neither is a stale process for the cleanup below to
+  // end. Dispatched, not awaited as a send is: this handler claims the runner with no gate
+  // around it, so a wait here would let a turn start in between. The turn that asked is ending,
+  // so the answer waits for it: under a hold that turn's process is not ended below.
+  const held = runnerEarly?.mergeHold || runnerEarly?.turnCommitPending || runnerEarly?.sessionHold;
+  const otherTurnRuns = runnerEarly?.running === true && !runnerEarly.awaitingUserAnswer;
+  if (runnerEarly && (held || otherTurnRuns)) {
+    runnerEarly.dispatch(
+      answerDispatch(runnerEarly),
+      runnerEarly.running && runnerEarly.awaitingUserAnswer ? { whenBusy: "queue" } : undefined,
+    );
     return;
   }
 
   // Capture before setAgent(null) clears the mode; answering must not leave plan mode.
   const capturedPermissionMode = msg.permissionMode ?? runnerEarly?.appliedPermissionMode;
 
+  // The process of the turn that asked, when it does not stay for the answer.
   const staleAgent = runnerEarly?.getAgent() ?? null;
   if (staleAgent) {
     const staleAgentInfo = ctx.agentRegistry.get(ctx.getActiveAgentId());
     const persistentStreaming =
       (staleAgentInfo?.capabilities.supportsSteering ?? false) &&
       ctx.credentialStore.getLiveSteering() &&
-      (runnerEarly?.isStreamingActive ?? false) &&
-      !(runnerEarly?.systemTurnInProgress ?? false);
+      (runnerEarly?.isStreamingActive ?? false);
     if (!persistentStreaming) {
       staleAgent.kill();
       if (runnerEarly?.getAgent() === staleAgent) {
@@ -680,10 +676,9 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     }
   }
 
+  // The turn that asked has not ended yet, and its process stays: the answer is the next turn.
   if (runnerEarly?.running) {
-    console.warn(
-      `[answer_question] Runner ${runnerEarly.sessionId} already running — dropping duplicate answer (text="${answerText.slice(0, 60)}")`,
-    );
+    runnerEarly.dispatch(answerDispatch(runnerEarly), { whenBusy: "queue" });
     return;
   }
 
@@ -714,7 +709,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     });
   }
 
-  await runAgentWithMessage(ctx, {
+  await endClaimIfSetupFails(turnRunner, (claim) => runAgentWithMessage(ctx, {
     userText: answerText,
     validatedFiles: [],
     ...(agentSessionId !== undefined ? { agentSessionId } : {}),
@@ -723,5 +718,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     ...(msg.dictated ? { dictated: true } : {}),
     isNewSession: false,
     userEcho: { ...(msg.requestId ? { clientRequestId: msg.requestId } : {}) },
-  });
+    ...(turnRunner ? { queued: toQueuedMessage(answerDispatch(turnRunner)) } : {}),
+    claim,
+  }));
 }

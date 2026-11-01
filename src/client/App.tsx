@@ -11,7 +11,7 @@ import {
 } from "react";
 /* eslint-enable no-restricted-imports */
 import { Dialog, DialogContent } from "./components/ui/dialog.js";
-import { mobileChatInFront } from "./components/ContentPanels.js";
+import { homeScreenShown, mobileChatInFront } from "./components/ContentPanels.js";
 import { TooltipProvider } from "./components/ui/tooltip.js";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useSessionWebSocket } from "./hooks/useSessionWebSocket.js";
@@ -189,6 +189,7 @@ import { Spinner } from "./components/Spinner.js";
 import { runSend } from "./utils/send-handler.js";
 import { deleteUploadFromServer } from "./hooks/useFileUpload.js";
 import { removeDraftUploads } from "./utils/local-storage.js";
+import { sessionFileUrlPath } from "./utils/session-file-path.js";
 import type { NotifyContext } from "./hooks/useNotification.js";
 
 // The components below read whole session lists, so that a list change re-renders them and not the app.
@@ -263,6 +264,7 @@ export default function App() {
   const diffDialogTitle = useGitStore((s) => s.diffDialogTitle);
 
   const fileTree = useFileStore((s) => s.tree);
+  const persistTree = useFileStore((s) => s.persistTree);
   const docFiles = useFileStore((s) => s.docFiles);
   const skills = useFileStore((s) => s.skills);
   const previewFile = useFileStore((s) => s.previewFile);
@@ -1239,9 +1241,12 @@ export default function App() {
   );
   const detectedPorts = effectivePreviewStatus?.detectedPorts ?? [];
   const showNewSessionView = isNewSessionRoute && !urlSessionId;
-  const showHomeScreen =
-    !showNewSessionView &&
-    (!sessionId || (showTemplates && messages.length === 0 && !isLoading));
+  const showHomeScreen = homeScreenShown({
+    showNewSessionView,
+    urlSessionId,
+    sessionId,
+    templatesForEmptySession: showTemplates && messages.length === 0 && !isLoading,
+  });
   const isHomeRoute = !urlSessionId && !isNewSessionRoute;
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -1484,6 +1489,7 @@ export default function App() {
         ) : rightTab === "files" ? (
           <FileTree
             tree={fileTree}
+            persistTree={persistTree}
             onRefresh={() => {
               const sid = useSessionStore.getState().sessionId;
               if (sid) {
@@ -1512,7 +1518,7 @@ export default function App() {
               const sid = useSessionStore.getState().sessionId;
               if (sid) {
                 const a = document.createElement("a");
-                a.href = `/api/sessions/${sid}/files/download/${f}`;
+                a.href = `/api/sessions/${sid}/files/download/${sessionFileUrlPath(f)}`;
                 a.download = "";
                 document.body.appendChild(a);
                 a.click();
@@ -1671,10 +1677,11 @@ export default function App() {
             onUndoIssueWrite={(cardId) =>
               send({ type: "undo_issue_write", cardId })
             }
-            onStartRepoSession={async (cardId) => {
+            onStartRepoSession={async (cardId, options) => {
               if (!sessionId) return;
               const res = await apiPost<{ startedSessionId?: string; startedAt?: string }>(
                 `/api/sessions/${sessionId}/repo-session-proposals/${cardId}/start`,
+                options,
               );
               // Same reason as the decline below: no runner, no WS update.
               if (!res?.startedSessionId || useSessionStore.getState().sessionId !== sessionId) return;
@@ -1777,6 +1784,7 @@ export default function App() {
           pendingFiles={pendingFiles}
           onRemoveFile={(i) => useSettingsStore.getState().removePendingFile(i)}
           onAddFile={(f) => useSettingsStore.getState().addPendingFile(f)}
+          onReturnedTaken={(ids) => send({ type: "queue_returned_taken", ids })}
           fileTree={fileTree}
           skills={skills}
           sessionId={wsSessionId}

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
@@ -35,11 +35,13 @@ let repoStore: RepoStore;
 let latestClaude: FakeClaudeProcess | null = null;
 let dbManager: DatabaseManager;
 let port: number;
+let pushCalls: string[];
 
 beforeEach(async () => {
   dbManager = createTestDatabaseManager();
   tmpDir = fs.mkdtempSync("/tmp/shipit-agent-driven-pr-");
   latestClaude = null;
+  pushCalls = [];
 
   githubAuth = new StubGitHubAuthManager();
   githubAuth.setPrData(null);
@@ -61,7 +63,7 @@ beforeEach(async () => {
       const real = new GitManager(dir);
       return new Proxy(real, {
         get(target, prop) {
-          if (prop === "push") return async () => {};
+          if (prop === "push") return async (...args: string[]) => { pushCalls.push(args.join(" ")); };
           if (prop === "forcePush") return async () => {};
           if (prop === "listRemoteBranches") return async () => ["main"];
           // Tests set origin/main directly; fetching would fail before the progress gate.
@@ -155,6 +157,16 @@ async function withLiveTurn<T>(sessionId: string, fn: () => Promise<T>): Promise
     claude.finish("agent-session-1");
     await drainMessages(1500);
   }
+}
+
+function pr7(headSha: string, opts: { merged: boolean }) {
+  return {
+    url: "https://github.com/test-user/test-repo/pull/7", number: 7, base: "main",
+    title: "Feature", body: "", state: opts.merged ? "closed" : "open",
+    merged_at: opts.merged ? "2026-10-30T12:00:00Z" : null,
+    merge_commit_sha: opts.merged ? "merge-sha" : null,
+    head_sha: headSha, head_ref: "shipit/test-feature", additions: 1, deletions: 0,
+  };
 }
 
 async function drainMessages(timeoutMs = 2500): Promise<WsServerMessage[]> {
@@ -439,6 +451,59 @@ describe("agent-driven PR creation (Phase 2)", () => {
       expect(call.title).toBe("Follow-up slice");
       expect(call.base).toBe("main");
       expect(call.head).toBe("shipit/test-feature");
+    },
+  );
+
+  // 2026-10-28 incident: `gh pr merge` then `gh pr create` in one turn left mergedAt
+  // set, and every later auto-push was refused as "already merged".
+  it(
+    "a PR opened mid-turn past the session's merged PR un-merges the session, so the turn's push lands",
+    { timeout: 20_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      const gitEnv = { ...process.env, HOME: tmpDir };
+      const mergedHead = execSync("git rev-parse HEAD", { cwd: sessionDir, env: gitEnv })
+        .toString().trim();
+      execSync(`git update-ref refs/remotes/origin/main ${mergedHead}`, { cwd: sessionDir, env: gitEnv });
+
+      githubAuth.setPrData(null);
+      githubAuth.setFindPrAnyStateResult({
+        url: "https://github.com/test-user/test-repo/pull/9",
+        number: 9,
+        base: "main",
+        title: "Merged earlier this turn",
+        body: "",
+        state: "closed",
+        merged_at: "2026-10-28T10:36:17Z",
+        head_sha: mergedHead,
+        additions: 0,
+        deletions: 0,
+      });
+      sessionManager.markMerged(sessionId);
+      sessionManager.setMergedHeadSha(sessionId, mergedHead);
+
+      await withLiveTurn(sessionId, async () => {
+        fs.writeFileSync(path.join(sessionDir, "followup.ts"), "export const y = 2;\n");
+        const res = await app.inject({
+          method: "POST",
+          url: `/api/sessions/${sessionId}/pr/agent-create`,
+          payload: { title: "Follow-up slice", body: "## Summary\nWork after the merge." },
+        });
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toMatchObject({ alreadyExisted: false, number: 1 });
+        // Work after `gh pr create` in the same turn: only the post-turn push carries it.
+        fs.writeFileSync(path.join(sessionDir, "more.ts"), "export const z = 3;\n");
+      });
+
+      const session = sessionManager.get(sessionId)!;
+      expect(session.mergedAt).toBeUndefined();
+      expect(session.previousMergedPr).toMatchObject({ number: 9, baseBranch: "main", mergedHeadSha: mergedHead });
+      expect(session.prNumber).toBe(1);
+
+      await vi.waitFor(() => expect(pushCalls).toContain("origin shipit/test-feature"), { timeout: 5_000 });
+      const notices = chatHistoryManager.load(sessionId).map((m) => m.text).join("\n");
+      expect(notices).not.toContain("already merged");
     },
   );
 
@@ -1063,6 +1128,83 @@ describe("repo-aware PR brokering (docs/211)", () => {
   );
 
   it(
+    "does not report a merge as failed when the read that records it gets no answer",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      const error = vi.spyOn(console, "error").mockImplementation(() => { /* silence */ });
+      const read = vi.spyOn(githubAuth, "findPullRequestByNumber").mockRejectedValue(
+        new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+      );
+      const settling = vi.spyOn(AgentMergeClaimStore.prototype, "markSettling");
+
+      try {
+        const res = await withLiveTurn(sessionId, () => app.inject({
+          method: "POST",
+          url: `/api/sessions/${sessionId}/pr/7/merge`,
+          payload: {},
+        }));
+
+        expect(res.json()).toMatchObject({
+          success: true,
+          message: expect.stringContaining("could not finish recording"),
+        });
+        expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toMatchObject({
+          prNumber: 7, state: "settling",
+        });
+        expect(settling).toHaveBeenCalledTimes(1);
+      } finally {
+        settling.mockRestore();
+        read.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
+
+  it(
+    "does not report a merge as failed when the write that records it throws",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      const error = vi.spyOn(console, "error").mockImplementation(() => { /* silence */ });
+      const settling = vi.spyOn(AgentMergeClaimStore.prototype, "markSettling").mockImplementation(() => {
+        throw new Error("database is locked");
+      });
+
+      try {
+        const res = await withLiveTurn(sessionId, () => app.inject({
+          method: "POST",
+          url: `/api/sessions/${sessionId}/pr/7/merge`,
+          payload: {},
+        }));
+
+        expect(githubAuth.mergePullRequestCalls.at(-1)).toMatchObject({ pullNumber: 7, expectedSha: head });
+        expect(res.json()).toMatchObject({
+          success: true,
+          message: expect.stringContaining("could not finish recording"),
+        });
+      } finally {
+        settling.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
+
+  it(
     "refuses when the pull request head is not this workspace's commit (req 14)",
     { timeout: 15_000 },
     async () => {
@@ -1227,6 +1369,39 @@ describe("repo-aware PR brokering (docs/211)", () => {
       expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toMatchObject({
         state: "pending", origin: "auto", expectedSha: newTip,
       });
+    },
+  );
+
+  it(
+    "docs/288 — the answer to `--auto` names the background work that will hold the merge",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "PENDING" });
+
+      const res = await withLiveTurn(sessionId, async () => {
+        const runner = app.runnerRegistry.get(sessionId)!;
+        runner.isStreamingActive = true;
+        runner.setBackgroundTasks([{ id: "bash-1", description: "npm run dev" }]);
+        try {
+          return await app.inject({
+            method: "POST", url: `/api/sessions/${sessionId}/pr/7/merge`, payload: { auto: true },
+          });
+        } finally {
+          runner.clearBackgroundTasks();
+          runner.isStreamingActive = false;
+        }
+      });
+
+      const message = (res.json() as { message: string }).message;
+      expect(message).toContain("once its checks pass and this session is idle");
+      expect(message).toContain('Background work is running in this session now ("npm run dev")');
     },
   );
 
@@ -1422,6 +1597,93 @@ describe("repo-aware PR brokering (docs/211)", () => {
       expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toMatchObject({
         expectedSha: head, state: "merging",
       });
+    },
+  );
+
+  it(
+    "resolves an unresolved merge when its turn ends, so a later merge is not refused (#3296)",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      githubAuth.setMergeAttempt({
+        outcome: "indeterminate", message: "GitHub returned 502 for the merge of PR #7",
+      });
+
+      await withLiveTurn(sessionId, async () => {
+        await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/pr/7/merge`, payload: {} });
+        expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toMatchObject({ state: "merging" });
+        // The merge went through on GitHub although its answer was lost.
+        githubAuth.setPullRequestByNumber(7, pr7(head, { merged: true }));
+      });
+
+      await vi.waitFor(
+        () => expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toBeNull(),
+        { timeout: 5_000 },
+      );
+
+      sessionManager.recordPrProvenance(sessionId, 8, "github:test-user/test-repo");
+      githubAuth.setMergeAttempt({ outcome: "merged", message: "Pull request merged", mergeCommitSha: "m8" });
+      const res = await withLiveTurn(sessionId, () => {
+        const nextHead = execSync("git rev-parse HEAD", {
+          cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+        }).toString().trim();
+        githubAuth.setMergeGateResult({ headRefOid: nextHead, rollupState: "SUCCESS" });
+        return app.inject({ method: "POST", url: `/api/sessions/${sessionId}/pr/8/merge`, payload: {} });
+      });
+
+      expect(res.json()).toMatchObject({ success: true });
+      expect(githubAuth.mergePullRequestCalls.at(-1)).toMatchObject({ pullNumber: 8 });
+    },
+  );
+
+  it(
+    "does not reconcile a merge whose request is still in flight when its turn ends",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      githubAuth.setMergeAttempt({ outcome: "merged", message: "Pull request merged", mergeCommitSha: "m" });
+      githubAuth.setPullRequestByNumber(7, pr7(head, { merged: false }));
+
+      const previous = latestClaude;
+      client.send({ type: "send_message", text: "merge it", sessionId });
+      const claude = await waitForClaude(() => latestClaude, previous);
+      githubAuth.setOnMergeAttempt(async () => {
+        // The turn ends, and its post-turn work finishes, before GitHub answers.
+        claude.finish("agent-session-1");
+        await vi.waitFor(async () => {
+          const runner = await app.inject({
+            method: "POST", url: `/api/_test/runner/${sessionId}/running`, payload: {},
+          });
+          expect(runner.json()).toMatchObject({ running: false, agentBusy: false });
+        }, { timeout: 5_000 });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        githubAuth.setPullRequestByNumber(7, pr7(head, { merged: true }));
+      });
+      let res;
+      try {
+        res = await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/pr/7/merge`, payload: {} });
+      } finally {
+        githubAuth.setOnMergeAttempt(null);
+      }
+
+      expect(res.json()).toMatchObject({ success: true, message: "Merged PR #7" });
+      expect(chatHistoryManager.load(sessionId).map((m) => m.text).join("\n"))
+        .toContain("Merged pull request #7");
+      expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toBeNull();
     },
   );
 

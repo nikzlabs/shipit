@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ScheduleEditor } from "./ScheduleEditor.js";
+import { formatRunTime } from "./schedule-format.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { useRepoStore } from "../../../stores/repo-store.js";
@@ -268,6 +269,36 @@ describe("ScheduleEditor — the rest of a schedule (req 11)", () => {
 
     expect(screen.getByTestId("schedule-editor-timing-problem").textContent).toContain("at least an hour apart");
     expect(screen.getByTestId("schedule-editor-save")).toBeDisabled();
+  });
+
+  it("saves a schedule that runs once, on a date at a time, and shows that one run (req 34)", async () => {
+    render(<ScheduleEditor schedule={schedule()} onClose={vi.fn()} />);
+    fireEvent.change(screen.getByTestId("schedule-editor-repeats"), { target: { value: "once" } });
+    fireEvent.change(screen.getByTestId("schedule-editor-date"), { target: { value: "2099-03-05" } });
+    fireEvent.change(screen.getByTestId("schedule-editor-time"), { target: { value: "07:30" } });
+
+    // The schedule's zone is UTC; the editor names run times in the browser's.
+    const run = formatRunTime(new Date("2099-03-05T07:30:00Z"));
+    expect(screen.getByTestId("schedule-editor-next-runs").textContent?.replace(" (your time)", "")).toBe(`Next runs: ${run}`);
+    await userEvent.click(screen.getByTestId("schedule-editor-save"));
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]!.timing).toEqual({ kind: "once", date: "2099-03-05", hour: 7, minute: 30 });
+  });
+
+  it("refuses a once time that has passed, but still edits a once schedule whose time has passed", async () => {
+    const ran = schedule({ timing: { kind: "once", date: "2001-01-01", hour: 9, minute: 0 } });
+    render(<ScheduleEditor schedule={ran} onClose={vi.fn()} />);
+    expect(screen.getByTestId("schedule-editor-next-runs").textContent).toContain("none");
+
+    fireEvent.change(screen.getByTestId("schedule-editor-time"), { target: { value: "10:00" } });
+    expect(screen.getByTestId("schedule-editor-timing-problem").textContent).toContain("has already passed");
+    expect(screen.getByTestId("schedule-editor-save")).toBeDisabled();
+
+    fireEvent.change(screen.getByTestId("schedule-editor-time"), { target: { value: "09:00" } });
+    fireEvent.change(screen.getByTestId("schedule-editor-prompt"), { target: { value: "Again." } });
+    await userEvent.click(screen.getByTestId("schedule-editor-save"));
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]).toMatchObject({ timing: ran.timing, spec: { prompt: "Again." } });
   });
 
   it("shows the server's refusal and stays open", async () => {

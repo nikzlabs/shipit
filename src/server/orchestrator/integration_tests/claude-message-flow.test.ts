@@ -109,9 +109,9 @@ describe("Integration: Claude message flow — basics", () => {
     client.close();
   });
 
-  it("'No conversation found' clears the guarded pointer and retries fresh without persisting the doomed init", async () => {
+  it("'No conversation found' keeps the stored id, ends the turn without a retry, and never persists the doomed init", async () => {
     sessionManager.track("loop-session", "Stuck session", tmpDir);
-    sessionManager.setAgentSessionId("loop-session", "recovered-real-id");
+    sessionManager.setAgentSessionId("loop-session", "stored-real-id");
 
     const client = await TestClient.connect(port);
     await client.receive();
@@ -119,34 +119,23 @@ describe("Integration: Claude message flow — basics", () => {
     client.send({ type: "send_message", text: "anything", sessionId: "loop-session" });
     await waitForClaude(() => lastClaude);
     const rejectedProcess = lastClaude;
+    expect(rejectedProcess.lastSessionId).toBe("stored-real-id");
 
-    rejectedProcess.emit("log", "stderr", "No conversation found with session ID: recovered-real-id");
+    rejectedProcess.emit("log", "stderr", "No conversation found with session ID: stored-real-id");
     rejectedProcess.emit("event", {
       type: "system",
       subtype: "init",
       session_id: "doomed-fresh-uuid",
       tools: [],
     });
-    await waitForClaude(() => lastClaude !== rejectedProcess ? lastClaude : null);
-    expect(rejectedProcess.killed).toBe(true);
-    expect(lastClaude.lastPrompt).toBe("anything");
-    expect(lastClaude.lastSessionId).toBeUndefined();
-    expect(sessionManager.get("loop-session")?.agentSessionId).toBeUndefined();
+    const error = await client.receiveType("error");
+    expect((error as { message: string }).message).toContain("fork the session");
+    rejectedProcess.emit("done", 1);
+    await new Promise((r) => setTimeout(r, 100));
 
-    lastClaude.emit("event", {
-      type: "system",
-      subtype: "init",
-      session_id: "fresh-conversation-id",
-      tools: [],
-    });
-    lastClaude.emit("event", {
-      type: "assistant",
-      message: { content: [{ type: "text", text: "recovered" }] },
-      session_id: "fresh-conversation-id",
-    });
-    await client.receiveType("agent_event");
-    await client.receiveType("agent_event");
-    expect(sessionManager.get("loop-session")?.agentSessionId).toBe("fresh-conversation-id");
+    expect(rejectedProcess.killed).toBe(false);
+    expect(lastClaude).toBe(rejectedProcess);
+    expect(sessionManager.get("loop-session")?.agentSessionId).toBe("stored-real-id");
 
     client.close();
   });

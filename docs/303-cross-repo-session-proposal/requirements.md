@@ -42,6 +42,12 @@ What the feature must do, in the user's terms. Design lives in
 11. When the user starts or declines the proposed work, the agent in the
     proposing session is told at the start of its next turn — the same way it is
     told what the user did with a bug report it proposed.
+12. When the target repository is not trusted, the card says so before the user
+    acts, and the user trusts the repository from the card. The user does not
+    open the other repository to trust it.
+13. When the proposing session runs a role, the started session runs the same
+    role. When that role no longer exists at the click, the session starts with
+    no role.
 
 ## Open questions
 
@@ -65,3 +71,20 @@ None.
   sent to the agent on the next turn, similar to the bug reports and other
   cases." That is req 11. The card had no way to decline, so req 10 is that
   sentence's "declines" made possible.
+- 2026-10-10 — The trust refusal had moved ahead of the session's creation
+  (docs/243-agent-messaging-trust-gate), and the agent offered a follow-up
+  with this description: "When the target of a 'start in another repository'
+  card is not trusted, the user must leave the card, open a session on that
+  repository, trust it, and come back." The user answered: "Follow-ups: fix
+  both now." That is req 12. The user was not asked how many clicks the
+  consent is; `plan.md` gives the reason for one button.
+- 2026-10-28 — The first design started the target with no role. The user
+  reported that as a bug: "the role doesn't see to propagate when starting a
+  session via the suggestion card from a different repo." That is req 13. The
+  user was not asked where the role's standing instructions go; `plan.md` gives
+  the reason they stay out of the first message.
+- 2026-10-28 — *What if the proposing session's role was deleted before the
+  click?* Offered: start with no role (as every inheriting spawn does), refuse
+  the start, or show the role on the card first. The reviewer preferred a
+  refusal, because a deleted "review only" role then lets the target edit. The
+  user chose to start with no role (req 13, second sentence).

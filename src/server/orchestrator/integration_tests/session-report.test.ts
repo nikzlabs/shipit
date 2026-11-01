@@ -143,7 +143,7 @@ describe("Integration: session report (docs/233)", () => {
     expect(parentBody.children.map((c) => c.id).sort()).toEqual([childA, childB].sort());
   });
 
-  it("delivers a child's report to the parent as a card + a wake-turn", { timeout: 20_000 }, async () => {
+  it("delivers a child's report to the parent as a card and an inbox message", { timeout: 20_000 }, async () => {
     const parentId = await createParent();
     const childId = await spawnChild(parentId, "Elementalist catalog");
 
@@ -168,14 +168,23 @@ describe("Integration: session report (docs/233)", () => {
       relation: "child",
     });
 
+    // docs/328-session-message-inbox — the parent's turn says that a message waits; the
+    // report itself is what the parent's agent reads from its inbox.
     await waitFor(
-      () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("report from child")),
+      () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("shipit session inbox")),
       10_000,
-      "parent wake-turn started",
+      "the parent's inbox turn started",
     );
-    const wake = spawnedAgents.find((a) => a.lastPrompt?.includes("report from child"))!;
-    expect(wake.lastPrompt).toContain("BLOCKER");
-    expect(wake.lastPrompt).toContain("deletes every catalog");
+    const told = spawnedAgents.find((a) => a.lastPrompt?.includes("shipit session inbox"))!;
+    expect(told.lastPrompt).not.toContain("deletes every catalog");
+
+    const inbox = await app.inject({ method: "POST", url: `/api/sessions/${parentId}/inbox/read`, payload: {} });
+    const messages = inbox.json().messages as { text: string; from?: { sessionId: string } }[];
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.from?.sessionId).toBe(childId);
+    expect(messages[0]!.text).toContain("report from child");
+    expect(messages[0]!.text).toContain("BLOCKER");
+    expect(messages[0]!.text).toContain("deletes every catalog");
   });
 
   it("rejects sibling/cohort delivery without touching any transcript", { timeout: 30_000 }, async () => {

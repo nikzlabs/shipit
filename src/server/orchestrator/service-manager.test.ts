@@ -1,10 +1,13 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import type { ChildProcess } from "node:child_process";
+import type * as childProcessModule from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
   type ServiceManager,
+  LOG_FOLLOWER_REARM_MS,
+  MAX_LOG_FOLLOWER_REARMS,
   NETWORK_JOIN_TIMEOUT_MS,
   STARTING_WATCHDOG_MS,
   STARTING_TIMEOUT_MESSAGE,
@@ -18,12 +21,33 @@ import {
   type SecretsStatusInternalSnapshot,
 } from "./service-manager.js";
 import { DEFAULT_STOP_GRACE_PERIOD_MS, type DockerSocketGrant } from "./compose-generator.js";
+import { COMPOSE_HELPER_IMAGE_ENV, ComposeHelperError } from "./compose-helper.js";
 import { OPS_TEMPLATE } from "./templates-ops.js";
 import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-dir.js";
 import { serializeStackOp } from "./stack-op-queue.js";
 import type { PluginCredentialDeclaration } from "../shared/plugin-credentials.js";
 import { markPreviewReachable, forgetStackUp } from "./preview-timing.js";
-import { recordedOverride, testServiceManager } from "./compose-test-helpers.js";
+import { FakeConfinedCompose, recordedOverride, testServiceManager } from "./compose-test-helpers.js";
+import { joinSessionNetworkEndpoints } from "./service-manager-setup.js";
+import { releaseSessionNetworkQueued } from "./session-network-release.js";
+import { fakeNetworkDocker } from "./session-network-test-helpers.js";
+
+// A real `docker` exits or prints on its own, at a time the test does not control, and only on a
+// host that has docker (CI does). Tests that follow or snapshot logs take a fake: a follower stays
+// open and silent, and a one-shot `logs` closes with no output so a snapshot can finish.
+const fakeDocker = vi.hoisted(() => ({ enabled: false }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof childProcessModule>();
+  const { EventEmitter } = await import("node:events");
+  const spawn = (...args: Parameters<typeof actual.spawn>) => {
+    if (!fakeDocker.enabled) return actual.spawn(...args);
+    const proc = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true });
+    const argv = Array.isArray(args[1]) ? args[1] : [];
+    if (argv.includes("logs") && !argv.includes("-f")) queueMicrotask(() => proc.emit("close", 0, null));
+    return proc;
+  };
+  return { ...actual, spawn };
+});
 
 function makeSessionDir(prefix: string): string {
   const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -498,6 +522,645 @@ services:
     expect(ups).toBe(2);
   });
 
+  describe("session network at stop", () => {
+    const SESSION = "test-session";
+    const NETWORK = `shipit-session-${SESSION}`;
+    const AGENT = "agent-test-session";
+    const ORCHESTRATOR = os.hostname();
+    const flushStackQueue = () => serializeStackOp(SESSION, async () => {});
+
+    type Hook = () => Promise<void> | void;
+    function harness(
+      dir: string,
+      hooks: { beforeDown?: Hook; duringRead?: Hook; duringBuild?: Hook; beforeUp?: Hook; duringUp?: Hook; duringStop?: Hook } = {},
+      service = "image: node:22",
+    ) {
+      writeCompose(dir, `services:\n  web:\n    ${service}\n    ports: ['3000:3000']\n`);
+      const net = fakeNetworkDocker();
+      let agentRuns = true;
+      const releaseRequests: string[] = [];
+      const runs: string[] = [];
+      let created = 0;
+      let downHeld: Promise<void> | undefined;
+      // The stop paths take the manager out of the registry before they stop it.
+      const registered = new Set<unknown>();
+      // A command that a time limit ends: the process is killed.
+      const untilAborted = (signal: AbortSignal | undefined): Promise<void> =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("killed")), { once: true });
+        });
+      const composeRunner: ComposeRunner = async (args, _cwd, _onOutput, signal) => {
+        if (args.includes("up")) {
+          runs.push("up");
+          // It pulls a missing image first. Then it finds or creates the network, creates its
+          // containers, and starts them.
+          await hooks.beforeUp?.();
+          net.seed(NETWORK);
+          await hooks.duringUp?.();
+          net.createContainers(NETWORK, ["web-1"]);
+          created += 1;
+          net.composeStart(["web-1"]);
+          runs.push("started");
+        }
+        if (args.includes("down")) {
+          runs.push("down");
+          // It removes the containers that it listed when it began.
+          const listed = created;
+          await hooks.beforeDown?.();
+          if (downHeld) await Promise.race([downHeld, untilAborted(signal)]);
+          if (listed === created) net.composeDown(NETWORK, ["web-1"]);
+        }
+        if (args.includes("stop")) {
+          // With `-f`, Compose has the service's definition, and runs its `pre_stop` hook.
+          runs.push(args.includes("-f") ? "stop" : "stop without its files");
+          await hooks.duringStop?.();
+        }
+      };
+      const composeQuery: ComposeQuery = async (args) =>
+        (args.includes("status=running") && net.attached(NETWORK).includes("web-1") ? "web\n" : "");
+      class Confined extends FakeConfinedCompose {
+        override async readProjectFile(file: string): Promise<Buffer> {
+          await hooks.duringRead?.();
+          return super.readProjectFile(file);
+        }
+      }
+      const joiner = {
+        connectToNetwork: async (_sessionId: string, name: string) => {
+          if (!agentRuns) throw new Error(`No container found for session ${SESSION}`);
+          if (!net.attached(name).includes(AGENT)) await net.docker.getNetwork(name).connect({ Container: AGENT });
+        },
+        getDockerClient: () => net.docker,
+      };
+      // Activation builds a manager for each start, as this does.
+      const manager = (runner: ComposeRunner = composeRunner) => testServiceManager({
+        sessionId: SESSION,
+        workspaceDir: dir,
+        serviceEnvDir: serviceEnvOf(dir),
+        composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+        composeRunner: runner,
+        fakeConfined: new Confined({
+          workspaceDir: dir,
+          sessionId: SESSION,
+          runner,
+          buildRunner: async () => { await hooks.duringBuild?.(); },
+        }),
+        composeQuery,
+        pollIntervalMs: 0,
+        networkJoinFn: (name) => joinSessionNetworkEndpoints(joiner, SESSION, name),
+        networkReleaseFn: () => {
+          releaseRequests.push(SESSION);
+          releaseSessionNetworkQueued(net.docker, SESSION, () => registered.size > 0);
+        },
+        stackOwnedFn: () => registered.size > 0,
+      });
+      return {
+        net,
+        manager,
+        releaseRequests,
+        runs,
+        holdDown: (until: Promise<void>) => { downHeld = until; },
+        registered,
+        destroyAgent: () => { agentRuns = false; net.removeContainer(AGENT); },
+        createAgent: () => { agentRuns = true; },
+      };
+    }
+
+    it("removes the network when the stack stops after the agent container is gone, and a resume gets it back", async () => {
+      const h = harness(setup());
+      const first = h.manager();
+      await first.start();
+      expect(h.net.attached(NETWORK)).toEqual([AGENT, ORCHESTRATOR, "web-1"].sort());
+
+      h.destroyAgent();
+      await first.stop();
+      await flushStackQueue();
+
+      expect(h.net.has(NETWORK)).toBe(false);
+
+      h.createAgent();
+      const resumed = h.manager();
+      await resumed.start();
+
+      expect(h.net.attached(NETWORK)).toEqual([AGENT, ORCHESTRATOR, "web-1"].sort());
+      expect(resumed.getService("web")?.status).not.toBe("error");
+    });
+
+    it("keeps the network, and the orchestrator on it, while the agent container is attached", async () => {
+      const h = harness(setup());
+      const mgr = h.manager();
+      await mgr.start();
+
+      await mgr.stop();
+      await flushStackQueue();
+
+      expect(h.net.attached(NETWORK)).toEqual([AGENT, ORCHESTRATOR].sort());
+    });
+
+    // The manager can start a service outside the stack queue, and refreshSecrets does not join again.
+    it("keeps the network of a manager that is still registered when it stops", async () => {
+      const h = harness(setup());
+      const mgr = h.manager();
+      h.registered.add(mgr);
+      await mgr.start();
+      h.destroyAgent();
+
+      await mgr.stop();
+      await flushStackQueue();
+
+      expect(h.net.attached(NETWORK)).toEqual([ORCHESTRATOR]);
+    });
+
+    it("does not ask for the release when the down failed", async () => {
+      const h = harness(setup());
+      const mgr = h.manager((args) =>
+        args.includes("down") ? Promise.reject(new Error("daemon unreachable")) : Promise.resolve());
+
+      await mgr.stop();
+
+      expect(h.releaseRequests).toEqual([]);
+    });
+
+    // A down that outlasts awaitComposeStop ends while the next start is between finding the
+    // network and creating its first container.
+    it("lands behind a start that is already in the stack queue, and keeps that start's network", async () => {
+      let finishDown: (() => void) | undefined;
+      let finishUp: (() => void) | undefined;
+      let holdNextUp = false;
+      const h = harness(setup(), {
+        beforeDown: () => new Promise<void>((resolve) => { finishDown = resolve; }),
+        duringUp: () => (holdNextUp ? new Promise<void>((resolve) => { finishUp = resolve; }) : Promise.resolve()),
+      });
+      const first = h.manager();
+      await first.start();
+      h.destroyAgent();
+
+      const stopping = first.stop();
+      await vi.waitFor(() => expect(finishDown).toBeDefined());
+      holdNextUp = true;
+      h.createAgent();
+      const resumed = h.manager();
+      const starting = serializeStackOp(SESSION, () => resumed.start());
+      await vi.waitFor(() => expect(finishUp).toBeDefined());
+
+      finishDown?.();
+      await stopping;
+      expect(h.releaseRequests).toHaveLength(1);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(h.net.has(NETWORK)).toBe(true);
+
+      finishUp?.();
+      await starting;
+      await flushStackQueue();
+
+      expect(h.net.attached(NETWORK)).toEqual([AGENT, ORCHESTRATOR, "web-1"].sort());
+      expect(resumed.getService("web")?.status).not.toBe("error");
+    });
+
+    // Some starts run outside the stack queue, and a stop waits for none of them.
+    describe("with a start in flight", () => {
+      /** A hook that lets the calls before `arm()` pass, and holds the first one after it. */
+      function heldOnce() {
+        let armed = false;
+        let entered = false;
+        let release = (): void => {};
+        return {
+          hook: (): Promise<void> | void => {
+            if (!armed) return;
+            armed = false;
+            entered = true;
+            return new Promise<void>((resolve) => { release = resolve; });
+          },
+          arm: () => { armed = true; },
+          entered: () => vi.waitFor(() => expect(entered).toBe(true)),
+          release: () => release(),
+        };
+      }
+      const ups = (h: ReturnType<typeof harness>) => h.runs.filter((run) => run === "up").length;
+      const downs = (h: ReturnType<typeof harness>) => h.runs.filter((run) => run === "down").length;
+
+      it("does not run `up` for a start whose build ends after the stack stopped", async () => {
+        const build = heldOnce();
+        const h = harness(setup(), { duringBuild: build.hook }, "build: .");
+        const mgr = h.manager();
+        await mgr.start();
+        h.destroyAgent();
+
+        build.arm();
+        const starting = mgr.startService("web");
+        await build.entered();
+        await mgr.stop();
+        await flushStackQueue();
+        expect(h.net.has(NETWORK)).toBe(false);
+
+        build.release();
+        await expect(starting).resolves.toBeUndefined();
+        await flushStackQueue();
+
+        expect(ups(h)).toBe(1);
+        expect(h.net.has(NETWORK)).toBe(false);
+        expect(mgr.getService("web")?.status).toBe("stopped");
+      });
+
+      it("ends the first start quietly when the stack stopped during its build", async () => {
+        const build = heldOnce();
+        const h = harness(setup(), { duringBuild: build.hook }, "build: .");
+        const mgr = h.manager();
+        const events: string[] = [];
+        mgr.on("stack_ready", () => events.push("ready"));
+        mgr.on("stack_error", () => events.push("error"));
+
+        build.arm();
+        const starting = mgr.start();
+        await build.entered();
+        await mgr.stop();
+        build.release();
+        await expect(starting).resolves.toBeUndefined();
+
+        expect(ups(h)).toBe(0);
+        expect(mgr.started).toBe(false);
+        expect(events).toEqual([]);
+        expect(mgr.getService("web")?.status).toBe("stopped");
+      });
+
+      it("does not run `up` for a first start that the stop overtook before it resolved the project", async () => {
+        const read = heldOnce();
+        const h = harness(setup(), { duringRead: read.hook });
+        const mgr = h.manager();
+
+        read.arm();
+        const starting = mgr.start();
+        await read.entered();
+        await mgr.stop();
+        read.release();
+        await expect(starting).resolves.toBeUndefined();
+
+        expect(ups(h)).toBe(0);
+        expect(mgr.started).toBe(false);
+        expect(mgr.getService("web")?.status).toBe("stopped");
+      });
+
+      it("ends a first start quietly when every service waits at the install gate", async () => {
+        const read = heldOnce();
+        const h = harness(setup(), { duringRead: read.hook });
+        const mgr = h.manager();
+        mgr.setInstallRunning(true);
+        const events: string[] = [];
+        mgr.on("stack_ready", () => events.push("ready"));
+
+        read.arm();
+        const starting = mgr.start();
+        await read.entered();
+        await mgr.stop();
+        read.release();
+        await starting;
+
+        expect(mgr.started).toBe(false);
+        expect(events).toEqual([]);
+        expect(mgr.getService("web")?.status).toBe("stopped");
+      });
+
+      it("does not run `up` for a secrets refresh that the stop overtook before it resolved the project", async () => {
+        const read = heldOnce();
+        const h = harness(setup(), { duringRead: read.hook });
+        const mgr = h.manager();
+        await mgr.start();
+
+        read.arm();
+        const refreshing = mgr.refreshSecrets();
+        await read.entered();
+        // The stop is held too, so that the refresh still reads the stack as started.
+        let finishDown = (): void => {};
+        h.holdDown(new Promise<void>((resolve) => { finishDown = resolve; }));
+        const stopping = mgr.stop();
+        read.release();
+        await refreshing;
+        finishDown();
+        await stopping;
+
+        expect(ups(h)).toBe(1);
+      });
+
+      it("does not run `up` for a restart whose stop of the old container ends after the stack stopped", async () => {
+        const stop = heldOnce();
+        const h = harness(setup(), { duringStop: stop.hook });
+        const mgr = h.manager();
+        await mgr.start();
+
+        stop.arm();
+        const restarting = mgr.restartService("web");
+        await stop.entered();
+        await mgr.stop();
+        stop.release();
+        await expect(restarting).resolves.toBeUndefined();
+
+        expect(ups(h)).toBe(1);
+      });
+
+      // `start()` clears the disposal flag, so the flag cannot tell an old start from a new one.
+      it("does not run the old `up` after the same manager started again", async () => {
+        const build = heldOnce();
+        const h = harness(setup(), { duringBuild: build.hook }, "build: .");
+        const mgr = h.manager();
+        h.registered.add(mgr);
+        await mgr.start();
+
+        build.arm();
+        const refreshing = mgr.refreshSecrets();
+        await build.entered();
+        await mgr.stop();
+        await mgr.start();
+        expect(ups(h)).toBe(2);
+
+        build.release();
+        await refreshing;
+
+        expect(ups(h)).toBe(2);
+        expect(mgr.getService("web")?.status).not.toBe("error");
+      });
+
+      it("takes down what an `up` that was already running created after the stop", async () => {
+        const pull = heldOnce();
+        const h = harness(setup(), { beforeUp: pull.hook });
+        const mgr = h.manager();
+        await mgr.start();
+        h.destroyAgent();
+
+        pull.arm();
+        const refreshing = mgr.refreshSecrets();
+        await pull.entered();
+        await mgr.stop();
+        await flushStackQueue();
+        expect(h.net.has(NETWORK)).toBe(false);
+
+        pull.release();
+        await refreshing;
+
+        await vi.waitFor(() => expect(downs(h)).toBe(2));
+        await flushStackQueue();
+        // Each `down` comes after a stop of the running service from its start's files,
+        // which is what runs a `pre_stop` hook.
+        expect(h.runs).toEqual(["up", "started", "up", "stop", "down", "started", "stop", "down"]);
+        expect(h.net.has(NETWORK)).toBe(false);
+      });
+
+      // `down` removes what it listed when it began, and the stop then forgets the starts that ended.
+      it("stops a late service from the files of its start when its `up` ended during the first `down`", async () => {
+        const pull = heldOnce();
+        const h = harness(setup(), { beforeUp: pull.hook });
+        const mgr = h.manager();
+        await mgr.start();
+        h.destroyAgent();
+        pull.arm();
+        const refreshing = mgr.refreshSecrets();
+        await pull.entered();
+
+        let finishDown = (): void => {};
+        h.holdDown(new Promise<void>((resolve) => { finishDown = resolve; }));
+        const stopping = mgr.stop();
+        await vi.waitFor(() => expect(downs(h)).toBe(1));
+        pull.release();
+        await refreshing;
+        finishDown();
+        await stopping;
+
+        await vi.waitFor(() => expect(downs(h)).toBe(2));
+        await flushStackQueue();
+        expect(h.runs).toEqual(["up", "started", "up", "stop", "down", "started", "stop", "down"]);
+        expect(h.net.has(NETWORK)).toBe(false);
+      });
+
+      // That `down` holds the session's stack queue, which has no timeout of its own.
+      it("ends a second `down` that hangs, so that the next start of the session can run", async () => {
+        const pull = heldOnce();
+        const h = harness(setup(), { beforeUp: pull.hook });
+        const mgr = h.manager();
+        await mgr.start();
+        h.destroyAgent();
+        pull.arm();
+        const refreshing = mgr.refreshSecrets();
+        await pull.entered();
+        await mgr.stop();
+        await flushStackQueue();
+
+        const limits: AbortController[] = [];
+        const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+          limits.push(new AbortController());
+          return limits.at(-1)!.signal;
+        });
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        h.holdDown(new Promise<void>(() => {}));
+        pull.release();
+        await refreshing;
+        await vi.waitFor(() => expect(downs(h)).toBe(2));
+        let nextStartRan = false;
+        const nextStart = serializeStackOp(SESSION, async () => { nextStartRan = true; });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(nextStartRan).toBe(false);
+
+        expect(timeout.mock.calls.at(-1)).toEqual([DEFAULT_STOP_GRACE_PERIOD_MS + GATED_TEARDOWN_GRACE_MARGIN_MS]);
+        limits.at(-1)!.abort();
+        await nextStart;
+
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("down after a late up failed"), "killed");
+        timeout.mockRestore();
+        warn.mockRestore();
+      });
+
+      it("leaves what the late `up` created to a manager that owns the stack by then", async () => {
+        const pull = heldOnce();
+        const h = harness(setup(), { beforeUp: pull.hook });
+        const first = h.manager();
+        await first.start();
+
+        pull.arm();
+        const refreshing = first.refreshSecrets();
+        await pull.entered();
+        await first.stop();
+        const resumed = h.manager();
+        h.registered.add(resumed);
+        await serializeStackOp(SESSION, () => resumed.start());
+
+        pull.release();
+        await refreshing;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await flushStackQueue();
+
+        expect(downs(h)).toBe(1);
+        expect(h.net.attached(NETWORK)).toEqual([AGENT, ORCHESTRATOR, "web-1"].sort());
+      });
+
+      it("does not take the stack down again after the same manager started again", async () => {
+        const pull = heldOnce();
+        const h = harness(setup(), { beforeUp: pull.hook });
+        const mgr = h.manager();
+        await mgr.start();
+
+        pull.arm();
+        const refreshing = mgr.refreshSecrets();
+        await pull.entered();
+        await mgr.stop();
+        await mgr.start();
+
+        pull.release();
+        await refreshing;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await flushStackQueue();
+
+        expect(downs(h)).toBe(1);
+        expect(h.net.attached(NETWORK)).toEqual([AGENT, ORCHESTRATOR, "web-1"].sort());
+      });
+    });
+  });
+
+  describe("session network join when Compose has not created the network", () => {
+    const SESSION = "test-session";
+    const NETWORK = `shipit-session-${SESSION}`;
+    const MANUAL = "services:\n  dev:\n    image: node:22\n    ports: ['3000:3000']\n    x-shipit-preview: manual\n";
+    const AUTO = "services:\n  web:\n    image: node:22\n    ports: ['3000:3000']\n";
+
+    // `up` succeeds and no network appears, which is what a join sees when the network is gone.
+    function harness(dir: string, compose: string) {
+      writeCompose(dir, compose);
+      const net = fakeNetworkDocker();
+      const joiner = {
+        connectToNetwork: async (_sessionId: string, name: string) => {
+          await net.docker.getNetwork(name).connect({ Container: "agent-test-session" });
+        },
+        getDockerClient: () => net.docker,
+      };
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      let ups = 0;
+      const hooks: { whileStartResolves?: () => void } = {};
+      const mgr = testServiceManager({
+        sessionId: SESSION,
+        workspaceDir: dir,
+        serviceEnvDir: serviceEnvOf(dir),
+        composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+        composeRunner: (args) => {
+          if (args.includes("up")) ups += 1;
+          return Promise.resolve();
+        },
+        composeQuery: emptyComposeQuery,
+        pollIntervalMs: 0,
+        resolveWorkspaceDevice: () => {
+          hooks.whileStartResolves?.();
+          return Promise.resolve(dir);
+        },
+        networkJoinFn: (name, opts) => joinSessionNetworkEndpoints(joiner, SESSION, name, opts),
+      });
+      const joinWarnings = () =>
+        warn.mock.calls.map((call) => call.join(" ")).filter((line) => line.includes(NETWORK));
+      return { mgr, net, warn, joinWarnings, hooks, ups: () => ups };
+    }
+
+    function stopWhileStartResolves(h: ReturnType<typeof harness>, name: string): () => Promise<void> {
+      let stopped: Promise<void> | undefined;
+      h.hooks.whileStartResolves = () => { stopped ??= h.mgr.stopService(name); };
+      return async () => { await stopped; };
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("does not warn when an all-manual stack starts", async () => {
+      const h = harness(setup(), MANUAL);
+
+      await h.mgr.start();
+
+      expect(h.net.calls).toContain(`connect:${NETWORK}:${os.hostname()}`);
+      expect(h.joinWarnings()).toEqual([]);
+    });
+
+    it("does not warn while the install gate holds every auto service", async () => {
+      const h = harness(setup(), AUTO);
+      h.mgr.setInstallRunning(true);
+
+      await h.mgr.start();
+
+      expect(h.joinWarnings()).toEqual([]);
+    });
+
+    it("does not warn when a Stop cancels start()'s only up", async () => {
+      const h = harness(setup(), AUTO);
+      const stopSettled = stopWhileStartResolves(h, "web");
+
+      await h.mgr.start();
+      await stopSettled();
+
+      expect(h.ups()).toBe(0);
+      expect(h.joinWarnings()).toEqual([]);
+    });
+
+    it("does not warn when a Stop cancels the gated batch's only up", async () => {
+      const h = harness(setup(), AUTO);
+      h.mgr.setInstallRunning(true);
+      await h.mgr.start();
+      const stopSettled = stopWhileStartResolves(h, "web");
+      const callsBefore = h.net.calls.length;
+
+      h.mgr.setInstallRunning(false);
+      await serializeStackOp(SESSION, async () => {});
+      await stopSettled();
+
+      expect(h.net.calls.slice(callsBefore)).toEqual(expect.arrayContaining([
+        `connect:${NETWORK}:agent-test-session`,
+        `connect:${NETWORK}:${os.hostname()}`,
+      ]));
+      expect(h.ups()).toBe(0);
+      expect(h.joinWarnings()).toEqual([]);
+    });
+
+    it("still joins on a reconcile that finds a manual service running", async () => {
+      const h = harness(setup(), MANUAL);
+      await h.mgr.start();
+      h.net.seed(NETWORK, ["dev-1"]);
+
+      await h.mgr.reconcile();
+
+      expect(h.net.attached(NETWORK)).toEqual(["agent-test-session", os.hostname(), "dev-1"].sort());
+    });
+
+    it("warns on both endpoints when the network is missing after start() brought a service up", async () => {
+      const h = harness(setup(), AUTO);
+
+      await h.mgr.start();
+
+      expect(h.joinWarnings()).toEqual([
+        expect.stringContaining("Failed to connect orchestrator to"),
+        expect.stringContaining("joinSessionNetwork failed:"),
+      ]);
+    });
+
+    it("warns on both endpoints when the network is missing after the gated batch brought a service up", async () => {
+      const h = harness(setup(), AUTO);
+      h.mgr.setInstallRunning(true);
+      await h.mgr.start();
+
+      h.mgr.setInstallRunning(false);
+      await serializeStackOp(SESSION, async () => {});
+
+      expect(h.ups()).toBe(1);
+      expect(h.joinWarnings()).toEqual([
+        expect.stringContaining("Failed to connect orchestrator to"),
+        expect.stringContaining("joinSessionNetwork failed:"),
+      ]);
+    });
+
+    it("warns on both endpoints when the network is missing after a manual service started", async () => {
+      const h = harness(setup(), MANUAL);
+      await h.mgr.start();
+      h.warn.mockClear();
+
+      await h.mgr.startService("dev");
+
+      expect(h.joinWarnings()).toEqual([
+        expect.stringContaining("Failed to connect orchestrator to"),
+        expect.stringContaining("joinSessionNetwork failed:"),
+      ]);
+    });
+  });
+
   it("throws for unknown service in startService", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n");
@@ -519,6 +1182,39 @@ services:
     await expect(mgr.restartService("nonexistent")).rejects.toThrow("Unknown service");
   });
 
+  it("names the failed project-file read, not an unknown service, and registers the services once a read works", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    x-shipit-preview: manual\n");
+    const confined = new FakeConfinedCompose({ workspaceDir: dir, sessionId: "test-session" });
+    const helperFailure = "ShipIt could not start its Compose helper container for `read` (exit 125): "
+      + "docker: Error response from daemon: No such image: sha256:gone";
+    vi.spyOn(confined, "readProjectFile").mockRejectedValueOnce(new ComposeHelperError(helperFailure, "start"));
+    const mgr = testServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: () => Promise.resolve(),
+      composeQuery: emptyComposeQuery,
+      pollIntervalMs: 0,
+      confinedCompose: confined,
+    });
+
+    await expect(mgr.start()).rejects.toThrow(helperFailure);
+    expect(mgr.getServices()).toEqual([]);
+    for (const action of [mgr.startService, mgr.stopService, mgr.restartService]) {
+      const err = await action.call(mgr, "web").catch((e: unknown) => e);
+      expect((err as Error).message).toBe(
+        `ShipIt has no service "web", and its last read of this session's Compose file failed: ${helperFailure}`,
+      );
+    }
+
+    await mgr.reconcile();
+    expect(mgr.getService("web")).toBeDefined();
+    expect(mgr.projectComposeFailure).toBeNull();
+    await expect(mgr.startService("nonexistent")).rejects.toThrow("Unknown service: nonexistent");
+  });
+
   it("registers an 'error' listener on the log follower so a failed docker exec can't crash the process", () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
@@ -532,6 +1228,10 @@ services:
     expect(proc!.listenerCount("error")).toBeGreaterThan(0);
 
     expect(() => proc!.emit("error", new Error("spawn docker ENOENT"))).not.toThrow();
+    // `close` always follows a spawn error and owns the removal, so that it can also re-arm the
+    // follower — removing the entry here would make its identity guard skip that (docs/332).
+    expect(logProcesses.has("web")).toBe(true);
+    proc!.emit("close");
     expect(logProcesses.has("web")).toBe(false);
 
     cleanup();
@@ -792,6 +1492,28 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
       expect(mgr.projectComposeFailure?.kind).toBe("refused");
       expect(mgr.projectComposeFailure?.message).toContain("web");
       expect(mgr.projectComposeFailure?.message).toContain("privileged");
+    });
+
+    // Distinct repositories, and the other settings cleared, so one setting cannot stand in for another.
+    const IMAGE_SETTINGS: [string, string][] = [
+      ["SESSION_WORKER_IMAGE", "test-worker:prod"],
+      ["SESSION_WORKER_DOCKER_IMAGE", "test-worker-docker:prod"],
+      ["SESSION_EGRESS_SIDECAR_IMAGE", "test-sidecar:prod"],
+      [COMPOSE_HELPER_IMAGE_ENV, "test-helper:prod"],
+    ];
+    it.each(IMAGE_SETTINGS)("refuses a build that would tag the image %s names", async (env, image) => {
+      for (const [key] of IMAGE_SETTINGS) vi.stubEnv(key, "");
+      vi.stubEnv(env, image);
+      try {
+        const dir = setup();
+        writeCompose(dir, `services:\n  web:\n    image: ${image}\n    build: .\n    ports: ['3000:3000']\n`);
+        const mgr = createMockedManager(dir);
+
+        await expect(mgr.start()).rejects.toThrow("is reserved for one of ShipIt's own images");
+        expect(mgr.projectComposeFailure?.kind).toBe("refused");
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
 
     it("records a file it could not parse as MALFORMED, not refused", async () => {
@@ -3270,7 +3992,9 @@ describe("ServiceManager stuck-starting recovery (#2044)", () => {
     const { mgr, setPsResponse } = makeManager(dir);
 
     await mgr.start();
-    setPsResponse("");
+    // A listed-but-never-running container is what the watchdog owns: a service with NO container
+    // belongs to the missing-container rule, which reaches it first (docs/332).
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "paused", ExitCode: 0 }));
     await mgr.startService("web");
     expect(mgr.getService("web")?.status).toBe("starting");
 
@@ -3361,10 +4085,16 @@ describe("ServiceManager stuck-starting recovery (#2044)", () => {
     const { mgr, setPsResponse } = makeManager(dir, {
       networkJoinFn: () => new Promise<void>(() => { /* never settles */ }),
     });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const stackPromise = mgr.start();
     await vi.advanceTimersByTimeAsync(NETWORK_JOIN_TIMEOUT_MS + 1_000);
     await stackPromise;
+    // No `up` ran for this all-manual stack, and a join that hangs is reported all the same.
+    expect(warn.mock.calls.map((call) => call.join(" "))).toContainEqual(
+      expect.stringMatching(/joinSessionNetwork failed: .* did not complete within/),
+    );
+    warn.mockRestore();
 
     setPsResponse(runningPs);
     const startPromise = mgr.startService("web");
@@ -3493,7 +4223,8 @@ describe("ServiceManager starting-state address hygiene (#2044)", () => {
     });
 
     await mgr.start();
-    setPsResponse("");
+    // Paused, not absent: the missing-container rule would otherwise own this service (docs/332).
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "paused", ExitCode: 0 }));
     const startPromise = mgr.startService("web");
     await vi.advanceTimersByTimeAsync(0);
 
@@ -3538,7 +4269,12 @@ describe("ServiceManager starting-state address hygiene (#2044)", () => {
 describe("ServiceManager — compose up output reaches the service log", () => {
   let tmpDir: string;
 
+  beforeEach(() => {
+    fakeDocker.enabled = true;
+  });
+
   afterEach(() => {
+    fakeDocker.enabled = false;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -3673,7 +4409,12 @@ describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
     return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
   }
 
+  beforeEach(() => {
+    fakeDocker.enabled = true;
+  });
+
   afterEach(() => {
+    fakeDocker.enabled = false;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -3862,6 +4603,150 @@ describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
     const second = logProcesses().get("web");
     expect(second).toBeDefined();
     expect(second).not.toBe(first);
+  });
+
+  // docs/332: the re-arm replaced a poll, so an unattachable follower would otherwise leave a
+  // 2-second timer running for ever on a session nobody is watching.
+  it("re-attaches a follower that dies on its own, without a poll", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    const first = logProcesses().get("web");
+
+    first!.emit("close", 0);
+    await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+
+    const second = logProcesses().get("web");
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+    vi.useRealTimers();
+  });
+
+  it("gives up re-arming a follower that never attaches, rather than retrying for ever", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 2; i++) {
+      logProcesses().get("web")?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+
+    expect(logProcesses().has("web")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  // A `docker compose logs` that writes a diagnostic and exits proves the follower did NOT attach,
+  // so crediting stderr to the budget made the bound meaningless.
+  it("does not let a stderr diagnostic refill the re-arm budget", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 3; i++) {
+      const proc = logProcesses().get("web");
+      proc?.stderr?.emit("data", Buffer.from("error: no such service\n"));
+      proc?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+
+    expect(logProcesses().has("web")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("refills the budget on real container output, so later disconnects still recover", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 3; i++) {
+      const proc = logProcesses().get("web");
+      proc?.stdout?.emit("data", Buffer.from("listening on 3000\n"));
+      proc?.emit("close", 0);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+      expect(logProcesses().has("web")).toBe(true);
+    }
+    vi.useRealTimers();
+  });
+
+  // The budget has to cover the attempt a RECONCILE makes too: `onRunning` runs on every one, so a
+  // follower that can never attach would spawn a process on every backstop for ever (docs/332).
+  it("spawns nothing more once the budget is spent, not even from a reconcile", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 2; i++) {
+      logProcesses().get("web")?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+    expect(logProcesses().has("web")).toBe(false);
+
+    await poll();
+    await poll();
+
+    expect(logProcesses().has("web")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("follows the logs again once the user restarts the service", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    for (let i = 0; i < MAX_LOG_FOLLOWER_REARMS + 2; i++) {
+      logProcesses().get("web")?.emit("close", 1);
+      await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+    }
+    expect(logProcesses().has("web")).toBe(false);
+
+    await mgr.startService("web");
+    expect(logProcesses().has("web")).toBe(true);
+
+    // And the NEW container's follower gets a fresh budget, so it can re-arm on its own again.
+    logProcesses().get("web")?.emit("close", 1);
+    await vi.advanceTimersByTimeAsync(LOG_FOLLOWER_REARM_MS + 500);
+
+    expect(logProcesses().has("web")).toBe(true);
+    vi.useRealTimers();
   });
 
   it("does not replace a follower that is still alive", async () => {

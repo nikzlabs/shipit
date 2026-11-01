@@ -1,9 +1,9 @@
 import type { EventEmitter } from "node:events";
 import type { ImageAttachment, PermissionMode } from "./attachment-types.js";
 import type { ApiStyle, BillingMode, CredentialTarget } from "../catalogue/types.js";
-import type { McpServerConfig, McpServerStatus } from "./mcp-types.js";
+import type { McpServerConfig, McpServerStatus, ServiceMcpServer } from "./mcp-types.js";
 
-export type AgentId = "claude" | "codex" | "opencode" | "grok" | "antigravity";
+export type AgentId = "claude" | "codex" | "opencode" | "opencode2" | "grok" | "antigravity";
 
 export const CLAUDE_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded"];
 
@@ -179,7 +179,17 @@ export interface AgentCapabilities {
   supportsSteering: boolean;
   /** Resolve through the registry, not proxy defaults. Absent is false; late output alone is not a new turn. */
   startsOwnTurns?: boolean;
+  /**
+   * The CLI echoes every prompt back when it reads it (`agent_user_replay`). Resolve through
+   * the registry; no adapter declares it. Absent is false.
+   */
+  echoesPrompt?: boolean;
   supportsCompaction: boolean;
+  /**
+   * docs/007 — the CLI can start a conversation from a message of a stored one (`resumeAt`).
+   * Resolve through the registry; no adapter declares it. Absent is false.
+   */
+  forksAtMessage?: boolean;
   /** docs/154 — the CLI owns a goal ShipIt can read and change. Absent is false. */
   supportsGoals?: boolean;
   /** docs/154 — how ShipIt handles each `/goal` action for this harness: "control"
@@ -238,12 +248,17 @@ export interface AgentAssistantEvent {
   parentToolUseId?: string;
   /** Full final text for the summary; do not append again after streamed deltas. */
   isStreamCompletion?: boolean;
+  /** Text the CLI or its adapter wrote itself (a refusal, a warning), not the model's answer. */
+  synthetic?: boolean;
+  /** docs/007 — the CLI's id of this message in its stored conversation (Claude's `uuid`). */
+  messageId?: string;
 }
 
 export interface AgentToolResultEvent {
   type: "agent_tool_result";
   content: unknown[];
   parentToolUseId?: string;
+  messageId?: string;
 }
 
 export interface AgentResultEvent {
@@ -260,12 +275,36 @@ export interface AgentResultEvent {
   };
   /** Last call's input plus cache reads and writes. */
   contextTokens?: number;
+  /**
+   * Each model call of this turn, listed once, for prompt-length pricing
+   * (docs/329-tiered-model-pricing). `tokens` stays the billing total; whatever
+   * the list does not cover is priced at the tier `contextTokens` selects.
+   */
+  requests?: AgentRequestUsage[];
   /** Prefer the reported window to the static fallback. */
   contextWindow?: number;
+  /**
+   * docs/333-idle-compaction — the lifetime of the cache entries this turn's main-thread
+   * calls wrote: "5m" if any was a 5-minute entry. Absent when the turn wrote none.
+   */
+  cacheTtl?: "5m" | "1h";
   durationMs?: number;
   error?: string;
   /** Classifier denials only, not model self-refusals. */
   permissionDenials?: { toolName: string; toolUseId?: string; toolInput?: unknown }[];
+  /** Model calls the turn made: 0 when the CLI answered by itself. Absent where the harness does not say. */
+  numTurns?: number;
+  /** What the CLI answered when it was not a prompt, such as "task-notification". */
+  origin?: string;
+}
+
+/** One model call's tokens, disjoint like `AgentResultEvent.tokens`. */
+export interface AgentRequestUsage {
+  input: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  /** Absent where the harness does not report the call's final output. */
+  output?: number;
 }
 
 /** Percentages are 0–100; null usage means unreported, not zero. */
@@ -284,6 +323,7 @@ export interface AgentSteerRejectedEvent {
 export interface AgentUserReplayEvent {
   type: "agent_user_replay";
   text: string;
+  messageId?: string;
 }
 
 export interface AgentCompactionStartedEvent {
@@ -307,7 +347,14 @@ export interface AgentPermissionRequestEvent {
   summary?: string;
   details?: string;
   agentId?: AgentId;
+  subagent?: PermissionSubagent;
 }
+
+/**
+ * A subagent made the gated call. `background`: its Agent call had returned, so the main
+ * agent can act while the request waits. `foreground`: the main agent waits inside that call.
+ */
+export type PermissionSubagent = "foreground" | "background";
 
 /** The user's answer, or a deny once the agent stops waiting (its own timeout, Stop, exit). */
 export interface AgentPermissionResolvedEvent {
@@ -315,6 +362,11 @@ export interface AgentPermissionResolvedEvent {
   requestId: string;
   behavior: "allow" | "deny";
   remembered?: boolean;
+  /**
+   * The agent stopped waiting before anyone answered: the gated call got its result, or Codex
+   * withdrew it. `waitedMs` is the broker's measured wait; a worker image older than it sends none.
+   */
+  callEnded?: { summary: string; waitedMs?: number };
 }
 
 export interface PermissionDecision {
@@ -331,6 +383,7 @@ export interface PermissionRequestInput {
   agentId?: AgentId;
   /** Broker idempotency key; retries share one pending card. */
   toolUseId?: string;
+  subagent?: PermissionSubagent;
   /** Aborted when the agent withdraws the request; the card then shows denied. */
   signal?: AbortSignal;
 }
@@ -399,6 +452,11 @@ export type ServiceRouting = StringServiceRouting | OpenAIAccountRouting;
 export interface AgentRunParams {
   prompt: string;
   sessionId?: string;
+  /**
+   * docs/007 — with `sessionId`: start a new conversation from this message of the stored
+   * one. The CLI reports the new conversation's id like any other.
+   */
+  resumeAt?: string;
   systemPrompt?: string;
   images?: ImageAttachment[];
   cwd: string;
@@ -406,6 +464,10 @@ export interface AgentRunParams {
   mcpConfigPath?: string;
   /** Unresolved secret placeholders; the adapter resolves against its environment. */
   mcpServers?: McpServerConfig[];
+  /** docs/327 — the worker adds each as a stdio proxy entry in `mcpServers`. */
+  serviceMcpServers?: ServiceMcpServer[];
+  /** docs/327 — names a server can still take while the process runs; the tool allowlist is fixed at spawn. */
+  serviceMcpCandidates?: string[];
   model?: string;
   serviceRouting?: ServiceRouting;
   /** Per-spawn isolation overrides the adapter's home resolver. */
@@ -455,6 +517,8 @@ export interface AgentProcessEvents {
   mcp_status: [McpServerStatus[]];
   /** Settle only: the newer spawn owns teardown, queue drain, and commit. */
   superseded: [];
+  /** Settle only: the next turn takes this process, and its listeners with it. */
+  reused: [];
 }
 
 export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
@@ -463,7 +527,14 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
 
   run(params: AgentRunParams): void;
   writeStdin(data: string): void;
-  sendUserMessage(text: string, opts?: { images?: ImageAttachment[] }): void;
+  /**
+   * `deliveryId` marks the message as a turn's own prompt and names that turn's delivery
+   * (docs/329-user-steers-every-turn). A steer passes none.
+   */
+  sendUserMessage(
+    text: string,
+    opts?: { images?: ImageAttachment[]; deliveryId?: string; silentCompaction?: boolean },
+  ): void;
   /**
    * The last `run`/`sendUserMessage` submission, resolved once the process has
    * accepted it and rejected if it never did. Present only where submission is
@@ -484,9 +555,30 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
   setPermissionRequester?(requester: PermissionRequester): void;
   /** Correlates a surviving worker turn after orchestrator restart. */
   setDeliveryId?(deliveryId: string): void;
+  /**
+   * docs/333-idle-compaction — the turn this process runs is a silent compaction; a restarted
+   * orchestrator reads it back from the worker and adopts the turn as maintenance.
+   */
+  markSilentCompaction?(): void;
+  /** planning#700 — what this process is spawned as; the worker reports it back after a restart. */
+  setSpawnIdentity?(spawnIdentity: string): void;
   /** docs/154 — works with or without a live process; `threadId` is the session's agentSessionId. */
   goalCommand?(threadId: string, command: AgentGoalCommand): Promise<AgentGoalCommandResult>;
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult;
+  /**
+   * docs/327 — give a resident process these MCP servers while it runs. False
+   * when it did not take them; the caller then lets the next turn respawn it.
+   */
+  setLiveMcpServers?(servers: McpServerConfig[]): Promise<boolean>;
+}
+
+export interface WorkerServiceMcpBody {
+  serviceMcpServers: ServiceMcpServer[];
+}
+
+export interface WorkerServiceMcpResult {
+  /** What the agent process holds after this call; null when no process runs. */
+  live: ServiceMcpServer[] | null;
 }
 
 export interface WorkerAgentGoalBody {
@@ -501,8 +593,22 @@ export interface WorkerAgentStartBody {
   params: AgentRunParams;
   runToken?: string;
   deliveryId?: string;
+  /** docs/333-idle-compaction — reported back as `WorkerAgentStatus.silentCompaction`. */
+  silentCompaction?: boolean;
+  /** planning#700 — `sessionSpawnIdentity` at spawn, reported back as `WorkerAgentStatus.resident`. */
+  spawnIdentity?: string;
   /** docs/318 — the orchestrator's published model list; the worker's embedded one can predate it. */
   modelList?: unknown;
+}
+
+/** planning#700 — what the process in the slot was started with, for a restarted orchestrator. */
+export interface WorkerResidentSpawn {
+  spawnIdentity: string;
+  sessionStatusCard: boolean;
+  /** The current mode: the start params', then each change requested or reported. Absent is the CLI default. */
+  permissionMode?: PermissionMode;
+  /** docs/327 — the declared MCP servers the process holds. */
+  serviceMcpServers: ServiceMcpServer[];
 }
 
 export interface WorkerAgentKillBody {
@@ -525,9 +631,14 @@ export interface WorkerAgentStatus {
   ownTurn?: "heard" | "unheard";
   runToken?: string;
   deliveryId?: string;
+  /** docs/333-idle-compaction — the active turn is a silent compaction ShipIt started. */
+  silentCompaction?: boolean;
   agentId?: AgentId;
   streaming?: boolean;
+  /** Absent on workers from before planning#700, and when the start named no identity. */
+  resident?: WorkerResidentSpawn;
   backgroundTaskCount?: number;
+  backgroundTasks?: AgentBackgroundTasksEvent["tasks"];
   /** Busy, but does not assert replayability from turnStartSseSeq. */
   selfWakeActive?: boolean;
   /** A PTY exists; does not imply it is doing work. */

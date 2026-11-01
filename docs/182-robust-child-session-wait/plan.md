@@ -275,8 +275,10 @@ A–F are built; G remains a future seam. What landed:
   backoff. Transport failures (status 0 / 502 / 503 / 504) are swallowed and
   retried, never surfaced as an outcome; a swallowed error rides along as
   `lastTransportError` in `--json`. Both `callBroker` and
-  `OrchestratorClient.request` gained an AbortController per-request timeout so a
-  half-open socket fails fast.
+  `OrchestratorClient.request` gained a per-request timeout so a half-open socket
+  fails fast (an AbortController in `callBroker`; a timer on the request in the
+  client, which uses Node `http` for every call since
+  docs/306-spawn-retry-safety req 6).
 - **Multi-child** — `wait <id...> [--any|--all]` fans out over the resilient
   single-wait sharing one deadline (`waitAnyChild` for first-finisher).
 

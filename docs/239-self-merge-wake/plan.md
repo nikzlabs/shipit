@@ -36,7 +36,7 @@ correct PR number and concrete before/after SHAs.
 
 ```
 shipit session notify-on-merge --self        (agent arms it when work remains)
-  → store a self-watch on the existing merge_watch row, anchored to the open PR
+  → store a self-watch on the session row (`self_merge_watch`), anchored to the open PR
   → (the PR merges — by hand or by auto-merge; the source is irrelevant)
   → poller detects it → merge bookkeeping completes
   → deliver a wake-turn over docs/196's existing path
@@ -64,13 +64,39 @@ Separating what was decided from what was derived or proposed.
 | **A tested command rather than prompt instructions** | "the command sounds more robust" |
 | **planning#264 fixed first, separately** | Chosen from options |
 
+### Decided later — the 2026-10-10 ops incident
+
+Stated by the Ops investigation that found a parent's arm overwriting a child's
+self-watch (see *Storage*), not by the original conversation:
+
+| Requirement | What was said |
+|---|---|
+| **A parent's watch and a session's own watch coexist** | "A parent's watch and a session's own self-watch must be able to coexist… deliver both on one merge, each on its existing path" |
+| **No watch is dropped silently** | "Never drop a watch silently" |
+| **Arm calls are visible in the log** | "Log every arm, replacement and refusal with the `[merge-watch]` prefix, on both arm routes" |
+
+### Decided later — 2026-10-10, after PR #3136
+
+PR #3136 left the arm card as it was and added only a note. The follow-up offered to the
+user was to change the card itself, and the user's answer was "fix both after this pr is
+merged" (the other item is the parent re-arm rule of `docs/196-session-notify-on-merge`):
+
+| Requirement | What was said |
+|---|---|
+| **The arm card shows that its watch is gone** | "Make a replaced or ended `--self` arm card show that its watch is gone" |
+| **A card whose watch is gone does not offer Cancel, also after a reload** | "Adds a persisted state to the self-watch arm card, so an old card does not show 'Waiting on PR' with Cancel after its watch was replaced, delivered or cancelled." |
+
+This reverses one earlier decision, "no in-place transitions" (see *Cards*). The other
+exclusions there stay.
+
 ### Derived — implementation constraints, not requirements
 
 The reset safety gate; `merge-observed`, the retry supervisor and startup reconcile
 (inherited from docs/196, not built); firing after `markMergedAndPruneExcess`; the live
-open-PR lookup; arming replacing an existing watch; explicit-mode bypass of docs/218's
-preference; `handWorkspaceBackToWorker`; the co-located prompt file and card persistence
-(repo-wide rules); planning#264 as a prerequisite.
+open-PR lookup; arming replacing an existing self-watch; the self-watch's own column,
+apart from a parent's watch; explicit-mode bypass of docs/218's preference;
+`handWorkspaceBackToWorker`; the co-located prompt file and card persistence (repo-wide
+rules); planning#264 as a prerequisite.
 
 ### Easily-misread boundaries
 
@@ -83,17 +109,52 @@ preference; `handWorkspaceBackToWorker`; the co-located prompt file and card per
 - **Chaining does not imply plan *persistence*** — only agent-level re-arming while the
   conversation still contains the work.
 
-## Storage — reuse, don't parallel-build
+## Storage — reuse the machinery, keep the watch apart
 
 Extend `SessionMergeWatch` with an optional `{ kind: "self", watchId, prNumber }` and set
-`parentSessionId === sessionId`. No new column, no migration, no second list query, no
-parallel manager path — and `merge-observed`, the planning#260 retry supervisor, the polling
-gate and `reconcilePending` all come by inheritance rather than reimplementation.
+`parentSessionId === sessionId`. No second list query and no parallel manager path —
+`merge-observed`, the planning#260 retry supervisor, the polling gate and `reconcilePending`
+all come by inheritance rather than reimplementation.
 
-**Accepted limitation:** a session cannot be simultaneously parent-watched and
-self-watching, because the row holds one watch. Refuse a self-arm when it holds a genuine
-parent→child watch. A session that is simultaneously watched by its parent and watching
-itself is rare enough that a second subsystem costs more than the collision does.
+**The self-watch has its own column.** A session row holds two independent watches:
+`merge_watch` is the parent's (docs/196, `SessionInfo.mergeWatch`) and `self_merge_watch`
+is the session's own (`SessionInfo.selfMergeWatch`). Each arm path reads and writes only
+its own column, so neither can displace or block the other, and one merge delivers both:
+the parent's from `onPrTerminalState`, the session's own after
+`markMergedAndPruneExcess`. `SessionManager.listPendingMergeWatches` lists both, so a
+session can appear twice; `kind` tells them apart.
+
+> **Why — the 2026-10-10 incident.** The first design put both kinds in `merge_watch` and
+> accepted "one row, one watch" as a limitation, on the argument that a session watched by
+> its parent and watching itself was rare. It is not: a coordinator that does bookkeeping
+> per merged child PR, beside a child that chains several PRs, is an ordinary fan-out. The
+> self-arm refused on a collision, but `registerMergeWatch` had no matching guard and
+> overwrote a live self-watch with the parent's. Nothing refused, nothing was logged, the
+> child's arm card still read as armed, and the child's chain stopped at the next merge.
+
+`MergeWatchManager` therefore addresses every watch by a **slot** — `(sessionId,
+"parent" | "self")`. Its one piece of in-memory state, the `dispatching` lock, is keyed by
+slot too, because the poller starts both deliveries of one merge in the same tick: a
+per-session key made the second one read as already in flight and skip.
+
+Rows written before the split carry a self-watch in `merge_watch`. `SessionManager` moves
+each of them when it is constructed (`adoptLegacySelfMergeWatches`); a parent's watch
+stays where it is. This runs on **every start**, not as a one-time migration — the
+migration (`SELF_MERGE_WATCH_MIGRATION` in `shared/database.ts`) only adds the column.
+After a rollback the older code writes self-watches into `merge_watch` again, and a
+migration that already ran would leave them there to be read as a parent's watch and
+overwritten by the next parent arm. A value found there is always the newer state (only
+the older code writes it, and only while this code does not run), so it replaces what the
+new column holds — the same rule as a re-arm. A watch counts as the session's own when it
+has `kind: "self"` or names the session as its own `parentSessionId`; the second test
+catches a watch the older code already delivered, which it stored without `kind`.
+
+**One rollback case stays open.** The older code does not know the new column. If it
+*cancels* a self-watch (or clears one on a closed PR), it sets `merge_watch` to null, and
+that is indistinguishable from never having touched the row. A self-watch that this code
+armed before the rollback then comes back after the roll-forward and can still fire. It
+needs a rollback of this exact change while a self-watch is armed; the wake it causes
+starts with the guarded `shipit branch reset-to-base`, and its arm card still has Cancel.
 
 Nothing else is copied into the watch: `mergedHeadSha` already lives on the session, and
 the delivery fields belong to docs/196's machinery.
@@ -122,15 +183,37 @@ required, but an already-merged one fires immediately" branch.
 
 **Arming always replaces** any existing self-watch, including one already delivering.
 Without that the wake turn could never re-arm: the watch stays `merge-observed` for the
-whole turn.
+whole turn. It replaces only the session's *own* watch — a parent's watch on the same
+session is in the other column and is never read or written here.
+
+**A replacement that loses something says so in the transcript.** When the replaced watch
+was still `armed` on a *different* PR, the arm appends a persisted note ("the merge-watch
+on PR #A was replaced by a watch on PR #B"): the session will not be woken for PR #A, and
+the user should know. A re-arm on the same PR, or over a watch that already saw its merge
+— the ordinary chain — loses nothing and adds no note. In every case the older arm card
+itself records that its watch is gone (see *Cards*).
+
+**Every arm, replacement and refusal writes a `[merge-watch]` log line**, on this route
+and on docs/196's, and so does every watch the manager drops and every cancel that clears
+one. Before that the orchestrator log held no trace of an arm call, so an investigation
+could only infer from timing which watch a session held.
 
 ## Delivery
 
 **Fire from `onMergeDetectedCb`, after `markMergedAndPruneExcess` resolves.** Earlier —
 from `onPrTerminalState` — races the remote-branch deletion, so the agent could reset and
-push a branch about to be deleted. Read the PR facts from the persisted snapshot at fire
-time; `setPrStatus` and `setMergedHeadSha` both run *before* this callback, so the
-sessionId-only signature needs no widening.
+push a branch about to be deleted. The callback's signature stays sessionId-only: the PR
+facts come from the `onPrTerminalState` event of the same merge, which
+`handleChildPrTerminal` writes onto an armed self-watch as `mergedPr`. The persisted
+snapshot is only the fallback, for a watch that has no `mergedPr`.
+
+The snapshot alone is not enough, although `setPrStatus` runs before the callback. A
+docs/202 re-arm (`PrStatusPoller.reArm`) nulls it, and one can run in the window between
+the merge mark and this callback — the session's own post-turn flow, when a turn ends just
+as the merge is observed. The wake then found no merged PR and returned without a log
+line, leaving the watch `armed` on a PR that had already merged. Because `mergedPr` is on
+the persisted watch, a restart inside that window loses nothing either: `reconcilePending`
+finds the facts there.
 
 **Compare the merged PR number to the anchor.** A mismatch means a docs/202 re-arm
 replaced the work before the merge landed — append a note and clear the watch rather than
@@ -325,13 +408,52 @@ by the prompt's "unless the user has since redirected you".
 - **Arm:** a persisted, cancellable card via `emitChatCard` (the arm happens mid-turn, an
   agent tool call — the side-channel shape CLAUDE.md's persistence invariant covers).
   Cancel carries `watchId` so a stale card cannot cancel the next PR's watch.
-- **Closed-without-merge, anchor mismatch, delivery failure:** append a plain persisted
-  note.
-- **Merged:** no card — the wake turn itself is the visible signal.
+- **Closed-without-merge, anchor mismatch, delivery failure, a re-arm that replaces a
+  watch still waiting on another PR:** append a plain persisted note.
+- **Merged:** no new card — the wake turn itself is the visible signal.
 
-No terminal-state card family, no in-place transitions, no runner-less
-`persistCardTransition`, no card repair, no archive-time transition. Archiving clears the
-watch silently; the user froze that transcript deliberately.
+**The arm card records why its watch is gone** (decided 2026-10-10, see *Requirement
+provenance*). A chained session leaves one arm card per link in the scrollback. Each of
+them kept reading "Waiting on PR #N" with a Cancel button, also after its PR had merged
+and the chain had moved on, and only a click on Cancel said otherwise. The card now has
+an optional `ended`, stored inside the card's existing JSON (no new column), and a card
+with it shows that state and offers no Cancel:
+
+| `ended` | Written when | Where |
+|---|---|---|
+| `merged` | the watch observes its merge and requests the wake | `handleSelfMerge` |
+| `wake-failed` | the wake is given up after its attempts | `failWatch` |
+| `closed` | the PR closes without a merge | `handleSelfPrClosed` |
+| `other-pr-merged` | a different PR merged (anchor mismatch) | `handleSelfMerge` |
+| `cancelled` | the user presses Cancel | `cancelSelfMergeWatch` |
+| `replaced` | a new arm replaces a watch that still waited | `armSelfMergeWatch` |
+
+`merged` is written when the merge is observed and not when the wake settles: from that
+moment the watch waits for nothing, and the re-arm inside the wake turn then replaces a
+watch whose card already has its end. The wake can still be queued, held for an answer,
+or in a retry at that point, so the card says that the PR merged and that ShipIt wakes
+the session — not that the session has continued. It also removes Cancel for the time the wake is in
+delivery, where it could only stop the retries of a wake that had started. The first end
+stays, with one exception — a wake that started can still fail, so `merged` can become
+`wake-failed`. The notes above stay: the
+card says that the watch is gone, the note says what the user should do.
+
+`armSelfMergeWatch` reads the watch that it replaces *after* its PR lookup. Two arms of
+one session can overlap on that lookup, and the second must end the card of the watch
+that the first one installed in the meantime.
+
+One helper does every transition, `endSelfMergeWatchCard` (`self-merge-watch-card.ts`).
+It finds the card by `watchId`, writes it through `persistCardTransition` — so a card
+armed and ended inside one running turn keeps its end when that turn's rows are rebuilt
+— or straight to the database when the session has no runner, and sends the updated card
+to live viewers as the same `self_merge_watch_card` message, which the client handler
+applies in place. It never throws: a card that stays as it was must not stop an arm, a
+cancel or a wake.
+
+Still excluded: a card family for terminal states, card repair for cards stored before
+`ended` existed (their Cancel answers "no longer armed", as before), and an archive-time
+transition. Archiving clears the watch silently; the user froze that transcript
+deliberately.
 
 ## Prerequisite — done
 
@@ -354,16 +476,16 @@ reordered call site.
 
 | Area | File | Change |
 |---|---|---|
-| Watch | `sessions.ts`, `shared/types/domain-types/session.ts` | `kind`/`watchId`/`prNumber` on `SessionMergeWatch` |
+| Watch | `sessions.ts`, `shared/types/domain-types/session.ts`, `shared/database.ts` | `kind`/`watchId`/`prNumber`/`mergedPr` on `SessionMergeWatch`; `SessionInfo.selfMergeWatch` in its own `self_merge_watch` column; `adoptLegacySelfMergeWatches` moves older rows on every start |
 | Arm / cancel | `agent-shim/shipit-session.ts`, `agent-ops-routes.ts`, session routes | `--self`; live open-PR lookup; cancel with `watchId` |
-| Delivery | `merge-watch.ts` | Self branch: anchor comparison, closed-note, `watchId` settlement check, `reconcilePending` branch; planning#318 `interrupted` is terminal + the retry's `hasTurnInFlight` gate |
+| Delivery | `merge-watch.ts` | Self slot: anchor comparison, closed-note, `watchId` settlement check, `reconcilePending` branch, slot-keyed `dispatching` lock, merge facts read from the watch; planning#318 `interrupted` is terminal + the retry's `hasTurnInFlight` gate |
 | Settlement | `turn-settlement.ts`, `turn-executor.ts` | planning#318 `interrupted` outcome; settle on the `superseded` event |
 | Slot displacement | `container-session-runner.ts`, `session-runner.ts`, `proxy-agent-process.ts` | planning#318 emit `superseded` on a proxy pushed out by a newer spawn |
 | Slot retirement | `dispatched-turn.ts`, `resident-spawn-guard.ts`, `ws-handlers/agent-execution.ts` | planning#318 follow-up: settle the outgoing turn at every site that retires a resident process by CLEARING the slot, which bypasses the displacement hook |
 | Wake | `wake-session.ts` | Restore the checkout if missing |
 | Reset | `services/pre-turn-reset.ts` | Explicit mode: setting-blind, idempotent, strict push failure, ownership handback |
 | Prompt | `orchestrator/prompts/self-merge-wake.md` | Co-located template |
-| Card | client card + handler | Arm card with Cancel |
+| Card | client card + handler, `self-merge-watch-card.ts`, `chat-history.ts` | Arm card with Cancel; `ended` on the card when its watch is gone (`endSelfMergeWatchCard`, `updateSelfMergeWatchCard`) |
 | Agent docs | `shipit-docs/sessions.md` | `--self`, re-arming, the reset command |
 
 ## Testing
@@ -374,9 +496,27 @@ One test each, not a matrix:
   **new** PR, not the stale snapshot.
 - Card: the arm card persists and round-trips; Cancel with a stale `watchId` does not
   cancel a newer watch.
+- Card end: each of the six ends is written by its path and reaches live viewers
+  (`self-merge-watch.test.ts`); a card armed and replaced inside one running turn keeps
+  its end; a session with no runner still gets it; a card that cannot be updated does
+  not stop the wake; replaced, cancelled and merged are in the history that a reload
+  reads, through a fully-wired `buildApp`
+  (`integration_tests/session-notify-on-merge.test.ts`); the client shows the end with
+  no Cancel, and a replayed arm does not undo it (`SelfMergeWatchCard.test.tsx`,
+  `message-handlers/self-merge-watch.test.ts`).
 - Delivery: fires after merge bookkeeping; anchor mismatch appends a note and wakes
   nothing; closed-without-merge appends a note and wakes nothing; an old settlement does
-  not mark a newly-armed watch delivered.
+  not mark a newly-armed watch delivered; a re-arm that clears the PR snapshot before the
+  merge callback does not lose the wake, and neither does a restart in that window.
+- Arm: replacing a watch still armed on another PR leaves a persisted note; a re-arm that
+  loses nothing leaves none.
+- Beside a parent's watch: each arm leaves the other watch as it was, in both orders
+  (`services/child-sessions-wait.test.ts`, `self-merge-watch.test.ts`); one merge delivers
+  both, also when the two paths run at the same time, and retry, `rebindDelivery`,
+  `reconcilePending` and the polling gate work per watch (`merge-watch.test.ts`); one
+  merge seen by the real poller wakes parent and child through a fully-wired `buildApp`
+  (`integration_tests/session-notify-on-merge.test.ts`); older rows move to the new
+  column on every start, also after a rollback (`sessions.test.ts`).
 - Eviction: a wake against a missing checkout restores it.
 - Reset command: refuses on dirty tree / moved HEAD / detached / sequencer; a second
   invocation returns already-at-base; it runs with the docs/218 setting off; force-push
@@ -384,15 +524,17 @@ One test each, not a matrix:
 
 ## Resolved decisions
 
-- **Reuse the existing merge-watch with `kind: "self"`** — no parallel subsystem. Accepted
-  limitation: no simultaneous parent-watch and self-watch on one session.
+- **Reuse the existing merge-watch with `kind: "self"`** — no parallel subsystem. The
+  self-watch has its own column, so a session can be watched by its parent and by itself
+  at once (this replaced the first design's "one row, one watch" limitation).
 - **No captured follow-up payload.** The transcript already holds the plan.
 - **Live open-PR lookup at arm time**, one refusal, no `checkAndFireNow` branch.
 - **Arming always replaces**, including a delivering watch.
 - **Explicit mode over the existing reset core**, not a new service; setting-blind,
   idempotent, strict about push failure, hands the workspace back.
 - **Chaining is agent-level**; ShipIt models no chain.
-- **Notes, not a card lifecycle**, for terminal outcomes.
+- **Notes, not a card lifecycle**, for terminal outcomes. Since 2026-10-10 the arm card
+  also records its own end (see *Cards*); no further card was added.
 - **No docs/218 `resetEligible` suppression** — the idempotent command already resolves the
   overlap, and suppressing would leave a user's own next turn on the stale merged tip.
 - **No eviction exemption** — restore at delivery instead.

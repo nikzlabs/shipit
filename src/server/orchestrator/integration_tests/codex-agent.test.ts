@@ -253,13 +253,13 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
     await client.receive();
 
     const session = sessions.get("s-retired");
-    expect(session?.model).toBe("gpt-5.6-sol");
+    expect(session?.model).toBe("gpt-6.1-sol");
     expect(session?.serviceId).toBe("openai");
     expect(session?.billingMode).toBe("key");
 
     client.send({ type: "send_message", text: "Hello" });
     const codex = await waitForCodex(() => lastCodex);
-    expect(codex.lastParams?.model).toBe("gpt-5.6-sol");
+    expect(codex.lastParams?.model).toBe("gpt-6.1-sol");
 
     client.close();
   });
@@ -495,7 +495,7 @@ describe("Integration: Codex agent — validation and default agent", () => {
     const sessionId = created.json().sessionId as string;
 
     sessionManager.setAgentId(sessionId, "codex" as AgentId);
-    sessionManager.setModel(sessionId, "gpt-5.5");
+    sessionManager.setModel(sessionId, "gpt-6.1-sol");
 
     await app.inject({
       method: "POST",
@@ -584,12 +584,12 @@ describe("Integration: Codex agent — validation and default agent", () => {
     const sid = client.sessionId;
     expect(sessionManager.get(sid)?.agentPinned).toBe(true);
 
-    client.send({ type: "set_model", model: "gpt-5.5" });
+    client.send({ type: "set_model", model: "gpt-6.1-sol" });
     const err = await receiveByType(client, "error");
     expect((err as { message: string }).message).toContain("locked to Claude Code");
-    expect((err as { message: string }).message).toContain("gpt-5.5");
+    expect((err as { message: string }).message).toContain("gpt-6.1-sol");
     expect(sessionManager.get(sid)?.agentId).toBe("claude");
-    expect(sessionManager.get(sid)?.model).not.toBe("gpt-5.5");
+    expect(sessionManager.get(sid)?.model).not.toBe("gpt-6.1-sol");
 
     client.close();
   });

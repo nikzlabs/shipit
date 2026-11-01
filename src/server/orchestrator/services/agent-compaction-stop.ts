@@ -31,5 +31,5 @@ export function stopCompactionContinuation(
   for (let i = queue.length - 1; i >= 0; i--) {
     if (continuations.has(queue[i])) queue.splice(i, 1);
   }
-  if (queue.length !== before) runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+  if (queue.length !== before) runner.emitMessage({ type: "queue_updated", sessionId: runner.sessionId, queue: runner.getQueueSnapshot() });
 }

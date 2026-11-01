@@ -1,11 +1,14 @@
 import type { ServiceRouting, OpenAIAccountRouting } from "./types/agent-types.js";
 import { SHIPIT_PROVIDER_ID, scrubHarnessEnvCredentials } from "./spawn-routing.js";
 import { HARNESSES } from "./catalogue/harnesses.js";
-import { visionSupportFor } from "./catalogue/index.js";
+import { apiModelIdFor, visionSupportFor } from "./catalogue/index.js";
+import type { OpenCodeHarnessId } from "./opencode-harness.js";
 
-const OPENCODE_REASONING_LEVELS: readonly string[] = (
-  HARNESSES.find((h) => h.id === "opencode")?.capabilities.reasoning?.options ?? []
-).map((o) => o.value);
+function reasoningLevels(harness: OpenCodeHarnessId): readonly string[] {
+  return (HARNESSES.find((h) => h.id === harness)?.capabilities.reasoning?.options ?? []).map((o) => o.value);
+}
+
+const OPENCODE_REASONING_LEVELS = reasoningLevels("opencode");
 
 // Synthetic models have no models.dev fallback; omitted modalities silently drop images.
 const IMAGE_MODALITIES = { input: ["text", "image"], output: ["text"] } as const;
@@ -38,6 +41,7 @@ function variantPayload(style: ServiceRouting["style"], level: string): Record<s
 export function opencodeProviderConfig(
   routing: ServiceRouting,
   modelId: string,
+  harness: OpenCodeHarnessId = "opencode",
 ): Record<string, unknown> | undefined {
   const npm = npmPackageForStyle(routing.style);
   if (!npm || routing.credentialTarget.kind !== "env") return undefined;
@@ -46,18 +50,12 @@ export function opencodeProviderConfig(
     routing.style === "anthropic-messages" ? `${routing.baseUrl.replace(/\/$/, "")}/v1` : routing.baseUrl;
   const refused = STYLE_REFUSED_LEVELS[routing.style] ?? [];
   const variants: Record<string, Record<string, unknown>> = {};
-  for (const level of OPENCODE_REASONING_LEVELS) {
+  for (const level of harness === "opencode" ? OPENCODE_REASONING_LEVELS : reasoningLevels(harness)) {
     if (refused.includes(level)) continue;
     variants[level] = variantPayload(routing.style, level);
   }
-  const modalities =
-    visionSupportFor({
-      serviceId: routing.serviceId,
-      billingMode: routing.billingMode,
-      modelId,
-    }) === "no"
-      ? TEXT_ONLY_MODALITIES
-      : IMAGE_MODALITIES;
+  const selection = { serviceId: routing.serviceId, billingMode: routing.billingMode, modelId };
+  const modalities = visionSupportFor(selection) === "no" ? TEXT_ONLY_MODALITIES : IMAGE_MODALITIES;
   return {
     [SHIPIT_PROVIDER_ID]: {
       name: routing.serviceName,
@@ -66,8 +64,9 @@ export function opencodeProviderConfig(
         baseURL,
         apiKey: `{env:${routing.credentialTarget.name}}`,
       },
+      // The key stays the row id, which OpenCode reports back; `id` is what it sends.
       models: {
-        [modelId]: { name: modelId, variants, modalities },
+        [modelId]: { id: apiModelIdFor(selection) ?? modelId, name: modelId, variants, modalities },
       },
     },
   };
@@ -77,12 +76,22 @@ export function opencodeModelArg(modelId: string): string {
   return `${SHIPIT_PROVIDER_ID}/${modelId}`;
 }
 
+/** OpenCode 2 has no `--variant`; the variant rides the model as `provider/model#variant`. */
+export function opencode2ModelArg(providerId: string, modelId: string, variant?: string): string {
+  return `${providerId}/${modelId}${variant ? `#${variant}` : ""}`;
+}
+
 export function isOpenCodeAccountRouting(routing: ServiceRouting | undefined): routing is OpenAIAccountRouting {
   return routing?.credentialTarget.kind === "openai-chatgpt";
 }
 
+const ACCOUNT_MODE = { serviceId: "openai", billingMode: "sub" } as const satisfies Pick<
+  OpenAIAccountRouting,
+  "serviceId" | "billingMode"
+>;
+
 // Native auth rewrites Responses to the ChatGPT backend and rereads file auth.
-export function opencodeAccountConfig(modelId: string): Record<string, unknown> {
+export function opencodeAccountConfig(modelId: string, harness: OpenCodeHarnessId = "opencode"): Record<string, unknown> {
   return {
     enabled_providers: ["openai"],
     disabled_providers: [],
@@ -95,11 +104,11 @@ export function opencodeAccountConfig(modelId: string): Record<string, unknown> 
         whitelist: [modelId],
         models: {
           [modelId]: {
-            id: modelId,
+            id: apiModelIdFor({ ...ACCOUNT_MODE, modelId }) ?? modelId,
             name: modelId,
             modalities: IMAGE_MODALITIES,
             limit: { context: 400_000, input: 272_000, output: 128_000 },
-            variants: Object.fromEntries(OPENCODE_REASONING_LEVELS.map((level) => [level, { reasoningEffort: level }])),
+            variants: Object.fromEntries((harness === "opencode" ? OPENCODE_REASONING_LEVELS : reasoningLevels(harness)).map((level) => [level, { reasoningEffort: level }])),
           },
         },
       },

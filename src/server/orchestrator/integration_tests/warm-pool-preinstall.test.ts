@@ -74,9 +74,12 @@ describe("warm-pool runPreInstall", () => {
       "agent:\n  install:\n    - 'true'\n",
     );
 
-    await expect(runPreInstall(workspaceDir, workerUrl, "test")).resolves.toEqual({ settled: true });
+    await expect(runPreInstall(workspaceDir, workerUrl, "test")).resolves.toEqual({ settled: true, ran: true });
 
     expect(fs.existsSync(path.join(stateDir, ".install-done"))).toBe(true);
+
+    // The marker now matches, so a second request is a skip, not an install (docs/288 req 13).
+    await expect(runPreInstall(workspaceDir, workerUrl, "test")).resolves.toEqual({ settled: true });
   });
 
   it("doesn't throw when shipit.yaml is malformed (best-effort)", async () => {
@@ -92,7 +95,7 @@ describe("warm-pool runPreInstall", () => {
       "agent:\n  install:\n    - 'exit 3'\n",
     );
 
-    await expect(runPreInstall(workspaceDir, workerUrl, "test")).resolves.toEqual({ settled: false });
+    await expect(runPreInstall(workspaceDir, workerUrl, "test")).resolves.toEqual({ settled: false, ran: true });
     expect(fs.existsSync(path.join(stateDir, ".install-done"))).toBe(false);
   });
 });

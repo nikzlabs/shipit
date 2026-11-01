@@ -59,7 +59,7 @@ a reviewer you picked. Relaying it sets the distance guarantee aside (see
 the user's call. The line is between a value they said and a value you supplied —
 the second is you choosing a reviewer, whatever it is dressed up as.
 
-**Never reach for the raw `codex` / `claude` / `opencode` / `grok` / `antigravity` CLI to do this.** Per-agent
+**Never reach for the raw `codex` / `claude` / `opencode` / `opencode2` / `grok` / `antigravity` CLI to do this.** Per-agent
 credential isolation mounts only *your* pinned agent's credentials in this
 container, so invoking the other backend's bare CLI fails with **401
 Unauthorized**. `shipit agent run` is the only authenticated path — it brokers
@@ -299,7 +299,9 @@ backgrounded run finishes and nothing else is going to hand you the result — y
 turn is over and there is no live process to surface it — ShipIt starts a turn
 naming the run id and telling you to read it with `shipit agent result <RUN-ID>`.
 So it is safe to end a turn with a consult still in flight; you do not have to
-hold the turn open, and the user does not have to prod you. You still get the
+hold the turn open, and the user does not have to prod you. If that turn does
+not run — the user pressed Stop while it waited, or it failed to start — your
+next turn's prompt carries the same note instead. You still get the
 output on stdout in the ordinary case, and this changes nothing about a run you
 `--wait` on.
 
@@ -358,6 +360,12 @@ id or a bad flag, since neither condition can ever clear.
 - **Output is plain text** on stdout (exit 0), or a clear error on stderr with a
   non-zero exit (feature disabled, unknown agent, cap exceeded, crash, timeout,
   cancel).
+- **A run that fails says why.** When a run ends `error` or `timeout`, stderr
+  carries one line with the reason: the harness's message, its exit code, and
+  the last part of its stderr, with credentials replaced by `[REDACTED]`. The
+  consult card shows the same line, and `shipit agent result <RUN-ID>` prints
+  it again. Read it before you run the consult again: a missing credential or
+  a CLI that does not start fails the same way each time.
 - **The sub-agent runs full-capability** in the *same* workspace — it can read,
   write, and run shell. If you want it to only review (not edit), **say so in the
   prompt**. Any files it writes are committed for you: if the run finishes while
@@ -398,13 +406,19 @@ id or a bad flag, since neither condition can ever clear.
   wait for the quota. Pass that on as it stands rather than picking one. In none
   of these is the run silently downgraded onto something else.
 - **No recursion.** A spawned sub-agent cannot itself spawn a sub-agent.
-- **At most 3 spawns per turn.** Enough for "review with both other models" or a
-  couple of delegations. A 4th returns an error without spawning. The budget
-  refills whenever a new instruction from the user arrives — a new turn, or a
-  message they type while you are still working — so a long session never runs
-  out permanently. A background job finishing does not refill it.
-- **Bounded run.** Each spawn has a wall-clock cap (~30 min) and an output cap; an
-  over-limit run is truncated and flagged.
+- **At most 16 runs in progress at once**, unless the operator changed the
+  number. A run counts from its start until it finishes; there is no limit for
+  each turn, so a long turn can make as many runs as its work needs. A call past
+  the limit returns an error without spawning: wait for one of the runs to
+  finish (`shipit agent result <RUN-ID> --wait`), then run the command again.
+  Every run is a process in this container and shares its memory.
+- **Bounded run.** Each spawn has two limits, and **neither is a cost limit**: a
+  time limit (~30 min) and an output-size limit (32,000 characters). A run that
+  passes the time limit is stopped, ends `timeout`, and returns what it wrote
+  before that. An answer longer than the size limit is cut at the limit, and the
+  run keeps its status. Both are flagged, and the note on stderr names the limit
+  that applied. To get a full answer under the size limit, ask for a shorter
+  report or divide the work into more than one run.
 - **The run's lifetime is its own.** Nothing about your turn ends a consult —
   not an interrupt, not a Stop, not asking the user a question, not your turn
   finishing. It ends only on its own ~30-minute cap or if the session container

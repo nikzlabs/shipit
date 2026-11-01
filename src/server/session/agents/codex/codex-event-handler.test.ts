@@ -274,6 +274,14 @@ describe("sandbox diagnostics", () => {
     expect(logs.some((l) => l.source === "server" && l.text.includes("CAP_SYS_ADMIN"))).toBe(true);
   });
 
+  it("marks the notice as its own text, so it does not count as the model's answer (docs/007)", () => {
+    const { handler, events } = makeHandler();
+    handler.handleNotification(shellResult("c1", BWRAP));
+
+    const notice = events.find((e) => e.type === "agent_assistant" && e.content.some((b) => b.type === "text"));
+    expect(notice).toMatchObject({ synthetic: true });
+  });
+
   it("still emits the tool result it diagnosed, and puts the notice after it", () => {
     const { handler, events } = makeHandler();
     handler.handleNotification(shellResult("c1", BWRAP));

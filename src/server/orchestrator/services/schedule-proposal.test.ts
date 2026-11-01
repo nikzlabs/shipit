@@ -318,6 +318,22 @@ describe("confirmScheduleProposal", () => {
     expect(result.card).toMatchObject({ phase: "refused", outcome: "The schedule was deleted after this card was written." });
   });
 
+  it("checks a once time that names no zone in the browser's zone on Confirm (req 34)", async () => {
+    // A wall-clock time an hour ahead at UTC−12 is eleven hours past in UTC.
+    const ahead = new Date(Date.now() - 11 * 60 * 60 * 1000).toISOString();
+    const when = `once ${ahead.slice(0, 10)} ${ahead.slice(11, 16)}`;
+    const text = NEW_SCHEDULE.replace("weekdays 09:00", when);
+    expect(() => proposeSchedule(deps, SESSION, { text: NEW_SCHEDULE.replace("weekdays 09:00", "once 2001-01-01 09:00") }))
+      .toThrow("2001-01-01 09:00 has already passed in every time zone.");
+    const card = proposeSchedule(deps, SESSION, { text });
+    expect(card.values[0]).toEqual({ label: "When", after: `Once, on ${ahead.slice(0, 10)} at ${ahead.slice(11, 16)}` });
+
+    const result = await confirmScheduleProposal(deps, SESSION, card.cardId, "UTC");
+
+    expect(result.card).toMatchObject({ phase: "refused", outcome: expect.stringMatching(/has already passed in UTC\.$/) });
+    expect(store.list()).toEqual([]);
+  });
+
   it("checks again on Confirm, and a refusal saves nothing", async () => {
     const card = proposeSchedule(deps, SESSION, { text: NEW_SCHEDULE });
     roles = [];

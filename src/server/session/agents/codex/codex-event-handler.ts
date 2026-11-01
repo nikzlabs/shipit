@@ -81,6 +81,8 @@ export interface CodexTransport {
   sendErrorResponse(id: number, code: number, message: string): void;
   sendNotification(method: string, params?: Record<string, unknown>): void;
   kill(): void;
+  /** The parent turn has an id now, so a steer can name it. */
+  turnStarted?(): void;
   /** Like sendRequest, but rejects at once when the process is gone. */
   goalRequest(method: string, params: Record<string, unknown>): Promise<unknown>;
   /** Set a goal active again through a control process, for when this one has died. */
@@ -218,6 +220,7 @@ export class CodexEventHandler {
         if (!this.isParentThread(params)) break;
         const turn = params.turn as { id?: string } | undefined;
         this.currentTurnId = turn?.id ?? (params.turnId as string) ?? this.currentTurnId;
+        if (this.currentTurnId) this.ctx.turnStarted?.();
         break;
       }
 
@@ -375,6 +378,7 @@ export class CodexEventHandler {
               durationMs: Date.now() - this.turnStartTime,
               tokens: codexTurnTokens(compactUsage?.usage.total, compactUsage?.baselineTotal),
               contextTokens: compactUsage?.usage.last?.totalTokens,
+              ...(compactUsage?.requests.length ? { requests: compactUsage.requests } : {}),
               contextWindow: this.rateLimits.lastTokenUsage?.modelContextWindow,
             });
             this.ctx.kill();
@@ -596,7 +600,12 @@ export class CodexEventHandler {
   private noticeOnce(key: string, text: string, parentToolUseId?: string): void {
     if (this.sandboxNotices.has(key)) return;
     this.sandboxNotices.add(key);
-    this.emitAssistant([{ type: "text", text: `\n\n${text}` }], parentToolUseId);
+    this.ctx.emitEvent({
+      type: "agent_assistant",
+      content: [{ type: "text", text: `\n\n${text}` }],
+      parentToolUseId,
+      synthetic: true,
+    });
   }
 
   private handleMessageDelta(params: Record<string, unknown>, parentToolUseId?: string): void {
@@ -654,6 +663,7 @@ export class CodexEventHandler {
       sessionId: this.threadId ?? "unknown",
       tokens: codexTurnTokens(turnUsage?.usage.total, turnUsage?.baselineTotal),
       contextTokens: turnUsage?.usage.last?.totalTokens,
+      ...(turnUsage?.requests.length ? { requests: turnUsage.requests } : {}),
       contextWindow: this.rateLimits.lastTokenUsage?.modelContextWindow,
       durationMs,
       error: status !== "completed" ? `Turn ended with status: ${status}` : undefined,
@@ -716,7 +726,7 @@ export class CodexEventHandler {
     }
 
     // Retirement is service-specific and resolved by the orchestrator; forward model IDs unchanged.
-    const model = params.model ?? "gpt-5.6-sol";
+    const model = params.model ?? "gpt-6.1-sol";
 
     this.ctx.emitEvent({
       type: "agent_init",
@@ -752,6 +762,7 @@ export class CodexEventHandler {
       const turnResult = await this.ctx.sendRequest("turn/start", turnParams);
       const turnData = turnResult as { turnId?: string; turn?: { id?: string } } | undefined;
       this.currentTurnId = turnData?.turn?.id ?? turnData?.turnId ?? this.currentTurnId;
+      if (this.currentTurnId) this.ctx.turnStarted?.();
     } finally {
       // Also on failure: a goal ShipIt paused must not stay paused.
       if (heldGoal && params.sessionId) await this.releaseGoal(params.sessionId);

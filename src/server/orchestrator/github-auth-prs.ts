@@ -1,5 +1,5 @@
 import { getErrorMessage } from "../shared/utils.js";
-import { fetchGitHub, fetchGitHubGraphQL, parseGitHubError } from "./github-api.js";
+import { fetchGitHub, fetchGitHubGraphQL, parseGitHubError, GITHUB_READ_TIMEOUT_MS } from "./github-api.js";
 
 export async function createPullRequest(
   token: string,
@@ -194,6 +194,7 @@ export async function findPullRequestByNumber(
   const res = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls/${pullNumber}`,
     token,
+    { signal: AbortSignal.timeout(GITHUB_READ_TIMEOUT_MS) },
   );
   if (!res.ok) return null;
   const pr = (await res.json().catch(() => null)) as {

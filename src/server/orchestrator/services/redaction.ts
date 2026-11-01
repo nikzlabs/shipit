@@ -1,43 +1,112 @@
 import { execFile } from "node:child_process";
 import type { AgentId } from "../../shared/types.js";
-import { stripUrlCredentials } from "../git-utils.js";
+import {
+  KEY_PATTERNS,
+  REDACTION_PLACEHOLDER,
+  type RedactionResult,
+} from "../../shared/credential-redaction.js";
 
-export const REDACTION_PLACEHOLDER = "[REDACTED]";
+// The session worker redacts with these too, and its image has no orchestrator code.
+export { REDACTION_PLACEHOLDER, redactCredentials } from "../../shared/credential-redaction.js";
 
-const STAGE1_PATTERNS: { name: string; re: RegExp }[] = [
-  { name: "anthropic-key", re: /\bsk-ant-[A-Za-z0-9_-]{12,}/g },
-  { name: "openai-key", re: /\bsk-[A-Za-z0-9_-]{16,}/g },
-  { name: "github-token", re: /\b(?:gh[posur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})/g },
-  { name: "aws-key", re: /\b(?:AKIA|ASIA)[A-Z0-9]{12,}/g },
-  { name: "google-key", re: /\bAIza[A-Za-z0-9_-]{20,}/g },
-  { name: "slack-token", re: /\bxox[baprs]-[A-Za-z0-9-]{8,}/g },
-  { name: "jwt", re: /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g },
+// A pattern with `orRun` is `(shape)|rest of the run`. A shape that fails at one start fails at
+// every later start in the same run, so the second alternative takes the run and the shape is
+// tried once in it. With the shape alone, 80 KB of `a.a.a.…` needed 10 s (planning#677). A
+// look-behind for the start of a run is not equal: a match can end in the middle of a run, and
+// `a@b.cc.d@e.ff` is two matches. `orRun` is text that each match has in it: the second
+// alternative costs a call for each run, so text with none of it is not scanned.
+const STAGE1_PATTERNS: { name: string; re: RegExp; orRun?: string }[] = [
+  ...KEY_PATTERNS,
+  {
+    name: "jwt",
+    re: /(\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,})|\beyJ[A-Za-z0-9_-]*/g,
+    orRun: "eyJ",
+  },
   { name: "bearer", re: /\b(?:Bearer|Token)\s+[A-Za-z0-9._~+/=-]{12,}/gi },
-  { name: "email", re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g },
-  { name: "ssh-remote", re: /\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._/-]+\.git\b/g },
+  {
+    name: "email",
+    re: /(\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b)|\b[A-Za-z0-9._%+-]+/g,
+    orRun: "@",
+  },
+  {
+    name: "ssh-remote",
+    re: /(\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._/-]+\.git\b)|\b[A-Za-z0-9._-]+/g,
+    orRun: "@",
+  },
   { name: "workspace-path", re: /(?:\/workspace|\/uploads|\/home\/[^\s/]+|\/root|\/Users\/[^\s/]+)\/[^\s)'"`]*/g },
 ];
 
 // Plain URLs can disclose private project remotes too.
 const URL_RE = /\b(?:https?|git|ssh):\/\/[^\s)'"`]+/gi;
 
-export interface Stage1Result {
-  text: string;
-  redactedCount: number;
-}
+// The last steps take an scp-style remote that the patterns above took in part or not at
+// all. Those patterns stay as they are: a change there shows text that a later step hides
+// (docs/164-user-bug-filing/plan.md). A path can hold placeholders of earlier steps, and it
+// needs a `/` or `.git`: a port, a time or a word after a colon stays.
+const SCP_PATH_PART = String.raw`(?:[A-Za-z0-9._-]|\[REDACTED\])`;
+const SCP_PATH = String.raw`${SCP_PATH_PART}*\/(?:${SCP_PATH_PART}|\/)*`;
+// `(shape)|rest of the run`, as in `STAGE1_PATTERNS`.
+const SCP_REMOTE_RE = new RegExp(
+  String.raw`(\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:${SCP_PATH})|\b[A-Za-z0-9._-]+`,
+  "g",
+);
+// A host has no `[` in it and a path has no colon in it: no text is read again from each
+// placeholder.
+const SCP_PATH_AFTER_REDACTION_RE = new RegExp(
+  String.raw`\[REDACTED\][A-Za-z0-9.-]*:(?:${SCP_PATH}|${SCP_PATH_PART}+\.git\b)`,
+  "g",
+);
+
+// Git prints a remote with no user: `To github.com:acme/app.git`. The phrases are git's.
+// With no phrase before it, `host:path` is also an image, a file with a key path and a
+// bucket; a first path part that is a number is read as a port (planning#684). In a JSON log
+// line, the phrase follows a written `\n`, which has no word boundary after it.
+const GIT_OUTPUT_REMOTE_RE = new RegExp(
+  String.raw`(?<=^|\W|\\[nrt])((?:To|From|Pushing to|refs to) '?)[A-Za-z0-9.-]{2,}:(?![0-9]+\/)(?:${SCP_PATH}|${SCP_PATH_PART}+\.git\b)`,
+  "g",
+);
+
+// Lines of git and of git servers that name a repository and have no remote in them
+// (planning#685). The phrase after the name is a condition too: with no `...` after it,
+// `Cloning into 'x'` is also a sentence. A name ends at a quote or at white space, and each
+// phrase has one of them in it, so no name is read again from a later phrase.
+const QUOTED_NAME = String.raw`[^'\n\r]+`;
+const GIT_MESSAGE_NAME_RES = [
+  [String.raw`Cloning into (?:bare repository )?'`, QUOTED_NAME, String.raw`'\.\.\.`],
+  [String.raw`destination path '`, QUOTED_NAME, String.raw`' already exists`],
+  // With no `/` and no `.git`, the quoted text is in most cases the name of a remote:
+  // `'origin'`.
+  [
+    String.raw`fatal: '`,
+    String.raw`[^'\n\r/]*(?:\/[^'\n\r]*|\.git)`,
+    String.raw`' does not appear to be a git repository`,
+  ],
+  [String.raw`repository '`, QUOTED_NAME, String.raw`' does not exist`],
+  // GitHub and GitLab. The second name is found after the placeholder of the first one. No
+  // phrase follows GitHub's second name: it ends where the characters of a name end.
+  [String.raw`Permission to `, String.raw`[^\s/]+\/\S+`, String.raw` denied to `],
+  [String.raw`Permission to \[REDACTED\] denied to `, String.raw`[A-Za-z0-9._/-]+`, ""],
+  [String.raw`Project '`, QUOTED_NAME, String.raw`' was moved to '`],
+  [String.raw`Project '\[REDACTED\]' was moved to '`, QUOTED_NAME, "'"],
+].map(([before, name, after]) => new RegExp(`(${before})${name}(?=${after})`, "g"));
+
+export type Stage1Result = RedactionResult;
 
 export function redactStage1(input: string): Stage1Result {
   let count = 0;
   let text = input;
 
-  text = text.replace(URL_RE, (match) => {
-    void stripUrlCredentials(match);
+  // The URL is not parsed: `new URL` is quadratic in a host of many different non-ASCII
+  // characters.
+  text = text.replace(URL_RE, () => {
     count++;
     return REDACTION_PLACEHOLDER;
   });
 
-  for (const { re } of STAGE1_PATTERNS) {
-    text = text.replace(re, () => {
+  for (const { re, orRun } of STAGE1_PATTERNS) {
+    if (orRun !== undefined && !text.includes(orRun)) continue;
+    text = text.replace(re, (match: string, shape: unknown) => {
+      if (orRun !== undefined && shape === undefined) return match;
       count++;
       return REDACTION_PLACEHOLDER;
     });
@@ -49,6 +118,23 @@ export function redactStage1(input: string): Stage1Result {
     count++;
     return REDACTION_PLACEHOLDER;
   });
+
+  // The steps from here are last and only replace text: they cannot make redacted text visible.
+  if (text.includes("@")) {
+    text = text.replace(SCP_REMOTE_RE, (match: string, shape: unknown) => {
+      if (shape === undefined) return match;
+      count++;
+      return REDACTION_PLACEHOLDER;
+    });
+  }
+  // Not counted: it makes a redaction longer.
+  text = text.replace(SCP_PATH_AFTER_REDACTION_RE, REDACTION_PLACEHOLDER);
+  for (const re of [GIT_OUTPUT_REMOTE_RE, ...GIT_MESSAGE_NAME_RES]) {
+    text = text.replace(re, (_match: string, phrase: string) => {
+      count++;
+      return `${phrase}${REDACTION_PLACEHOLDER}`;
+    });
+  }
 
   return { text, redactedCount: count };
 }
@@ -131,10 +217,10 @@ function cliInvocation(agentId: AgentId, prompt: string): [string, string[]] {
   switch (agentId) {
     case "codex":
       // The working directory is /tmp, outside a trusted repository.
-      return ["codex", ["exec", "--skip-git-repo-check", prompt]];
+      return ["codex", ["exec", "--skip-git-repo-check", "--ephemeral", prompt]];
     case "claude":
     default:
-      return ["claude", ["-p", prompt, "--output-format", "text"]];
+      return ["claude", ["-p", prompt, "--output-format", "text", "--no-session-persistence"]];
   }
 }
 

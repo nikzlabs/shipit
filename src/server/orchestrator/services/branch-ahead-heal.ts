@@ -11,6 +11,7 @@ import type { SessionInfo } from "../../shared/types.js";
 import type { BranchSyncStatus, PrStatusSummary } from "../../shared/types/github-types.js";
 import { evaluateMergedBranchPush, type MergedPushGuardGit } from "./merged-push-guard.js";
 import { autoCommitAllowed } from "./auto-commit-gate.js";
+import type { SessionHold } from "../session-hold.js";
 
 export const HEAL_BASE_COOLDOWN_MS = 60_000;
 export const HEAL_MAX_COOLDOWN_MS = 30 * 60_000;
@@ -33,7 +34,7 @@ export type AheadHealOutcome =
 
 export interface AheadHealRunner {
   readonly agentBusy: boolean;
-  readonly systemTurnInProgress: boolean;
+  readonly sessionHold: SessionHold | null;
 }
 
 export interface BranchAheadHealerDeps {
@@ -128,7 +129,7 @@ export class BranchAheadHealer {
 
   private holdReason(sessionId: string): "busy" | "push-armed" | null {
     const runner = this.deps.getRunner(sessionId);
-    if (runner?.agentBusy || runner?.systemTurnInProgress) return "busy";
+    if (runner?.agentBusy || runner?.sessionHold) return "busy";
     return this.deps.pushArmed(sessionId) ? "push-armed" : null;
   }
 }

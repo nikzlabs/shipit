@@ -270,7 +270,7 @@ test — and it moved to a `shipit/*` branch. The rest are untouched.
   cover ShipIt's own pushes on every backend; an agent running raw `git` on
   another backend is not covered.
 - **`git push --force` is only blocked during merged-branch recovery**
-  (`SHIPIT_GUARD_DESTRUCTIVE_GIT`). Blocking it always would be wrong — a
+  (`docs/130-block-branch-ops`, second rule). Blocking it always would be wrong — a
   session force-pushing its *own* branch after a rebase is routine — and the
   hook has no way to learn the session branch, so the precise rule ("force-push
   only your own branch") needs an env var it does not have.

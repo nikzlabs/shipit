@@ -76,8 +76,8 @@ and never write it to a file, a log, or a commit.
 ### Which agent CLIs
 
 A harness is an agent CLI plus the adapter that normalizes its events. The
-default set is **Claude Code, Codex, and OpenCode**; Grok Build and Antigravity
-are offered but not preselected, so an update never adds a CLI to the images
+default set is **Claude Code, Codex, and OpenCode**; OpenCode 2, Grok Build and
+Antigravity are offered but not preselected, so an update never adds a CLI to the images
 behind the user's back. Narrowing the set is worth it if image size or build
 time matters.
 
@@ -126,13 +126,20 @@ Docker cannot give the GPU, the session starts without it and the transcript
 says why — that is a host problem from step 1. Inside a session,
 `$SHIPIT_GPU` says what the container got (`/shipit-docs/environment.md`).
 
-On WSL2, your container is also set up so that a Chrome you start yourself can
-draw WebGL on the GPU — for a rendering test or a benchmark. When the user asks
-for that, do it: `/shipit-docs/environment.md` has the display and the flags
-Chrome needs. Chrome falls back to software drawing without a message, so run
-the check it gives and tell the user which renderer Chrome reported. It does
-not reach the built-in browser behind your browser tools, which draws in
-software, nor WebGPU, Compose services, or a native Linux host.
+On WSL2, your container is also set up so that Chrome draws WebGL on the GPU.
+The built-in browser behind your browser tools does so by itself in a session
+that has the GPU, and for WebGL only. Its pictures of WebGL content are then
+not pixel-identical to software-drawn ones, and its picture of a page with no
+WebGL does not change. There is no separate switch for this: it follows **GPU
+access**. A Chrome you start yourself — for a rendering test or a benchmark —
+needs the flags that `/shipit-docs/environment.md` gives; when the user asks
+for that, do it. Chrome falls back to software drawing without a message, so
+run the check that page gives and tell the user which renderer Chrome
+reported. Such a container also starts with `GLIBC_TUNABLES` set, for every
+program in it: without that variable, uploads of texture and buffer data to
+the GPU were up to 40 times slower. A program that sets its own
+`GLIBC_TUNABLES` replaces the value; that page says how to keep both. None of
+this reaches WebGPU, Compose services, or a native Linux host.
 
 ## Updating
 
@@ -175,6 +182,15 @@ idle, is the whole fix.
 `/opt/shipit`, honouring the channel recorded in `/opt/shipit/.release-channel`.
 Both are spelled out in `deployment/README.md`; run them for the user rather
 than pasting them at them.
+
+**A ShipIt update does not update `cloudflared`.** On a VPS with the Cloudflare
+tunnel, the tunnel client is a host package that neither the updater nor
+cloudflared itself upgrades. When a Cloudflare advisory asks for a newer version,
+upgrade it with apt and restart the `cloudflared` service; a host set up before
+the installer used Cloudflare's apt repository needs that repository added first.
+`deployment/README.md` → *Troubleshooting* has both steps. With a shell on the host
+(an SSH destination granted to the session), do it for the user; without one,
+say that the upgrade needs a shell on that machine.
 
 ## Reaching it from a phone or another machine
 

@@ -1,15 +1,19 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { ChatHistoryManager } from "../chat-history.js";
+import { UsageManager } from "../usage.js";
 import { SessionRunner } from "../session-runner.js";
 import { wireAgentListeners, buildTurnMessages, recordSteeredMessage, type AgentListenerDeps } from "./agent-listeners.js";
 import { AGENT_NOT_AUTHENTICATED_MESSAGE } from "./agent-auth-handler.js";
+import { PERMISSION_WAIT_NOTICE_MS } from "../permission-wait-notice.js";
 import type { ChatMessageGroup, RecordedChatCard } from "../session-runner.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentCapabilities, AgentEvent, AgentMcpWriteContext, AgentMcpWriteResult, AgentProcess } from "../../shared/types.js";
+import type { AgentPermissionResolvedEvent } from "../../shared/types/agent-types.js";
+import { beginTurnSetup, noteUserStop } from "../turn-stop-request.js";
 
 const capabilities: AgentCapabilities = {
   supportsResume: true,
@@ -134,6 +138,134 @@ describe("wireAgentListeners", () => {
       expect.objectContaining({ credentialRouteId: "acct-a" }),
     );
     runner.dispose({ force: true });
+  });
+
+  describe("the idle-compaction anchor (docs/333-idle-compaction)", () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    function wire(opts: { compactionTurn?: boolean; maintenanceTurn?: boolean; anchorUnknown?: boolean } = {}) {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-10-19T10:00:00.000Z"));
+      const agent = new FakeAgent("claude");
+      const runner = new SessionRunner({ sessionId: "session-1", sessionDir: "/tmp/session-1", defaultAgentId: "claude" });
+      const d = deps();
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+        ...opts,
+      });
+      const toolResult = (parentToolUseId?: string): void => {
+        agent.emit("event", {
+          type: "agent_tool_result",
+          content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }],
+          ...(parentToolUseId ? { parentToolUseId } : {}),
+        } satisfies AgentEvent);
+      };
+      const result = (tokens = { input: 10, output: 5, cacheRead: 240_000 }): void => {
+        agent.emit("event", {
+          type: "agent_result", status: "success", sessionId: "s", tokens, contextTokens: 240_010, cacheTtl: "1h",
+        } satisfies AgentEvent);
+      };
+      const recorded = () => (d.usageManager.record as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[5] as
+        { cacheScope?: { agentId: string; model: string | null }; cacheAnchorAt?: number; cacheTtl?: string } | undefined;
+      return { agent, runner, d, toolResult, result, recorded };
+    }
+
+    it("anchors on the last tool result, a subagent's included, and writes the cache lifetime", () => {
+      const { runner, toolResult, result, recorded } = wire();
+      const start = Date.now();
+      vi.setSystemTime(start + 60_000);
+      toolResult();
+      vi.setSystemTime(start + 90_000);
+      toolResult("toolu_sub");
+      vi.setSystemTime(start + 300_000);
+      result();
+      expect(recorded()).toMatchObject({
+        cacheScope: { agentId: "claude", model: null },
+        cacheAnchorAt: start + 90_000,
+        cacheTtl: "1h",
+      });
+      runner.dispose({ force: true });
+    });
+
+    it("anchors on the turn's start when it had no tool result", () => {
+      const { runner, result, recorded } = wire();
+      const start = Date.now();
+      vi.setSystemTime(start + 300_000);
+      result();
+      expect(recorded()?.cacheAnchorAt).toBe(start);
+      runner.dispose({ force: true });
+    });
+
+    it("writes no anchor for a compaction turn, nor for a turn that read nothing", () => {
+      const compaction = wire({ compactionTurn: true });
+      compaction.result();
+      expect(compaction.recorded()?.cacheAnchorAt).toBeUndefined();
+      compaction.runner.dispose({ force: true });
+
+      const refused = wire();
+      refused.result({ input: 0, output: 0, cacheRead: 0 });
+      expect(refused.recorded()?.cacheAnchorAt).toBeUndefined();
+      refused.runner.dispose({ force: true });
+    });
+
+    it("writes no anchor for a turn adopted after a restart, whose events are replayed", () => {
+      const { runner, result, recorded } = wire({ anchorUnknown: true });
+      result();
+      expect(recorded()?.cacheAnchorAt).toBeUndefined();
+      runner.dispose({ force: true });
+    });
+
+    it("a silent compaction leaves the session's last use and its last turn's error state alone", () => {
+      const { runner, d, result } = wire({ compactionTurn: true, maintenanceTurn: true });
+      runner.lastTurnErrored = true;
+      result();
+      expect(d.sessionManager.touchUnlessResolved).not.toHaveBeenCalled();
+      expect(d.sessionManager.setLastTurnErrored).not.toHaveBeenCalled();
+      expect(runner.lastTurnErrored).toBe(true);
+      runner.dispose({ force: true });
+    });
+  });
+
+  it("prices a subscription turn's long prompts the same live as on reload (docs/329-tiered-model-pricing)", () => {
+    const agent = new FakeAgent("claude");
+    const runner = new SessionRunner({
+      sessionId: "session-1",
+      sessionDir: "/tmp/session-1",
+      defaultAgentId: "claude",
+    });
+    const emitted: { type: string; turn?: { atApiRatesUsd?: number } }[] = [];
+    runner.on("message", (msg) => emitted.push(msg as (typeof emitted)[number]));
+    const db = new DatabaseManager(":memory:");
+    const usageManager = new UsageManager(db);
+    const d = { ...deps(), usageManager };
+    d.sessionManager.get = vi.fn(() => ({
+      model: "claude-haiku-5-5",
+      serviceId: "anthropic",
+      billingMode: "sub",
+    })) as never;
+
+    wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+      capturedSessionId: "session-1",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+    agent.emit("event", {
+      type: "agent_result",
+      status: "success",
+      sessionId: "session-1",
+      tokens: { input: 200_000, output: 1_000 },
+      contextTokens: 150_000,
+      requests: [{ input: 50_000 }, { input: 150_000 }],
+    } satisfies AgentEvent);
+
+    const live = emitted.find((m) => m.type === "turn_usage_update")?.turn?.atApiRatesUsd;
+    // Haiku 5.5: the short request at $0.1/M, the long one and the unlisted output at 5x.
+    expect(live).toBeCloseTo((50_000 * 0.1 + 150_000 * 0.5 + 1_000 * 2.5) / 1e6, 12);
+    expect(usageManager.getSessionTurns("session-1")[0].atApiRatesUsd).toBe(live);
+    runner.dispose({ force: true });
+    db.close();
   });
 
   it("keeps Codex stream-completion events internal so live text is not duplicated", () => {
@@ -642,6 +774,40 @@ describe("wireAgentListeners", () => {
       runner.dispose({ force: true });
     });
 
+    // planning#691 — the user's correction must not run before the message it corrects.
+    it("puts a rejected steer back in front of the messages the user sent after it", () => {
+      const { agent, runner } = wireWithSteers();
+      const emitted: { type: string; [key: string]: unknown }[] = [];
+      runner.on("message", (m) => emitted.push(m as { type: string }));
+      runner.enqueue({ text: "a later correction", execution: "interactive" });
+      const [earlier, changed] = runner.steeredMessages;
+
+      agent.emit("event", { type: "agent_steer_rejected", text: "[from parent] change of scope" });
+      agent.emit("event", { type: "agent_steer_rejected", text: "[earlier]" });
+
+      expect(runner.messageQueue.map((m) => m.text)).toEqual(["earlier", "change of scope", "a later correction"]);
+      expect(emitted.filter((m) => m.type === "message_queued")).toEqual([
+        { type: "message_queued", sessionId: "session-1", id: changed?.clientRequestId, text: "change of scope", position: 1 },
+        { type: "message_queued", sessionId: "session-1", id: earlier?.clientRequestId, text: "earlier", position: 1 },
+      ]);
+      runner.dispose({ force: true });
+    });
+
+    // docs/328-session-message-inbox — the inbox tells again by its own rule.
+    it("a rejected best-effort steer loses its row and is not re-queued", () => {
+      const { agent, runner } = wireWithSteers();
+      recordSteeredMessage(runner, "you have messages", {
+        assembledPrompt: "you have messages",
+        bestEffort: true,
+      });
+
+      agent.emit("event", { type: "agent_steer_rejected", text: "you have messages" });
+
+      expect(runner.steeredMessages.map((m) => m.text)).toEqual(["earlier", "change of scope"]);
+      expect(runner.queueLength).toBe(0);
+      runner.dispose({ force: true });
+    });
+
     it("a rejection that arrives after the turn errored does not queue the message twice", async () => {
       const { agent, runner } = wireWithSteers();
 
@@ -1039,58 +1205,158 @@ describe("wireAgentListeners", () => {
     });
   });
 
-  describe("unrecoverable stale resume", () => {
-    it("persists the couldn't-resume error instead of only emitting it", async () => {
+  describe("a conversation the CLI cannot resume (docs/007)", () => {
+    it("persists one card that says the conversation was kept and points at fork", () => {
       const agent = new FakeAgent();
       const runner = new SessionRunner({
         sessionId: "session-1",
         sessionDir: "/tmp/session-1",
-        defaultAgentId: "codex",
+        defaultAgentId: "claude",
       });
       runner.running = true;
       const emitted: { type?: string; message?: string }[] = [];
       runner.on("message", (m) => emitted.push(m as { type?: string; message?: string }));
       const d = deps();
+      const onConversationNotFound = vi.fn();
       wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
         capturedSessionId: "session-1",
         isNewSession: false,
         persistUserMessage: vi.fn(),
-        recoverMissingConversation: () => false,
+        onConversationNotFound,
       });
 
       agent.emit("log", "stderr", "No conversation found with session ID: abc-123");
+      agent.emit("log", "stderr", "No conversation found with session ID: abc-123");
 
-      expect(emitted.find((m) => m.type === "error")?.message).toContain("Couldn't resume");
+      const message = emitted.find((m) => m.type === "error")?.message ?? "";
+      expect(message).toContain("could not resume");
+      expect(message).toContain("fork the session");
       expect(runner.recordedCards).toHaveLength(1);
       expect(runner.recordedCards[0]!.message).toEqual(
-        expect.objectContaining({ isError: true, text: expect.stringContaining("Couldn't resume") }),
+        expect.objectContaining({ isError: true, text: expect.stringContaining("fork the session") }),
       );
       expect(d.chatHistoryManager.replaceInProgress).toHaveBeenCalled();
+      expect(onConversationNotFound).toHaveBeenCalledTimes(1);
       runner.dispose({ force: true });
     });
 
-    it("stays silent when the executor claims the recovery", () => {
+    it("finds the CLI's line when the pipe splits it across chunks", () => {
       const agent = new FakeAgent();
       const runner = new SessionRunner({
         sessionId: "session-1",
         sessionDir: "/tmp/session-1",
-        defaultAgentId: "codex",
+        defaultAgentId: "claude",
       });
-      const emitted: { type?: string }[] = [];
-      runner.on("message", (m) => emitted.push(m as { type?: string }));
+      runner.running = true;
+      const d = deps();
+      const onConversationNotFound = vi.fn();
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+        onConversationNotFound,
+      });
+
+      // Chunks arrive trimmed, so a split at a space loses the space.
+      agent.emit("log", "stderr", "No conversation found with");
+      agent.emit("log", "stderr", "session ID: abc-123");
+
+      expect(onConversationNotFound).toHaveBeenCalledTimes(1);
+      expect(runner.recordedCards).toHaveLength(1);
+      runner.dispose({ force: true });
+    });
+
+    it("never writes the id of the conversation the failed spawn reports", () => {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "claude",
+      });
+      runner.running = true;
       const d = deps();
       wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
         capturedSessionId: "session-1",
         isNewSession: false,
         persistUserMessage: vi.fn(),
-        recoverMissingConversation: () => true,
       });
 
+      agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "fresh-id", tools: [] } as AgentEvent);
       agent.emit("log", "stderr", "No conversation found with session ID: abc-123");
+      agent.emit("event", { type: "agent_result", status: "error", sessionId: "fresh-id" } as AgentEvent);
 
-      expect(emitted.find((m) => m.type === "error")).toBeUndefined();
-      expect(runner.recordedCards).toHaveLength(0);
+      expect(d.sessionManager.setAgentSessionId).not.toHaveBeenCalled();
       runner.dispose({ force: true });
+    });
+  });
+
+  describe("the agent session id is stored once the conversation answered (docs/007)", () => {
+    const wire = (session?: { agentSessionId?: string; conversationReplay?: string }) => {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "claude",
+      });
+      runner.running = true;
+      const d = deps();
+      (d.sessionManager.get as ReturnType<typeof vi.fn>).mockReturnValue(
+        session ? { id: "session-1", ...session } : undefined,
+      );
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+      });
+      return { agent, runner, d };
+    };
+
+    it("does not store the id of a refused first attempt, so a fork keeps its replay", () => {
+      const { agent, runner, d } = wire({ conversationReplay: "User: the parent's transcript" });
+
+      agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "refused-id", tools: [] } as AgentEvent);
+      // A refusal: the CLI's own text, then an error result.
+      agent.emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text: "API Error: 500" }],
+        synthetic: true,
+      } as AgentEvent);
+      agent.emit("event", { type: "agent_result", status: "error", sessionId: "refused-id" } as AgentEvent);
+
+      expect(d.sessionManager.setAgentSessionId).not.toHaveBeenCalled();
+      runner.dispose({ force: true });
+    });
+
+    it("never lets an unanswered failure replace a stored id", () => {
+      const { agent, runner, d } = wire({ agentSessionId: "stored-id" });
+
+      agent.emit("event", { type: "agent_result", status: "error", sessionId: "other-id" } as AgentEvent);
+
+      expect(d.sessionManager.setAgentSessionId).not.toHaveBeenCalled();
+      runner.dispose({ force: true });
+    });
+
+    it("stores a new session's first conversation even when it was stopped before an answer", () => {
+      const { agent, runner, d } = wire({});
+
+      agent.emit("event", { type: "agent_init", agentId: "codex", sessionId: "first-thread", tools: [] } as AgentEvent);
+      agent.emit("event", { type: "agent_result", status: "error", sessionId: "first-thread" } as AgentEvent);
+
+      expect(d.sessionManager.setAgentSessionId).toHaveBeenCalledWith("session-1", "first-thread");
+      runner.dispose({ force: true });
+    });
+
+    it("stores it at the first answer, and on a successful result", () => {
+      const answered = wire({ conversationReplay: "User: the parent's transcript" });
+      answered.agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "new-id", tools: [] } as AgentEvent);
+      answered.agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "On it." }] } as AgentEvent);
+      expect(answered.d.sessionManager.setAgentSessionId).toHaveBeenCalledWith("session-1", "new-id");
+      answered.runner.dispose({ force: true });
+
+      const quiet = wire({ agentSessionId: "stored-id" });
+      quiet.agent.emit("event", { type: "agent_result", status: "success", sessionId: "stored-id" } as AgentEvent);
+      expect(quiet.d.sessionManager.setAgentSessionId).toHaveBeenCalledWith("session-1", "stored-id");
+      quiet.runner.dispose({ force: true });
     });
   });
 
@@ -1684,6 +1950,100 @@ describe("wireAgentListeners — tool-call time", () => {
   });
 });
 
+// A viewer that switched sessions drops a streamed event of the session it left.
+describe("wireAgentListeners — a streamed event names its session", () => {
+  it("carries the session the turn was wired for", () => {
+    const agent = new FakeAgent();
+    const runner = new SessionRunner({
+      sessionId: "session-stream",
+      sessionDir: "/tmp/session-stream",
+      defaultAgentId: "codex",
+    });
+    wireAgentListeners(agent as unknown as AgentProcess, runner, deps(), {
+      capturedSessionId: "session-stream",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+
+    agent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "hi" }] } as unknown as AgentEvent);
+
+    const streamed = runner.getTurnEventBuffer().filter((m) => m.type === "agent_event");
+    expect(streamed).toEqual([expect.objectContaining({ type: "agent_event", sessionId: "session-stream" })]);
+    runner.dispose({ force: true });
+  });
+});
+
+describe("wireAgentListeners — a subagent's call that waits for approval (docs/193-sensitive-file-permission req 2)", () => {
+  function wireAndRequest(subagent: "background" | "foreground" | undefined) {
+    const agent = new FakeAgent("claude");
+    const runner = new SessionRunner({ sessionId: "session-wait", sessionDir: "/tmp/session-wait", defaultAgentId: "claude" });
+    runner.setAgent(agent as unknown as AgentProcess);
+    runner.running = true;
+    runner.isStreamingActive = true;
+    const d = deps();
+    Object.assign(d.chatHistoryManager, { hasInProgress: () => false, updatePermissionCard: vi.fn() });
+    wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+      capturedSessionId: "session-wait",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+    const dispatch = vi.spyOn(runner, "dispatch");
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    agent.emit("event", {
+      type: "agent_permission_request",
+      requestId: "perm_1",
+      toolName: "Write",
+      summary: "Write /workspace/link/a.txt",
+      ...(subagent ? { subagent } : {}),
+    } satisfies AgentEvent);
+    return { runner, dispatch, agent };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("offers the running turn a line about a background subagent's request", () => {
+    const { runner, dispatch } = wireAndRequest("background");
+
+    vi.advanceTimersByTime(PERMISSION_WAIT_NOTICE_MS);
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    const [prepared, admission] = dispatch.mock.calls[0]!;
+    expect(prepared.text).toContain("Write /workspace/link/a.txt");
+    expect(admission).toEqual({ whenBusy: "steer-or-refuse" });
+    runner.dispose({ force: true });
+  });
+
+  it("offers no line once the request has its answer", () => {
+    const { runner, dispatch, agent } = wireAndRequest("background");
+
+    agent.emit("event", { type: "agent_permission_resolved", requestId: "perm_1", behavior: "allow" } satisfies AgentEvent);
+    vi.advanceTimersByTime(10 * PERMISSION_WAIT_NOTICE_MS);
+
+    expect(dispatch).not.toHaveBeenCalled();
+    runner.dispose({ force: true });
+  });
+
+  // The main agent waits inside these calls, so it reads a line only after the request ended.
+  it.each([["the main agent's own request", undefined], ["a foreground subagent's request", "foreground"]] as const)(
+    "sends no line about %s",
+    (_label, subagent) => {
+      const { runner, dispatch } = wireAndRequest(subagent);
+
+      vi.advanceTimersByTime(10 * PERMISSION_WAIT_NOTICE_MS);
+
+      expect(dispatch).not.toHaveBeenCalled();
+      runner.dispose({ force: true });
+    },
+  );
+});
+
 describe("wireAgentListeners — permission cards no agent can answer (docs/193)", () => {
   function wireForPermission() {
     const agent = new FakeAgent("claude");
@@ -1772,6 +2132,105 @@ describe("wireAgentListeners — permission cards no agent can answer (docs/193)
 
     expect(denied().map((m) => m.requestId)).toEqual(["perm_1"]);
     expect(attention().at(-1)).toEqual({ sessionId: "session-perm", awaitingPermission: false });
+    runner.dispose({ force: true });
+  });
+});
+
+describe("wireAgentListeners — an approval request that nobody answers (docs/193-sensitive-file-permission req 6, req 7)", () => {
+  function wireForApproval() {
+    const agent = new FakeAgent("claude");
+    const runner = new SessionRunner({ sessionId: "session-ask", sessionDir: "/tmp/session-ask", defaultAgentId: "claude" });
+    runner.setAgent(agent as unknown as AgentProcess);
+    const d = deps();
+    const updatePermissionCard = vi.fn();
+    Object.assign(d.chatHistoryManager, { updatePermissionCard, hasInProgress: () => false });
+    const appendPendingAgentNotice = vi.fn();
+    Object.assign(d.sessionManager, { appendPendingAgentNotice });
+    const deliverVoiceNote = vi.fn();
+    wireAgentListeners(agent as unknown as AgentProcess, runner, { ...d, deliverVoiceNote }, {
+      capturedSessionId: "session-ask",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+    });
+    const request = (requestId: string, toolName: string) =>
+      agent.emit("event", { type: "agent_permission_request", requestId, toolName, summary: `${toolName}: x` } satisfies AgentEvent);
+    const resolve = (requestId: string, extra: Partial<AgentPermissionResolvedEvent> = {}) =>
+      agent.emit("event", { type: "agent_permission_resolved", requestId, behavior: "deny", ...extra } satisfies AgentEvent);
+    return { runner, request, resolve, deliverVoiceNote, appendPendingAgentNotice, updatePermissionCard };
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("sends a permission voice note when the session starts to wait, and none for a card that joins the wait", () => {
+    const { runner, request, resolve, deliverVoiceNote } = wireForApproval();
+
+    request("perm_1", "Bash");
+    request("perm_2", "Write");
+
+    expect(deliverVoiceNote).toHaveBeenCalledTimes(1);
+    const [payload, , source] = deliverVoiceNote.mock.calls[0]!;
+    expect(source).toBe("permission");
+    expect((payload as { summary: string }).summary).toContain("run a command");
+
+    resolve("perm_1");
+    resolve("perm_2");
+    request("perm_3", "Write");
+
+    expect(deliverVoiceNote).toHaveBeenCalledTimes(2);
+    expect((deliverVoiceNote.mock.calls[1]![0] as { summary: string }).summary).toContain("change a file");
+    runner.dispose({ force: true });
+  });
+
+  it("tells the next turn that nobody answered when the call ended first", () => {
+    const { runner, request, resolve, appendPendingAgentNotice, updatePermissionCard } = wireForApproval();
+    request("perm_1", "Write");
+
+    resolve("perm_1", { callEnded: { summary: "Write: .claude/skills/x/SKILL.md", waitedMs: 1_800_000 } });
+
+    expect(updatePermissionCard).toHaveBeenCalledWith("session-ask", "perm_1", {
+      phase: "denied",
+      unanswered: { waitedMs: 1_800_000 },
+    });
+    expect(appendPendingAgentNotice).toHaveBeenCalledTimes(1);
+    const [sessionId, notice] = appendPendingAgentNotice.mock.calls[0]!;
+    expect(sessionId).toBe("session-ask");
+    expect(notice).toContain("`Write: .claude/skills/x/SKILL.md`");
+    expect(notice).toContain("nobody answered");
+    runner.dispose({ force: true });
+  });
+
+  it("marks the card unanswered with no duration when the worker measured none", () => {
+    const { runner, request, resolve, updatePermissionCard } = wireForApproval();
+    request("perm_1", "Write");
+
+    resolve("perm_1", { callEnded: { summary: "Write: .claude/x" } });
+
+    expect(updatePermissionCard).toHaveBeenCalledWith("session-ask", "perm_1", { phase: "denied", unanswered: {} });
+    runner.dispose({ force: true });
+  });
+
+  it("sends no notice for a deny that did not come from an ended call", () => {
+    const { runner, request, resolve, appendPendingAgentNotice, updatePermissionCard } = wireForApproval();
+    request("perm_1", "Write");
+
+    resolve("perm_1");
+
+    expect(updatePermissionCard).toHaveBeenCalledWith("session-ask", "perm_1", { phase: "denied" });
+    expect(appendPendingAgentNotice).not.toHaveBeenCalled();
+    runner.dispose({ force: true });
+  });
+
+  it("sends no notice and no reason when the user's Stop ended the call", () => {
+    const { runner, request, resolve, appendPendingAgentNotice, updatePermissionCard } = wireForApproval();
+    runner.running = true;
+    beginTurnSetup(runner);
+    noteUserStop(runner);
+    request("perm_1", "Write");
+
+    resolve("perm_1", { callEnded: { summary: "Write: .claude/x", waitedMs: 5_000 } });
+
+    expect(appendPendingAgentNotice).not.toHaveBeenCalled();
+    expect(updatePermissionCard).toHaveBeenCalledWith("session-ask", "perm_1", { phase: "denied" });
     runner.dispose({ force: true });
   });
 });

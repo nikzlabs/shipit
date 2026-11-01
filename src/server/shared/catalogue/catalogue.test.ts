@@ -68,6 +68,7 @@ import type {
   ServiceDef,
 } from "./index.js";
 import { formatModelName } from "../../../client/utils/format-model.js";
+import { modelContextWindows } from "../model-windows.js";
 
 // Widen literal rows so invariant checks can index all API styles.
 const CATALOGUE: readonly ServiceDef[] = SERVICES;
@@ -406,12 +407,12 @@ describe("resolving a retired model (req 13, phase 8)", () => {
     expect(retirementSuccessor("codex", RETIRED)).toEqual({
       serviceId: "openai",
       billingMode: "sub",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
     });
     expect(retirementSuccessor("codex", { ...RETIRED, billingMode: "key" })).toEqual({
       serviceId: "openai",
       billingMode: "key",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
     });
   });
 
@@ -489,7 +490,7 @@ describe("resolving a retired model (req 13, phase 8)", () => {
 
   it("says nothing about a model that is still current, or that never existed", () => {
     expect(
-      retirementSuccessor("codex", { ...RETIRED, modelId: "gpt-5.6-sol" }),
+      retirementSuccessor("codex", { ...RETIRED, modelId: "gpt-6.1-sol" }),
     ).toBeUndefined();
     expect(retirementSuccessor("codex", { ...RETIRED, modelId: "nope" })).toBeUndefined();
     expect(
@@ -501,7 +502,7 @@ describe("resolving a retired model (req 13, phase 8)", () => {
     expect(resolveRetiredModelId("codex", "gpt-5.6", "openai")).toEqual({
       serviceId: "openai",
       billingMode: "sub",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
     });
     expect(resolveRetiredModelId("claude", "gpt-5.6", "openai")).toBeUndefined();
     expect(resolveRetiredModelId("codex", undefined)).toBeUndefined();
@@ -567,28 +568,20 @@ describe("harnesses", () => {
 
 describe("the harness\u00d7service join", () => {
   it("leads with the harness's own vendor, in the order the picker had", () => {
-    expect(catalogueModelIdsForHarness("claude").slice(0, 6)).toEqual([
+    expect(catalogueModelIdsForHarness("claude").slice(0, 7)).toEqual([
       "claude-opus-5",
       "claude-opus-5-5",
       "claude-sonnet-5",
       "claude-sonnet-5-5",
       "haiku",
+      "claude-haiku-5-5",
       "claude-fable-5-1",
     ]);
-    expect(catalogueModelIdsForHarness("codex").slice(0, 13)).toEqual([
-      "gpt-5.6-sol",
-      "gpt-6-astra",
+    expect(catalogueModelIdsForHarness("codex").slice(0, 4)).toEqual([
       "gpt-6.1-sol",
+      "gpt-6-astra",
       "gpt-6-sol",
       "gpt-6-luna",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
-      "gpt-5.3-codex-spark",
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "gpt-5.5",
-      "gpt-5.3-codex",
-      "gpt-5.2",
     ]);
   });
 
@@ -636,6 +629,29 @@ describe("the harness\u00d7service join", () => {
     expect(MODEL_ID_ALIASES["claude-sonnet-5-5"]).toBe("claude-sonnet-5.5");
   });
 
+  it("offers Haiku 5.5 under both Anthropic billing modes beside Haiku 4.5", () => {
+    for (const billingMode of ["sub", "key"] as const) {
+      const selection = { serviceId: "anthropic", billingMode, modelId: "claude-haiku-5-5" };
+      expect(getModel(selection)).toMatchObject({
+        label: "Haiku 5.5", canonicalModelKey: "claude-haiku-5.5", family: "claude",
+        contextWindow: { default: 1_000_000 },
+        price: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+      });
+      expect(resolveSpawnShaping("claude", selection)?.style).toBe("anthropic-messages");
+      expect(visionSupportFor(selection)).toBe("yes");
+      expect(reasoningOptionsFor("claude", selection).map((option) => option.value))
+        .toEqual(["low", "medium", "high", "xhigh", "max"]);
+      if (billingMode === "key") {
+        expect(reasoningOptionsFor("opencode", selection).map((option) => option.value))
+          .toEqual(["low", "medium", "high", "xhigh", "max"]);
+      }
+      expect(resolveSpawnShaping("codex", selection)).toBeUndefined();
+      expect(getModel({ serviceId: "anthropic", billingMode, modelId: "haiku" })?.label).toBe("Haiku 4.5");
+    }
+    expect(catalogueModelIdsForHarness("claude")[0]).toBe("claude-opus-5");
+    expect(MODEL_ID_ALIASES["claude-haiku-5-5"]).toBe("claude-haiku-5.5");
+  });
+
   it("offers GPT-6 Astra through both OpenAI billing modes without making it the default", () => {
     const selections = (["sub", "key"] as const).map((billingMode) => ({
       billingMode,
@@ -661,7 +677,7 @@ describe("the harness\u00d7service join", () => {
     expect(reasoningOptionsFor("codex", keySelection).map((option) => option.value))
       .toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(reasoningOptionsFor("grok", keySelection)).toEqual([]);
-    expect(catalogueModelIdsForHarness("codex")[0]).toBe("gpt-5.6-sol");
+    expect(catalogueModelIdsForHarness("codex")[0]).toBe("gpt-6.1-sol");
     expect(visionSupportFor({ serviceId: "openai", billingMode: "sub", modelId: "gpt-6-astra" }))
       .toBe("yes");
   });
@@ -707,34 +723,13 @@ describe("the harness\u00d7service join", () => {
         expect(selectionHonoursEffort(harness, selection, "none")).toBe(false);
       }
     }
-    expect(catalogueModelIdsForHarness("codex")[0]).toBe("gpt-5.6-sol");
-  });
-
-  it("offers Codex Spark only through the OpenAI subscription", () => {
-    const sub = getModel({
-      serviceId: "openai",
-      billingMode: "sub",
-      modelId: "gpt-5.3-codex-spark",
-    });
-    const key = getModel({
-      serviceId: "openai",
-      billingMode: "key",
-      modelId: "gpt-5.3-codex-spark",
-    });
-    const proxy = getModel({
-      serviceId: "openai",
-      billingMode: "key",
-      modelId: "gpt-5.3-codex",
-    });
-
-    expect(sub?.price).toEqual(proxy?.price);
-    expect(key).toBeUndefined();
+    expect(catalogueModelIdsForHarness("codex")[0]).toBe("gpt-6.1-sol");
   });
 
   it("reaches services the harness shares a style with, and no others", () => {
     expect(catalogueModelIdsForHarness("claude")).toContain("deepseek-flash");
     expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-flash");
-    expect(catalogueModelIdsForHarness("codex")).toContain("openai/gpt-5.6-sol");
+    expect(catalogueModelIdsForHarness("codex")).toContain("openai/gpt-6-sol");
     expect(catalogueModelIdsForHarness("claude")).toContain("anthropic/claude-opus-5");
     expect(catalogueModelIdsForHarness("codex")).toContain("deepseek/deepseek-v4-flash");
     expect(catalogueModelIdsForHarness("codex")).not.toContain("anthropic/claude-opus-5");
@@ -744,8 +739,6 @@ describe("the harness\u00d7service join", () => {
 
 describe("eligibility (req 8)", () => {
   const deepseekKey = { serviceId: "deepseek", billingMode: "key" as const, via: "string" as const };
-  const openaiKey = { serviceId: "openai", billingMode: "key" as const, via: "string" as const };
-  const openaiAccount = { serviceId: "openai", billingMode: "sub" as const, via: "account" as const };
   const anthropicAccount = {
     serviceId: "anthropic",
     billingMode: "sub" as const,
@@ -755,18 +748,6 @@ describe("eligibility (req 8)", () => {
   it("offers nothing at all when no credential is configured", () => {
     expect(eligibleEntriesForHarness("claude", [])).toEqual([]);
     expect(eligibleEntriesForHarness("codex", [])).toEqual([]);
-  });
-
-  it("offers Codex Spark to an OpenAI subscription, never an OpenAI API key", () => {
-    const spark = {
-      serviceId: "openai",
-      billingMode: "sub" as const,
-      modelId: "gpt-5.3-codex-spark",
-    };
-    expect(isSelectionEligible("codex", spark, [openaiAccount])).toBe(true);
-    expect(
-      isSelectionEligible("codex", { ...spark, billingMode: "key" }, [openaiKey]),
-    ).toBe(false);
   });
 
   it("req 2: a DeepSeek key alone makes Claude Code runnable, with no Anthropic row", () => {
@@ -989,8 +970,8 @@ describe("spawn shaping", () => {
     expect(windows["claude-fable-5-1"]).toBe(1_000_000);
     expect(windows.haiku).toBe(200_000);
     expect(windows["gpt-6-astra"]).toBe(272_000);
-    expect(windows["gpt-5.6-sol"]).toBe(272_000);
-    expect(windows["gpt-5.2"]).toBe(272_000);
+    expect(modelContextWindows()["gpt-5.6-sol"]).toBe(272_000);
+    expect(modelContextWindows()["gpt-5.2"]).toBe(272_000);
   });
 
   it("keeps EVERY display label the client's hand-kept record reported", () => {
@@ -1010,8 +991,13 @@ describe("spawn shaping", () => {
       "gpt-5.3-codex": "GPT-5.3 Codex",
       "gpt-5.2": "GPT-5.2",
     };
+    // Rows removed from the picker keep their label only in the client's legacy record.
+    const LEFT_THE_CATALOGUE = new Set([
+      "gpt-5.3-codex-spark", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2",
+      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+    ]);
     for (const [id, label] of Object.entries(PRE_CATALOGUE_LABELS)) {
-      expect(labels[id], id).toBe(label);
+      if (!LEFT_THE_CATALOGUE.has(id)) expect(labels[id], id).toBe(label);
       expect(formatModelName(id), id).toBe(label);
     }
   });
@@ -1056,9 +1042,9 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
       .toBe("https://opencode.ai/zen/v1");
     expect(resolveEndpoint("opencode", { serviceId: "opencode", billingMode: "sub", modelId: "glm-5.3" }))
       .toBe("https://opencode.ai/zen/go/v1");
-    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "key", modelId: "gpt-5.6-sol" }))
+    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "key", modelId: "gpt-6.1-sol" }))
       .toBe("https://opencode.ai/zen/v1");
-    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "sub", modelId: "gpt-5.6-luna" }))
+    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "sub", modelId: "gpt-6-luna" }))
       .toBe("https://opencode.ai/zen/go/v1");
   });
 
@@ -1067,8 +1053,8 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
       catalogueEntriesForHarness("codex")
         .filter((e) => e.service.id === "opencode" && e.mode.kind === billingMode)
         .map((e) => e.model.id);
-    expect(idsFor("key").sort()).toEqual(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.6"]);
-    expect(idsFor("sub")).toEqual(["gpt-5.6-luna"]);
+    expect(idsFor("key").sort()).toEqual(["gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "grok-4.6"]);
+    expect(idsFor("sub")).toEqual(["gpt-6-luna"]);
     for (const entry of catalogueEntriesForHarness("codex").filter((e) => e.service.id === "opencode")) {
       expect(entry.model.styles, entry.model.id).toEqual(["openai-responses"]);
     }
@@ -1085,22 +1071,23 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
       getModel({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-flash" })!.price.input,
     );
     expect(go("deepseek-v4-flash")!.price.input).not.toBe(zen("deepseek-v4-flash")!.price.input);
-    expect(zen("gpt-5.6-terra")!.price.input).toBeGreaterThan(
-      getModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.6-terra" })!.price.input,
-    );
-    expect(go("gpt-5.6-luna")!.price.input).toBeLessThan(zen("gpt-5.6-luna")!.price.input);
+    // OpenCode's Zen and Go pages publish the same GPT-6 Luna rate (docs/272 §7).
+    expect(go("gpt-6-luna")!.price.input).toBe(zen("gpt-6-luna")!.price.input);
   });
 
   it("names OpenCode's own inference as its harness's native service (docs/272)", () => {
     expect(HARNESSES.find((h) => h.id === "opencode")?.nativeService).toBe("opencode");
     expect(loginIntegrationForService("opencode")).toBeUndefined();
-    expect(harnessForNativeService("opencode")).toBe("opencode");
+    expect(HARNESSES.find((h) => h.id === "opencode2")?.nativeService).toBe("opencode");
+    // Both OpenCode harnesses are native to it; list order puts OpenCode 2 first (docs/269 req 5).
+    expect(harnessForNativeService("opencode")).toBe("opencode2");
   });
 
   it("offers OpenCode's inference to the harnesses whose pair was measured, and to no others", () => {
     const zenKey = { serviceId: "opencode", billingMode: "key" as const, via: "string" as const };
     const goKey = { serviceId: "opencode", billingMode: "sub" as const, via: "string" as const };
-    for (const harness of ["opencode", "codex"] as const) {
+    // OpenCode 2 carries the same API keys as OpenCode 1 (docs/269 req 4).
+    for (const harness of ["opencode2", "opencode", "codex"] as const) {
       expect(eligibleEntriesForHarness(harness, [zenKey]).length, harness).toBeGreaterThan(0);
       expect(eligibleEntriesForHarness(harness, [goKey]).length, harness).toBeGreaterThan(0);
       expect(harnessSupportsService(harness, "opencode"), harness).toBe(true);
@@ -1388,7 +1375,7 @@ describe("credentials", () => {
 
     it("fans a completed sign-in out to every harness that can use the credential", () => {
       expect(harnessesForLoginIntegration("anthropic-oauth")).toEqual(["claude"]);
-      expect(harnessesForLoginIntegration("openai-chatgpt")).toEqual(["codex", "opencode"]);
+      expect(harnessesForLoginIntegration("openai-chatgpt")).toEqual(["codex", "opencode2", "opencode"]);
       expect(harnessesForLoginIntegration("xai-oauth")).toEqual(["grok"]);
     });
 
@@ -1396,7 +1383,7 @@ describe("credentials", () => {
       const chatgpt = getService("openai")?.modes
         .find((m) => m.kind === "sub")
         ?.credentials.find((c) => c.via === "account");
-      expect(chatgpt?.carriers).toEqual(["codex", "opencode"]);
+      expect(chatgpt?.carriers).toEqual(["codex", "opencode2", "opencode"]);
       expect(harnessCanCarry("grok", {
         serviceId: "openai", billingMode: "sub", via: "account",
       })).toBe(false);

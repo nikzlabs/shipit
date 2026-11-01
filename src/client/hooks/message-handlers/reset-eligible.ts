@@ -8,5 +8,5 @@ import type { Handler } from "./types.js";
 // box the user had turned off. The untick belongs to the message being
 // composed; only that message leaving clears it.
 export const handleResetEligible: Handler<WsResetEligible> = (_ctx, data) => {
-  usePrStore.getState().setResetEligible(data.sessionId, data.eligible);
+  usePrStore.getState().setResetEligible(data.sessionId, data.eligible, data.compactionSpent === true);
 };

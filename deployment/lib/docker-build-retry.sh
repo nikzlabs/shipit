@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Bounded retry for transient registry failures. This sourced file defines functions only.
+# Bounded retry for transient registry and DNS failures. This sourced file defines functions only.
 # Do not add an EXIT trap; it would replace deploy.sh's cleanup trap.
 
 # Usage: shipit_docker_build_with_retry docker compose -f FILE build ARGS...
@@ -27,7 +27,7 @@ shipit_docker_build_with_retry() {
       rm -f "$log"
       return "$status"
     fi
-    echo "==> Build attempt ${attempt}/${attempts} failed with a transient registry error; retrying in ${delay}s..." >&2
+    echo "==> Build attempt ${attempt}/${attempts} failed with a transient network error; retrying in ${delay}s..." >&2
     sleep "$delay"
     attempt=$((attempt + 1))
     delay=$((delay * 2))
@@ -41,6 +41,13 @@ shipit_build_failure_is_transient() {
   fi
   if grep -qiE \
     'TLS handshake timeout|i/o timeout|dial tcp|connection reset by peer|failed to do request|net/http: request canceled|unexpected status.*: 5[0-9][0-9]|unexpected HTTP status: 5[0-9][0-9]' \
+    "$1"; then
+    return 0
+  fi
+  # apt, glibc/curl, Go and Node name-resolution failures. apt's form needs its quote:
+  # npm's ERESOLVE "could not resolve dependency" is deterministic.
+  if grep -qiE \
+    "Could not resolve '|Temporary failure resolving|Temporary failure in name resolution|Could not resolve host|lookup [^[:space:]]+.*no such host|EAI_AGAIN" \
     "$1"; then
     return 0
   fi

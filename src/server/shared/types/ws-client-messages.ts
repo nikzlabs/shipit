@@ -106,6 +106,12 @@ export interface WsCancelQueuedMessage {
   position: number | "all";
 }
 
+/** docs/330-stop-returns-queued-messages — this viewer's input box holds these returned messages. */
+export interface WsQueueReturnedTaken {
+  type: "queue_returned_taken";
+  ids: string[];
+}
+
 export interface WsPrTabActive {
   type: "pr_tab_active";
   sessionId: string;
@@ -198,6 +204,7 @@ export type WsClientMessage =
   | WsTerminalInput
   | WsTerminalResize
   | WsCancelQueuedMessage
+  | WsQueueReturnedTaken
   | WsInterruptAgent
   | WsInitPreviewConfig
   | WsStartService

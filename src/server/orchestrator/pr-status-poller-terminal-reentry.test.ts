@@ -147,6 +147,22 @@ describe("promoteMergedPrByNumber", () => {
     expect(sessionManager.setMergedHeadSha).toHaveBeenCalledWith("s1", "sha-head");
   });
 
+  it("anchors the reset at the commit the merge pinned, not the head read later", async () => {
+    const sessionManager = makeSessionManager([{ id: "s1", branch: "shipit/feature" }]);
+    const poller = new PrStatusPoller({
+      githubAuth: githubAuthFor({ ...MERGED_PR, head_sha: null as unknown as string }),
+      sessionManager,
+      sseBroadcast: vi.fn(),
+    });
+
+    const res = await poller.promoteMergedPrByNumber({
+      sessionId: "s1", owner: "o", repo: "r", prNumber: 7, mergedHeadSha: "sha-pinned",
+    });
+
+    expect(res).toMatchObject({ promoted: true, pr: { head_sha: null } });
+    expect(sessionManager.setMergedHeadSha).toHaveBeenCalledWith("s1", "sha-pinned");
+  });
+
   it("promotes a closed-without-merge pull request, which is terminal too", async () => {
     const sessionManager = makeSessionManager([{ id: "s1", branch: "shipit/feature" }]);
     const poller = new PrStatusPoller({

@@ -423,8 +423,10 @@ describe("Integration: install gate — liveness watchdog (docs/286)", () => {
   });
 
   const SETTLE_MS = 150;
-  const POLL_MS = 25;
-  const PAST_SETTLE_MS = SETTLE_MS + POLL_MS * 10;
+  // Zero, as production runs: service state is event-driven, so the watchdog has to reach its
+  // settle window on the follow-up the manager arms, not on a poll interval (docs/332).
+  const POLL_MS = 0;
+  const PAST_SETTLE_MS = SETTLE_MS * 3;
 
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -651,7 +653,10 @@ describe("Integration: install gate — liveness watchdog (docs/286)", () => {
     expect(h.mgr.getService("web")?.status).toBe("error");
     expect(h.mgr.getService("web")?.error).toContain("agent.install failed");
 
+    // Clearing the latch by hand is not a path that arms anything, so the watchdog's clock starts
+    // at the next reconcile — which production reaches via the host-wide backstop (docs/332).
     (h.mgr as unknown as { _installFailed: boolean })._installFailed = false;
+    await h.mgr.refreshServices();
     await waitFor(() => h.webUps() === 1, 3000, "watchdog fired once the latch cleared");
   });
 });

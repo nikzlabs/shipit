@@ -19,7 +19,7 @@ export const handleSessionReportCard: Handler<WsSessionReportCard> = (_ctx, data
               fromTitle: data.card.fromTitle,
               ...(data.card.fromBranch ? { fromBranch: data.card.fromBranch } : {}),
               relation: data.card.relation,
-              severity: data.card.severity,
+              ...(data.card.severity ? { severity: data.card.severity } : {}),
               ...(data.card.subject ? { subject: data.card.subject } : {}),
               body: data.card.body,
               createdAt: data.card.createdAt,

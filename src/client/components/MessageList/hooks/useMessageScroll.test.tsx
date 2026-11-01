@@ -749,7 +749,6 @@ describe("useMessageScroll — search jump settles (planning#491)", () => {
     act(() => { view.rerender(<MatchHarness match={{ messageIndex: 3, start: 0, length: 4 }} />); });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].behavior).toBe("smooth");
 
     // over the next few frames. Each change must re-centre, or the match ends up
 
@@ -760,8 +759,16 @@ describe("useMessageScroll — search jump settles (planning#491)", () => {
 
     expect(calls.length).toBeGreaterThan(1);
 
-    expect(calls.slice(1).every((c) => c.behavior === undefined)).toBe(true);
+    expect(calls.every((c) => c.behavior === undefined)).toBe(true);
     expect(calls.every((c) => c.block === "center")).toBe(true);
+  });
+
+  it("does not jump again when the messages rebuild the same match", () => {
+    const { calls, view } = setup();
+    act(() => { view.rerender(<MatchHarness match={{ messageIndex: 3, start: 0, length: 4 }} />); });
+    act(() => { view.rerender(<MatchHarness match={{ messageIndex: 3, start: 0, length: 4 }} />); });
+
+    expect(calls).toHaveLength(1);
   });
 
   it("stops once the height has held still, rather than scrolling forever", () => {
@@ -789,6 +796,149 @@ describe("useMessageScroll — search jump settles (planning#491)", () => {
     for (let i = 0; i < 5; i++) flushFrame();
 
     expect(calls.length).toBe(afterJump);
+  });
+});
+
+describe("useMessageScroll — a search jump from the bottom of a long transcript", () => {
+  const TAIL = " and a needle";
+  const REPLY = `The **needle**${TAIL}`;
+  const SECOND = { messageIndex: 1, start: REPLY.lastIndexOf("needle"), length: 6 };
+
+  function RowHarness({ match, withMark, tail = TAIL, rowKey = "row", onRestoreGuard }: {
+    match: SearchMatch | undefined;
+    withMark: boolean;
+    tail?: string;
+    rowKey?: string;
+    onRestoreGuard?: (guard: () => boolean) => void;
+  }) {
+    const messages: ChatMessage[] = [user("question"), { role: "assistant", text: `The **needle**${tail}` }];
+    const { containerRef, contentRef, currentMatchRef, canRestoreReadingAnchor } =
+      useMessageScroll(messages, false, match, "s1");
+    onRestoreGuard?.(canRestoreReadingAnchor);
+    return (
+      <div ref={containerRef} data-testid="scroller">
+        <div ref={contentRef} data-testid="content">
+          {/* What `MarkdownContent` draws for the reply: no <mark> anywhere. */}
+          <div key={rowKey} data-compact-index="1">
+            <p>The <strong>needle</strong>{tail}</p>
+          </div>
+          {withMark && match && <mark ref={currentMatchRef} />}
+        </div>
+      </div>
+    );
+  }
+
+  function mountAtBottom(withMark: boolean) {
+    const state = { scrollTop: 9500 };
+    const view = render(<RowHarness match={undefined} withMark={withMark} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => 10000 });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true,
+      get: () => state.scrollTop,
+      set: (v: number) => { state.scrollTop = Math.min(v, 9500); },
+    });
+    for (let i = 0; i < 6; i++) flushFrame();
+    // Long past the open, so only the follow flag decides whether to pin.
+    clock = 10_000;
+    return { view, div, state };
+  }
+
+  it("is not pulled back to the bottom by content the jump lays out", () => {
+    Element.prototype.scrollIntoView = function () {
+      this.closest<HTMLElement>('[data-testid="scroller"]')!.scrollTop = 2000;
+    };
+    const { view, state } = mountAtBottom(true);
+
+    act(() => { view.rerender(<RowHarness match={SECOND} withMark />); });
+    expect(state.scrollTop).toBe(2000);
+
+    // `content-visibility` groups near the match paint for the first time, in
+    // the same frame and before the jump's `scroll` event is dispatched.
+    growContent();
+
+    expect(state.scrollTop).toBe(2000);
+  });
+
+  describe("a match its row draws no mark for", () => {
+    const painted = new Map<string, { ranges: Range[] }>();
+    const paintedRange = () => [...painted.values()][0]?.ranges[0];
+    let rangeRect: PropertyDescriptor | undefined;
+
+    beforeEach(() => {
+      painted.clear();
+      vi.stubGlobal("CSS", { highlights: painted });
+      vi.stubGlobal("Highlight", class { ranges: Range[]; constructor(...ranges: Range[]) { this.ranges = ranges; } });
+      rangeRect = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");
+      Range.prototype.getBoundingClientRect = () => ({ top: -6000, height: 20 }) as DOMRect;
+    });
+
+    afterEach(() => {
+      if (rangeRect) Object.defineProperty(Range.prototype, "getBoundingClientRect", rangeRect);
+      else delete (Range.prototype as { getBoundingClientRect?: unknown }).getBoundingClientRect;
+    });
+
+    function jumpToSecond() {
+      const mounted = mountAtBottom(false);
+      mounted.div.getBoundingClientRect = () => ({ top: 0, height: 500 }) as DOMRect;
+      act(() => { mounted.view.rerender(<RowHarness match={SECOND} withMark={false} />); });
+      return mounted;
+    }
+
+    it("is found in the row's text and painted until the search moves on", () => {
+      const { view, state } = jumpToSecond();
+
+      expect(paintedRange().toString()).toBe("needle");
+      // The second occurrence, not the one in <strong>.
+      expect(paintedRange().startContainer.textContent).toBe(TAIL);
+      expect(state.scrollTop).toBe(9500 - 6000 + 10 - 250);
+
+      act(() => { view.rerender(<RowHarness match={undefined} withMark={false} />); });
+      expect(painted.size).toBe(0);
+    });
+
+    it("is painted again, without another jump, when a streamed token rewrites its text", () => {
+      const { view, state } = jumpToSecond();
+      const jumpedTo = state.scrollTop;
+
+      act(() => { view.rerender(<RowHarness match={SECOND} withMark={false} tail={`${TAIL} and more`} />); });
+
+      expect(paintedRange().toString()).toBe("needle");
+      expect(state.scrollTop).toBe(jumpedTo);
+    });
+
+    it("is painted again when its row is remounted", () => {
+      const { view } = jumpToSecond();
+
+      // The status card's move re-parents rows, and React remounts them.
+      act(() => { view.rerender(<RowHarness match={SECOND} withMark={false} rowKey="moved" />); });
+
+      expect(paintedRange().startContainer.isConnected).toBe(true);
+      expect(paintedRange().toString()).toBe("needle");
+    });
+  });
+
+  it("keeps CompactLayout from restoring the row the reader was on before the jump", () => {
+    let guard = () => false;
+    const onRestoreGuard = (g: () => boolean) => { guard = g; };
+    Element.prototype.scrollIntoView = function () {
+      this.closest<HTMLElement>('[data-testid="scroller"]')!.scrollTop = 2000;
+    };
+    const { view, div } = mountAtBottom(true);
+    // A reader scrolled up, whose reading row a reveal would otherwise hold still.
+    div.scrollTop = 3000;
+    act(() => { div.dispatchEvent(new Event("scroll")); });
+    act(() => { view.rerender(<RowHarness match={undefined} withMark onRestoreGuard={onRestoreGuard} />); });
+    expect(guard()).toBe(true);
+
+    act(() => { view.rerender(<RowHarness match={SECOND} withMark onRestoreGuard={onRestoreGuard} />); });
+    // The restore that was running reads this on its next frame and stops.
+    expect(guard()).toBe(false);
+
+    // One that starts after the jump — closing the search — still runs.
+    flushFrame();
+    expect(guard()).toBe(true);
   });
 });
 

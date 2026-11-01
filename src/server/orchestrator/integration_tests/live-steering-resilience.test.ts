@@ -218,4 +218,92 @@ describe("Integration: live-steering resilience (docs/140 Phase 5)", () => {
 
     client.close();
   });
+
+  describe("a Stop and the messages around it (docs/330-stop-returns-queued-messages)", () => {
+    const returnedTexts = (m: AnyMsg): string[] | null =>
+      m.type === "queue_updated" && m.returned ? (m.returned as { text: string }[]).map((r) => r.text) : null;
+
+    async function steeredTurn(client: TestClient): Promise<FakeClaudeProcess> {
+      client.send({ type: "send_message", text: "Start steered turn" });
+      const claude = await waitForClaude(() => lastClaude);
+      claude.initSession("steer-stop-session");
+      return claude;
+    }
+
+    it("does not write a message sent after the Stop into the ending process; it runs next", async () => {
+      const client = await TestClient.connect(port);
+      await client.receive();
+      const claude = await steeredTurn(client);
+
+      client.send({ type: "interrupt_agent" });
+      await drainUntil(client, (m) => m.type === "agent_interrupted");
+      // The kill is under way, and the process has not ended yet.
+      client.send({ type: "send_message", text: "the redirect" });
+      expect(await drainUntil(client, (m) => m.type === "message_queued")).toMatchObject({ text: "the redirect" });
+      expect(claude.stdinData).not.toContain("the redirect");
+
+      claude.emit("done", 143);
+      const next = await waitForClaude(() => lastClaude, claude);
+      expect(next.lastPrompt).toContain("the redirect");
+
+      client.close();
+    });
+
+    it("returns a steer that the stopped agent never read, when its process ends with no result", async () => {
+      const client = await TestClient.connect(port);
+      await client.receive();
+      const claude = await steeredTurn(client);
+      claude.doneOnKill = true;
+      client.send({ type: "send_message", text: "compare this" });
+      await drainUntil(client, (m) => m.type === "message_steered");
+
+      client.send({ type: "interrupt_agent" });
+
+      const update = await drainUntil(client, (m) => returnedTexts(m) !== null);
+      expect(returnedTexts(update)).toEqual(["compare this"]);
+      await settle(250);
+      expect(lastClaude).toBe(claude);
+      const res = await fetch(`http://127.0.0.1:${String(port)}/api/sessions/${client.sessionId}/history`);
+      const history = await res.json() as { messages: { role: string; text?: string }[] };
+      expect(history.messages.filter((m) => m.role === "user").map((m) => m.text)).toEqual(["Start steered turn"]);
+
+      client.close();
+    });
+
+    it("returns a steer that the agent refuses after the stopped turn has ended", async () => {
+      const client = await TestClient.connect(port);
+      await client.receive();
+      const claude = await steeredTurn(client);
+      claude.doneOnKill = true;
+      client.send({ type: "send_message", text: "compare this" });
+      await drainUntil(client, (m) => m.type === "message_steered");
+      // Output after the steer: at the end of the turn it counts as read.
+      claude.emit("event", { type: "assistant", message: { content: [{ type: "text", text: "on it" }] } });
+
+      client.send({ type: "interrupt_agent" });
+      const runner = (app as AnyMsg).runnerRegistry.get(client.sessionId);
+      // Past the stopped turn's whole post-turn sequence, and so past its last drain.
+      await waitForCondition(() => !runner.running && runner.getAgent() === null && !runner.agentBusy);
+      await settle(100);
+      expect(runner.queueLength).toBe(0);
+
+      claude.emit("event", { type: "agent_steer_rejected", text: "compare this" });
+
+      const update = await drainUntil(client, (m) => returnedTexts(m) !== null);
+      expect(returnedTexts(update)).toEqual(["compare this"]);
+      expect(runner.queueLength).toBe(0);
+      await settle(250);
+      expect(lastClaude).toBe(claude);
+
+      client.close();
+    });
+  });
 });
+
+async function waitForCondition(fn: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!fn()) {
+    if (Date.now() > deadline) throw new Error("condition timed out");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}

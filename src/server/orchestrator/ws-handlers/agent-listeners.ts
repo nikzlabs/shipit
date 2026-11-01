@@ -1,10 +1,12 @@
 import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, LogSource } from "../../shared/types.js";
-import { costFromRates, resolveTurnCost, selectionOf, turnAttributionFor } from "../turn-attribution.js";
+import { atApiRatesFor, resolveTurnCost, selectionOf, turnAttributionFor, type PricedUsage } from "../turn-attribution.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { resetRunnerTurnState } from "../session-runner.js";
-import { noteTurnSubmitted } from "../turn-stop-request.js";
+import { noteTurnReady, noteTurnSubmitted, setSteerRefused, stoppedByUser, turnInSetup } from "../turn-stop-request.js";
+import { queueEntryId, requeueInSendOrder } from "../queue-identity.js";
+import { returnQueueSentBeforeStop } from "../queue-return.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import { retireRewindUndo } from "../chat-history.js";
 import type { CredentialFailurePolicy } from "../credential-failure-policy.js";
@@ -18,6 +20,7 @@ import {
 import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice-note-types.js";
 import { emitChatCard, emitNoticeInTurn, finalizeTurnRows, persistTurnInProgress } from "../chat-card-persistence.js";
 import { denyAbandonedPermissionCards, settlePermissionCard } from "../permission-cards.js";
+import { buildUnansweredPermissionNotice, watchPermissionWait } from "../permission-wait-notice.js";
 import type { CompactionCard } from "../../shared/types.js";
 import crypto from "node:crypto";
 import {
@@ -35,9 +38,10 @@ import {
   attachSubagentToolResults,
   attachToolResultsToGroup,
   requeueUndeliveredSteers,
+  stampLastGroup,
   steerToQueuedMessage,
 } from "./agent-message-builder.js";
-import { observeVoiceNotes } from "./agent-voice-handler.js";
+import { derivePermissionHeadline, observeVoiceNotes } from "./agent-voice-handler.js";
 import { retireFinishedBackgroundSubagent } from "./subagent-retire.js";
 import { wireAuthRequiredHandler } from "./agent-auth-handler.js";
 import {
@@ -86,6 +90,17 @@ export interface AgentListenerDeps {
 
 export const CONTEXT_WINDOW_TOKENS = DEFAULT_CONTEXT_WINDOW_TOKENS;
 
+// Whitespace-tolerant because the trimmed chunks it is matched across lose a split space.
+const MISSING_CONVERSATION = /No\s*conversation\s*found\s*with\s*session\s*ID/i;
+// docs/007 — the rewind point is not in the stored conversation, or a CLI bump dropped the flag.
+const MISSING_REWIND_POINT = /No\s*message\s*found\s*with\s*message\.uuid|unknown\s*option\s*'--resume-session-at'/i;
+const MISSING_CONVERSATION_WINDOW = 200;
+
+const CANNOT_RESUME_MESSAGE = "The agent could not resume this session's conversation. ShipIt kept it and did not "
+  + "start a new one. To continue in a new conversation, fork the session.";
+const CANNOT_REWIND_MESSAGE = "The agent could not rewind this session's conversation to the point you chose. "
+  + "ShipIt kept the conversation and did not start a new one. To continue from that point, fork the session there.";
+
 export interface WireListenersOpts {
   isNewSession: boolean;
   persistUserMessage: (sessionId: string) => void;
@@ -103,12 +118,24 @@ export interface WireListenersOpts {
   willRecoverAuth?: () => boolean;
   /** true means handled, including adopted turns healed without redispatch. */
   recoverAuth?: () => Promise<boolean>;
-  recoverMissingConversation?: (agentSessionId: string) => boolean;
+  /** The CLI could not resume the stored conversation and is exiting; the card is posted. */
+  onConversationNotFound?: () => void;
+  /** docs/007 req 5 — this turn's conversation id was stored: the session keeps that conversation. */
+  onConversationKept?: () => void;
   /** true transfers terminal cleanup to the retry. */
   willRetryOnQuotaError?: (err: Error) => boolean;
   useStreaming?: boolean;
   /** Distinct from streaming: Codex can emit final text after its result without starting a turn. */
   adoptsCliStartedTurns?: boolean;
+  /** docs/333-idle-compaction — a compaction turn's usage row starts no idle-compaction deadline. */
+  compactionTurn?: boolean;
+  /** docs/333-idle-compaction — a silent compaction is maintenance, not use of the session. */
+  maintenanceTurn?: boolean;
+  /**
+   * docs/333-idle-compaction — a turn adopted after a restart: its events are replayed, so when
+   * they arrive says nothing about when its requests ran, and its row carries no anchor.
+   */
+  anchorUnknown?: boolean;
 }
 
 /**
@@ -137,6 +164,7 @@ export function wireAgentListeners(
   if (!opts.capturedSessionId) {
     throw new Error("wireAgentListeners requires opts.capturedSessionId");
   }
+  const ownerSessionId = opts.capturedSessionId;
   const sessionAtTurnStart = deps.sessionManager.get(opts.capturedSessionId);
   let turnModel: string | undefined = sessionAtTurnStart?.model ?? deps.getSelectedModel();
   const turnAttributionAtStart = turnAttributionFor(selectionOf(sessionAtTurnStart));
@@ -152,23 +180,47 @@ export function wireAgentListeners(
 
   let hasLoggedAgentStart = false;
 
-  // Init precedes resume validation; wait for output before replacing the stored ID.
+  // Init precedes resume validation, and a fork's replay is retired with the write: an id
+  // is stored once its conversation answered (output or a successful result). See the
+  // result handler for the one unanswered case.
   let pendingAgentSessionId: string | null = null;
   let agentSessionIdPersisted = false;
   let missingConversationDetected = false;
+  let conversationAnswered = false;
   let sawTurnResult = false;
+  // Pipe chunks can split the CLI's line.
+  let recentStderr = "";
+
+  // docs/333-idle-compaction — when the turn's last model request started: the turn's start,
+  // or its last tool result, which the next request follows at once. Where it errs, it errs
+  // early, which compacts sooner and never after the cache is cold.
+  let cacheAnchorAt = Date.now();
+  let anchorKnown = opts.anchorUnknown !== true;
+  let compactionTurn = opts.compactionTurn === true;
+  let maintenanceTurn = opts.maintenanceTurn === true;
 
   const adoptCliStartedTurn = (reason: string): void => {
     if (!runner) return;
-    // Task notifications also arrive mid-turn; resetting then would erase its history.
-    const startsTurn = !runner.running;
+    // Task notifications also arrive mid-turn; resetting then would erase its history. A claim
+    // still in setup is no turn yet: the claiming turn waits for this one (planning#703). Only on
+    // a resident process — no next turn takes a one-shot one.
+    const startsTurn = !runner.running
+      || (opts.useStreaming === true && sawTurnResult && turnInSetup(runner));
     if (startsTurn) {
       resetRunnerTurnState(runner);
       wiredTurnEpoch = runner.turnEpoch;
+      // The CLI's own turn is ordinary work, also on a process a compaction ran on.
+      cacheAnchorAt = Date.now();
+      anchorKnown = true;
+      compactionTurn = false;
+      maintenanceTurn = false;
     }
     runner.running = true;
     // The CLI is already generating, so a Stop must reach its process.
     noteTurnSubmitted(runner);
+    // Only for the turn that this adoption began. A wake during another turn's setup must
+    // not say that the agent has that turn's prompt.
+    if (startsTurn) noteTurnReady(runner);
     const turnSessionId = opts.capturedSessionId;
     // A turn the CLI starts on its own is new use (docs/316 req 5).
     if (turnSessionId && startsTurn) deps.sessionManager.track(turnSessionId);
@@ -182,6 +234,7 @@ export function wireAgentListeners(
       });
       if (startsTurn && opts.useStreaming === true) {
         deps.sseBroadcast("session_agent_started", { sessionId: turnSessionId });
+        deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
       }
     }
     console.log(`[cli-turn] runner=${runner.sessionId} adopted a turn the orchestrator did not start (${reason})`);
@@ -196,6 +249,7 @@ export function wireAgentListeners(
     if (!turnSessionId) return;
     deps.sessionManager.setAgentSessionId(turnSessionId, pendingAgentSessionId);
     agentSessionIdPersisted = true;
+    opts.onConversationKept?.();
   };
 
   // Synthetic CLI answers can race the interrupt and disable unanswered cards.
@@ -212,30 +266,28 @@ export function wireAgentListeners(
 
   agent.on("log", (source: string, text: string) => {
     deps.broadcastLog(source as "stderr" | "stdout" | "server", text);
-    const missingConversation = source === "stderr"
-      ? /No conversation found with session ID:\s*([^\s]+)/i.exec(text)
+    if (source === "stderr") recentStderr = (recentStderr + text).slice(-MISSING_CONVERSATION_WINDOW);
+    // The stored id is kept and nothing is retried: only a fork starts a new conversation.
+    const message = source === "stderr" && !missingConversationDetected
+      ? MISSING_CONVERSATION.test(recentStderr)
+        ? CANNOT_RESUME_MESSAGE
+        : MISSING_REWIND_POINT.test(recentStderr) ? CANNOT_REWIND_MESSAGE : null
       : null;
-    if (missingConversation) {
-      if (!missingConversationDetected) {
-        missingConversationDetected = true;
-        pendingAgentSessionId = null;
-        const invalidId = missingConversation[1];
-        const recovering = opts.recoverMissingConversation?.(invalidId) ?? false;
-        if (!recovering) {
-          const message = "Couldn't resume the previous conversation. ShipIt could not start a fresh thread automatically; resend your message, or start a new session if the problem continues.";
-          const turnSessionId = opts.capturedSessionId;
-          if (runner && turnSessionId) {
-            emitChatCard(
-              runner,
-              { type: "error", message, sessionId: turnSessionId },
-              { role: "assistant", text: `Error: ${message}`, isError: true },
-              { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
-            );
-          } else {
-            emitToViewers({ type: "error", message });
-          }
-        }
+    if (message) {
+      missingConversationDetected = true;
+      pendingAgentSessionId = null;
+      const turnSessionId = opts.capturedSessionId;
+      if (runner && turnSessionId) {
+        emitChatCard(
+          runner,
+          { type: "error", message, sessionId: turnSessionId },
+          { role: "assistant", text: `Error: ${message}`, isError: true },
+          { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
+        );
+      } else {
+        emitToViewers({ type: "error", message });
       }
+      opts.onConversationNotFound?.();
     }
   });
 
@@ -270,12 +322,28 @@ export function wireAgentListeners(
           if (turnSessionId) {
             persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
           }
-          const position = runner.enqueue(steerToQueuedMessage(dropped));
-          emitToViewers({ type: "message_queued", text: dropped.text, position });
-          deps.broadcastLog(
-            "server",
-            `Live steer rejected by ${agent.agentId} — re-queued for the next turn.`,
-          );
+          if (!dropped.bestEffort) {
+            const requeued = steerToQueuedMessage(dropped);
+            // A message of the user's is back in the queue, and the delivery must not send it
+            // again by itself. A refused notice from another source says nothing about theirs.
+            if (requeued.execution === "interactive" && requeued.automatic !== true) {
+              setSteerRefused(runner, true);
+            }
+            const position = requeueInSendOrder(runner, requeued);
+            emitToViewers({
+              type: "message_queued",
+              sessionId: runner.sessionId,
+              id: queueEntryId(requeued),
+              text: dropped.text,
+              position,
+            });
+            deps.broadcastLog(
+              "server",
+              `Live steer rejected by ${agent.agentId} — re-queued for the next turn.`,
+            );
+            // The rejection can come after the stopped turn's last drain (docs/330).
+            returnQueueSentBeforeStop(runner);
+          }
         }
         // A worker with no agent at all would otherwise hold the turn, and the re-queued
         // message, until a viewer's reconciler noticed.
@@ -293,6 +361,7 @@ export function wireAgentListeners(
         );
         if (idx >= 0) {
           const next = steers.slice();
+          // Not stamped: a steer is stored as a queued command under another id (docs/007).
           next[idx] = { ...next[idx], delivered: true };
           runner.steeredMessages = next;
         }
@@ -399,11 +468,23 @@ export function wireAgentListeners(
           { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
         );
 
+        const startsWait = runner.awaitingPermissionIds.size === 0;
         runner.awaitingPermissionIds.add(event.requestId);
         deps.sseBroadcast("session_attention", {
           sessionId: turnSessionId,
           awaitingPermission: true,
         });
+        // One alert per wait, as the sidebar's: subagents can open several cards at once.
+        if (startsWait) {
+          deps.deliverVoiceNote?.({ summary: derivePermissionHeadline(event.toolName) }, runner, "permission");
+        }
+        // The main agent is blocked inside any other gated call, and reads no line until it returns.
+        if (event.subagent === "background") {
+          watchPermissionWait(runner, {
+            requestId: event.requestId,
+            summary: event.summary ?? event.toolName,
+          });
+        }
       }
       return;
     }
@@ -411,6 +492,8 @@ export function wireAgentListeners(
     if (event.type === "agent_permission_resolved") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId && runner) {
+        // A Stop also ends the call, and the user who pressed it knows why.
+        const unanswered = event.callEnded && !stoppedByUser(runner) ? event.callEnded : undefined;
         settlePermissionCard(
           runner,
           turnSessionId,
@@ -418,7 +501,14 @@ export function wireAgentListeners(
           event.requestId,
           event.behavior === "allow" ? "approved" : "denied",
           event.remembered,
+          unanswered && { ...(unanswered.waitedMs !== undefined ? { waitedMs: unanswered.waitedMs } : {}) },
         );
+        if (unanswered) {
+          deps.sessionManager.appendPendingAgentNotice(
+            turnSessionId,
+            buildUnansweredPermissionNotice(unanswered.summary),
+          );
+        }
       }
       return;
     }
@@ -497,10 +587,8 @@ export function wireAgentListeners(
       event.type === "agent_assistant" && event.isStreamCompletion;
     if (!isInternalStreamCompletion) {
       // Keep full bodies for persistence; only results persist synchronously in this tick.
-      const wireEvent = opts.capturedSessionId
-        ? projectAgentEventForWire(opts.capturedSessionId, event, (id) => toolTracker.getToolName(id))
-        : event;
-      emitToViewers({ type: "agent_event", event: wireEvent });
+      const wireEvent = projectAgentEventForWire(ownerSessionId, event, (id) => toolTracker.getToolName(id));
+      emitToViewers({ type: "agent_event", sessionId: ownerSessionId, event: wireEvent });
     }
 
     if (event.type === "agent_init") {
@@ -541,7 +629,7 @@ export function wireAgentListeners(
           emitNoticeInTurn(
             runner,
             turnSessionId,
-            "Guarded mode isn't available for this account or model, so this turn is running in auto mode (no command safety check). It needs a Max, Team, or Enterprise plan and a Sonnet or Opus model.",
+            "Guarded mode isn't available for this account or model, so this turn is running in auto mode (no command safety check). It needs a Max, Team, or Enterprise plan, and it does not run on Haiku before 5.5.",
             deps.chatHistoryManager,
             "warn",
           );
@@ -560,13 +648,16 @@ export function wireAgentListeners(
     if (event.type === "agent_assistant") {
       // Adopt before accumulation resets history. Init alone can be a mode-change response.
       if (
-        opts.adoptsCliStartedTurns && sawTurnResult && runner && !runner.running
-        && !event.parentToolUseId
+        opts.adoptsCliStartedTurns && sawTurnResult && runner
+        && (!runner.running || turnInSetup(runner)) && !event.parentToolUseId
       ) {
         adoptCliStartedTurn("post-result assistant output");
       }
 
-      persistAgentSessionIdIfReady();
+      if (!event.synthetic) {
+        conversationAnswered = true;
+        persistAgentSessionIdIfReady();
+      }
 
       const text = (event.content ?? [])
         .filter((b): b is ClaudeContentBlockText => b.type === "text")
@@ -604,6 +695,8 @@ export function wireAgentListeners(
 
       if ((text || toolBlocks.length > 0) && runner) {
         accumulateAssistantGroups(runner, text, toolBlocks);
+        // Text the CLI wrote itself may sit in a conversation that is never stored.
+        if (!event.synthetic && event.messageId) stampLastGroup(runner, event.messageId);
       }
 
       if (runner) {
@@ -641,6 +734,7 @@ export function wireAgentListeners(
     }
 
     if (event.type === "agent_tool_result") {
+      cacheAnchorAt = Date.now();
       const toolResults = extractToolResults(event);
 
       if (toolResults.length > 0) toolTracker.reportMcpCrashesFromResults(toolResults);
@@ -654,6 +748,7 @@ export function wireAgentListeners(
 
       if (toolResults.length > 0 && runner) {
         attachToolResultsToGroup(runner, toolResults);
+        if (event.messageId) stampLastGroup(runner, event.messageId);
       }
 
       const usageSessionId = opts.capturedSessionId;
@@ -668,13 +763,21 @@ export function wireAgentListeners(
     if (event.type === "agent_result") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId) {
-        if (!missingConversationDetected) {
+        // An unanswered failure (a refusal, a Stop) may only name a session's first
+        // conversation: never replace a stored id, nor retire a fork's replay unread.
+        const firstConversation = !sessionAtTurnStart?.agentSessionId
+          && !sessionAtTurnStart?.conversationReplay;
+        const storable = event.status === "success" || conversationAnswered || firstConversation;
+        if (!missingConversationDetected && storable) {
           deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
           agentSessionIdPersisted = true;
+          opts.onConversationKept?.();
         }
         // A PR that merged during this turn resolves the session (docs/316 req 5).
-        deps.sessionManager.touchUnlessResolved(turnSessionId);
-        deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
+        if (!maintenanceTurn) {
+          deps.sessionManager.touchUnlessResolved(turnSessionId);
+          deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
+        }
       }
 
       // Non-guarded turns can report permission denials too; do not call them classifier blocks.
@@ -730,17 +833,26 @@ export function wireAgentListeners(
         const turnAttribution =
           turnAttributionAtStart
           ?? turnAttributionFor(selectionOf(deps.sessionManager.get(usageSessionId)));
-        const resolvedCost = resolveTurnCost({
-          harnessId: agent.agentId,
-          attribution: turnAttribution,
-          reportedCostUsd: event.cost?.totalUsd,
+        const pricedUsage: PricedUsage = {
           tokens: {
             input: event.tokens?.input,
             output: event.tokens?.output,
             cacheRead: event.tokens?.cacheRead,
             cacheWrite: event.tokens?.cacheWrite,
           },
+          requests: event.requests,
+          contextTokens: event.contextTokens,
+        };
+        const resolvedCost = resolveTurnCost({
+          harnessId: agent.agentId,
+          attribution: turnAttribution,
+          reportedCostUsd: event.cost?.totalUsd,
+          usage: pricedUsage,
         });
+        // docs/333-idle-compaction — a turn whose requests read nothing did not touch the
+        // cache, so the previous turn's anchor still describes it.
+        const touchedCache =
+          (event.tokens?.input ?? 0) + (event.tokens?.cacheRead ?? 0) + (event.tokens?.cacheWrite ?? 0) > 0;
         perTurnUsage.costUsd = deps.usageManager.record(
           usageSessionId,
           resolvedCost.costUsd,
@@ -752,6 +864,7 @@ export function wireAgentListeners(
             cacheCreate: event.tokens?.cacheWrite,
             model: turnModel,
             contextTokens: event.contextTokens,
+            ...(event.requests ? { requests: event.requests } : {}),
             costSource: resolvedCost.costSource,
             // Preserve cumulative continuity across billing-mode changes.
             ...(event.cost?.totalUsd !== undefined
@@ -761,19 +874,17 @@ export function wireAgentListeners(
             ...(opts.getCapturedRouteId?.()
               ? { credentialRouteId: opts.getCapturedRouteId()! }
               : {}),
+            cacheScope: { agentId: agent.agentId, model: sessionAtTurnStart?.model ?? null },
+            ...(event.cacheTtl ? { cacheTtl: event.cacheTtl } : {}),
+            ...(!compactionTurn && anchorKnown && touchedCache ? { cacheAnchorAt } : {}),
           },
         );
         if (turnAttribution) {
           perTurnUsage.billingMode = turnAttribution.billingMode;
         }
-        if (turnAttribution?.billingMode === "sub") {
-          perTurnUsage.atApiRatesUsd = costFromRates(turnAttribution.rates, {
-            input: event.tokens?.input,
-            output: event.tokens?.output,
-            cacheRead: event.tokens?.cacheRead,
-            cacheWrite: event.tokens?.cacheWrite,
-          });
-        }
+        // The same function and inputs as the stored row, so reload shows this figure.
+        const atApiRates = atApiRatesFor(turnAttribution, pricedUsage);
+        if (atApiRates !== undefined) perTurnUsage.atApiRatesUsd = atApiRates;
         const sessionUsage = deps.usageManager.getSessionUsage(usageSessionId);
         if (sessionUsage) {
           const tokenTotals = deps.usageManager.getSessionTokenTotals(usageSessionId);
@@ -868,9 +979,10 @@ export function wireAgentListeners(
         }
       }
 
+      // A maintenance turn leaves the last real turn's outcome in place (docs/333-idle-compaction).
       const turnErrored = Boolean((event as { error?: unknown }).error) && !runner?.wasInterrupted;
-      if (runner) runner.lastTurnErrored = turnErrored;
-      if (turnSessionId) deps.sessionManager.setLastTurnErrored(turnSessionId, turnErrored);
+      if (runner && !maintenanceTurn) runner.lastTurnErrored = turnErrored;
+      if (turnSessionId && !maintenanceTurn) deps.sessionManager.setLastTurnErrored(turnSessionId, turnErrored);
 
       sawTurnResult = true;
 
@@ -939,8 +1051,10 @@ export function wireAgentListeners(
         runner.clearBackgroundTasks();
       }
       runner.running = false;
-      runner.lastTurnErrored = true;
-      if (turnSessionId) deps.sessionManager.setLastTurnErrored(turnSessionId, true);
+      if (!maintenanceTurn) {
+        runner.lastTurnErrored = true;
+        if (turnSessionId) deps.sessionManager.setLastTurnErrored(turnSessionId, true);
+      }
       runner.clearTurnEventBuffer();
       if (turnSessionId) {
         emitToViewers({

@@ -517,6 +517,7 @@ export class AntigravityAdapter
         || (exitCode === null && this.reapedAfterResult && this.resultStatus === "SUCCESS"));
     const tokens = this.usage.tokens;
     const contextTokens = this.usage.contextTokens;
+    const requests = this.usage.requests;
     const stderrText = antigravityStderrErrorText(this.stderrAll);
     this.emit("event", {
       type: "agent_result",
@@ -526,6 +527,7 @@ export class AntigravityAdapter
         ? { tokens: { input: tokens.input, output: tokens.output, cacheRead: tokens.cacheRead } }
         : {}),
       ...(contextTokens !== undefined ? { contextTokens } : {}),
+      ...(requests.length > 0 ? { requests } : {}),
       ...(this.resultDurationMs !== undefined ? { durationMs: this.resultDurationMs } : {}),
       ...(ok
         ? {}

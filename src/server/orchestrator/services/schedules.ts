@@ -159,15 +159,16 @@ function readTiming(value: unknown): ScheduleTiming {
   if (!timing) {
     throw new ServiceError(
       400,
-      'The timing must be a preset ({ kind: "hourly" | "daily" | "weekdays" | "weekly", … }) '
+      'The timing must be a preset ({ kind: "hourly" | "daily" | "weekdays" | "weekly", … }), '
+        + 'one run ({ kind: "once", date: "YYYY-MM-DD", hour, minute }) '
         + 'or a cron expression ({ kind: "cron", expression }).',
     );
   }
   return timing;
 }
 
-export function checkScheduleTiming(timing: ScheduleTiming, timeZone: string): void {
-  const problem = timingProblem(timing, timeZone);
+export function checkScheduleTiming(timing: ScheduleTiming, timeZone: string, now = new Date()): void {
+  const problem = timingProblem(timing, timeZone, now);
   if (problem) throw new ServiceError(400, problem);
 }
 
@@ -196,19 +197,22 @@ export function getSchedule(deps: ScheduleServiceDeps, id: string): ScheduleView
 
 /**
  * Create's checks and write, without telling the browser. Its first slot comes after now
- * (`active_since`): a schedule never runs for a time before it existed.
+ * (`active_since`): a schedule never runs for a time before it existed. The check and
+ * `active_since` read one clock, so a once time accepted as still to come can never fall
+ * at or before `active_since` (req 34).
  */
 export function insertSchedule(deps: Pick<ScheduleServiceDeps, "store" | keyof ScheduleSpecDeps>, input: unknown): Schedule {
+  const now = new Date();
   const fields = body(input);
   const name = readScheduleName(fields.name);
   const timeZone = readScheduleTimeZone(fields.timeZone);
   const timing = readTiming(fields.timing);
-  checkScheduleTiming(timing, timeZone);
+  checkScheduleTiming(timing, timeZone, now);
   const spec = readScheduleSpec(fields.spec, deps);
   if (fields.enabled !== undefined && typeof fields.enabled !== "boolean") {
     throw new ServiceError(400, "enabled must be true or false.");
   }
-  return deps.store.create({ name, enabled: fields.enabled !== false, timing, timeZone, spec });
+  return deps.store.create({ name, enabled: fields.enabled !== false, timing, timeZone, spec }, now.toISOString());
 }
 
 export function createSchedule(deps: ScheduleServiceDeps, input: unknown): ScheduleView {
@@ -248,8 +252,10 @@ export function applyScheduleUpdate(
   const timing = changes.timing ?? current.timing;
   const timeZone = changes.timeZone ?? current.timeZone;
   if (JSON.stringify(timing) !== JSON.stringify(current.timing) || timeZone !== current.timeZone) {
-    checkScheduleTiming(timing, timeZone);
-    changes.activeSince = new Date().toISOString();
+    // One clock for the check and `active_since`, as on create.
+    const now = new Date();
+    checkScheduleTiming(timing, timeZone, now);
+    changes.activeSince = now.toISOString();
   }
   if (fields.spec !== undefined) changes.spec = readScheduleSpec(fields.spec, deps);
   deps.store.update(id, changes);

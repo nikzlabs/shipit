@@ -1,13 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { setTimeout as realSleep } from "node:timers/promises";
 import { registerAgentOpsRoutes } from "./agent-ops-routes.js";
-import type { OrchestratorClient } from "./orchestrator-client.js";
+import { OrchestratorClient } from "./orchestrator-client.js";
 
 interface RecordedCall {
   method: string;
   path: string;
   body?: unknown;
+  timeoutMs?: number;
 }
 
 interface FakeResponse {
@@ -28,8 +32,9 @@ class FakeOrchestratorClient {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     suffix: string,
     body?: unknown,
+    opts?: { timeoutMs?: number },
   ): Promise<FakeResponse> {
-    this.calls.push({ method, path: suffix, body });
+    this.calls.push({ method, path: suffix, body, timeoutMs: opts?.timeoutMs });
     const key = `${method} ${suffix.split("?")[0]}`;
     return this.responses[key] ?? { ok: true, status: 200, body: {} };
   }
@@ -178,6 +183,18 @@ describe("agent-ops routes", () => {
 
     expect(res.statusCode).toBe(409);
     expect((res.json() as { error: string }).error).toContain("is off");
+  });
+
+  it("GET /agent-ops/branch/destructive-git-guard gives the hook no answer when the orchestrator gives none", async () => {
+    client.setResponse("GET", "/branch/destructive-git-guard", {
+      ok: false, status: 0, body: { error: "Could not reach orchestrator" },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/agent-ops/branch/destructive-git-guard" });
+
+    // The hook reads only a 2xx with a boolean, and takes its spawn value otherwise.
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).not.toHaveProperty("guarded");
   });
 
   it("POST /agent-ops/pr/create forwards to /pr/agent-create with body", async () => {
@@ -496,6 +513,42 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toContain("/children?turn=turn-xyz");
   });
 
+  it("GET /agent-ops/session/host-session-transcript forwards the target and the paging flags only", async () => {
+    client.setResponse("GET", "/host-session-transcript", {
+      ok: true, status: 200, body: { entries: [], stored: 0 },
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: "/agent-ops/session/host-session-transcript?target=7bc72326&last=5&before=40&since=2h&until=1h&full=true&other=1",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls).toHaveLength(1);
+    expect(client.calls[0].method).toBe("GET");
+    expect(client.calls[0].path).toBe(
+      "/host-session-transcript?target=7bc72326&since=2h&until=1h&last=5&before=40&full=true",
+    );
+  });
+
+  it("GET /agent-ops/session/host-session-transcript forwards an empty value, for the orchestrator to reject", async () => {
+    await app.inject({
+      method: "GET",
+      url: "/agent-ops/session/host-session-transcript?target=7bc72326&last=&since=",
+    });
+    expect(client.calls[0].path).toBe("/host-session-transcript?target=7bc72326&since=&last=");
+  });
+
+  it("GET /agent-ops/session/host-session-transcript passes the ops-only refusal through", async () => {
+    client.setResponse("GET", "/host-session-transcript", {
+      ok: false, status: 403, body: { error: "Host session inventory is only available in Ops sessions." },
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: "/agent-ops/session/host-session-transcript?target=7bc72326",
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toContain("only available in Ops sessions");
+  });
+
   it("GET /agent-ops/session/view/:childId forwards to /children/:childId", async () => {
     client.setResponse("GET", "/children/ses_x", {
       ok: true, status: 200,
@@ -784,6 +837,17 @@ describe("agent-ops routes", () => {
     expect(res.json().error).toContain("rate limit reached");
   });
 
+  it("POST /agent-ops/session/inbox reads the session's own inbox through /inbox/read", async () => {
+    client.setResponse("POST", "/inbox/read", {
+      ok: true, status: 200, body: { all: true, messages: [{ id: 1, text: "a report" }] },
+    });
+    const res = await app.inject({ method: "POST", url: "/agent-ops/session/inbox", payload: { all: true } });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().messages).toEqual([{ id: 1, text: "a report" }]);
+    expect(client.calls[0]).toMatchObject({ method: "POST", path: "/inbox/read", body: { all: true } });
+  });
+
   it("POST /agent-ops/agent/spawn forwards the whole explicit target", async () => {
     client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });
     const payload = {
@@ -891,6 +955,55 @@ describe("agent-ops routes", () => {
     });
     expect(client.calls[1]).toMatchObject({ body: { repo: "tools", force: true } });
   });
+
+  it("POST /agent-ops/plugin/exec forwards the id that the call's later stdin carries", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/agent-ops/plugin/exec",
+      payload: { alias: "reqs", command: "reqs", args: ["list"], cwd: "/workspace", stdinId: "call-1" },
+    });
+
+    expect(client.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/plugin/exec",
+      body: { alias: "reqs", command: "reqs", args: ["list"], cwd: "/workspace", stdinId: "call-1" },
+      timeoutMs: 0,
+    });
+  });
+
+  it("POST /agent-ops/plugin/exec/stdin relays one part of a call's stdin with no time limit, and the answer", async () => {
+    client.setResponse("POST", "/plugin/exec/stdin", { ok: true, status: 200, body: { accepted: false } });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/plugin/exec/stdin",
+      payload: { id: "call-1", seq: 4, data: "one\n", end: "yes" },
+    });
+
+    expect(res.json()).toEqual({ accepted: false });
+    expect(client.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/plugin/exec/stdin",
+      body: { id: "call-1", seq: 4, data: "one\n", end: false },
+      timeoutMs: 0,
+    });
+  });
+
+  it("POST /agent-ops/plugin/exec/stdin relays an input that was not delivered as an error", async () => {
+    client.setResponse("POST", "/plugin/exec/stdin", {
+      ok: false, status: 409, body: { error: "The call that this input belongs to did not arrive." },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/plugin/exec/stdin",
+      payload: { id: "call-1", seq: 0, data: "one\n" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ error: "The call that this input belongs to did not arrive." });
+  });
+
   it("GET /agent-ops/settings/list relays to the session's settings index", async () => {
     client.setResponse("GET", "/settings", {
       ok: true, status: 200,
@@ -915,5 +1028,135 @@ describe("agent-ops routes", () => {
       method: "GET",
       path: "/settings/detail?key=advanced.enableSubAgents",
     });
+  });
+});
+
+describe("agent-ops routes — the caller of a plugin command goes away (docs/262-plugins req 32)", () => {
+  interface Arrived {
+    url: string;
+    res: http.ServerResponse;
+    /** Null while the connection is open; then, whether it closed before the answer was complete. */
+    closedEarly: boolean | null;
+  }
+
+  let app: FastifyInstance;
+  let workerPort: number;
+  let orchestrator: http.Server;
+  let arrived: Arrived[];
+  const agents: http.Agent[] = [];
+
+  beforeEach(async () => {
+    arrived = [];
+    orchestrator = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        const call: Arrived = { url: req.url ?? "", res, closedEarly: null };
+        res.once("close", () => { call.closedEarly = !res.writableFinished; });
+        arrived.push(call);
+      });
+    });
+    await new Promise<void>((resolve) => { orchestrator.listen(0, "127.0.0.1", resolve); });
+    const { port } = orchestrator.address() as AddressInfo;
+    app = Fastify({ logger: false });
+    registerAgentOpsRoutes(app, {
+      createOrchestratorClient: () =>
+        new OrchestratorClient({ baseUrl: `http://127.0.0.1:${port}`, sessionId: "ses_me" }),
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    workerPort = (app.server.address() as AddressInfo).port;
+  });
+
+  afterEach(async () => {
+    for (const call of arrived) call.res.destroy();
+    for (const agent of agents.splice(0)) agent.destroy();
+    await app.close();
+    orchestrator.close();
+  });
+
+  // As the shim: one request, and a connection that the test can close.
+  function shim(agent: http.Agent | false): { req: http.ClientRequest; answer: Promise<unknown> } {
+    if (agent) agents.push(agent);
+    const payload = JSON.stringify({ alias: "reqs", command: "reqs" });
+    let req!: http.ClientRequest;
+    const answer = new Promise<unknown>((resolve) => {
+      req = http.request(
+        { host: "127.0.0.1", port: workerPort, path: "/agent-ops/plugin/exec", method: "POST", agent,
+          headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } },
+        (res) => {
+          let data = "";
+          res.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+          res.on("end", () => resolve({ status: res.statusCode, body: JSON.parse(data) }));
+        },
+      );
+      req.on("error", () => resolve("no answer"));
+      req.end(payload);
+    });
+    return { req, answer };
+  }
+
+  const atOrchestrator = async (): Promise<Arrived> => {
+    await vi.waitFor(() => { expect(arrived).toHaveLength(1); });
+    return arrived[0];
+  };
+
+  it("closes its connection to the orchestrator when the shim's connection closes before the answer", async () => {
+    const { req, answer } = shim(false);
+    const call = await atOrchestrator();
+    expect(call.url).toBe("/api/sessions/ses_me/plugin/exec");
+
+    req.destroy();
+
+    await vi.waitFor(() => { expect(call.closedEarly).toBe(true); });
+    expect(await answer).toBe("no answer");
+  });
+
+  it.each([
+    ["a connection of its own", (): false => false],
+    ["a connection that it keeps for the next call", (): http.Agent => new http.Agent({ keepAlive: true })],
+  ])("keeps the call of a shim that waits on %s, and gives it the answer", async (_name, agent) => {
+    const { answer } = shim(agent());
+    const call = await atOrchestrator();
+    // The request's own `close` event comes in this time, when its body was read.
+    await realSleep(100);
+    expect(call.closedEarly).toBeNull();
+
+    call.res.writeHead(200, { "content-type": "application/json" });
+    call.res.end(JSON.stringify({ exitCode: 0, stdout: "done\n" }));
+
+    expect(await answer).toEqual({ status: 200, body: { exitCode: 0, stdout: "done\n" } });
+    expect(call.closedEarly).toBe(false);
+  });
+});
+
+describe("agent-ops routes — a plugin command that has its answer", () => {
+  it("does not report the shim as gone when the connection closes after the answer", async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    const app = Fastify({ logger: false });
+    registerAgentOpsRoutes(app, {
+      createOrchestratorClient: () => ({
+        request: async (_method: string, _suffix: string, _body: unknown, opts?: { signal?: AbortSignal }) => {
+          signals.push(opts?.signal);
+          return { ok: true, status: 200, body: { exitCode: 0 } };
+        },
+      }) as unknown as OrchestratorClient,
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const { port } = app.server.address() as AddressInfo;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/agent-ops/plugin/exec`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Connection: "close" },
+        body: JSON.stringify({ alias: "reqs", command: "reqs" }),
+      });
+      expect(await res.json()).toEqual({ exitCode: 0 });
+      // The reply's `close` event comes in this time.
+      await realSleep(50);
+
+      expect(signals).toHaveLength(1);
+      expect(signals[0]?.aborted).toBe(false);
+    } finally {
+      await app.close();
+    }
   });
 });

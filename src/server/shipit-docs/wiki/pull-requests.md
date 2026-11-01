@@ -61,7 +61,8 @@ known here. And a **⋮** menu:
 |---|---|
 | **Auto-merge** switch | Only when the pull request is *not* open — while it is open the switch is on the card itself. Before one exists it arms in advance, and ShipIt applies it the moment the pull request opens |
 | **Auto-fix CI** switch | Only when the workspace auto-fix setting is on. Off here pauses auto-fixing for this session alone. A fix turn that is still waiting to start is removed; one already running finishes |
-| **Sync with `<base>`** | Whenever the session has a remote. Rebases onto the base; on a session whose pull request already merged it resets the branch to the base instead |
+| **Compact after merge** switch | When *"Start from the latest base after a merge"* is on and the session's harness can compact. The same choice as the composer's **Compact the context** box, kept for this session: off here, no turn of this session compacts after a merge |
+| **Sync with `<base>`** | Whenever the session has a remote. Rebases onto the base; on a session whose pull request already merged it resets the branch to the base instead. When no turn runs, a `.git/index.lock` older than ten minutes is removed as stale and the rebase runs once more |
 | **Copy branch name** | Whenever the branch is known |
 | **Close pull request** | Only while the pull request is open. Two clicks — the second confirms |
 
@@ -213,7 +214,11 @@ Two related things a user will ask about:
   makes sense on the finished result — re-running codegen or tests over the
   merged tree, updating the pull request body — must be armed with
   `shipit session continue-after-rebase --note "…"`, which ShipIt gives back to
-  you as a new turn once the rebase concludes.
+  you as a new turn once the rebase concludes. Your agent process ends with
+  the conflict-resolution turn, so a background job started in it stops there.
+- **The user can steer the conflict-resolution turn** like any turn: a message
+  they send goes into it. If they press **Stop** in it, ShipIt aborts the
+  rebase and the branch stays as it was, as when the turn fails.
 - If a push is refused because the branch has fallen behind, ShipIt says so
   above the composer and offers **Update branch**, which is the same rebase.
 
@@ -267,6 +272,19 @@ arms a watch and ends the turn; ShipIt wakes the session with a new turn when
 the pull request lands, and the armed watch appears in the transcript as a card
 the user can cancel.
 
+A wait also holds back the merge it waits for. In a repo-bound session, ShipIt
+performs a merge you requested with `--auto` only while the session is idle: no
+turn running, no background command or sub-agent consult still running, no
+message queued, and no work of ShipIt's own in progress on the branch. A `sleep`
+or a poll started in the background keeps the session busy while your CLI
+reports it, and its end normally starts a new turn. When a request has waited
+two minutes on a session that is not idle with no turn running, or ten minutes
+on a turn that still runs, the transcript gets one notice that names what holds
+it — that notice is the answer when the user asks why a pull request with green
+checks has not merged. A sandbox session
+is different: there `--auto` hands the merge to GitHub, which does not wait for
+the session.
+
 ## After it merges
 
 The card turns to **Merged**, and the session counts as resolved — it stops
@@ -285,10 +303,34 @@ base and the conversation is compacted before the message runs, and a card in
 the transcript records what moved.
 
 The two ticks are not symmetrical, which surprises people. Unticking **Compact
-the context** applies to that one message. Unticking **Start from the latest
-base** *answers the offer for that merge*: ShipIt records the decision, and
-neither control comes back — so the compaction stands down with it — until the
-next pull request merges.
+the context** is kept for the session: the box stays unticked after the next
+merge too, until the user ticks it again — there, or with the **Compact after
+merge** switch in the pull request's **⋮** menu, which shows the same choice.
+Unticking **Start from the latest base** *answers the offer for that merge*:
+ShipIt records the decision, and neither control comes back — so the compaction
+stands down with it — until the next pull request merges, when it is ticked
+again.
+
+The ticks govern what the user sends from the ShipIt view: a typed message, a
+button on a ShipIt card, and a message that a page you built sends through
+`window.shipit`. A turn that starts with nobody at the composer — a wake after a
+merge, a message from another session — has no tick to read, so the setting
+decides and it resets and compacts — unless the session's compaction choice is
+off, which holds for these turns too.
+
+No continuation compacts a context under 200,000 tokens — not even one sent
+with **Compact the context** ticked. The box is still shown, with a hint under
+it that says so, and the branch is still reset; only the compaction is left
+out. Under that size, the context is compacted only when the user asks for it:
+they send `/compact`, or they ask you to compact and you run
+`shipit compact --user-asked`.
+
+The context is compacted at most once for each merge: after a message
+compacted it, or was sent with **Compact the context** unticked, that box does
+not come back. If the reset could not be done on that message, a notice in the
+transcript gives the reason and your prompt says the branch was not reset. The
+**Start from the latest base** box stays for the next message, which tries the
+reset again; `shipit branch reset-to-base` does it at once.
 
 A session works one pull request at a time, so a second one is a fresh start on
 the same session, not two open at once.

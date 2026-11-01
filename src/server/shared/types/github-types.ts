@@ -298,4 +298,6 @@ export interface WsResetEligible {
   type: "reset_eligible";
   sessionId: string;
   eligible: boolean;
+  /** docs/295 — this merge's compaction is no longer on offer; only the reset control is shown. */
+  compactionSpent?: boolean;
 }

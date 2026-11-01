@@ -4,6 +4,7 @@ import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import { holdsActiveReservation } from "./sessions.js";
 import type { AgentId, WorkerAgentStatus } from "../shared/types.js";
+import type { WorkerResidentSpawn } from "../shared/types/agent-types.js";
 import { workerGet, workerPost } from "./worker-http.js";
 import { getErrorMessage } from "./validation.js";
 import { getContainerFreshness } from "./container-freshness.js";
@@ -85,6 +86,16 @@ export async function workerHasLiveWork(
   } catch {
     return true;
   }
+}
+
+/**
+ * planning#700 — what an idle streaming process was started with, when a runner can take it
+ * over: no turn and no self-wake, and a worker that kept the facts its spawn guards compare.
+ */
+export function attachableResident(status: WorkerAgentStatus): WorkerResidentSpawn | null {
+  if (!status.running || status.streaming !== true || status.runToken === undefined) return null;
+  if (status.turnActive !== false || status.selfWakeActive === true) return null;
+  return status.resident ?? null;
 }
 
 /**

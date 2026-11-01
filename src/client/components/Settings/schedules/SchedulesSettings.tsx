@@ -1,4 +1,4 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: read the schedules if no connection has yet, and Delete's list of unfinished runs (external system sync)
+// eslint-disable-next-line no-restricted-imports -- useEffect: read the schedules if no connection has yet, Delete's list of unfinished runs, and the clock at the next run time (external system sync)
 import { useCallback, useEffect, useState } from "react";
 import {
   ClockIcon,
@@ -36,6 +36,8 @@ import { browserTimeZone, formatRunTime, targetInWords } from "./schedule-format
 import { describeTiming } from "../../../../server/shared/schedule-describe.js";
 
 const STOPPING_RECHECK_MS = 3000;
+/** The longest delay `setTimeout` takes; a later run time is waited for in steps. */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 /**
  * docs/324-scheduled-sessions — Settings → Schedules (reqs 10, 11, 19, 24, 26, 32, 33): every
@@ -56,6 +58,15 @@ export function SchedulesSettings({ onOpenSession }: { onOpenSession?: (sessionI
   useEffect(() => {
     if (!useScheduleStore.getState().loaded) void useScheduleStore.getState().load();
   }, []);
+
+  const [clock, setClock] = useState(0);
+  // eslint-disable-next-line no-restricted-syntax -- external system sync: the clock. A run time that comes moves "next" on and marks a once time passed (req 34)
+  useEffect(() => {
+    const at = nextRunTime(schedules, new Date());
+    if (at === null) return;
+    const timer = setTimeout(() => setClock((c) => c + 1), Math.min(at - Date.now() + 1000, MAX_TIMEOUT_MS));
+    return () => clearTimeout(timer);
+  }, [schedules, clock]);
 
   const focusRef = useCallback((el: HTMLElement | null) => { el?.scrollIntoView?.({ block: "nearest" }); }, []);
 
@@ -164,6 +175,30 @@ function nextRunOf(schedule: ScheduleView): Date | string | undefined {
   }
 }
 
+/** The earliest coming run time of any schedule, paused ones included, in milliseconds. */
+function nextRunTime(schedules: ScheduleView[], now: Date): number | null {
+  let earliest: number | null = null;
+  for (const schedule of schedules) {
+    try {
+      const at = nextRuns(schedule.timing, schedule.timeZone, 1, now)[0]?.getTime();
+      if (at !== undefined && (earliest === null || at < earliest)) earliest = at;
+    } catch {
+      // A timing that no longer compiles shows no time.
+    }
+  }
+  return earliest;
+}
+
+/** Req 34 — a schedule that runs once has no run left after its time, paused or not. */
+function oncePassed(schedule: ScheduleView): boolean {
+  if (schedule.timing.kind !== "once") return false;
+  try {
+    return nextRuns(schedule.timing, schedule.timeZone, 1).length === 0;
+  } catch {
+    return false;
+  }
+}
+
 /** What the run starts on, in the words `START_PARAM_LABELS` gives the cards. */
 function startParamsInWords(params: SessionStartParams): string {
   if (params.role) return `Role ${START_PARAM_LABELS.role.describe(params.role)}`;
@@ -233,6 +268,11 @@ function ScheduleCard({
             {describeTiming(schedule.timing)}{zone}
             {next && (
               <span className="text-(--color-text-tertiary)"> · next {formatRunTime(next)}{zone && " your time"}</span>
+            )}
+            {oncePassed(schedule) && (
+              <span className="text-(--color-text-tertiary)" data-testid={`schedule-once-passed-${schedule.id}`}>
+                {" "}· the time has passed
+              </span>
             )}
           </p>
           <p className="mt-0.5 truncate text-xs text-(--color-text-tertiary)">

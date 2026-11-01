@@ -12,7 +12,7 @@ export const AUTO_RESOLVE_DEFERRED_COOLDOWN_MS = 60 * 1000;
 export const AUTO_RESOLVE_SETTLE_MS = 60 * 1000;
 
 /**
- * The one deferral reason that is not transient: a system turn cannot displace a resident
+ * The one deferral reason that is not transient: the resolution turn cannot replace a resident
  * agent running background work, and that work can last an hour. Retrying it on the
  * ordinary deferred cooldown is an unbounded loop (nikzlabs/shipit#2751).
  */

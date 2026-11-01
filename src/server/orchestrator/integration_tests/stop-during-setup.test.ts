@@ -6,6 +6,7 @@ import type { TurnOutcome } from "../turn-settlement.js";
 import { handleInterruptAgent } from "../ws-handlers/misc-handlers.js";
 import {
   makeDispatchTurnDeps,
+  makeFakeAgent,
   testDispatch,
   waitForTurn,
   type FakeAgent,
@@ -163,5 +164,70 @@ describe("Stop during turn setup", () => {
 
     pressStop();
     expect(interrupt).toHaveBeenCalledTimes(1);
+  });
+});
+
+// docs/329-user-steers-every-turn — a setup awaits, and a newer turn can have taken the
+// process or its slot when it resumes. Its prompt would then run beside that turn.
+describe("a turn that a newer one displaces during setup", () => {
+  it("does not write its prompt to a process that a newer turn took", async () => {
+    deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
+    dispatch("first");
+    await waitForTurn(() => agents[0]?.run.mock.calls.length === 1, "resident agent running");
+    const resident = agents[0]!;
+    resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => settled.length === 1, "first turn settled");
+
+    const setup = holdSetup();
+    dispatch("second");
+    await waitForTurn(setup.began, "env preparation");
+
+    // What the next turn does when it takes the resident process.
+    resident.emit("reused");
+    setup.release();
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(resident.sendUserMessage).not.toHaveBeenCalled();
+    // Told once, and that the agent never had the prompt.
+    expect(settled.map((o) => o.status)).toEqual(["completed", "dropped"]);
+  });
+
+  it("does not start its process when a newer turn took its slot", async () => {
+    const setup = holdSetup();
+    dispatch("first");
+    await waitForTurn(setup.began, "env preparation");
+    const agent = agents[0]!;
+
+    // What a newer turn does when it brings a process of its own.
+    runner.setAgent(makeFakeAgent() as never);
+    setup.release();
+
+    await waitForTurn(() => settled.length === 1, "turn settled");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(agent.run).not.toHaveBeenCalled();
+    expect(settled[0]!.status).toBe("dropped");
+  });
+
+  it("still submits when the CLI's own turn took and gave back the runner during the setup", async () => {
+    deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
+    dispatch("first");
+    await waitForTurn(() => agents[0]?.run.mock.calls.length === 1, "resident agent running");
+    const resident = agents[0]!;
+    resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => settled.length === 1, "first turn settled");
+
+    const setup = holdSetup();
+    dispatch("second");
+    await waitForTurn(setup.began, "env preparation");
+
+    // A result of the CLI's own turn clears `running`; its next wake claims the runner again.
+    resident.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => !runner.running, "the CLI's own turn ended");
+    resident.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    expect(runner.running).toBe(true);
+    setup.release();
+
+    await waitForTurn(() => resident.sendUserMessage.mock.calls.length === 1, "the prompt submitted");
+    expect(String(resident.sendUserMessage.mock.calls[0]?.[0])).toContain("second");
   });
 });

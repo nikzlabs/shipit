@@ -23,6 +23,7 @@ import type { FastifyInstance } from "fastify";
 import type { CredentialStore } from "../credential-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { WsBugReportCard, WsBugReportFiled, WsBugReportFailed } from "../../shared/types.js";
+import { MAX_BUG_REPORT_BODY_LENGTH, MAX_BUG_REPORT_TITLE_LENGTH } from "../../shared/bug-report-limits.js";
 
 describe("Integration: user bug filing", () => {
   let app: FastifyInstance;
@@ -121,6 +122,76 @@ describe("Integration: user bug filing", () => {
     expect(call.body).not.toContain("ghp_ABCDEFGHIJKLMNOP");
 
     client.close();
+  });
+
+  it("accepts a title and a body that are exactly as long as the limits", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    // The last character is one code point and two UTF-16 units.
+    const title = `${"t".repeat(MAX_BUG_REPORT_TITLE_LENGTH - 1)}\u{1F600}`;
+    const body = `${"word ".repeat(MAX_BUG_REPORT_BODY_LENGTH / 5 - 1)}word\u{1F600}`;
+    expect(Array.from(title)).toHaveLength(MAX_BUG_REPORT_TITLE_LENGTH);
+    expect(Array.from(body)).toHaveLength(MAX_BUG_REPORT_BODY_LENGTH);
+
+    const relay = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title, body },
+    });
+    expect(relay.statusCode).toBe(200);
+
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    expect(card.title).toBe(title);
+    expect(card.body.startsWith(body.trim())).toBe(true);
+
+    client.close();
+  });
+
+  it("refuses a title or a body above its limit with a message for the agent, and posts no card", async () => {
+    const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    const longBody = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "A bug", body: "x".repeat(MAX_BUG_REPORT_BODY_LENGTH + 1) },
+    });
+    expect(longBody.statusCode).toBe(413);
+    expect((longBody.json() as { error: string }).error).toBe(
+      "The body of the report is 60,001 characters; the maximum is 60,000. Shorten it: keep what happened and the steps to reproduce it, and quote only the log lines that show the problem. Then call report_shipit_bug again.",
+    );
+
+    const longTitle = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "t".repeat(MAX_BUG_REPORT_TITLE_LENGTH + 1), body: "Something is broken in the editor." },
+    });
+    expect(longTitle.statusCode).toBe(413);
+    expect((longTitle.json() as { error: string }).error).toBe(
+      "The title of the report is 257 characters; the maximum is 256. Shorten it. Then call report_shipit_bug again.",
+    );
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "The report that passes", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    expect(card.title).toBe("The report that passes");
+    expect(histMgr.load(sessionId).filter((m) => m.bugReport)).toHaveLength(1);
+
+    client.close();
+  });
+
+  it("checks the length before it looks for the session", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/no-such-session/bug-report",
+      payload: { title: "A bug", body: "x".repeat(MAX_BUG_REPORT_BODY_LENGTH + 1) },
+    });
+    expect(res.statusCode).toBe(413);
   });
 
   it("surfaces a GitHub scope error as a reconnect prompt", async () => {

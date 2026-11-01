@@ -39,12 +39,11 @@ describe("a superseded turn settles (planning#318)", () => {
 
     runner.dispatch(testDispatch({
       text: "Your PR #1971 merged.",
-      systemTurn: true,
+      automatic: true,
       deliveryId: "watch-1:1",
       onTurnComplete: (o) => outcomes.push(o),
     }));
     await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "wake turn started");
-    expect(runner.systemTurnInProgress).toBe(true);
 
     const usersAgent = makeFakeAgent();
     runner.setAgent(usersAgent as never);
@@ -53,7 +52,6 @@ describe("a superseded turn settles (planning#318)", () => {
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]!.status).toBe("interrupted");
     expect(outcomes[0]!.errored).toBe(false);
-    expect(runner.systemTurnInProgress).toBe(false);
   });
 
   it("settles WITHOUT running the superseded turn's teardown", async () => {
@@ -62,7 +60,7 @@ describe("a superseded turn settles (planning#318)", () => {
     deps.postTurnPrFlow = postTurnPrFlow;
     runner.enqueue({ text: "queued behind the wake", execution: "dispatched" });
 
-    runner.dispatch(testDispatch({ text: "wake", systemTurn: true, deliveryId: "watch-1:1" }));
+    runner.dispatch(testDispatch({ text: "wake", automatic: true, deliveryId: "watch-1:1" }));
     await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "wake turn started");
     expect(runner.running).toBe(true);
 
@@ -85,7 +83,7 @@ describe("a superseded turn settles (planning#318)", () => {
 
     runner.dispatch(testDispatch({
       text: "wake",
-      systemTurn: true,
+      automatic: true,
       onTurnComplete: (o) => outcomes.push(o),
     }));
     await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn started");
@@ -108,7 +106,7 @@ describe("a superseded turn settles (planning#318)", () => {
 
     runner.dispatch(testDispatch({
       text: "Your PR #1971 merged.",
-      systemTurn: true,
+      automatic: true,
       deliveryId: "watch-1:1",
       onTurnComplete: (o) => outcomes.push(o),
     }));
@@ -122,40 +120,6 @@ describe("a superseded turn settles (planning#318)", () => {
     expect(agents).toHaveLength(1);
   });
 
-  it("settles the turn whose resident process a drained system turn RETIRES", async () => {
-    const { runner, agents } = makeRunnerWithDeps();
-    const outcomesA: TurnOutcome[] = [];
-
-    runner.dispatch(testDispatch({
-      text: "Child PR #2104 merged.",
-      systemTurn: true,
-      deliveryId: "watch-2104:1",
-      onTurnComplete: (o) => outcomesA.push(o),
-    }));
-    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "wake A started");
-
-    runner.dispatch(testDispatch({
-      text: "Child PR #2105 merged.",
-      systemTurn: true,
-      deliveryId: "watch-2105:1",
-    }));
-    expect(runner.queueLength).toBe(1);
-
-    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitForTurn(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "wake B started");
-
-    expect(agents[0]!.kill).toHaveBeenCalled();
-    expect(outcomesA).toHaveLength(1);
-    expect(outcomesA[0]!.status).toBe("completed");
-    agents[0]!.emit("done", 0);
-    await flushTurn();
-    expect(outcomesA).toHaveLength(1);
-    expect(outcomesA[0]!.status).toBe("completed");
-
-    runner.clearQueue();
-    runner.dispose({ force: true });
-  });
-
   it("settles the retired turn at the ACCOUNT-FAILOVER retirement site too", async () => {
     const { runner, agents, deps } = makeRunnerWithDeps();
     const outcomes: TurnOutcome[] = [];
@@ -164,7 +128,7 @@ describe("a superseded turn settles (planning#318)", () => {
 
     runner.dispatch(testDispatch({
       text: "Child PR #2104 merged.",
-      systemTurn: true,
+      automatic: true,
       deliveryId: "watch-2104:1",
       onTurnComplete: (o) => outcomes.push(o),
     }));
@@ -190,7 +154,7 @@ describe("a superseded turn settles (planning#318)", () => {
 
     runner.dispatch(testDispatch({
       text: "Child PR #2104 merged.",
-      systemTurn: true,
+      automatic: true,
       deliveryId: "watch-2104:1",
       onTurnComplete: (o) => outcomes.push(o),
     }));
@@ -216,7 +180,7 @@ describe("a superseded turn settles (planning#318)", () => {
 
     runner.dispatch(testDispatch({
       text: "wake",
-      systemTurn: true,
+      automatic: true,
       onTurnComplete: (o) => outcomes.push(o),
     }));
     await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn started");

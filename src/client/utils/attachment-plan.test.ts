@@ -127,16 +127,16 @@ describe("buildAttachmentPlan — an existing upload re-attached as a file refer
     expect(plan.bubble.files).toEqual([{ path: "/uploads/notes.txt", contentPreview: "" }]);
   });
 
-  it("keeps workspace files in files and uploads in uploads", () => {
+  it("keeps workspace and /persist files in files and uploads in uploads", () => {
     const plan = buildAttachmentPlan({
       text: "both",
       uploadRefs: [],
       uploads: [],
-      pendingFiles: [{ path: "src/index.ts" }, { path: "/uploads/shot.png" }],
+      pendingFiles: [{ path: "src/index.ts" }, { path: "/persist/notes.md" }, { path: "/uploads/shot.png" }],
     });
     expect(plan.frame).toEqual({
       uploads: [SHOT],
-      files: [{ path: "src/index.ts" }],
+      files: [{ path: "src/index.ts" }, { path: "/persist/notes.md" }],
     });
   });
 

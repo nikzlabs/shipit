@@ -21,6 +21,7 @@ import type { SessionInfo } from "../../shared/types.js";
 import type { DatabaseManager } from "../../shared/database.js";
 import type { CredentialStore } from "../credential-store.js";
 import {
+  ADVERTISED_STATUS_LEN,
   MAX_NEEDS_YOU_ITEMS,
   MAX_STATUS_LEN,
 } from "../../shared/session-status-validation.js";
@@ -176,7 +177,7 @@ describe("Integration: session-status route", () => {
     expect(sessionManager.get(sessionId)?.sessionStatus).toBeUndefined();
   });
 
-  it("rejects an over-long status, naming the size and the cap", async () => {
+  it("rejects an over-long status, naming the size and the advertised cap (req 49)", async () => {
     const client = await TestClient.connect(port, sessionId);
     await client.receive();
 
@@ -184,7 +185,7 @@ describe("Integration: session-status route", () => {
     expect(res.statusCode).toBe(400);
     const { error } = res.json() as { error: string };
     expect(error).toContain(`${MAX_STATUS_LEN + 1} chars`);
-    expect(error).toContain(String(MAX_STATUS_LEN));
+    expect(error).toContain(`the cap is ${ADVERTISED_STATUS_LEN}`);
   });
 
   it("refuses while the setting is off, naming propose_actions (req 21)", async () => {

@@ -43,3 +43,28 @@ export function mockGitHubPulls(
   });
   return requests;
 }
+
+/**
+ * A GitHub that never answers: a request ends only when its own deadline does. A request sent
+ * with no deadline stays open, as it does against the real client.
+ */
+export function mockGitHubThatNeverAnswers(): { deadlines: number[]; reachDeadline: () => void } {
+  const deadlines: number[] = [];
+  const controllers: AbortController[] = [];
+  vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+    deadlines.push(ms);
+    const controller = new AbortController();
+    controllers.push(controller);
+    return controller.signal;
+  });
+  vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => new Promise<Response>((_resolve, reject) => {
+    const signal = init?.signal;
+    signal?.addEventListener("abort", () => { reject(signal.reason as Error); });
+  }));
+  return {
+    deadlines,
+    reachDeadline: () => {
+      for (const c of controllers) c.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+    },
+  };
+}

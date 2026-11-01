@@ -65,6 +65,7 @@ import { startSseKeepalive, startWebSocketKeepalive } from "./keepalive.js";
 import { currentUpdateNotice, versionAnchor } from "./services/update-notice.js";
 import { applyRoleToSession, resolveUserRole } from "./services/session-role.js";
 import { ServiceError } from "./services/types.js";
+import { returnedMessages } from "./queue-return.js";
 
 export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntime): void {
   const {
@@ -226,13 +227,15 @@ export async function registerRoutes(
     prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits, markSessionAccountExhausted,
     runRequestedRestartForTurn,
     runRequestedCompactionForTurn,
+    quotaContinuationManager,
+    reportStoppedBackgroundJobsForTurn,
     createSessionDir, warmSessionForRepo, waitForWarmSession,
     clientDir, logStore, buildId, version,
   } = rt;
   const { kickDiskEscalation } = monitors;
   const {
     agentMergeClaims, agentMergeExecutor, claimSessionService, scheduleStore, scheduleRunner, scheduleProposals,
-    scheduleNotes, scheduleNotesRequests,
+    scheduleNotes, scheduleNotesRequests, sessionInbox, sessionInboxStore,
   } = rt;
   const wsOriginPolicy = readOriginPolicyFromEnv();
 
@@ -248,6 +251,7 @@ export async function registerRoutes(
 
   await registerApiRoutes(app, {
     sessionManager,
+    quotaContinuation: quotaContinuationManager,
     kickDiskEscalation,
     cancelAutoPush: (sessionId: string) => autoPushScheduler.cancel(sessionId),
     scheduleAutoPush: (git: GitManager, sessionId?: string) => autoPushScheduler.schedule(git, sessionId),
@@ -303,6 +307,7 @@ export async function registerRoutes(
     prStatusPoller,
     releaseStatusPoller,
     mergeWatchManager,
+    sessionInbox,
     databaseManager,
     settingsProposals,
     secretStore,
@@ -512,7 +517,7 @@ export async function registerRoutes(
             })
           : undefined;
         const modelOwner = model && !roleDecidesHarness && !honouredAgent
-          ? agentRegistry.list().find((a) => a.capabilities.models.includes(model))
+          ? agentRegistry.list().find((a) => a.installed && a.capabilities.models.includes(model))
           : undefined;
         if (honouredAgent) {
           perConnectionAgentId = honouredAgent;
@@ -698,6 +703,7 @@ export async function registerRoutes(
           sessionId: sid,
           sessionStatus: session?.sessionStatus ?? null,
           agentGoal: session?.agentGoal ?? null,
+          compactAfterMergeOff: session?.compactAfterMergeOff === true,
         });
       };
       const offDetailsChanged = sessionManager.onDetailsChanged((sid) => {
@@ -797,16 +803,29 @@ export async function registerRoutes(
           if (buffered.type === "terminal_reconnecting") continue;
           // HTTP history carries current tasks; buffered tasks can be stale.
           if (buffered.type === "background_tasks") continue;
+          // The returned messages are state: the snapshot below names those that still wait.
+          if (buffered.type === "queue_updated" && buffered.returned) {
+            const { returned: _taken, ...rest } = buffered;
+            send(rest);
+            continue;
+          }
           // Keep system_user_message for its activity label; clientRequestId deduplicates it.
           send(buffered);
         }
         // Every rebase flow holds the runner, so a replayed start with no hold is one whose
         // terminator was lost; left alone it keeps the banner up and Sync disabled.
-        if (replayedRebaseStart && !runner.running && !runner.systemTurnInProgress) {
+        if (replayedRebaseStart && !runner.running && !runner.sessionHold) {
           send({ type: "rebase_aborted", sessionId: runner.sessionId });
         }
-        // An empty queue snapshot clears messages drained while disconnected.
-        send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+        // An empty queue snapshot clears messages drained while disconnected. The messages
+        // that a Stop returned wait on the runner until an input box has them (docs/330).
+        const returned = returnedMessages(runner);
+        send({
+          type: "queue_updated",
+          sessionId: runner.sessionId,
+          queue: runner.getQueueSnapshot(),
+          ...(returned.length > 0 ? { returned } : {}),
+        });
         if (runner.running || runner.queueLength > 0) {
           send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
         }
@@ -1049,7 +1068,8 @@ export async function registerRoutes(
         ...(deps.trackerFetchImpl !== undefined ? { trackerFetchImpl: deps.trackerFetchImpl } : {}),
         repoStore, warmSessionForRepo, generateText,
         egressAllowlistStore,
-        settingsProposals, scheduleProposals, scheduleNotesRequests, secretStore, serviceManagers, agentMergeClaims,
+        settingsProposals, scheduleProposals, scheduleNotesRequests, sessionInboxStore,
+        secretStore, serviceManagers, agentMergeClaims,
         ...(scheduleRunner ? { scheduledRuns: scheduleRunner } : {}),
         ...(containerManager ? { containerManager } : {}),
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
@@ -1057,6 +1077,8 @@ export async function registerRoutes(
         releaseStatusPoller,
         runRequestedRestart: runRequestedRestartForTurn,
         runRequestedCompaction: runRequestedCompactionForTurn,
+        quotaContinuation: quotaContinuationManager,
+        reportStoppedBackgroundJobs: reportStoppedBackgroundJobsForTurn,
         recordAgentRateLimits,
         markSessionAccountExhausted,
         getSubscriptionLimitsSnapshot: () => limitsRegistry?.getSnapshot() ?? {},
@@ -1361,6 +1383,7 @@ export async function registerRoutes(
           case "rewind_preview_request": return rollbackHandlers.handleRewindPreviewRequest(ctx, msg);
           case "rewind_restore_request": return rollbackHandlers.handleRewindRestoreRequest(ctx, msg);
           case "cancel_queued_message": { miscHandlers.handleCancelQueuedMessage(ctx, msg); return; }
+          case "queue_returned_taken": { miscHandlers.handleQueueReturnedTaken(ctx, msg); return; }
           case "interrupt_agent": { miscHandlers.handleInterruptAgent(ctx); return; }
           case "pr_tab_active": { miscHandlers.handlePrTabActive(ctx, msg); return; }
           case "init_preview_config": {

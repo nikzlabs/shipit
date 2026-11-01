@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  ADVERTISED_STATUS_LEN,
   MAX_LAST_TURN_LEN,
   MAX_NEEDS_YOU_ITEMS,
   MAX_NEEDS_YOU_LEN,
@@ -89,7 +90,7 @@ describe("validateSessionStatus", () => {
 
   it("caps the two fields", () => {
     expect(validateSessionStatus({ status: "s".repeat(MAX_STATUS_LEN + 1) }, stored)).toEqual({
-      error: expect.stringContaining(`the cap is ${MAX_STATUS_LEN}`),
+      error: expect.stringContaining(`the cap is ${ADVERTISED_STATUS_LEN}`),
     });
     expect(validateSessionStatus({ needsYou: ["n".repeat(MAX_NEEDS_YOU_LEN + 1)] }, stored)).toEqual({
       error: expect.stringContaining(`the cap is ${MAX_NEEDS_YOU_LEN}`),
@@ -97,6 +98,12 @@ describe("validateSessionStatus", () => {
     expect(validateSessionStatus({ status: "s".repeat(MAX_STATUS_LEN) }, stored)).toEqual({
       status: "s".repeat(MAX_STATUS_LEN),
     });
+  });
+
+  it("accepts a status that overshoots the advertised cap, short of the enforced one (req 49)", () => {
+    expect(ADVERTISED_STATUS_LEN).toBeLessThan(MAX_STATUS_LEN);
+    const overshoot = "s".repeat(ADVERTISED_STATUS_LEN + 100);
+    expect(validateSessionStatus({ status: overshoot }, stored)).toEqual({ status: overshoot });
   });
 
   it("refuses a non-string field", () => {

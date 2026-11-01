@@ -10,9 +10,7 @@ import {
   ensureSessionAgentUserConfig,
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
-  provisionSubAgentCredentials,
   provisionSubAgentSpawnHome,
-  releaseSubAgentCredentials,
   releaseSubAgentSpawnHome,
   removeSubAgentCredentials,
   subAgentSpawnHomeContainerDir,
@@ -30,8 +28,6 @@ import {
   repoMemoryDir,
   provisionRepoMemory,
   chownSessionCredentialsTree,
-  clearSubtreeBorrows,
-  subtreeBorrowInFlight,
 } from "./session-credentials.js";
 
 function seedCredentialsRoot(root: string): void {
@@ -55,7 +51,6 @@ describe("session-credentials", () => {
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
-    clearSubtreeBorrows();
   });
 
   it("computes the per-session dir and POSIX subpath", () => {
@@ -349,135 +344,14 @@ describe("session-credentials", () => {
     expect(readTail(path.join(accountA, ".claude", ".credentials.json"))).toBe("A-OLD");
   });
 
-  it("does not publish a BORROWED account's token into the session's own account root", () => {
-    const accountA = path.join(root, "provider-accounts", "claude", "acct-a");
-    const accountB = path.join(root, "provider-accounts", "claude", "acct-b");
-    writeClaudeToken(accountA, "A-FRESH", 12_000);
-    writeClaudeToken(accountB, "B-LIVE", 5_000);
-    provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-    provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-
-    syncProviderAccountTokenBack(root, sid, "claude", "acct-b");
-
-    expect(readTail(path.join(accountB, ".claude", ".credentials.json"))).toBe("B-LIVE");
-  });
-
-  it("does not publish a borrowed account's token into the flat root", () => {
+  it("does not publish an account's token into the flat root", () => {
     writeClaudeToken(root, "FLAT", 1_000);
     writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A-FRESH", 12_000);
-    fs.mkdirSync(perSessionCredentialsDir(root, sid), { recursive: true });
-    provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
+    provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
 
     syncAgentTokenBack(root, sid, "claude");
 
     expect(readTail(path.join(root, ".claude", ".credentials.json"))).toBe("FLAT");
-  });
-
-  it("records the borrowed account on the subtree marker, so the borrow is visible", () => {
-    writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
-    writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
-    provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-    expect(readSessionAccountMarker(root, sid).claude).toBe("acct-b");
-
-    provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-    expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
-
-    writeClaudeToken(perSessionCredentialsDir(root, sid), "A-ROTATED", 15_000);
-    syncProviderAccountTokenBack(root, sid, "claude", "acct-a");
-    expect(readTail(path.join(root, "provider-accounts", "claude", "acct-a", ".claude", ".credentials.json")))
-      .toBe("A-ROTATED");
-  });
-
-  /**
-   * Cross-harness consults do NOT get a private spawn home: they provision into
-   * `<sessionDir>/<credential path>`, one location per (session, harness). A
-   * session may have several running at once (the per-turn cap is 3 and a consult
-   * can be backgrounded), so the borrow record has to outlive the first of them
-   * to finish.
-   */
-  // Cross-harness consults share one subtree per (session, harness) — only
-  // same-harness ones get a private spawn home — and several can run at once.
-  describe("overlapping borrows of one subtree", () => {
-    const tokenPath = (dir: string): string => path.join(dir, ".claude", ".credentials.json");
-    const A = "consult-a";
-    const B = "consult-b";
-
-    beforeEach(() => {
-      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
-      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
-    });
-
-    it("keeps the credentials when the first of two overlapping consults finishes", () => {
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", B, "acct-b");
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", A)).toBeUndefined();
-
-      expect(
-        fs.existsSync(tokenPath(perSessionCredentialsDir(root, sid))),
-        "the first release wiped the subtree under a consult that is still running",
-      ).toBe(true);
-    });
-
-    it("wipes once the last consult has finished", () => {
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", B, "acct-b");
-      releaseSubAgentCredentials(root, sid, "claude", A);
-
-      releaseSubAgentCredentials(root, sid, "claude", B);
-
-      expect(fs.existsSync(tokenPath(perSessionCredentialsDir(root, sid)))).toBe(false);
-    });
-
-    it("returns the displaced account only to the last release", () => {
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", B, "acct-a");
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", A)).toBeUndefined();
-      expect(releaseSubAgentCredentials(root, sid, "claude", B)).toBe("acct-b");
-    });
-
-    it("blocks the session's own token write-back for the whole overlap", () => {
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", B, "acct-a");
-      releaseSubAgentCredentials(root, sid, "claude", A);
-
-      writeClaudeToken(perSessionCredentialsDir(root, sid), "BORROWED", 20_000);
-      syncAgentTokenBack(root, sid, "claude", { sessionOwnRoute: true });
-
-      expect(readTail(tokenPath(root))).not.toBe("BORROWED");
-    });
-
-    // Counting begin calls instead of holders leaves a record that never reaches
-    // zero, blocking the session's own write-back for the rest of the process.
-    it("treats a failover re-provision as the same holder, not a second one", () => {
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", A)).toBe("acct-b");
-      expect(subtreeBorrowInFlight(sid, "claude")).toBe(false);
-    });
-
-    it("is unchanged for a single borrow: one release restores and wipes", () => {
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", A)).toBe("acct-b");
-      expect(fs.existsSync(tokenPath(perSessionCredentialsDir(root, sid)))).toBe(false);
-    });
-
-    // Revocation and failover wipe without ending the borrow, so a release can
-    // arrive with no record; it must still clean up rather than silently skip.
-    it("still wipes for a release with no record open", () => {
-      provisionSubAgentCredentials(root, sid, "claude", A, "acct-a");
-      removeSubAgentCredentials(root, sid, "claude");
-      releaseSubAgentCredentials(root, sid, "claude", A);
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", B)).toBeUndefined();
-      expect(fs.existsSync(tokenPath(perSessionCredentialsDir(root, sid)))).toBe(false);
-    });
   });
 
   describe("same-harness spawn home isolation", () => {
@@ -742,41 +616,6 @@ describe("session-credentials", () => {
       });
     });
 
-    describe("cross-harness borrow cleanup", () => {
-      const strandedFiles = (accountRoot: string) => {
-        try {
-          return fs.readdirSync(path.join(accountRoot, ".shipit-stranded-tokens"));
-        } catch {
-          return [];
-        }
-      };
-
-      it("preserves a refused rotation before the borrowed subtree is wiped", () => {
-        const accountRoot = path.join(root, "provider-accounts", "claude", "acct-a");
-        writeClaudeToken(accountRoot, "A", 12_000);
-        provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-        const borrowed = path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json");
-        fs.writeFileSync(borrowed, '{"claudeAiOauth":{"accessToken":"tok-ROTATED"}}');
-
-        releaseSubAgentCredentials(root, sid, "claude", "consult-1");
-
-        expect(fs.existsSync(borrowed)).toBe(false);
-        const kept = strandedFiles(accountRoot);
-        expect(kept).toHaveLength(1);
-        expect(readTail(path.join(accountRoot, ".shipit-stranded-tokens", kept[0]))).toBe("ROTATED");
-      });
-
-      it("keeps nothing when the borrowed copy is provably superseded", () => {
-        const accountRoot = path.join(root, "provider-accounts", "claude", "acct-a");
-        writeClaudeToken(accountRoot, "A", 12_000);
-        provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-
-        releaseSubAgentCredentials(root, sid, "claude", "consult-1");
-
-        expect(strandedFiles(accountRoot)).toEqual([]);
-      });
-    });
-
     it("the container path pairs with the host path under the /credentials mount", () => {
       expect(subAgentSpawnHomeContainerDir(spawnId)).toBe(`/credentials/sub-agent-homes/${spawnId}`);
       expect(subAgentSpawnHomeDir(root, sid, spawnId)).toBe(
@@ -785,61 +624,26 @@ describe("session-credentials", () => {
     });
   });
 
-  describe("a borrow never loses the session's own account", () => {
-    const seedTwoAccounts = () => {
-      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
-      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
-    };
+  it("never exposes an empty account marker mid-write", () => {
+    writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
+    provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
 
-    it("restores the session's account after an ordinary borrow", () => {
-      seedTwoAccounts();
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-      provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", "consult-1")).toBe("acct-b");
+    const observed: (string | undefined)[] = [];
+    const realRename = fs.renameSync;
+    const spy = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      observed.push(readSessionAccountMarker(root, sid).claude);
+      realRename(from, to);
     });
+    try {
+      writeSessionAccountMarker(root, sid, "claude", "acct-a");
+    } finally {
+      spy.mockRestore();
+    }
 
-    it("survives a borrow taken while the marker reads as absent", () => {
-      seedTwoAccounts();
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-
-      provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-      removeSubAgentCredentials(root, sid, "claude");
-      expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
-
-      provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-      expect(releaseSubAgentCredentials(root, sid, "claude", "consult-1")).toBe("acct-b");
-    });
-
-    it("reports no account to restore for a session that never had one", () => {
-      seedTwoAccounts();
-      fs.mkdirSync(perSessionCredentialsDir(root, sid), { recursive: true });
-      provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", "consult-1")).toBeUndefined();
-    });
-
-    it("never exposes an empty marker mid-write", () => {
-      seedTwoAccounts();
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
-
-      const observed: (string | undefined)[] = [];
-      const realRename = fs.renameSync;
-      const spy = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
-        observed.push(readSessionAccountMarker(root, sid).claude);
-        realRename(from, to);
-      });
-      try {
-        writeSessionAccountMarker(root, sid, "claude", "acct-a");
-      } finally {
-        spy.mockRestore();
-      }
-
-      expect(observed).toEqual(["acct-b"]);
-      expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
-      const leftovers = fs.readdirSync(perSessionCredentialsDir(root, sid)).filter((f) => f.includes(".tmp-"));
-      expect(leftovers).toEqual([]);
-    });
+    expect(observed).toEqual(["acct-b"]);
+    expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
+    const leftovers = fs.readdirSync(perSessionCredentialsDir(root, sid)).filter((f) => f.includes(".tmp-"));
+    expect(leftovers).toEqual([]);
   });
 
   describe("write-back marker repair", () => {
@@ -891,7 +695,7 @@ describe("session-credentials", () => {
       }
     });
 
-    it("still refuses a caller that is publishing a BORROWED account", () => {
+    it("does not repair a lost marker for a caller that is not on the session's own route", () => {
       writeClaudeToken(accountA(), "A", 12_000);
       provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
       writeSessionAccountMarker(root, sid, "claude", null);
@@ -901,39 +705,6 @@ describe("session-credentials", () => {
 
       expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
       expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
-    });
-
-    it("refuses while a flat-route borrow holds the subtree", () => {
-      writeClaudeToken(accountA(), "A", 12_000);
-      writeClaudeToken(root, "FLAT", 1_000);
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", "consult-1");
-      rotateInSession();
-
-      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
-
-      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
-      expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
-
-      expect(releaseSubAgentCredentials(root, sid, "claude", "consult-1")).toBe("acct-a");
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
-      writeSessionAccountMarker(root, sid, "claude", null);
-      rotateInSession();
-      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
-      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("ROTATED");
-    });
-
-    it("refuses a session-route publish for the whole borrow, marker agreement included", () => {
-      writeClaudeToken(accountA(), "A", 1_000);
-      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
-      provisionSubAgentCredentials(root, sid, "claude", "consult-1", "acct-a");
-      expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
-      rotateInSession();
-
-      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
-
-      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
-      releaseSubAgentCredentials(root, sid, "claude", "consult-1");
     });
 
     it("still refuses when the marker names a different account", () => {
@@ -1131,13 +902,11 @@ describe("session-credentials", () => {
       path.join(nested, "projects", "-workspace", `${agentSessionId}.jsonl`),
     )).toBe(true);
 
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
 
     expect(fs.existsSync(
       path.join(sessionDir, ".claude", "projects", "-workspace", `${agentSessionId}.jsonl`),
     )).toBe(true);
-    expect(recovered).toEqual([agentSessionId]);
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
   });
 
@@ -1172,8 +941,7 @@ describe("session-credentials", () => {
     fs.writeFileSync(path.join(containerVisible, ".credentials.json"), claudeCreds("STALE", 1_000));
 
     syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default", undefined, undefined,
-      { repairLeakedSubtrees: false },
+      root, sid, "claude", "claude-default", { repairLeakedSubtrees: false },
     );
 
     expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(true);
@@ -1192,8 +960,7 @@ describe("session-credentials", () => {
     fs.writeFileSync(path.join(containerVisible, ".credentials.json"), claudeCreds("DEAD", 99_000));
 
     const wrote = repushProviderAccountToken(
-      root, sid, "claude", "claude-default", undefined, undefined,
-      { repairLeakedSubtrees: false },
+      root, sid, "claude", "claude-default", { repairLeakedSubtrees: false },
     );
 
     expect(wrote).toBe(true);
@@ -1247,13 +1014,8 @@ describe("session-credentials", () => {
     `${JSON.stringify({ sessionId: agentSessionId, type: "summary" })}\n`
     + `${JSON.stringify({ sessionId: agentSessionId, type: "user", message: { role: "user", content: "hi" } })}\n`
     + `${JSON.stringify({ sessionId: agentSessionId, type: "assistant", message: { role: "assistant", content: "hello" } })}\n`;
-  const stubJsonl = (agentSessionId: string) =>
-    `${JSON.stringify({ sessionId: agentSessionId, type: "last-prompt", prompt: "x" })}\n`
-    + `${JSON.stringify({ sessionId: agentSessionId, type: "ai-title", title: "y" })}\n`;
 
   it("non-destructive repair: merges orphan conversation history into the rebuilt .claude/", () => {
-    const recovered: (string | null)[] = [];
-    const onRecover = (id: string | null) => { recovered.push(id); };
     const agentSessionId = "b5903553-cab6-49a9-a9c0-855a7708867d";
     const { sessionDir } = seedLeakedSessionWithOrphanHistory({
       accessTail: "FRESH",
@@ -1263,7 +1025,7 @@ describe("session-credentials", () => {
       jsonlContents: resumableJsonl(agentSessionId),
     });
 
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", onRecover);
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
 
     expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
     expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("FRESH");
@@ -1272,48 +1034,35 @@ describe("session-credentials", () => {
     const lines = fs.readFileSync(mergedJsonl, "utf-8").trim().split("\n");
     expect(lines.length).toBe(3);
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
-    expect(recovered).toEqual([agentSessionId]);
   });
 
-  it("non-destructive repair: picks the most-recently-modified jsonl when multiple exist", () => {
-    const oldSid = "11111111-1111-4111-8111-111111111111";
-    const newSid = "22222222-2222-4222-8222-222222222222";
+  it("repairs the layout without reading a conversation file (docs/007)", () => {
     const account = path.join(root, "provider-accounts", "claude", "claude-default");
     fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
     const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(sessionDir, { recursive: true });
-    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
-    const orphanProjects = path.join(sessionDir, "provider-accounts", "claude", "claude-default", ".claude", "projects", "-workspace");
-    fs.mkdirSync(orphanProjects, { recursive: true });
-    const oldJsonl = path.join(orphanProjects, `${oldSid}.jsonl`);
-    const newJsonl = path.join(orphanProjects, `${newSid}.jsonl`);
-    fs.writeFileSync(oldJsonl, resumableJsonl(oldSid));
-    fs.writeFileSync(newJsonl, resumableJsonl(newSid));
-    const past = Date.now() / 1000 - 3600;
-    const now = Date.now() / 1000;
-    fs.utimesSync(oldJsonl, past, past);
-    fs.utimesSync(newJsonl, now, now);
+    const live = path.join(sessionDir, ".claude", "projects", "-workspace");
+    fs.mkdirSync(live, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
+    fs.writeFileSync(path.join(live, "live.jsonl"), resumableJsonl("live"));
+    const orphan = path.join(
+      sessionDir, "provider-accounts", "claude", "claude-default", ".claude", "projects", "-workspace",
+    );
+    fs.mkdirSync(orphan, { recursive: true });
+    fs.writeFileSync(path.join(orphan, "orphaned.jsonl"), resumableJsonl("orphaned"));
 
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
-
-    expect(recovered).toEqual([newSid]);
-  });
-
-  it("non-destructive repair: no orphan present → callback fires with null (clear signal)", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(sessionDir, { recursive: true });
-    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
-
-    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
-    expect(recovered).toEqual([null]);
+    const reads = vi.spyOn(fs, "readFileSync");
+    try {
+      syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
+      const conversationReads = reads.mock.calls
+        .map(([file]) => String(file))
+        .filter((file) => file.endsWith(".jsonl"));
+      expect(conversationReads).toEqual([]);
+    } finally {
+      reads.mockRestore();
+    }
+    expect(fs.existsSync(path.join(live, "orphaned.jsonl"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
   });
 
   it("non-destructive repair: shared-source files win on filename collision with orphan", () => {
@@ -1374,14 +1123,12 @@ describe("session-credentials", () => {
       resumableJsonl(agentSessionId),
     );
 
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
 
     expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
     const mergedJsonl = path.join(sessionDir, ".claude", "projects", "-workspace", `${agentSessionId}.jsonl`);
     expect(fs.existsSync(mergedJsonl)).toBe(true);
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
-    expect(recovered).toEqual([agentSessionId]);
     expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("FRESH");
   });
 
@@ -1393,10 +1140,8 @@ describe("session-credentials", () => {
     fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("EXISTING", 5_000));
 
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
+    syncProviderAccountTokenIn(root, sid, "claude", "claude-default");
 
-    expect(recovered).toEqual([]);
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
   });
 
@@ -1448,14 +1193,12 @@ describe("session-credentials", () => {
       resumableJsonl(agentSessionId),
     );
 
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", ACCT_UUID, (id) => { recovered.push(id); });
+    syncProviderAccountTokenIn(root, sid, "claude", ACCT_UUID);
 
     expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("ORPHAN");
     expect(fs.existsSync(
       path.join(sessionDir, ".claude", "projects", "-workspace", `${agentSessionId}.jsonl`),
     )).toBe(true);
-    expect(recovered).toEqual([agentSessionId]);
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
   });
 
@@ -1485,14 +1228,12 @@ describe("session-credentials", () => {
       resumableJsonl("newer-id"),
     );
 
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", ACCT_UUID, (id) => { recovered.push(id); });
+    syncProviderAccountTokenIn(root, sid, "claude", ACCT_UUID);
 
     const merged = path.join(sessionDir, ".claude", "projects", "-workspace");
     expect(fs.existsSync(path.join(merged, "older.jsonl"))).toBe(true);
     expect(fs.existsSync(path.join(merged, "newer.jsonl"))).toBe(true);
     expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
-    expect(recovered).toEqual(["older-id"]);
     expect(readTail(path.join(sessionDir, ".claude", ".credentials.json"))).toBe("OLDER");
   });
 
@@ -1543,225 +1284,6 @@ describe("session-credentials", () => {
     }
 
     expect(warnings.filter((line) => line.includes("has no token file"))).toEqual([]);
-  });
-
-  it("non-destructive repair (case 4): recovers when DB agent_session_id has no matching jsonl on disk", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const goodSid = "b5903553-cab6-49a9-a9c0-855a7708867d";
-    const olderSid1 = "11111111-1111-4111-8111-111111111111";
-    const olderSid2 = "22222222-2222-4222-8222-222222222222";
-    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-    fs.mkdirSync(projectsDir, { recursive: true });
-    fs.writeFileSync(path.join(projectsDir, `${olderSid1}.jsonl`), resumableJsonl(olderSid1));
-    fs.writeFileSync(path.join(projectsDir, `${olderSid2}.jsonl`), resumableJsonl(olderSid2));
-    fs.writeFileSync(path.join(projectsDir, `${goodSid}.jsonl`), resumableJsonl(goodSid));
-    const now = Date.now() / 1000;
-    fs.utimesSync(path.join(projectsDir, `${olderSid1}.jsonl`), now - 7200, now - 7200);
-    fs.utimesSync(path.join(projectsDir, `${olderSid2}.jsonl`), now - 3600, now - 3600);
-    fs.utimesSync(path.join(projectsDir, `${goodSid}.jsonl`), now, now);
-
-    const staleSid = "ffffffff-ffff-4fff-8fff-ffffffffffff";
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      staleSid,
-    );
-
-    expect(recovered).toEqual([goodSid]);
-    expect(fs.existsSync(path.join(projectsDir, `${olderSid1}.jsonl`))).toBe(true);
-    expect(fs.existsSync(path.join(projectsDir, `${olderSid2}.jsonl`))).toBe(true);
-    expect(fs.existsSync(path.join(projectsDir, `${goodSid}.jsonl`))).toBe(true);
-  });
-
-  it("non-destructive repair (case 4): no callback when the DB id already matches an on-disk jsonl", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const goodSid = "b5903553-cab6-49a9-a9c0-855a7708867d";
-    const olderSid = "11111111-1111-4111-8111-111111111111";
-    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-    fs.mkdirSync(projectsDir, { recursive: true });
-    fs.writeFileSync(path.join(projectsDir, `${goodSid}.jsonl`), resumableJsonl(goodSid));
-    fs.writeFileSync(path.join(projectsDir, `${olderSid}.jsonl`), resumableJsonl(olderSid));
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      goodSid,
-    );
-
-    expect(recovered).toEqual([]);
-  });
-
-  it("non-destructive repair (case 4): no-op when currentAgentSessionId is null (fresh session)", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      null,
-    );
-
-    expect(recovered).toEqual([]);
-  });
-
-  it("non-destructive repair (case 4): callback fires with null when DB id has no resumable jsonl on disk", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      "doesnt-matter-no-projects-exist",
-    );
-
-    expect(recovered).toEqual([null]);
-  });
-
-  it("non-destructive repair: malformed jsonl first line → no callback fired", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(sessionDir, { recursive: true });
-    fs.symlinkSync(path.join(account, ".claude"), path.join(sessionDir, ".claude"));
-    const orphanProjects = path.join(sessionDir, "provider-accounts", "claude", "claude-default", ".claude", "projects", "-workspace");
-    fs.mkdirSync(orphanProjects, { recursive: true });
-    fs.writeFileSync(path.join(orphanProjects, "garbage.jsonl"), "not json at all\n");
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(root, sid, "claude", "claude-default", (id) => { recovered.push(id); });
-
-    expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(false);
-    expect(recovered).toEqual([null]);
-  });
-
-  it("validator: picks an older real-conversation jsonl over a newer stub-only jsonl", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-    fs.mkdirSync(projectsDir, { recursive: true });
-
-    const realSid = "11111111-1111-4111-8111-111111111111";
-    const stubSid = "22222222-2222-4222-8222-222222222222";
-    fs.writeFileSync(path.join(projectsDir, `${realSid}.jsonl`), resumableJsonl(realSid));
-    fs.writeFileSync(path.join(projectsDir, `${stubSid}.jsonl`), stubJsonl(stubSid));
-    const now = Date.now() / 1000;
-    fs.utimesSync(path.join(projectsDir, `${realSid}.jsonl`), now - 3600, now - 3600);
-    fs.utimesSync(path.join(projectsDir, `${stubSid}.jsonl`), now, now);
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      "stale-db-id-with-no-jsonl",
-    );
-
-    expect(recovered).toEqual([realSid]);
-  });
-
-  it("validator: ignores a newer resumable conversation from a different project bucket", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-
-    const workspaceSid = "11111111-1111-4111-8111-111111111111";
-    const otherProjectSid = "9ee27e97-b788-4aed-b1e0-d87c23e2eebf";
-    const workspaceDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-    const otherProjectDir = path.join(sessionDir, ".claude", "projects", "-tmp-other-project");
-    fs.mkdirSync(workspaceDir, { recursive: true });
-    fs.mkdirSync(otherProjectDir, { recursive: true });
-    fs.writeFileSync(path.join(workspaceDir, `${workspaceSid}.jsonl`), resumableJsonl(workspaceSid));
-    fs.writeFileSync(path.join(otherProjectDir, `${otherProjectSid}.jsonl`), resumableJsonl(otherProjectSid));
-    const now = Date.now() / 1000;
-    fs.utimesSync(path.join(workspaceDir, `${workspaceSid}.jsonl`), now - 60, now - 60);
-    fs.utimesSync(path.join(otherProjectDir, `${otherProjectSid}.jsonl`), now, now);
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      "stale-db-id-with-no-jsonl",
-    );
-
-    expect(recovered).toEqual([workspaceSid]);
-  });
-
-  it("validator: only-stub jsonls present → callback fires with null (clear signal)", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-    fs.mkdirSync(projectsDir, { recursive: true });
-    const stubSid1 = "11111111-1111-4111-8111-111111111111";
-    const stubSid2 = "22222222-2222-4222-8222-222222222222";
-    fs.writeFileSync(path.join(projectsDir, `${stubSid1}.jsonl`), stubJsonl(stubSid1));
-    fs.writeFileSync(path.join(projectsDir, `${stubSid2}.jsonl`), stubJsonl(stubSid2));
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      "stale-db-id-with-no-jsonl",
-    );
-
-    expect(recovered).toEqual([null]);
-  });
-
-  it("validator: DB id points at a stub-only jsonl → fires Case 4 anyway, recovers from a sibling real jsonl", () => {
-    const account = path.join(root, "provider-accounts", "claude", "claude-default");
-    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const sessionDir = perSessionCredentialsDir(root, sid);
-    fs.mkdirSync(path.join(sessionDir, ".claude"), { recursive: true });
-    fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-    const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-    fs.mkdirSync(projectsDir, { recursive: true });
-
-    const stubSidInDb = "856d63e4-stub-pointer-from-prod-aaaa";
-    const realSid = "11111111-1111-4111-8111-111111111111";
-    fs.writeFileSync(path.join(projectsDir, `${stubSidInDb}.jsonl`), stubJsonl(stubSidInDb));
-    fs.writeFileSync(path.join(projectsDir, `${realSid}.jsonl`), resumableJsonl(realSid));
-
-    const recovered: (string | null)[] = [];
-    syncProviderAccountTokenIn(
-      root, sid, "claude", "claude-default",
-      (id) => { recovered.push(id); },
-      stubSidInDb,
-    );
-
-    expect(recovered).toEqual([realSid]);
   });
 
   describe("docs/274 req 13 — a rotating Grok subscription token", () => {
@@ -1937,16 +1459,10 @@ describe("session-credentials", () => {
       fs.mkdirSync(path.dirname(path.join(orphan, rolloutRel)), { recursive: true });
       fs.writeFileSync(path.join(orphan, rolloutRel), `${JSON.stringify({ id: threadId })}\n`);
 
-      const recovered: (string | null)[] = [];
-      syncProviderAccountTokenIn(
-        root, sid, "codex", "codex-default",
-        (id) => { recovered.push(id); },
-        threadId,
-      );
+      syncProviderAccountTokenIn(root, sid, "codex", "codex-default");
 
       expect(fs.existsSync(path.join(sessionDir, ".codex", rolloutRel))).toBe(true);
       expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
-      expect(recovered).toEqual([]);
     });
 
     it("keeps the orphan when preservation fails — never delete the only copy", () => {
@@ -1978,81 +1494,6 @@ describe("session-credentials", () => {
       expect(fs.existsSync(path.join(sessionDir, "provider-accounts"))).toBe(false);
     });
 
-    it("clears a stale Codex thread pointer when no rollout exists on disk", () => {
-      const account = path.join(root, "provider-accounts", "codex", "codex-default");
-      fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
-      fs.writeFileSync(path.join(account, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
-      const sessionDir = perSessionCredentialsDir(root, sid);
-      fs.mkdirSync(path.join(sessionDir, ".codex", "sessions"), { recursive: true });
-      fs.writeFileSync(path.join(sessionDir, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
-
-      const recovered: (string | null)[] = [];
-      syncProviderAccountTokenIn(
-        root, sid, "codex", "codex-default",
-        (id) => { recovered.push(id); },
-        threadId,
-      );
-
-      expect(recovered).toEqual([null]);
-    });
-
-    it("leaves a live Codex thread pointer alone when its rollout is present", () => {
-      const account = path.join(root, "provider-accounts", "codex", "codex-default");
-      fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
-      fs.writeFileSync(path.join(account, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
-      const sessionDir = perSessionCredentialsDir(root, sid);
-      fs.mkdirSync(path.dirname(path.join(sessionDir, ".codex", rolloutRel)), { recursive: true });
-      fs.writeFileSync(path.join(sessionDir, ".codex", rolloutRel), "{}\n");
-      fs.writeFileSync(path.join(sessionDir, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
-
-      const recovered: (string | null)[] = [];
-      syncProviderAccountTokenIn(
-        root, sid, "codex", "codex-default",
-        (id) => { recovered.push(id); },
-        threadId,
-      );
-
-      expect(recovered).toEqual([]);
-    });
-
-    it("does not clear on a fresh session with no thread pointer yet", () => {
-      const account = path.join(root, "provider-accounts", "codex", "codex-default");
-      fs.mkdirSync(path.join(account, ".codex"), { recursive: true });
-      fs.writeFileSync(path.join(account, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
-      const sessionDir = perSessionCredentialsDir(root, sid);
-      fs.mkdirSync(path.join(sessionDir, ".codex"), { recursive: true });
-      fs.writeFileSync(path.join(sessionDir, ".codex", "auth.json"), codexAuth("FRESH", 9_000_000_000));
-
-      const recovered: (string | null)[] = [];
-      syncProviderAccountTokenIn(
-        root, sid, "codex", "codex-default",
-        (id) => { recovered.push(id); },
-        null,
-      );
-
-      expect(recovered).toEqual([]);
-    });
-
-    it("a Claude session's jsonl state is unaffected by the Codex probe", () => {
-      const account = path.join(root, "provider-accounts", "claude", "claude-default");
-      fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
-      fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-      const sessionDir = perSessionCredentialsDir(root, sid);
-      const projectsDir = path.join(sessionDir, ".claude", "projects", "-workspace");
-      fs.mkdirSync(projectsDir, { recursive: true });
-      fs.writeFileSync(path.join(sessionDir, ".claude", ".credentials.json"), claudeCreds("FRESH", 9_000));
-      const claudeSid = "11111111-1111-4111-8111-111111111111";
-      fs.writeFileSync(path.join(projectsDir, `${claudeSid}.jsonl`), resumableJsonl(claudeSid));
-
-      const recovered: (string | null)[] = [];
-      syncProviderAccountTokenIn(
-        root, sid, "claude", "claude-default",
-        (id) => { recovered.push(id); },
-        claudeSid,
-      );
-
-      expect(recovered).toEqual([]);
-    });
   });
 
   it("removeSessionCredentials drops the subtree and is idempotent", () => {
@@ -2065,27 +1506,26 @@ describe("session-credentials", () => {
   });
 
   describe("sub-agent credentials (docs/144)", () => {
-    it("provisions only the sub-agent subtree next to the pinned agent's", () => {
-      provisionAgentCredentials(root, sid, "claude");
-      const dir = perSessionCredentialsDir(root, sid);
-      expect(fs.existsSync(path.join(dir, ".claude"))).toBe(true);
-      expect(fs.existsSync(path.join(dir, ".codex"))).toBe(false);
-
-      provisionSubAgentCredentials(root, sid, "codex", "consult-1");
-      expect(fs.existsSync(path.join(dir, ".codex", "auth.json"))).toBe(true);
-      expect(fs.existsSync(path.join(dir, ".claude", ".credentials.json"))).toBe(true);
-    });
-
     it("removes cross-provider auth and config, leaving the pinned agent intact", () => {
       provisionAgentCredentials(root, sid, "claude");
-      provisionSubAgentCredentials(root, sid, "codex", "consult-1");
+      provisionAgentCredentials(root, sid, "codex");
       const dir = perSessionCredentialsDir(root, sid);
-      expect(fs.existsSync(path.join(dir, ".codex"))).toBe(true);
+      expect(fs.existsSync(path.join(dir, ".codex", "auth.json"))).toBe(true);
 
       removeSubAgentCredentials(root, sid, "codex");
       expect(fs.existsSync(path.join(dir, ".codex", "auth.json"))).toBe(false);
       expect(fs.existsSync(path.join(dir, ".claude", ".credentials.json"))).toBe(true);
       expect(fs.existsSync(path.join(dir, ".claude.json"))).toBe(true);
+    });
+
+    it("clears the account marker with the subtree", () => {
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+      expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
+
+      removeSubAgentCredentials(root, sid, "claude");
+
+      expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
     });
 
     it("preserves a Codex parent's rollout across same-harness reviewer cleanup", () => {

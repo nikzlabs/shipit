@@ -485,6 +485,26 @@ session still pays ~0 and only a session the new base does **not** satisfy pays 
 The pre-`g<N>` layout (a bare `upper/` + `work/` under the scope dir) counts as superseded too, so
 the upgrade itself takes the marker drop rather than silently emptying every live session's upper.
 
+**The pre-stamp vouches only for an EMPTY upper (nikzlabs/shipit#3234 follow-up).** The pointer
+describes the base, not the merged view, and the install controller drops the marker before every
+install. So "no marker" plus "the upper holds entries" is usually an install that failed or was
+killed — a container recreate mid-`npm ci` is the common shape — and its partial files and
+whiteouts shadow the base. Stamping there skipped the one install that would repair the tree, for
+every dep-dir kind; the worker's npm completeness check (`incompleteNpmDepDirs`) caught only
+`node_modules`. `preStampInstallMarker` now refuses unless every spec's upper is empty (an
+unreadable or unlocatable one counts as used). The fast paths keep it: a new session and a rotation
+both start from an empty upper, and the bin seed that does write into a fresh upper is pnpm-only,
+where there is no pre-stamp. A healthy used upper can also lack a marker — a standby claim that
+moves HEAD drops it (`claim-session.ts`) — and there a refusal costs one real install, never a
+broken tree.
+
+**`createContainer` sets `running` only after the pre-stamp.** A claiming runner takes the worker
+as soon as the container reads `running` (`app-lifecycle.ts`, the reconnect and standby-wait
+paths), and may start an install. With the flip before the stamp, that install could drop the
+marker while the stamp was still awaiting git, and the stamp then wrote a marker the failed
+install left behind — the next start skipped over its partial tree. Guard:
+`container-lifecycle.test.ts`, "is not running until the install-marker pre-stamp has finished".
+
 **A rotation must evict the volume's holders before it recreates it, and verify that it did (ops
 finding, 2026-08-19).** The rotation above only works if the Docker volume actually follows the
 generation, and it did not. `createOverlayVolume` removes the same-named volume before creating it,

@@ -1,5 +1,6 @@
 import os from "node:os";
 import type Docker from "dockerode";
+import { GLIBC_TUNABLES_ENV, GPU_GRAPHICS_GLIBC_TUNABLES } from "../shared/gpu-graphics-env.js";
 import { getErrorMessage } from "../shared/utils.js";
 
 /** What `docker run --gpus all` sends; the NVIDIA runtime hook does the rest (docs/325-session-gpu-access). */
@@ -16,6 +17,12 @@ export function gpuGraphicsBinds(kernelRelease: string = os.release()): string[]
   if (!/microsoft|wsl/i.test(kernelRelease)) return [];
   return WSL_GRAPHICS_DIRS.map((dir) => `${dir}:${dir}:ro`);
 }
+
+/**
+ * Goes with `gpuGraphicsBinds`, where Mesa can reach the card. In the container's environment, a
+ * browser that the agent starts needs no variable of its own (docs/325-session-gpu-access req 9, 12).
+ */
+export const GPU_GRAPHICS_ENV: readonly string[] = [`${GLIBC_TUNABLES_ENV}=${GPU_GRAPHICS_GLIBC_TUNABLES}`];
 
 /** What a session's agent container started with; decided once per container. */
 export type SessionGpu =

@@ -1,11 +1,14 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { agentHome, codexHome, resolveAgentHome, DEFAULT_AGENT_HOME } from "./agent-home.js";
+import { agentHome, codexHome, grokHome, resolveAgentHome, DEFAULT_AGENT_HOME } from "./agent-home.js";
 
 describe("agent-home (docs/150)", () => {
   const prevAgentHome = process.env.AGENT_HOME;
   const prevCodexHome = process.env.CODEX_HOME;
+  const prevGrokHome = process.env.GROK_HOME;
 
   afterEach(() => {
+    if (prevGrokHome === undefined) delete process.env.GROK_HOME;
+    else process.env.GROK_HOME = prevGrokHome;
     if (prevAgentHome === undefined) delete process.env.AGENT_HOME;
     else process.env.AGENT_HOME = prevAgentHome;
     if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
@@ -36,6 +39,15 @@ describe("agent-home (docs/150)", () => {
   it("codexHome() honors an explicit CODEX_HOME override", () => {
     process.env.CODEX_HOME = "/custom/codex";
     expect(codexHome()).toBe("/custom/codex");
+  });
+
+  it("grokHome() uses an inherited GROK_HOME only when no scoped home applies", () => {
+    process.env.AGENT_HOME = "/root";
+    delete process.env.GROK_HOME;
+    expect(grokHome()).toBe("/root/.grok");
+    process.env.GROK_HOME = "/custom/grok";
+    expect(grokHome()).toBe("/custom/grok");
+    expect(grokHome("/credentials/sub-agent-homes/run-1")).toBe("/credentials/sub-agent-homes/run-1/.grok");
   });
 
   describe("resolveAgentHome", () => {

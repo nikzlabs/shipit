@@ -11,6 +11,7 @@ import {
   ArrowSquareOutIcon,
   GitForkIcon,
   PlusCircleIcon,
+  ShieldWarningIcon,
   WarningCircleIcon,
   XCircleIcon,
 } from "@phosphor-icons/react";
@@ -19,11 +20,15 @@ import { ICON_SIZE } from "../design-tokens.js";
 import type { RepoSessionProposalCard as RepoSessionProposalCardData } from "../../server/shared/types.js";
 import { Button } from "./ui/button.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useRepoTrust } from "../hooks/useRepoTrust.js";
 
 export interface RepoSessionProposalCardProps {
   card: RepoSessionProposalCardData;
-  /** Rejects if the start could not be requested; the card then shows why. */
-  onStart?: (cardId: string) => Promise<void>;
+  /**
+   * Rejects if the start could not be requested; the card then shows why.
+   * `trust` is sent only from the button that names the consent (docs/303 req 12).
+   */
+  onStart?: (cardId: string, options?: { trust: true }) => Promise<void>;
   /** Rejects if the decline could not be requested; the card then shows why. */
   onDecline?: (cardId: string) => Promise<void>;
   onOpenSession?: (sessionId: string) => void;
@@ -38,6 +43,9 @@ export function RepoSessionProposalCard({
   const [requestError, setRequestError] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
   const [declining, setDeclining] = useState(false);
+  // The server's answer to the last start: it wins over a repository list that is behind.
+  const [trustRefused, setTrustRefused] = useState(false);
+  const target = useRepoTrust(card.repoUrl);
   /**
    * A card that is ALREADY `starting` when this mount begins is a leftover: the
    * live `starting` always arrives as an update, so the only way to load one is
@@ -58,14 +66,17 @@ export function RepoSessionProposalCard({
   const started = card.state === "started";
   const declined = card.state === "declined";
   const busy = starting || declining;
+  // A repository that the click adds starts untrusted, so one ShipIt does not have needs the consent too.
+  const needsTrust = !started && !declined && (trustRefused || !target.known || target.untrusted);
 
   const handleStart = async () => {
     if (busy || started || declined) return;
     setRequestError(null);
     setRequesting(true);
     try {
-      await onStart?.(card.cardId);
+      await (needsTrust ? onStart?.(card.cardId, { trust: true }) : onStart?.(card.cardId));
     } catch (err) {
+      setTrustRefused((err as { code?: unknown } | null)?.code === "repository_untrusted");
       setRequestError(err instanceof Error ? err.message : String(err));
     } finally {
       setRequesting(false);
@@ -151,6 +162,22 @@ export function RepoSessionProposalCard({
         </div>
       )}
 
+      {needsTrust && (
+        <div
+          className="flex items-start gap-1.5 text-(--color-warning)"
+          data-testid="repo-session-proposal-trust"
+        >
+          <span className="shrink-0 mt-0.5">
+            <ShieldWarningIcon size={ICON_SIZE.XS} weight="fill" />
+          </span>
+          <span>
+            {card.repo} is not trusted yet. Starting this trusts it: the agent can work there, and
+            ShipIt runs its setup commands and services. ShipIt remembers the choice for this
+            repository.
+          </span>
+        </div>
+      )}
+
       {errorMessage && (
         <div className="flex items-start gap-1.5 text-(--color-error)" role="status">
           <span className="shrink-0 mt-0.5">
@@ -160,7 +187,7 @@ export function RepoSessionProposalCard({
         </div>
       )}
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         {started ? (
           <>
             <Button
@@ -191,9 +218,11 @@ export function RepoSessionProposalCard({
               {starting ? <Spinner size={ICON_SIZE.SM} /> : <GitForkIcon size={ICON_SIZE.SM} />}
               {starting
                 ? "Starting…"
-                : card.state === "failed"
-                  ? "Try again"
-                  : `Start in ${card.repo}`}
+                : needsTrust
+                  ? `Trust and start in ${card.repo}`
+                  : card.state === "failed"
+                    ? "Try again"
+                    : `Start in ${card.repo}`}
             </Button>
             <Button variant="ghost" size="md" onClick={handleDecline} disabled={busy}>
               {declining && <Spinner size={ICON_SIZE.SM} />}

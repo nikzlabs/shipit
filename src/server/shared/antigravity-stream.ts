@@ -1,3 +1,5 @@
+import type { AgentRequestUsage } from "./types/agent-types.js";
+
 /**
  * The Antigravity CLI's NDJSON stream, as captured on 1.2.2
  * (docs/301-antigravity-harness/probes/). Three events: `init`, `step_update`
@@ -125,6 +127,8 @@ export class AntigravityUsageAccumulator {
   private seen = false;
   /** A step is reported on both ACTIVE and DONE; count each index once. */
   private readonly countedSteps = new Set<number>();
+  /** One entry per counted step, for prompt-length pricing (docs/329-tiered-model-pricing). */
+  private readonly steps: AgentRequestUsage[] = [];
 
   observe(step: AntigravityStepUpdate): void {
     const usage = step.usage;
@@ -137,12 +141,22 @@ export class AntigravityUsageAccumulator {
     this.totals.output += usage.output_tokens ?? 0;
     this.totals.cacheRead += usage.cache_read_tokens ?? 0;
     this.totals.thinking += usage.thinking_tokens ?? 0;
+    // Output already includes thinking; Antigravity reports no cache writes.
+    this.steps.push({
+      input: usage.input_tokens ?? 0,
+      output: usage.output_tokens ?? 0,
+      cacheRead: usage.cache_read_tokens ?? 0,
+    });
     const context = (usage.input_tokens ?? 0) + (usage.cache_read_tokens ?? 0);
     if (context > 0) this.lastContext = context;
   }
 
   get tokens(): AntigravityTurnTokens | undefined {
     return this.seen ? { ...this.totals } : undefined;
+  }
+
+  get requests(): AgentRequestUsage[] {
+    return [...this.steps];
   }
 
   /** The last step's prompt occupancy: uncached input plus what was read from cache. */

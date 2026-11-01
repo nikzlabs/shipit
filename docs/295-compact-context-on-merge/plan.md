@@ -6,6 +6,10 @@ description: A merged session compacts its context before the next turn — offe
 
 # 295 — Compact the context when a merged session continues
 
+> **Changed 2026-10-17:** the compaction untick is kept for the session, not spent by one message (req 5), the PR card menu shows and changes it (req 16), and it also stops a continuation that has no checkbox (req 17) — see [The compaction choice is kept for the session](#the-compaction-choice-is-kept-for-the-session-req-5-req-16-req-17). Where the sections below say an untick applies to one message, that now holds for the reset control only.
+
+> **Changed 2026-10-12 by [docs/329-user-steers-every-turn](../329-user-steers-every-turn/plan.md) part 3.** The compaction ahead of a turn is no longer a system turn and holds no flag: it runs on the process a typed turn would use, the claim on `running` keeps other turns out from the decision to the compaction, and the rule of docs/329 part 2 keeps messages out of it.
+
 Implements [requirements.md](./requirements.md). Extends
 [docs/218 — Auto-update a merged session's branch to latest base](../218-auto-reset-merged-branch-on-continue/plan.md)
 and reuses the compaction primitive from
@@ -35,15 +39,17 @@ Both transports make the same decision (req 13), for the planning#333 reason:
 docs/218 scoped its reset to the interactive path, and an Agent Interface SDK
 click, a `shipit session message` and a notify-on-merge wake then all continued
 on a branch still sitting on merged commits. The composer checkbox is the
-per-send intent for the typed path only; a programmatic continuation has no
-checkbox and follows the global setting, exactly as the reset does.
+per-send intent for a message the user sends from the ShipIt view — typed, a
+card button, or a message from an agent-built page (req 14). A continuation
+with no view has no checkbox and follows the global setting, exactly as the
+reset does.
 
 ## The pieces
 
 - **The decision** — `compact-before-turn.ts`, `shouldCompactBeforeTurn`. Gates,
   in order: the per-send untick (req 5), the shared setting (req 11), the
   harness capability (req 10), an armed conversation replay (the next spawn
-  consumes it read-and-clear, so a compaction turn would take the seed), a
+  starts a conversation from it, which a compaction turn would pre-empt), a
   resident holding background work (docs/260 req 13), the docs/282 merge
   recheck's `unsettled` answer (the reset stands down on it, and a compaction
   without the reset's prefix loses req 7), and finally `isResetEligible` — the
@@ -172,10 +178,9 @@ mean "do it".
 **The transport does not decide it; the interaction does.** The same omission
 existed on the HTTP dispatch (`POST /agent/dispatch`), which four ShipIt buttons
 use — preview errors, Create PR, and the two compose-error actions. They now
-pass `userInitiated`, which carries the intent and spends it; a CI auto-fix and
-an agent-interface continuation do not, and keep req 13. The server route and
-`services/agent.ts` forward the two fields onto the dispatch shape, which
-already carried them.
+pass `userInitiated`, which carries the intent and spends it; a CI auto-fix does
+not, and keeps req 13. The server route and `services/agent.ts` forward the two
+fields onto the dispatch shape, which already carried them.
 
 **One snapshot for display and wire.** The composer memoises what it read while
 a send reads afresh, so another tab could display an unticked box and send
@@ -189,9 +194,18 @@ card button is pressed by the user, in the view the checkbox is in, often in the
 same breath as unticking it — the checkbox is right there, and req 5 says an
 untick applies to the user's next message. These frames therefore honour it. A
 continuation with genuinely no checkbox — a wake turn, a `shipit session
-message`, a click inside an agent-built page — never reaches that builder and is
-unaffected. This is a requirements judgement, recorded here rather than as a new
-numbered requirement.
+message` — never reaches that builder and is unaffected. This is a requirements
+judgement, recorded here rather than as a new numbered requirement.
+
+**A message from an agent-built page obeys the controls (req 14).** It first
+shipped on the other side of that line: the page is in the Preview or Present
+tab, beside the composer, and its message compacted while the user's untick sat
+on screen. `dispatchAgentMessage` now carries and spends the intent whenever the
+dispatch has `agentInterface` provenance — decided inside the helper, so its one
+caller cannot omit it. The SDK also lets a page send from a timer, and the
+client does not tell that from a click: an opt-out can only skip an action, and
+the message that carries it is the first one after the merge, which is the
+message the untick was made for.
 
 **The other four defects.** Each is real, each is fixed here, and the host log
 rules each out for the observed incident. The remount is what the log positively
@@ -212,7 +226,8 @@ row had no top padding, so the apparent breathing room above its checkbox was a
 live hit target for the reset control; a near-miss would have shown as exactly
 one `false` on the wire, and none was sent. Both are fixed; neither is the cause.
 
-So the tick state is `mergeContinueOptOutBySession` in the PR store, mirrored to
+So the reset's tick state is `mergeContinueOptOutBySession` in the PR store
+(until 2026-10-17 the compaction's too), mirrored to
 `shipit-merge-continue-optout:{sessionId}` in localStorage — the third durable
 half of a draft, beside its text and its upload chips — and it holds only what
 the user turned **off**. Nothing keys on a visibility transition. The payload
@@ -250,12 +265,13 @@ drains the queue — including the ones where the agent process dies (CLAUDE.md
 post-turn invariant 2) — so the message is never lost. Two cases needed a line
 each:
 
-- **Stop during the compaction** stops the compaction; the message it ran ahead
-  of still runs. The WS drain normally clears the queue after an interrupt (the
-  user stopped *their* turn); after the compaction turn it does not. This rides
-  the turn's terminal event; a streaming CLI that answers a stop with neither a
-  result nor an exit leaves the session as it leaves any stopped streaming turn
-  today — nothing drains until the process ends.
+- **Stop during the compaction** stops the compaction, and the message it ran
+  ahead of goes back into the input box
+  (`docs/330-stop-returns-queued-messages`, changed 2026-10-12: before, that
+  message still ran). The message waits in the queue while the compaction
+  runs, and a Stop empties the queue. The same holds when the Stop comes while
+  the turn still sets up, before the compaction starts. Requirement 9 is about
+  a compaction that fails, and is not changed: there the message runs.
 - **A compaction turn that ends with no compaction card** — stopped before any
   output, or a backend that accepted the trigger, exited 0 and compacted
   nothing — gets a persisted `warn` notice from the turn's drain,
@@ -306,15 +322,16 @@ without the card — the same loss a review queued behind a merge hold has today
 
 ```
 showResetControl   = resetEligible && autoResetMergedBranch && !isLoading
-showCompactControl = showResetControl && supportsCompaction
+showCompactControl = showResetControl && supportsCompaction && !compactionSpent
 ```
 
 Offered whenever the reset control is, so req 11's single setting governs both
 with no second gate. Nothing gates on context size (req 3). Placed as a
 subordinate second line inside the existing control block — one line, no
 description — so the block that appears at the moment the user wants to type
-does not double in weight. Both tick states re-tick on send, and are keyed by
-session, so an untick never rides a later message or another session.
+does not double in weight. Both tick states are keyed by session, so an untick
+never reaches another session. The reset re-ticks on send; the compaction keeps
+the user's choice (below).
 
 **`!isLoading` — the controls are hidden while a turn runs.** The intent is
 read and spent when a frame goes (`sendUserTurn`), so a tick changed after that
@@ -348,6 +365,51 @@ anything: [docs/218 req 6](../218-auto-reset-merged-branch-on-continue/requireme
 now ends the offer at the first answer, and `shouldCompactBeforeTurn` reads the
 same `isResetEligible` predicate, so the compaction stands down with the reset.
 One merge, one offer, one compaction.
+
+**The compaction is offered once for each merge, also when the reset did not
+happen.** That closed the offer for an *unticked reset* only. A first message
+that compacted and whose reset then did not happen — a fetch error, a blocker
+that appeared during the compaction — left the session merged, clean and on
+`mergedHeadSha`, so the next message compacted again; the user reported exactly
+that from an agent-built page. `shouldCompactBeforeTurn` now records the merge's
+anchor (`merge_continue_compacted_anchor`, the same identity the decline uses)
+when it finds the offer live, and answers false for that merge from then on. It
+records on a true answer — at the decision, not at the compaction's result, so a
+compaction that fails is not tried again either — and on an untick, which is an
+answer to the same offer (req 5 and docs/218 req 6 together).
+
+**The reset is not touched by that** (docs/218-auto-reset-merged-branch-on-continue
+req 7). It stays offered until it moves the branch or the user unticks it,
+which is what it did before. A stricter version shipped
+for one review round: it also ended the *reset* offer whenever the first message
+did not move the branch. A second review found that rule incomplete in four
+places (a branch already at the base, a throw in the first checks, a blocker
+that appears during the fetch, a queued message cancelled during its own
+compaction), each leaving a later message to reset with no control on screen,
+and each needing one more rule. The hazard in all of them was a reset with no
+control, not a reset that is retried — so the control is what stays. The
+`reset_eligible` signal carries `compactionSpent`, and the composer then shows
+"Start from the latest base" alone:
+
+```
+showCompactControl = showResetControl && supportsCompaction && !compactionSpent
+```
+
+A ticked "Compact the context" that compacts nothing would be the defect class
+this feature keeps hitting; `compactRunsBeforeTurn` reads the same flag, so the
+prediction and the control cannot disagree.
+
+**A reset that fails says so.** `autoResetMergedBranchOnContinue` used to answer
+a throw with a log line and "not moved", so the turn ran on already-merged
+commits with no notice and no agent prefix. A throw before the branch moved —
+in the first checks, the fetch or the reset — now returns a `reset-failed` skip:
+the transcript carries the notice with the first line of the error, and the
+agent gets the "NOT reset" prefix. The notice says the reset is re-evaluated on
+the next turn, which is true, because nothing ended the offer. Neither text says
+where the branch is or what the push guard will do with later commits — a failed
+reset proves neither. A
+throw after the branch moved keeps the old path, where the post-turn re-arm
+finishes the bookkeeping.
 
 ## The send opens queued, not running
 
@@ -398,16 +460,120 @@ are invisible to the browser, and are exactly what the echo row above corrects.
 in the *server's* queue, so a cancel aimed at a row the server does not hold yet
 would clear it while the message went on to run.
 
+## A small context is left alone (req 15)
+
+A wake turn after the session's own merge compacted under the setting alone
+(req 13), and nobody could untick it — also when the session had just been
+compacted and held almost nothing. The first fix was a 50,000-token floor for
+turns with nobody at the composer. Since 2026-10-24 (requirements.md) the floor
+is `AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS` (200,000,
+`shared/compaction-threshold.ts`), the one minimum that docs/324 and docs/333
+read as well, and `shouldCompactBeforeTurn` applies it to every turn: a typed
+message with the box ticked, a card button, a page message, a wake. So the
+decision no longer asks who started the turn, and the `unattended` argument it
+took for that is gone. The dispatch mark stays: the one-shot turn note of
+docs/235 reads it. The reset is not touched, and nothing is recorded against the
+merge: nothing was compacted, so nothing is spent.
+
+The client reads the size with the server's own function: `latestContextTokens`
+moved from `UsageManager` to `shared/compaction-threshold.ts`, and
+`contextUnderCompactionMinimum` (`client/stores/session-store.ts`) gives it the
+session's `turnUsage` and the newest compaction card of the transcript on
+screen. Two readers use it:
+
+- `compactRunsBeforeTurn` predicts no compaction under the minimum, so such a
+  message is shown as a bubble and not as a queue row.
+- The composer shows a hint under **Compact the context** (req 18): the context
+  is under 200K tokens, so no compaction runs, and `/compact` still compacts.
+  The box stays (req 3). An unknown size shows no hint, because it compacts.
+
+**Which size.** `UsageManager.latestContextTokens`: the last turn that read a
+context size, the number the context dial shows. Right after a compaction that
+number is wrong in a different way on each harness, and that is the case the
+floor is for: the compaction turn reports zero usage on Claude and Grok and no
+usage at all on OpenCode, so a plain "last turn" reads 0, or the size from
+*before* the compaction. So a compaction card newer than the last reading
+answers instead, with its `postTokens` (Claude, Codex), and with 0 where the
+harness gives none: just compacted is small. A zero-usage turn with no card —
+a `/compact` that failed — is not taken for a small context. An unknown size (no
+turn recorded yet) compacts as before.
+
+The floor does not gate the composer control. Req 3 forbids that, so the box is
+shown whatever the size; under the minimum a ticked box compacts nothing, and
+the user's `/compact` is the one way to compact.
+
+## The compaction choice is kept for the session (req 5, req 16, req 17)
+
+The user unticked "Compact the context", the PR merged, and on the next merge
+the box was ticked again. They asked for the choice to stay with the session
+and to be changeable from the PR card's menu as well.
+
+**One record, on the session row, sent to the open session.**
+`sessions.compact_after_merge_off` (`SessionInfo.compactAfterMergeOff`), the same
+column shape as the docs/186 `auto_fix_ci_paused` pause beside it.
+`POST /api/sessions/:id/pr/compact-after-merge { enabled }` writes it. The value
+reaches the browser on `session_details`, not on the session list:
+`filterVisibleInSidebar` caps the list, so an older merged session opened
+directly can be missing from it, and a choice read from the list then showed
+ticked while the server had it off. `session_details` reaches every viewer of
+the open session, on attach and after each write (`SessionManager.detailsChanged`).
+The route is not on the container allowlist
+(docs/201-container-api-trust-boundary), so the agent cannot change the user's
+choice.
+
+**What the controls show.** The composer box and the menu's **Compact after
+merge** switch read `compactAfterMergeEnabled`: the user's last click while its
+write is still in flight (`pendingCompactAfterMerge`), and the server's value
+after. Both call `setCompactAfterMerge`, which sends one session's writes one
+after another, so the saved choice is always the last click, and an older
+`session_details` that lands mid-write cannot show the old value. A refused
+write puts the server's value back and shows a toast.
+
+**The server reads it for every turn.** `shouldCompactBeforeTurn` treats the
+saved off as an untick: no compaction, and the merge's offer is recorded as
+answered, as an untick records it. Both callers — the interactive takeover and
+the dispatched one in `runner-registry-factory.ts` — build their deps from
+`sessionManager.get`, so a wake turn and a message from another session stand
+down too (req 17). The req 15 floor needs no change: an off session compacts
+nothing whatever the size.
+
+**The frame carries only a click that is not saved yet.**
+`mergeContinueFrameFields` puts `compactContext` on the frame — `true` or
+`false` — only while a write is in flight, and the server lets that value win
+over the saved one. Without it, a send made right after a click (in either
+direction) could reach the server before the write. Otherwise the field is
+absent and the server reads the saved choice at decision time, so a message
+that waits in the queue follows a change made in the PR card menu meanwhile.
+`consumeMergeContinueIntent` never spends it. One trade: a message sent inside
+that window while the session is busy keeps the value it was sent with until it
+drains, so a change made in the PR card menu while it waits does not reach it.
+It follows the box as it stood when the user sent it.
+
+**Not migrated.** A compaction untick saved in the old per-message localStorage
+record is dropped on read, so a draft that had one outstanding when this
+shipped comes back ticked once.
+
 ## The shared setting (req 11)
 
 No new setting. `autoResetMergedBranch` governs both actions; the Settings →
-Advanced description names both.
+Advanced description names both. The per-session choice above is not a
+setting in Settings: it is shown only where the composer control could show —
+the menu switch is hidden while the global setting is off or the harness cannot
+compact (reqs 10, 11).
 
 ## Key files
 
 | File | Role |
 |---|---|
-| `orchestrator/compact-before-turn.ts` | The decision, the post-merge `/compact` prompt, `noteMissedCompaction`. |
+| `orchestrator/compact-before-turn.ts` | The decision, which also records that this merge's compaction offer is spent; the post-merge `/compact` prompt; `noteMissedCompaction`. |
+| `orchestrator/services/pre-turn-reset.ts` | `compactedThisMerge`, `compactionSpent` on the eligibility signal; the `reset-failed` skip. |
+| `orchestrator/usage.ts`, `orchestrator/chat-history.ts` | `latestContextTokens` and `latestCompactionCard`: the size req 15's floor reads. |
+| `shared/compaction-threshold.ts` | `AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS`, req 15's floor, shared with docs/324 and docs/333; `latestContextTokens`, the size it is compared to, for the server and the client. |
+| `client/stores/session-store.ts` | `contextUnderCompactionMinimum`: the client's reading of req 15. |
+| `client/utils/merge-continue-intent.ts` | `compactRunsBeforeTurn`: the client's prediction, which reads the floor too. |
+| `client/components/MessageInput/MessageInput.tsx` | The control, and req 18's hint under it. |
+| `client/stores/pr-store.ts`, `client/hooks/message-handlers/reset-eligible.ts` | `compactionSpentBySession`, set from the signal. |
+| `orchestrator/integration_tests/pre-turn-compaction-dispatched.test.ts` | The dispatched path against a real `origin`: reset, req 14's untick, a failed reset. |
 | `orchestrator/ws-handlers/send-message.ts` | The interactive takeover. |
 | `orchestrator/dispatched-turn.ts` | The dispatched takeover (req 13); `/compact` re-derived on the drain (req 12). |
 | `orchestrator/ws-handlers/agent-execution.ts` | `decideCompactBeforeTurn` + `runCompactionAhead` (shared by the send handler and the WS drain); `silent`, `systemTurn`; the compaction turn's drain exemptions and `noteMissedCompaction`; `/compact` re-derived on the WS drain (req 12). |
@@ -415,7 +581,9 @@ Advanced description names both.
 | `orchestrator/turn-executor.ts` | `TurnInput.compact`, passed to `buildRunParams` for the dispatched path. |
 | `shared/types/ws-client-messages.ts` | `compactContext?: boolean`. |
 | `client/components/MessageInput/MessageInput.tsx` | The control, its tick state, the payload flag. |
-| `client/stores/pr-store.ts`, `client/utils/local-storage.ts` | `mergeContinueOptOutBySession` and its durable mirror: the untick outlives the composer. |
+| `client/stores/pr-store.ts`, `client/utils/local-storage.ts` | `mergeContinueOptOutBySession` and its durable mirror: the reset untick outlives the composer. |
+| `orchestrator/sessions.ts`, `shared/database.ts`, `api-routes-github.ts`, `route-registry.ts` | `compact_after_merge_off`, `POST /pr/compact-after-merge`, and the value on `session_details`: the compaction choice, kept for the session (reqs 5, 16). |
+| `client/stores/session-store.ts`, `client/components/PrStatusControls.tsx`, `PrActionsMenu.tsx` | `compactAfterMergeEnabled`, `pendingCompactAfterMerge`, the ordered `setCompactAfterMerge`, and the menu's **Compact after merge** switch (req 16). |
 | `client/utils/send-user-turn.ts` | `sendUserTurn` / `sendControlFrame` — the ONLY place a `send_message` frame is built. |
 | `client/utils/merge-continue-intent.ts` | Read, consume, the cross-tab sync, and `compactRunsBeforeTurn`. |
 | `client/utils/predicted-queue.ts` | The predicted queue row and every exit from it; `send-user-message.ts` writes it, and `message-queued` / `queue-updated` / `system-user-message` / `message-steered` / `error` reconcile it. |
@@ -431,16 +599,32 @@ Advanced description names both.
   starts, with the agent status bar reading "Compacting context..." — but not
   with the checkbox there to untick, which is the trade above. Req 3 rules out
   shortening the wait with a size gate.
-- **No mid-turn opt-out for a queued message** — and nothing that needs one:
-  docs/218 req 6 ends the offer at the first answer, so a later message on the
-  same merge compacts nothing. A message queued behind the *offered* turn is the
-  one already covered by req 12's "one compaction".
+- **No mid-turn opt-out for a queued message.** A later message on the same
+  merge compacts nothing, so the compaction needs none. The reset can: when the
+  first message's reset failed and a second message is sent while that turn
+  still runs, the controls are hidden (`!isLoading`), and the second message
+  tries the reset at its drain with no box to untick. Showing the reset box
+  mid-turn was weighed and left out: it is the shape the user reported against,
+  a ticked control sitting over work already under way.
+- **A second tab can show a spent compaction box for a moment.** The anchor is
+  recorded with no broadcast, so a tab that did not send the message learns of
+  it from the next eligibility signal. In that window its box can be ticked and
+  do nothing; the server's answer does not change.
 - **Stop reaches the compaction, not the send.** Interrupting during the
   compaction stops that turn; the queued message then runs. Cancelling the
   whole send from inside the compaction is not something a requirement asks for.
-- **A refused reset compacts again next time.** Eligibility is the composer's
-  own signal, so while a reset keeps being *refused* (no network, say) the box
-  keeps appearing ticked and each message compacts first. A refusal is not a
-  decline — docs/218 req 6 ends the offer only on an answer the user gave — so
-  this one survives that change. Consistent with what the user sees; untick to
-  skip, which now ends the offer.
+- **A reset that did not happen is offered again.** docs/218 req 6 gives the
+  offer to the first message after the merge;
+  [docs/218 req 7](../218-auto-reset-merged-branch-on-continue/requirements.md)
+  is the user's exception for a reset that was accepted and did not happen: it
+  is offered on the next message, with its control. The cost is a branch that
+  can stay on the merged commits for one more turn; the notice and the agent
+  prefix say so.
+- **A branch already at the base keeps its offer.** After a fast-forward merge
+  `HEAD` is the merged head and the base tip at once, so the reset has nothing
+  to do and nothing retires the merge. The control stays; the compaction does
+  not repeat. Older than this change, and not changed by it.
+- **Why the reported reset did not happen is not known.** Three integration
+  probes — an idle session, a resident streaming process, and one whose old
+  process exits while the compaction starts — all reset the branch. The
+  `reset-failed` notice is what will name the cause when it happens again.

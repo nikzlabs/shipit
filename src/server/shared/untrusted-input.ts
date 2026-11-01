@@ -5,6 +5,8 @@ export const UNTRUSTED_SOURCE_DESCRIPTIONS = {
   mcp: "an MCP tool response",
   issue: "an issue tracker",
   pr: "a pull request's comments and review feedback",
+  transcript:
+    "another ShipIt session's chat transcript (its user's messages, its agent's output, and what its tools read)",
 } as const;
 
 export type UntrustedSource = keyof typeof UNTRUSTED_SOURCE_DESCRIPTIONS;
@@ -15,6 +17,7 @@ const SOURCE_LABELS: Record<UntrustedSource, string> = {
   mcp: "MCP TOOL RESULT",
   issue: "ISSUE CONTENT",
   pr: "PULL REQUEST CONTENT",
+  transcript: "SESSION TRANSCRIPT",
 };
 
 export const UNTRUSTED_OPEN_MARKER = "<<UNTRUSTED";

@@ -50,7 +50,7 @@ export function registerAgentOpsRoutes(
     suffix: string,
     body: unknown,
     reply: FastifyReply,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<unknown> {
     const client = getClient();
     if ("error" in client) {
@@ -265,15 +265,34 @@ export function registerAgentOpsRoutes(
     });
 
   app.post<{
-    Body: { alias?: string; command?: string; args?: string[]; cwd?: string; stdin?: string };
-  }>("/agent-ops/plugin/exec", async (request, reply) =>
-    relay("POST", "/plugin/exec", {
+    Body: { alias?: string; command?: string; args?: string[]; cwd?: string; stdin?: string; stdinId?: string };
+  }>("/agent-ops/plugin/exec", async (request, reply) => {
+    // A caller that goes away must reach the orchestrator, which then stops the command
+    // (docs/262-plugins req 32). Not `request.raw`: its `close` comes when the body was read.
+    const callerGone = new AbortController();
+    reply.raw.once("close", () => {
+      if (!reply.raw.writableFinished) callerGone.abort();
+    });
+    return relay("POST", "/plugin/exec", {
       alias: request.body?.alias,
       command: request.body?.command,
       args: request.body?.args,
       cwd: request.body?.cwd,
       stdin: request.body?.stdin,
-    }, reply, { timeoutMs: 0 }));
+      stdinId: request.body?.stdinId,
+    }, reply, { timeoutMs: 0, signal: callerGone.signal });
+  });
+
+  // Unbounded: a part is answered when the command takes it, and a command reads when it wants to.
+  app.post<{ Body: { id?: string; seq?: number; data?: string; end?: boolean } }>(
+    "/agent-ops/plugin/exec/stdin",
+    async (request, reply) =>
+      relay("POST", "/plugin/exec/stdin", {
+        id: request.body?.id,
+        seq: request.body?.seq,
+        data: request.body?.data,
+        end: request.body?.end === true,
+      }, reply, { timeoutMs: 0 }));
 
   app.get("/agent-ops/issue/trackers", async (_request, reply) => relay("GET", "/issue/trackers", undefined, reply));
 
@@ -604,6 +623,29 @@ export function registerAgentOpsRoutes(
     },
   );
 
+  app.get<{
+    Querystring: {
+      target?: string;
+      since?: string;
+      until?: string;
+      last?: string;
+      before?: string;
+      full?: string;
+    };
+  }>(
+    "/agent-ops/session/host-session-transcript",
+    async (request, reply) => {
+      const params = new URLSearchParams();
+      for (const key of ["target", "since", "until", "last", "before", "full"] as const) {
+        const value = request.query[key];
+        // An empty value goes on as it is: the orchestrator rejects it.
+        if (value !== undefined) params.set(key, value);
+      }
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      return relay("GET", `/host-session-transcript${qs}`, undefined, reply);
+    },
+  );
+
   app.get<{ Params: { childId: string } }>(
     "/agent-ops/session/view/:childId",
     async (request, reply) =>
@@ -674,7 +716,7 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/restart-after-turn", request.body ?? {}, reply),
   );
 
-  app.post<{ Body: { instructions?: string; note?: string } }>(
+  app.post<{ Body: { instructions?: string; note?: string; userAsked?: boolean } }>(
     "/agent-ops/compact",
     async (request, reply) => relay("POST", "/compact-after-turn", request.body ?? {}, reply),
   );
@@ -689,6 +731,14 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/branch/reset-to-base", request.body ?? {}, reply),
   );
 
+  // Read by block-branch-ops.mjs, which waits 3 s. Each attempt is limited so that a
+  // stale orchestrator address leaves the next one time to answer (docs/130-block-branch-ops).
+  app.get(
+    "/agent-ops/branch/destructive-git-guard",
+    async (_request, reply) =>
+      relay("GET", "/branch/destructive-git-guard", undefined, reply, { timeoutMs: 1000 }),
+  );
+
   app.get(
     "/agent-ops/session/cohort",
     async (_request, reply) => relay("GET", "/cohort", undefined, reply),
@@ -697,5 +747,10 @@ export function registerAgentOpsRoutes(
   app.post<{ Body: { body?: string; subject?: string; severity?: string; to?: string } }>(
     "/agent-ops/session/report",
     async (request, reply) => relay("POST", "/report", request.body ?? {}, reply),
+  );
+
+  app.post<{ Body: { all?: boolean } }>(
+    "/agent-ops/session/inbox",
+    async (request, reply) => relay("POST", "/inbox/read", request.body ?? {}, reply),
   );
 }

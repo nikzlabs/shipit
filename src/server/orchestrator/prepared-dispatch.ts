@@ -28,7 +28,6 @@ export interface AgentDispatchInit {
   uploads: UploadRef[] | undefined;
   permissionMode: PermissionMode | undefined;
   postTurn: "commit-push" | "none" | undefined;
-  systemTurn: boolean | undefined;
   automatic: boolean | undefined;
   ciAutoFix?: boolean;
   heldId: number | undefined;
@@ -38,6 +37,13 @@ export interface AgentDispatchInit {
   resetMergedBranch: boolean | undefined;
   compactContext: boolean | undefined;
   silent: boolean | undefined;
+  bestEffortSteer?: boolean;
+  unattended?: boolean;
+  promptShown?: boolean;
+  clientRequestId?: string;
+  sendOrder?: number;
+  steeredDispatch?: boolean;
+  uploadPaths?: string[];
 }
 
 type AssertNever<T extends never> = T;
@@ -60,7 +66,6 @@ const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   uploads: true,
   permissionMode: true,
   postTurn: true,
-  systemTurn: true,
   automatic: true,
   ciAutoFix: true,
   heldId: true,
@@ -70,6 +75,13 @@ const DISPATCH_FIELDS: Record<keyof AgentDispatchOptions, true> = {
   resetMergedBranch: true,
   compactContext: true,
   silent: true,
+  bestEffortSteer: true,
+  unattended: true,
+  promptShown: true,
+  clientRequestId: true,
+  sendOrder: true,
+  steeredDispatch: true,
+  uploadPaths: true,
 };
 
 const DISPATCH_FIELD_KEYS = Object.keys(DISPATCH_FIELDS) as (keyof AgentDispatchOptions)[];
@@ -97,7 +109,6 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     uploads: next.uploads,
     permissionMode: next.permissionMode,
     postTurn: next.postTurn,
-    systemTurn: next.systemTurn,
     automatic: next.automatic,
     ciAutoFix: next.ciAutoFix,
     heldId: next.heldId,
@@ -107,6 +118,13 @@ export function queuedMessageToDispatchOptions(next: QueuedMessage): PreparedDis
     resetMergedBranch: next.resetMergedBranch,
     compactContext: next.compactContext,
     silent: next.silent,
+    bestEffortSteer: next.bestEffortSteer,
+    unattended: next.unattended,
+    promptShown: next.promptShown,
+    clientRequestId: next.clientRequestId,
+    sendOrder: next.sendOrder,
+    steeredDispatch: next.steeredDispatch,
+    uploadPaths: next.uploadPaths,
   });
 }
 

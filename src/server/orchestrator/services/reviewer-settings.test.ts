@@ -176,7 +176,7 @@ describe("buildReviewerSettings (req 8)", () => {
     const pin: ReviewerPin = {
       serviceId: "openai",
       billingMode: "key",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
       reasoningEffort: "high",
     };
 
@@ -328,7 +328,7 @@ describe("resolveReviewerPinPatch (reqs 5, 8)", () => {
     expectRefusal(
       () =>
         resolveReviewerPinPatch(
-          { serviceId: "openai", billingMode: "key", modelId: "gpt-5.6-sol" },
+          { serviceId: "openai", billingMode: "key", modelId: "gpt-6.1-sol" },
           storeWith([ANTHROPIC_KEY]),
           {},
         ),
@@ -345,7 +345,7 @@ describe("resolveReviewerPinPatch (reqs 5, 8)", () => {
     expectRefusal(
       () =>
         resolveReviewerPinPatch(
-          { serviceId: "openai", billingMode: "key", modelId: "gpt-5.6-sol" },
+          { serviceId: "openai", billingMode: "key", modelId: "gpt-6.1-sol" },
           storeWith([OPENAI_KEY]),
           {},
         ),

@@ -23,6 +23,7 @@ describe("useMessageHandler", () => {
   it("queues agent events until HTTP history has loaded", async () => {
     const event: WsServerMessage = {
       type: "agent_event",
+      sessionId: "session-1",
       event: {
         type: "agent_assistant",
         content: [{ type: "text", text: "streamed while reconnecting" }],
@@ -125,6 +126,36 @@ describe("useMessageHandler", () => {
     });
   });
 
+  // planning#691 — the steer of a reconnecting viewer is applied on top of the history.
+  it("queues a steer until HTTP history has loaded, and keeps its attachment", async () => {
+    const images = [{ mediaType: "image/png", src: "/img/abc" }];
+    const event: WsServerMessage = {
+      type: "message_steered", sessionId: "session-1", clientRequestId: "r1", text: "look", images,
+    };
+    const queued = [messageEvent(event)];
+
+    renderHook(() =>
+      useMessageHandler({
+        lastMessage: messageEvent(event),
+        drainMessages: vi.fn(() => queued.splice(0)),
+        send: vi.fn(),
+        terminalRef: { current: null },
+      })
+    );
+
+    act(() => {
+      useSessionStore.getState().setMessages([{ role: "user", text: "earlier turn" }]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+
+    await waitFor(() => {
+      expect(useSessionStore.getState().messages).toEqual([
+        { role: "user", text: "earlier turn" },
+        { role: "user", text: "look", clientRequestId: "r1", images },
+      ]);
+    });
+  });
+
   it("drops a queued echo whose row the history load already carried", async () => {
 
     const event: WsServerMessage = {
@@ -221,6 +252,7 @@ describe("useMessageHandler", () => {
   it("syncs the session permission mode when the agent enters plan mode itself", async () => {
     const event: WsServerMessage = {
       type: "agent_event",
+      sessionId: "session-1",
       event: {
         type: "agent_assistant",
         content: [{ type: "tool_use", id: "plan-1", name: "EnterPlanMode", input: {} }],

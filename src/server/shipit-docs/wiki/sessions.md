@@ -38,7 +38,12 @@ The user can start a session from:
 
 A new session usually opens instantly because ShipIt keeps a warm one prepared
 in the background. It becomes a real session, with a name derived from the first
-message, the moment the user sends that message.
+message, the moment the user sends that message. For a repository opened in
+the last week, ShipIt also keeps that warm session on the latest default branch
+and reinstalls its dependencies when they change, so opening it does not wait
+for either. The warm session is kept for the user: a session you spawn, a Quick
+Capture or a scheduled run gets its own fresh clone, so it starts a little
+slower and leaves the prepared one in place.
 
 ## Reading a session row
 
@@ -112,7 +117,8 @@ out to stop finished work burying live work.
 
 Several things exempt a session from that cap: a **pin**, a **Keep preview
 running** reservation, a workspace ShipIt could not commit to (which needs the
-user, so it is never hidden), and belonging to a live parent-and-children tree.
+user, so it is never hidden), an agent working in it (a turn or background
+work), and belonging to a live parent-and-children tree.
 A session that is not resolved at all is never capped.
 
 Nothing dropped is gone. **All sessions** — reached from a repository group's
@@ -169,6 +175,22 @@ At a gap between turns, four actions:
 After the last turn, only **Fork** is offered — the three rewinds would do
 nothing there.
 
+**What the agent remembers follows the chat.** Rewind chat and rewind both cut
+the agent's own conversation at the same point: Claude Code continues from its
+copy of that message, so the agent forgets the dropped turns and keeps
+everything above the line exactly as it was. Rewind code leaves the agent's
+conversation alone, and the next message tells the agent that the code was
+rolled back and to which commit.
+
+**Some rewinds of the chat are greyed out, and the menu says to fork instead.**
+The agent's conversation can only be cut at a message it has, so these cannot be
+made in place: a rewind to the very start of the chat, a rewind into messages
+from before ShipIt recorded which message is which, a rewind to just after a
+message the user sent while the agent was working, and any chat rewind in a
+session whose agent is Codex, which cannot cut its conversation. **Fork** from
+the same point gives the same chat in a new session. Rewind code is always
+offered.
+
 Anything that touches files asks for confirmation first, and tells the user how
 many files it will change. A rewind can be undone: a toast offers it
 immediately, and **Recover recent rewind** on the session menu offers it after
@@ -194,6 +216,16 @@ who reports this error only has to choose the rewind again.
 A fork is a real, separate session with its own branch and its own pull request,
 and ShipIt moves the browser to it as soon as it exists — the user does not go
 looking for it in the sidebar.
+
+**A fork is also the only way to a new agent conversation.** ShipIt hands the
+agent the conversation the session is in and nothing else: it never starts a new
+one on its own and never pastes the chat back in. If the agent reports that it
+cannot find that conversation, the turn ends with an error card that says so, and
+the session keeps its conversation. Sending again tries the same conversation
+again. To go on in a new conversation, the user forks from the latest point: the
+fork's agent gets the recent chat as the first message of its new conversation,
+and the whole chat in a file it can read. That first message is part of the
+conversation, so the agent still has it after its process restarts.
 
 ## Attention, and turning it off
 
@@ -240,13 +272,14 @@ pinning does not.
 
 **Done sessions.** A session under **Recently resolved**, or one the sidebar
 hides because of the resolved-session cap, is *done*. About 10 minutes after
-its pull request merged or closed, ShipIt stops its agent container and its
-whole Compose stack, whatever the memory budget says — also while the user has
-it open, but never while its agent is working. A pin, **Keep preview running**,
-a broken workspace or a spawned session that is not done makes a session not
-done. A merged session moves under **Recently resolved** at once, also when
-the merge happens during one of its turns. A message sent after the merge makes
-it active again, and the next message restarts it.
+it became done, ShipIt stops its agent container and its whole Compose stack,
+whatever the memory budget says — also while the user has it open. A pin,
+**Keep preview running**, a broken workspace, an agent working in it (a turn or
+background work) or a spawned session that is not done makes a session not
+done. A merged session moves under **Recently resolved** at once, also when the
+user has it open; when the merge happens during one of its turns, it moves there
+when the agent stops working. A message sent after the merge makes it active
+again, and the next message restarts it.
 
 **New sessions nobody used.** Picking a repository for a new session hands the
 user a ready session before they type anything. If it has no first message and
@@ -326,6 +359,12 @@ it ends, ShipIt deletes the files. That includes what a service writes through a
 So when a user asks "can I archive this?", check what is in `/persist` first.
 If it holds something they must not lose, say so before they archive.
 
+The user can look for themselves: the **Files** tab lists `/persist` under its
+own heading, below the workspace tree, and only when it holds something. A file
+there opens, downloads and goes into a message ("Add to chat", or a drag onto
+the composer) like a workspace file, but has no Edit button — to change one,
+the user asks you.
+
 **"If I archive this, do I lose my work?"** is the question users actually ask,
 and the answer is no, for a reason worth giving them: before ShipIt reclaims a
 checkout it commits anything outstanding and **verifies the branch is on the
@@ -357,11 +396,29 @@ Four things users ask about children:
 - They report **upward only**. A child can raise a blocker to its parent; it
   cannot talk to its siblings, and cannot see them either — so children run as
   parallel trials of different prompts or models do not learn of each other.
-- **A parent cannot end a child.** It can wait on one, message one, and be woken
+- **A message between sessions is not a turn.** A child's report, and a
+  parent's message to a child, go to the receiving session's **inbox**. The
+  user sees a card for each one in the receiving session's transcript. You
+  are told that messages wait — in front of your next prompt, during your turn
+  where the harness allows it, or in a short turn that ShipIt starts when the
+  session is idle — and `shipit session inbox` returns every unread message in
+  one call. So a parent that was busy while five reports arrived reads the
+  five together, and does not run five turns one after the other.
+- **A parent cannot end a child.** It can wait on one, message one, and be told
   when one merges; archiving is the user's, above. A child steered by the user in
   its own chat is doing exactly that, and the parent has no way to see it.
 - **Being told about a merge** does not need watching. `shipit session
-  notify-on-merge` wakes the session when the pull request lands.
+  notify-on-merge --self` wakes the session with a turn when its own pull
+  request lands. A parent's watch on a child puts a notice in the parent's
+  inbox when the child's pull request merges or closes, and the user sees a
+  "Child PR merged" card; the notice is read with the other messages, and is
+  not a turn of its own. The two watches are independent: one merge serves
+  both. A watch reports one pull request; a parent that follows a child across
+  several pull requests arms again after each one, and is not told twice about
+  the same pull request. A session's own watch posts a card with Cancel, and
+  that card changes when its watch is gone — merged, replaced by a newer watch,
+  cancelled, or closed without a merge — so an older card does not read as
+  still waiting.
 - A child sees the repository as of **main**, not the parent's uncommitted or
   unmerged work. Work it must build on has to be merged first, or carried in
   the prompt.
@@ -375,33 +432,40 @@ a session that handed an agent a prompt without spawning it.
 
 For that case the agent posts a **"Message for another session"** card naming
 the target session and showing the whole message. The user reads it and sends
-it or declines it; the send is what delivers it, and it starts a turn there just
-as typing it would. Approving one card sends one message — the agent gets no
-continuing access, so a second message means a second card. The receiving
-session's transcript marks the message "From another session, approved by you",
-with the sender's name, and the card stays in the sender's transcript recording
-whether it was delivered or declined. Either way, a `[ShipIt]` line at the start
+it or declines it; the send is what delivers it, to the target session's inbox,
+and that session's agent is told at once — a message the user approved does not
+wait behind a question the agent asked. Approving one card sends one message —
+the agent gets no continuing access, so a second message means a second card.
+The receiving session's transcript shows the message, marked "From another
+session, approved by you" with the sender's name, and the card stays in the
+sender's transcript recording whether it was delivered or declined. Either way, a `[ShipIt]` line at the start
 of the sender's next turn says what the user did, so the agent never asks.
 
 ## Scheduled sessions
 
 A **schedule** makes ShipIt start a session by itself at set times — every
-weekday at 09:00, say. Each start is a **run**: an ordinary session in the
+weekday at 09:00, say — or once, at one date and time. Each start is a **run**: an ordinary session in the
 schedule's repository, or a sandbox with the grants the schedule names, started
 with the schedule's model, role and other session-start choices, and sent the
 schedule's prompt as its first message. The user can open a run and work in it
 like in any other session.
 
 **Setting one up is a request to you.** The message box has no schedule
-control. When the user asks for something to happen regularly, propose the
-schedule with `shipit schedule propose` (`/shipit-docs/schedules.md`); it is
+control. When the user asks for something to happen regularly, or once at a
+later time, propose the schedule with `shipit schedule propose`
+(`/shipit-docs/schedules.md`); it is
 saved only when the user presses **Confirm** on the card. A change — another
 time, another prompt, a pause — is a proposal too. `shipit schedule list` says
 what each schedule is now.
 
 When a schedule runs is a preset — every hour, every day, weekdays, every week —
-or a cron expression, in a time zone, so a 09:00 run stays at 09:00 local time
-across daylight-saving changes. Its run times must be at least an hour apart.
+a cron expression, or **once** on a date, in a time zone, so a 09:00 run stays
+at 09:00 local time across daylight-saving changes. Its run times must be at
+least an hour apart. A once schedule runs one time; after its time it stays in
+Settings → Schedules with its run and notes, shows that the time has passed,
+and comes due again only when its date and time are edited — **Run now** still
+starts a run at any time. If ShipIt was down at that time, the run starts when
+ShipIt is back.
 
 **Settings → Schedules** lists every schedule with when it runs, what it starts,
 its next run, and its state: *Paused*, or the reason its last start failed.
@@ -473,7 +537,7 @@ others exist for a reason worth knowing:
 |---|---|
 | **Warm** | A prepared, empty session so "New session" is instant. Becomes ordinary on first message. |
 | **Sandbox** | An empty workspace with no repository, and its own capability switches — a scratchpad that can still clone and open pull requests. See `/shipit-docs/sandbox-session.md`. |
-| **Ops** | ShipIt's own operations session, for looking at ShipIt itself and at other sessions. Reached from a session's menu. See `/shipit-docs/ops-session.md`. |
+| **Ops** | ShipIt's own operations session, for looking at ShipIt itself and at other sessions. Its agent can read the chat of any session on the host — read-only, with credentials redacted — and cannot write to one. Reached from a session's menu. See `/shipit-docs/ops-session.md`. |
 
 ## Who does what
 

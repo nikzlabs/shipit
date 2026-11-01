@@ -346,6 +346,8 @@ exports:
         root:
           description: Directory inside the project the plugin reads and writes
           default: docs
+
+      mcp: { service: api, path: /mcp }  # an MCP server for the agent — docs/327-service-mcp-servers
 ```
 
 **Optional credentials and hosts (reqs 23, 24).** Both lists take either a bare
@@ -1336,10 +1338,224 @@ instead of a repeat.
   unchecked writes a stray directory into the user's repository. Output is
   **buffered, not streamed**, with an 8 MiB per-stream cap that announces its
   own truncation; streaming through two relay hops is real machinery and the
-  plan already accepts per-call latency here. And the **trust gate** (docs/178)
+  plan already accepts per-call latency here. (Stdin is no longer read whole
+  before the call: "Stdin is delivered when it arrives", below.) And the
+  **trust gate** (docs/178)
   is re-read on every call, not at wrapper-generation time: a repository
   un-trusted since the wrapper was written must stop executing, and this is the
   only place that can notice.
+
+  **What a call costs to start, and the one part that is reused.** On a session
+  with the local block (docs/319-api-reach-through-host) or an egress allowlist,
+  a command does not join the plugin network directly: `plugin-egress.ts` builds
+  a holder container, runs the firewall installer in its namespace, and on a
+  contained session starts a resolver and an SNI proxy beside it. That was built
+  and removed on every call — two to four container starts before the command's
+  own, and their removal before the result returned — which a session measured
+  as about 2.5 s per call, whatever the command did (#3138).
+  `plugin-netns-pool.ts` keeps the built namespace for the session's next call
+  instead. Four rules bound that:
+
+  - **One lease is one command.** An idle namespace is taken exclusively, so
+    two commands that run at the same time never share a loopback; the second
+    one builds its own.
+  - **Reuse needs an identical plan.** `resolvePluginNetnsPlan` resolves every
+    policy input a namespace is built from — the allowlist, the allow-once
+    hosts, the identity rules, which tiers run, the host's addresses, both
+    images — and `buildPluginNetns` receives the plan and nothing else of the
+    policy. So an input cannot reach the build without also deciding reuse, and
+    a grant still takes effect on the next call: the next call's plan differs,
+    the old namespace is removed, and a new one is built.
+  - **The plan is not everything a namespace allows, so a namespace has a fixed
+    lifetime.** A namespace also holds what it learned while it lived: the
+    addresses its firewall resolved for the Tier A names at build time, and the
+    addresses its resolver added when a command looked up an allowed name. A
+    reused namespace keeps those; a new one would resolve them again. The
+    session's own container keeps the same kind of state for its whole life, so
+    this is req 24's bar ("what equivalent same-repo code could reach") and not
+    a wider one — but it is why `PLUGIN_NETNS_LIFETIME_MS` runs from the
+    **build** and use does not extend it. Calls that never stop cannot keep one
+    namespace, and an old address in it, for ever.
+  - **A namespace returns to the pool only when the command's container was
+    removed.** A container ShipIt could not remove is still in the namespace,
+    and a call that failed to start may have failed *because* of the namespace;
+    both remove it instead.
+  - **Reuse checks that the namespace still works.** One container listing
+    confirms that the holder and each sidecar it started still run. A resolver
+    or proxy that died fails closed, so without the check every later call in
+    that namespace would fail until it expired.
+
+  A namespace is removed when its lifetime ends, and a session keeps at most
+  `MAX_IDLE_PLUGIN_NETNS_PER_SESSION` idle ones. The idle ones are also removed
+  when the session's runner is disposed; one that a running command holds at
+  that moment returns to the pool and ends with its lifetime. The boot reap
+  that already covered a holder a dead process left covers these too.
+  `install` is not pooled: it already shares one namespace across all of a
+  job's commands.
+
+  What is **not** reused is the command's own container. Each call still gets a
+  new one, so its filesystem, `/tmp`, process tree, mounts, environment and
+  memory limit (reqs 30, 31) stay per call, and its start is the cost that
+  remains. Executing into a long-lived command container would remove that too
+  and give up every one of those properties, so it was not taken.
+
+  A call reports where its time went (`PluginCliResult.timings`), and the shim
+  prints it on stderr when `SHIPIT_PLUGIN_TIMING` is set. `command` runs from
+  the moment Docker reports the container started to the moment it exits, so
+  it is the plugin's own program, less whatever part of it ran before Docker
+  answered; the output drain and everything else is in ShipIt's phases. That is
+  the question a session could not answer before, because it cannot run
+  anything inside the plugin's container except the plugin's commands.
+
+  **Stdin is delivered when it arrives.** The request used to carry stdin as
+  one string, so the shim read all of it before it sent the call. It cannot
+  tell an inherited stdin that is open and idle from a producer that has not
+  written yet, so it waited 2 s for a first byte. That cost 2 s on every call
+  whose stdin was open and idle, and it dropped input whose first byte came
+  later, with no message (planning#678). No time limit separates those two
+  cases, so the limit is gone:
+
+  - **Small input that ended at once goes with the call.** The shim waits
+    `STDIN_INLINE_WAIT_MS` (50 ms) for stdin to *end*. `/dev/null`, a file, a
+    here-document and `echo x |` are at their end in a few milliseconds, and
+    they travel in the one request, as before. The wait is not a limit on the
+    input: when it passes, nothing is lost. It is kept, although the next
+    path is correct for every input, so that the most frequent call (an
+    agent's shell gives `/dev/null`) stays one request and does not depend on
+    a second route.
+  - **Other input follows the call.** This is input that did not end within
+    the wait, and input that is larger than one request can hold (the shim
+    stops its first read when it has more than that, which is at most about
+    two stream chunks more). The shim sends the call with a
+    `stdinId` and no stdin, and the command starts. The shim then sends stdin
+    as it arrives (`POST plugin/exec/stdin`), one numbered part at a time, and
+    then the end. A part is at most 128 Ki UTF-16 code units, so that its JSON
+    fits the 1 MiB body limit. `plugin-cli-stdin.ts` holds one stream for each
+    running call; `runCreated` pipes it into the container's attach
+    connection, and its end closes the command's stdin.
+  - **A part is answered when the stream to the command had room for it**,
+    not when the plugin's process read it. The shim sends the next part after
+    that answer, so a command that reads slowly slows the producer down, as a
+    pipe does, and neither side holds the whole input. Input larger than one
+    request body, which was refused before, now arrives.
+  - **A part has a number, and the orchestrator takes each number once.** The
+    worker's client sends a request again through another host name when the
+    connection fails, and a part whose answer was lost would be written twice.
+    A number that the call already has is answered and not written; one that
+    is not the next is an error. This also keeps one write at a time for a
+    call, whatever a session container sends.
+  - **A part can arrive before its call**, because the two travel on two
+    connections. It waits `PLUGIN_STDIN_CLAIM_WAIT_MS` for the call. A session
+    can have `MAX_WAITING_PLUGIN_STDIN_PARTS_PER_SESSION` parts in that wait.
+  - **"No more input" and "not delivered" are two answers.** When the command
+    exits, its stream is destroyed, each part that still waits is answered
+    `accepted: false`, and the shim stops without a message: a program that
+    exits does not read the rest of its stdin. A part whose call did not
+    arrive, or that is out of order, gets an error, and the shim ends with
+    exit code 2 and says that it could not deliver stdin. That exit closes the
+    call's connection, so the command is stopped (req 32, below). It can have
+    done a part of its work with the part of the input that it had.
+  - **A finished call's id is remembered for `FINISHED_PLUGIN_STDIN_CALL_MS`**,
+    without its stream. A part that was on its way when the command exited is
+    then answered `accepted: false` at once, and does not wait as a part
+    whose call has not arrived. A call with an id that ShipIt has, running or
+    finished, is refused: it does not take the first one's input and the
+    command does not run again. This matters because the worker's client can
+    send the call again after a connection failure. A call whose stdin went
+    with it has no id, and that case is not changed here.
+
+  These are the semantics of a local program, including the one that has a
+  cost: **a command that reads stdin to its end waits until the caller's stdin
+  ends.** Before, an open and idle stdin became an empty one after 2 s. Now it
+  stays open, and such a command runs until its time limit or until its caller
+  goes away (req 32, below); the timeout message says that its stdin had not
+  ended. Two alternatives were not taken. A shorter
+  wait drops more input. One streamed request body through both relay hops
+  needs no ids and no part numbers, but it needs a raw body parser and an
+  early response, with the request body still open, at each of the two hops; a
+  second JSON route uses both hops as they are and can be tested with them.
+
+  The attach connection now has an error handler. A command that exits before
+  it takes its stdin breaks the connection under a write, and the orchestrator
+  has no handler of last resort: an error that nothing handles there ends the
+  process, not the call. A large stdin that came with the call could do this
+  before.
+
+  **A lost caller stops the command (req 32).** Nothing told ShipIt that the
+  caller of a command was gone, so the command ran until it ended by itself or
+  until its 15-minute limit, and held its namespace for that time
+  (planning#683). Since stdin is delivered as it arrives, this also left a
+  command that reads stdin to its end with an end that could not come: the
+  shim was the only thing that could send it.
+
+  The shim holds one connection for the whole call, and the worker holds one
+  to the orchestrator for the same time (`orchestrator-client.ts` gives each
+  call a connection of its own). A caller that goes away closes the first one.
+  The kernel does that when the process ends, so the shim has no signal
+  handler and sends nothing. Each hop passes the loss on, and nothing else was
+  added:
+
+  - **The worker's route** (`agent-ops-routes.ts`) aborts its request to the
+    orchestrator when the shim's connection closes before the reply was sent.
+    `OrchestratorClient.request` takes that signal, closes its connection, and
+    does not go to the next host, before the connection is made or after.
+  - **The orchestrator's route** sets `callerGone` for that call when its own
+    connection closes before the reply. `runCreated` gives it to
+    `waitForContainerExit` with the session's `isCancelled`, so the stop is
+    the one that an archived session already had: the next check, every
+    `CANCELLATION_POLL_MS` (2 s), kills the container.
+
+  The event that both routes use is `close` on the **reply**, with
+  `writableFinished` false. `close` on the request is not usable: on Node 24
+  with this repository's Fastify it comes when the body was read, while the
+  caller still waits. `close` on the reply comes at the moment the client's
+  socket closes, and also after a complete answer, where `writableFinished`
+  is true. A client that ends only its sending side counts as gone; Node's
+  HTTP client, which both hops use, does not do that.
+
+  What follows from the use of the stop that was there:
+
+  - **The command is killed, not asked.** Its container gets SIGKILL, as at its
+    time limit, so no handler in the plugin's program runs. `plugin-authoring.md` tells an author to write state in a way that a
+    kill at any moment leaves usable.
+  - **The stop is not immediate, and has no fixed limit.** The checks start
+    when the container has started, 2 s apart, so a running command gets up to
+    2 s more and then the time of the kill. A command whose caller left before
+    the container started still starts, and runs until the first check. A
+    check before the start was not added: a caller can also leave immediately
+    after such a check, so the rule that a plugin's author has to write for
+    would stay the same.
+  - **The namespace is released as after any call**, because the killed
+    command's container is removed as any other is. It goes back to the pool
+    unless its lifetime has ended or the pool is full ("What a call costs to
+    start", above).
+  - **The result goes nowhere.** It is exit code 125 with "the caller went
+    away while the command was running", written to a connection that is
+    closed.
+
+  A caller is gone when its connection is. So a command is also stopped when
+  the worker goes away while it runs — the session's container was removed or
+  restarted — and when the shim ends by itself because it could not deliver
+  stdin. Local mode's relay (`local-agent-ops.ts`) did not change: that
+  runtime has no container runtime, so the exec route answers 501 and no
+  command starts.
+
+  One class of end is not seen. The launcher is two processes: `tsx` starts a
+  second `node`, and that one holds the connection. Anything that ends the
+  first process and leaves the second one — a SIGKILL or a SIGHUP to that one
+  process — leaves the connection open, and the command runs as before. `tsx`
+  passes on SIGINT and SIGTERM and no other signal. A signal to the process
+  group (Ctrl-C, `timeout`, `timeout -s KILL`), a kill of the process tree
+  (what ShipIt does to a turn), and SIGINT or SIGTERM to the first process
+  all close the connection:
+  `integration_tests/plugin-exec-lost-caller.test.ts` runs each of these with
+  the real shim process, through both routes.
+
+  To end only the command's stdin was the other option of planning#683, and
+  req 32 rules it out: a command that does not read stdin would still run to
+  its end. A cancel request from a signal handler in the shim was not taken
+  either: it covers neither SIGKILL nor a removed container, and the closed
+  connection covers both.
 
   One thing this slice does **not** settle, found by the independent review and
   cross-slice. (The other — a refresh deleting a generation out from under a
@@ -1355,6 +1571,9 @@ instead of a repeat.
   surfaces rather than two, and it stays one decision, not three. Joining a
   plugin container to the agent's network namespace is **not** the fix: it
   re-exposes the worker's loopback credential broker and breaks req 19.
+  *(No longer open for the invocation and install containers: each now runs in
+  a namespace that carries the session's own egress policy — `plugin-egress.ts`,
+  and "What a call costs to start" above.)*
 
   And one accepted limitation, not a gap: output is buffered, so a long-running
   command shows nothing until it exits.

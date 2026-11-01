@@ -35,7 +35,7 @@ describe("dispatched turn — the status card in the prompt (docs/303 req 35)", 
 
   it("carries the card, with the message still last", async () => {
     const { prompts } = setup();
-    runner.dispatch(testDispatch({ text: "Fix the failing build", systemTurn: true }));
+    runner.dispatch(testDispatch({ text: "Fix the failing build", automatic: true }));
     await flushTurn();
 
     expect(prompts[0]).toContain(CARD);
@@ -44,7 +44,7 @@ describe("dispatched turn — the status card in the prompt (docs/303 req 35)", 
 
   it("leaves it out of a driver-owned turn, which is never checked for an update", async () => {
     const { prompts } = setup();
-    runner.dispatch(testDispatch({ text: "resolve the conflict", systemTurn: true, postTurn: "none" }));
+    runner.dispatch(testDispatch({ text: "resolve the conflict", automatic: true, postTurn: "none" }));
     await flushTurn();
 
     expect(prompts[0]).not.toContain("<session_status_card>");

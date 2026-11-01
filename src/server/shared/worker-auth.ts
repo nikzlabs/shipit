@@ -22,6 +22,7 @@ export const LIFECYCLE_PATHS: ReadonlySet<string> = new Set([
   "/agent/compact",
   "/agent/goal",
   "/agent/permission/resolve",
+  "/agent/service-mcp",
 ]);
 
 const UNAUTHENTICATED_PATHS: readonly string[] = ["/health"];

@@ -53,6 +53,12 @@ describe("buildDnsmasqConfig", () => {
     expect(cfg).not.toContain("server=/com/");
   });
 
+  it("gives an exact single-label entry no public route, and keeps a suffix entry", () => {
+    const cfg = buildDnsmasqConfig({ publicDomains: ["api", ".dev"], publicUpstreams: ["1.1.1.1"] });
+    expect(cfg).not.toContain("/api/");
+    expect(cfg).toContain("server=/dev/1.1.1.1");
+  });
+
   it("supports multiple upstreams per domain", () => {
     const cfg = buildDnsmasqConfig({ publicDomains: ["github.com"], publicUpstreams: ["1.1.1.1", "8.8.8.8"] });
     expect(cfg).toContain("server=/github.com/1.1.1.1");

@@ -78,6 +78,7 @@ function consumeAuthFailureEvent(event: ClaudeEvent, raiseAuthRequiredOnce: () =
 export interface ClaudeRunOptions {
   prompt: string;
   sessionId?: string;
+  resumeAt?: string;
   systemPrompt?: string;
   images?: ImageAttachment[];
   cwd?: string;
@@ -95,6 +96,16 @@ export interface ClaudeRunOptions {
   guardDestructiveGit?: boolean;
   permissionPromptTool?: string;
   toolsOff?: boolean;
+}
+
+/**
+ * docs/007 — a rewind point forks the stored conversation at that message, leaving the
+ * stored file as it was. `--resume-session-at` is not in `--help`; verified on 2.1.300.
+ */
+export function resumeArgs(sessionId: string, resumeAt: string | undefined): string[] {
+  return resumeAt
+    ? ["--resume", sessionId, "--resume-session-at", resumeAt, "--fork-session"]
+    : ["--resume", sessionId];
 }
 
 // Files avoid Linux's 128 KiB limit per argument. The caller deletes the file.
@@ -188,7 +199,7 @@ export class ClaudeProcess extends EventEmitter {
     }
 
     if (sessionId) {
-      args.push("--resume", sessionId);
+      args.push(...resumeArgs(sessionId, opts.resumeAt));
     }
 
     if (mcpConfigPath) {
@@ -421,6 +432,14 @@ export class ClaudeProcess extends EventEmitter {
 }
 
 // Open stdin keeps the CLI alive across turns; result ends a turn, done ends the process.
+const SET_MCP_SERVERS_TIMEOUT_MS = 15_000;
+
+interface McpSetServersResponse {
+  subtype?: string;
+  request_id?: string;
+  response?: { errors?: Record<string, unknown> };
+}
+
 export class StreamingClaudeProcess extends EventEmitter {
   private proc: ChildProcess | null = null;
 
@@ -470,7 +489,7 @@ export class StreamingClaudeProcess extends EventEmitter {
     }
 
     if (serviceRouting) args.push(...PARTIAL_MESSAGE_ARGS);
-    if (sessionId) args.push("--resume", sessionId);
+    if (sessionId) args.push(...resumeArgs(sessionId, opts.resumeAt));
     if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath);
     if (permissionPromptTool) args.push("--permission-prompt-tool", permissionPromptTool);
     if (model) args.push("--model", claudeModelArg(model));
@@ -519,7 +538,8 @@ export class StreamingClaudeProcess extends EventEmitter {
     } else {
       delete spawnEnv.SHIPIT_SANDBOX;
     }
-    // System turns use a fresh process, so self-merge wakes get the updated guard.
+    // Only the hook's fallback: this process outlives the merged state it started in, so
+    // the hook asks ShipIt at each call (docs/130-block-branch-ops).
     if (guardDestructiveGit) {
       spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT = "1";
     } else {
@@ -616,6 +636,42 @@ export class StreamingClaudeProcess extends EventEmitter {
     };
     console.log(`[streaming-claude] setPermissionMode → ${cliMode}`);
     this.writeToStdin(`${JSON.stringify(msg)}\n`);
+  }
+
+  /**
+   * docs/327 — adds MCP servers to the running CLI, and resolves true only when
+   * the CLI confirms them. Verified on CLI 2.1.284: a server sent again with the
+   * same config is not restarted, and the servers of `--mcp-config` that a
+   * request leaves out stay connected.
+   */
+  setMcpServers(servers: Record<string, unknown>, timeoutMs = SET_MCP_SERVERS_TIMEOUT_MS): Promise<boolean> {
+    if (!this.alive) return Promise.resolve(false);
+    const requestId = `set-mcp-${++this.requestIdCounter}-${Date.now()}`;
+    return new Promise((resolve) => {
+      const settle = (confirmed: boolean): void => {
+        clearTimeout(timer);
+        this.off("event", onEvent);
+        this.off("done", onDone);
+        resolve(confirmed);
+      };
+      const onEvent = (raw: { type?: string; response?: McpSetServersResponse }): void => {
+        if (raw.type !== "control_response" || raw.response?.request_id !== requestId) return;
+        const errors = raw.response.response?.errors ?? {};
+        settle(raw.response.subtype === "success" && Object.keys(errors).length === 0);
+      };
+      const onDone = (): void => settle(false);
+      // A CLI that does not know the request must not leave the caller waiting.
+      const timer = setTimeout(() => settle(false), timeoutMs);
+      timer.unref();
+      this.on("event", onEvent);
+      this.on("done", onDone);
+      console.log(`[streaming-claude] setMcpServers → ${Object.keys(servers).join(", ") || "(none)"}`);
+      this.writeToStdin(`${JSON.stringify({
+        type: "control_request",
+        request_id: requestId,
+        request: { subtype: "mcp_set_servers", servers },
+      })}\n`);
+    });
   }
 
   kill(): void {

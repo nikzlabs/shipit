@@ -31,7 +31,7 @@ still showed `running`, and because `getServices` publishes an address for a
 `running` service, the preview proxy kept routing at a dead container.
 
 **Fixed** in `ServicePoller.expireUnconfirmedStatuses`. A *continuous* run of
-`ps` failures past `DOCKER_UNREACHABLE_GRACE_MS` (30s, ~6 polls) withdraws the
+`ps` failures past `DOCKER_UNREACHABLE_GRACE_MS` (30s) withdraws the
 claims that are no longer supportable: every `running` service is moved to
 `error` with `DOCKER_UNREACHABLE_MESSAGE`. One successful `ps` clears the clock,
 and the forward pass restores the real statuses on that same poll.
@@ -45,6 +45,11 @@ own watchdog, which runs off its own timer and therefore keeps working while the
 poll loop is blind — a second mechanism for it here would be redundant. Gated
 services (docs/137) and services with a `compose up` in flight are excluded, as
 in every other pass.
+
+The grace window used to be measured across repeated 5-second polls. Since
+docs/332-event-driven-service-status there is no such cadence: a failed listing
+arms one follow-up at the 30s deadline (`ServicePoller.armFollowUp`), which is
+what takes the second look this rule needs.
 
 **Rejected**: the `unknown` status + `stack_unhealthy` WS message + client banner
 this section used to propose. A new member of `ServiceStatus` has to be taught to

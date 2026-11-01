@@ -7,6 +7,9 @@ import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { residentBackgroundWork } from "../turn-admission.js";
+import { takeSessionHold, type SessionHold } from "../session-hold.js";
+import { requeueUndeliveredSteers } from "../ws-handlers/agent-listeners.js";
+import { finalizeTurnRows } from "../chat-card-persistence.js";
 import { ServiceError } from "./types.js";
 import { agentLogAppend } from "../log-emit.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
@@ -27,6 +30,13 @@ import {
   restorePluginSkills,
   retryClearingPluginSkills,
 } from "./plugin-skill-clearing.js";
+import {
+  formatLockAge,
+  isStaleIndexLockKept,
+  retryRemovingStaleIndexLock,
+  STALE_INDEX_LOCK_MS,
+  type IndexLockState,
+} from "./stale-index-lock.js";
 import { withWorkspaceLock } from "./marketplace.js";
 import { getErrorMessage } from "../validation.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
@@ -59,6 +69,10 @@ export interface RebaseDriverDeps {
   onAgentSpawned?: () => void;
   /** The auto-resolve deadline closes the window itself; a hanging turn never reaches `finally`. */
   onFollowupWindowOpened?: (attemptId: string) => void;
+  /** The auto-resolve deadline releases the flow's own hold, never a later one. */
+  onSessionHoldTaken?: (hold: SessionHold) => void;
+  /** Tests only; `STEP_PROCESS_EXIT_TIMEOUT_MS` otherwise. */
+  stepExitTimeoutMs?: number;
   drainQueue?: () => Promise<void> | void;
   /** Manual sync: persist no-op confirmations and notify the agent of rewrites. */
   recordSyncCard?: boolean;
@@ -101,6 +115,8 @@ export function buildRebaseConflictPrompt(
     "Edit them to produce the correct merged result. Don't run any git commands —",
     "just edit the files. After you finish, the orchestrator will stage your changes",
     "and continue the rebase.",
+    "",
+    "Your agent process ends with this turn, so start no background work in it.",
     "",
     "This turn ends BEFORE the rebase does. If finishing the job properly needs work once the",
     "rebase concludes — re-running codegen or the tests over the merged result, fixing a",
@@ -215,14 +231,16 @@ export function buildSyncFailureNotice(
   baseBranch: string,
   errorMessage: string,
   rebaseInProgress: boolean | null,
+  indexLock: IndexLockState | null = null,
 ): string {
   const leftover = rebaseLeftoverText(rebaseInProgress);
+  if (indexLock) return indexLockNotice(baseBranch, indexLock, leftover);
   const paths = untrackedOverwritePaths(errorMessage);
   if (paths && paths.length > 0) {
     return `Sync with \`${baseBranch}\` failed: a commit being replayed adds files at paths where this `
       + "workspace already has untracked files, and git will not overwrite them. These are usually files "
       + `this branch ignores but \`${baseBranch}\` does not, such as build caches: ${formatPathList(paths)}. `
-      + `${leftover ?? "Your branch was not changed by ShipIt."} To sync, delete those `
+      + `${leftover ?? "The rebase did not change your branch."} To sync, delete those `
       + "files if they can be regenerated, squash this branch so the commit that adds them and the later one "
       + `that stops tracking them cancel out, or add the ignore rule to \`${baseBranch}\` first.`;
   }
@@ -230,12 +248,27 @@ export function buildSyncFailureNotice(
   if (dirs && dirs.length > 0) {
     return `Sync with \`${baseBranch}\` failed: the rebase replaces ${formatPathList(dirs)} with a file or symlink, `
       + "and git will not delete the untracked files still inside. They are usually ignored files, which "
-      + `\`git status\` does not show. ${leftover ?? "Your branch was not changed by ShipIt."} To sync, move or `
+      + `\`git status\` does not show. ${leftover ?? "The rebase did not change your branch."} To sync, move or `
       + "delete those files, then sync again.";
   }
   const summary = summarizeGitError(errorMessage).replace(/[.:]$/, "");
-  const state = leftover ?? "Your branch was not changed by ShipIt; check the workspace state and try again.";
+  const state = leftover ?? "The rebase did not change your branch; check the workspace state and try again.";
   return `Sync with \`${baseBranch}\` failed: ${summary}. ${state}`;
+}
+
+function indexLockNotice(baseBranch: string, lock: IndexLockState, leftover: string | null): string {
+  const unchanged = leftover ?? "The rebase did not change your branch.";
+  const found = `Sync with \`${baseBranch}\` failed: git found this workspace's index lock, \`.git/index.lock\``;
+  if (lock.ageMs === null) return `${found}, and it was gone when ShipIt looked again. ${unchanged} Sync again.`;
+  const intro = `${found} (${formatLockAge(lock.ageMs)} old). A git command is still running, or one stopped `
+    + `without removing the lock. ${unchanged}`;
+  const deleteIt = "If no git command is running in this workspace, delete that file, then sync again.";
+  if (lock.removeError) return `${intro} ShipIt could not remove this stale lock (${lock.removeError}). ${deleteIt}`;
+  if (lock.ageMs < STALE_INDEX_LOCK_MS) {
+    return `${intro} ShipIt removes the lock only once it is ${formatLockAge(STALE_INDEX_LOCK_MS)} old, so that `
+      + `it does not stop a running command. Wait for the command to finish, then sync again. ${deleteIt}`;
+  }
+  return `${intro} ${deleteIt}`;
 }
 
 // The container's file watcher may miss a rewrite from the orchestrator.
@@ -270,18 +303,6 @@ class RebaseRunnerHold {
     this.held = false;
     this.runner.endPostTurnWork();
   }
-}
-
-/**
- * The driver's own claim on `runner.systemTurnInProgress`, separate from the disposal lease
- * above: every write of `true` mints a new `systemHoldSeq`, and the release compares (docs/304).
- */
-interface SystemHoldTicket { seq: number }
-
-/** One entry point, so no acquisition can forget to capture the ticket it releases on. */
-function takeSystemHold(runner: SessionRunnerInterface, ticket: SystemHoldTicket): void {
-  runner.systemTurnInProgress = true;
-  ticket.seq = runner.systemHoldSeq;
 }
 
 // The runner is no longer running; hold it against disposal during restoration.
@@ -369,6 +390,37 @@ export function syncFailureAlreadyExplained(err: unknown): boolean {
   );
 }
 
+/** A step that failed after the rebase had already rewritten the branch. */
+export interface PostRebaseFailure {
+  step: string;
+  forcePushed: boolean;
+}
+
+const POST_REBASE_FAILURE = Symbol("shipit.postRebaseFailure");
+
+function markPostRebaseFailure<T>(err: T, failure: PostRebaseFailure): T {
+  if (err !== null && typeof err === "object") {
+    Object.defineProperty(err, POST_REBASE_FAILURE, { value: failure, enumerable: false, configurable: true });
+  }
+  return err;
+}
+
+export function postRebaseFailureOf(err: unknown): PostRebaseFailure | null {
+  if (err === null || typeof err !== "object") return null;
+  return ((err as Record<symbol, unknown>)[POST_REBASE_FAILURE] as PostRebaseFailure | undefined) ?? null;
+}
+
+export function buildPostRebaseFailureNotice(
+  baseBranch: string,
+  failure: PostRebaseFailure,
+  errorMessage: string,
+): string {
+  const pushed = failure.forcePushed ? " and force-pushed it" : "";
+  const summary = summarizeGitError(errorMessage).replace(/[.:]$/, "");
+  return `Sync with \`${baseBranch}\` rebased this branch onto \`${baseBranch}\`${pushed}, but a later step `
+    + `failed: ${failure.step} (${summary}). The rebase is done and was not undone.`;
+}
+
 function unreadableReason(detail: string): string {
   return (
     `git cannot read \`${detail}\` in this workspace, so a rebase would rewrite the `
@@ -436,13 +488,13 @@ export async function runRebaseFlow(
   if (runner.running) {
     throw new ServiceError(409, "Cannot rebase while an agent turn is in progress");
   }
-  if (runner.systemTurnInProgress) {
-    throw new ServiceError(409, "Cannot rebase while a system turn is in progress");
+  if (runner.sessionHold) {
+    throw new ServiceError(409, "Cannot rebase while ShipIt is working on this session's branch");
   }
 
-  // Keep user turns queued between resolution turns and through the final push.
-  const systemHold: SystemHoldTicket = { seq: 0 };
-  takeSystemHold(runner, systemHold);
+  // Keep other turns queued from here through the final push; no turn releases it.
+  const sessionHold = takeSessionHold(runner);
+  deps.onSessionHoldTaken?.(sessionHold);
 
   // Defer auto-push so it cannot race the force-push. The object avoids TS callback narrowing.
   const pendingPush: { arm: (() => void) | null } = { arm: null };
@@ -451,6 +503,8 @@ export async function runRebaseFlow(
   const hold = new RebaseRunnerHold(runner);
   let published = false;
   let pushProhibited = false;
+  // From here a failure must not be reported as a sync that left the branch unchanged.
+  let rebaseConcluded = false;
   let savedCommit: string | null = null;
   // Our sweep removes them where git 2.39 refuses; newer git deletes ignored files itself.
   let pluginSkillsBefore: string[] = [];
@@ -503,10 +557,15 @@ export async function runRebaseFlow(
       }
       worktreeRewritten = true;
       pluginSkillsBefore = presentPluginSkillCopies(runner.sessionDir);
-      return retryClearingPluginSkills(git, runner.sessionDir, () => git.rebase(baseRef));
+      return retryRemovingStaleIndexLock(
+        runner.sessionDir,
+        () => runner.running,
+        () => retryClearingPluginSkills(git, runner.sessionDir, () => git.rebase(baseRef)),
+      );
     });
 
     if (result.status === "clean") {
+      rebaseConcluded = true;
       // Nothing refreshed the lease since the flow started; fetch and rebase alone can
       // outrun POST_TURN_HOLD_MAX_MS on a large repo.
       hold.take();
@@ -551,11 +610,14 @@ export async function runRebaseFlow(
 
       const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
       try {
-        await runRebaseResolutionTurn(deps, prompt, hold, systemHold);
+        const step = await runRebaseResolutionTurn(deps, prompt, hold, sessionHold);
         // docs/322 — the next resolution prompt would land on the agent's question.
         if (runner.answerHold) {
           throw new ServiceError(409, "the agent asked a question and is waiting for your answer");
         }
+        // A streaming turn that the user stops ends with a result too; it resolved nothing.
+        if (step.stopped) throw new Error("the conflict-resolution turn was stopped before it finished");
+        if (step.errored) throw new Error("the agent reported an error in the conflict-resolution turn");
       } catch (err) {
         // Abort before rethrowing; verify failures before reporting the branch unchanged.
         let stillInProgress = false;
@@ -591,6 +653,7 @@ export async function runRebaseFlow(
       }
     }
 
+    rebaseConcluded = true;
     hold.take();
     reevaluateSessionAfterRewrite(runner);
     const resolvedPushOutcome = await tryForcePush(deps, baseBranch);
@@ -624,7 +687,12 @@ export async function runRebaseFlow(
         }
         : {}),
     };
+  } catch (err) {
+    throw rebaseConcluded
+      ? markPostRebaseFailure(err, { step: "finishing the sync after the rebase", forcePushed: published })
+      : err;
   } finally {
+    let cleanupStep = "cleaning up after the rebase";
     // Released last, so a throw in this teardown cannot strand the lease. Re-taken
     // first: restoreLfsForSync's own begin/end would otherwise zero an expired depth
     // and then drop it, leaving the handback and the queue drain uncovered.
@@ -660,27 +728,33 @@ export async function runRebaseFlow(
           }
         }
       }
+      cleanupStep = "handing the workspace files back to the session";
       handWorkspaceBackToWorker(runner.sessionDir);
+      cleanupStep = "cleaning up after the rebase";
       // After the handback, since the worker may write into a root the rebase created; before
       // the queue drains, since a turn started now would spawn without the skills.
       if (pluginSkillCopiesGone(pluginSkillsBefore)) {
         hold.take();
         await restorePluginSkills(runner);
       }
-      // Clear on the hold's own ticket: a turn that displaced the driver, or another owner that
-      // took over mid-flow, minted one of its own. Keying this on `runner.running` left a hold a
-      // CLI-started turn was adopted under set with no owner at all (planning#554).
-      if (runner.systemHoldSeq === systemHold.seq) runner.systemTurnInProgress = false;
-      // The drain is NOT conditional on that: the queue can also be left by a hold that changed
-      // hands, and `releaseQueuedTurn` declines on its own while a turn, a hold or a merge holds
-      // the session — so it starts a turn only when nothing else can.
-      try {
-        releaseQueuedTurn(runner);
-      } catch (releaseErr) {
-        console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
-      }
+    } catch (err) {
+      // eslint-disable-next-line no-unsafe-finally -- the cleanup's own error, which left this `finally` before; only annotated
+      throw rebaseConcluded ? markPostRebaseFailure(err, { step: cleanupStep, forcePushed: published }) : err;
     } finally {
-      hold.release();
+      try {
+        // In a `finally` of its own, so a throw in the cleanup above cannot leave the session
+        // held with no owner. A no-op when the attempt's deadline released it already.
+        sessionHold.release();
+        // `releaseQueuedTurn` declines on its own while a turn, a hold or a merge holds the
+        // session, so it starts a turn only when nothing else can.
+        try {
+          releaseQueuedTurn(runner);
+        } catch (releaseErr) {
+          console.error("[rebase] post-flow queue release failed:", getErrorMessage(releaseErr));
+        }
+      } finally {
+        hold.release();
+      }
     }
   }
 }
@@ -784,18 +858,117 @@ function notifyPrStatusPollerOfPush(deps: RebaseDriverDeps): void {
   }
 }
 
+interface ResolutionStep {
+  stopped: boolean;
+  errored: boolean;
+}
+
+interface StepProcess {
+  agent: AgentProcess | null;
+}
+
+/** The process tree gets SIGKILL 5 s after SIGTERM (`shared/kill-child.ts`). */
+export const STEP_PROCESS_EXIT_TIMEOUT_MS = 15_000;
+
+/**
+ * docs/329-user-steers-every-turn — the step is an ordinary turn, so the user can steer it.
+ * The flow, not the turn, makes sure that no agent writes to the workspace while git runs:
+ * it starts the step on a process of its own and ends that process before it goes on.
+ */
 async function runRebaseResolutionTurn(
   deps: RebaseDriverDeps,
   prompt: string,
   hold: RebaseRunnerHold,
-  systemHold: SystemHoldTicket,
-): Promise<void> {
+  sessionHold: SessionHold,
+): Promise<ResolutionStep> {
+  const step: StepProcess = { agent: null };
+  const timeoutMs = deps.stepExitTimeoutMs ?? STEP_PROCESS_EXIT_TIMEOUT_MS;
+  let ended: ResolutionStep;
   try {
-    await dispatchRebaseResolutionTurn(deps, prompt, hold, systemHold);
-  } finally {
-    // The turn executor releases its own lease as this continuation is queued, so by
-    // here it has let go — and if it had already expired, it took ours with it.
+    refuseStepOverResidentWork(deps.runner);
+    ended = await dispatchRebaseResolutionTurn(deps, prompt, hold, sessionHold, step);
+  } catch (err) {
+    // The step failed already; the flow aborts the rebase either way, and says why.
     hold.take();
+    await endStepProcess(deps, step, sessionHold, timeoutMs).catch((exitErr: unknown) => {
+      console.warn("[rebase] ending the process of a failed conflict-resolution turn:", getErrorMessage(exitErr));
+    });
+    throw err;
+  }
+  // The turn executor releases its own lease as this continuation is queued, so by
+  // here it has let go — and if it had already expired, it took ours with it.
+  hold.take();
+  await endStepProcess(deps, step, sessionHold, timeoutMs);
+  // The attempt's deadline released the hold meanwhile, and a turn may run now.
+  if (deps.runner.sessionHold !== sessionHold) {
+    throw new Error("the rebase was stopped while its conflict-resolution turn ran");
+  }
+  return ended;
+}
+
+/**
+ * The gate retires the resident when it admits the step (`underHold`), which would end the
+ * resident's background work. A running turn is left to the gate, which refuses the step.
+ */
+function refuseStepOverResidentWork(runner: SessionRunnerInterface): void {
+  if (runner.running) return;
+  const work = residentBackgroundWork(runner);
+  if (work.length === 0) return;
+  // Transient: 409 defers the automatic retry without spending an attempt.
+  throw new ServiceError(
+    409,
+    "Cannot resolve conflicts right now — the resident agent has background work in flight "
+      + `(${work.join(", ")}), which replacing it would end`,
+  );
+}
+
+/**
+ * Without its listeners no event of the process can start a turn or take a message; the
+ * steers it had not read went back to the queue at its result. A process that is no longer
+ * in the slot exited (its `done` cleared it) or was taken out by something else (an adapter
+ * error, the abort route), which gives no proof of an exit, as before this flow.
+ */
+async function endStepProcess(
+  deps: RebaseDriverDeps,
+  step: StepProcess,
+  sessionHold: SessionHold,
+  timeoutMs: number,
+): Promise<void> {
+  const { runner } = deps;
+  const { agent } = step;
+  if (!agent || runner.getAgent() !== agent) return;
+  agent.removeAllListeners();
+  // An adapter emits `error` with no listener as a throw.
+  agent.on("error", () => { /* ending */ });
+  const exited = new Promise<void>((resolve) => { agent.once("done", () => resolve()); });
+  try {
+    agent.kill();
+  } catch {
+    // Already gone.
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), timeoutMs); });
+  const ended = await Promise.race([exited, timedOut]) !== "timeout";
+  if (timer) clearTimeout(timer);
+  // The attempt's deadline released the hold during the wait: what runs now is not this flow's.
+  if (runner.sessionHold !== sessionHold) return;
+  // A turn the CLI began on this process after the step's result; nothing else runs under the
+  // hold, and its listeners are gone. What it took and did not read goes back to the queue.
+  if (runner.running) {
+    requeueUndeliveredSteers(runner, (m) => runner.emitMessage(m));
+    finalizeTurnRows(deps.chatHistoryManager, runner, runner.sessionId, { skipEmpty: true });
+    runner.clearTurnEventBuffer();
+    runner.running = false;
+  }
+  // The slot and the streaming state stay until the exit, which the runner routes through them.
+  if (runner.getAgent() === agent) runner.setAgent(null);
+  runner.isStreamingActive = false;
+  runner.appliedSpawnIdentity = undefined;
+  runner.clearBackgroundTasks();
+  if (!ended) {
+    throw new Error(
+      `the agent process of the conflict-resolution turn did not exit within ${timeoutMs / 1000}s`,
+    );
   }
 }
 
@@ -803,25 +976,24 @@ function dispatchRebaseResolutionTurn(
   deps: RebaseDriverDeps,
   prompt: string,
   hold: RebaseRunnerHold,
-  systemHold: SystemHoldTicket,
-): Promise<void> {
+  sessionHold: SessionHold,
+  step: StepProcess,
+): Promise<ResolutionStep> {
   const { runner } = deps;
 
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<ResolutionStep>((resolve, reject) => {
     let turnSettled = false;
 
     deps.onAgentSpawned?.();
 
-    // Unqueueable by construction: this flow holds systemTurnInProgress across the whole
-    // rebase, so a queued entry could only drain after the hold this turn must release —
-    // it would never settle, and the driver would own the session for ever (planning#297).
+    // Never queued: nothing drains the queue under this flow's own hold, so a queued step
+    // would settle only after the hold it waits to release (planning#297).
     runner.dispatch(prepareDispatch({
       text: prompt,
       agentInterface: undefined,
       activity: "Resolving conflicts...",
       // Rebase owns the commits, push, and queue drain.
       postTurn: "none",
-      systemTurn: true,
       automatic: deps.userStarted !== true,
       heldId: undefined,
       execution: undefined,
@@ -835,15 +1007,14 @@ function dispatchRebaseResolutionTurn(
       compactContext: undefined,
       silent: undefined,
       onTurnComplete: (outcome) => {
-        // Late duplicate callbacks must not re-lock the runner after the flow releases it.
         if (turnSettled) return;
         turnSettled = true;
-        // Restore the flow's holds synchronously after finishTurn clears the per-turn
-        // flag; an unexpired turn lease is still held here, so nothing reads idle between.
-        if (!runner.running) takeSystemHold(runner, systemHold);
+        // Synchronous, while an unexpired turn lease is still held: nothing reads idle between.
         hold.take();
+        // A streaming process is still in the slot at its result; a one-shot one has exited.
+        if (outcome.status !== "refused") step.agent = runner.getAgent();
         if (outcome.status === "completed") {
-          resolve();
+          resolve({ stopped: outcome.stoppedByUser === true, errored: outcome.resultErrored === true });
           return;
         }
         if (outcome.status === "refused") {
@@ -860,7 +1031,7 @@ function dispatchRebaseResolutionTurn(
             : `the conflict-resolution turn ended as "${outcome.status}"${outcome.detail ? ` — ${outcome.detail}` : ""}`,
         ));
       },
-    }), { whenBusy: "refuse" });
+    }), { whenBusy: "refuse", underHold: sessionHold });
 
     // dispatch claims the turn synchronously, so `running` now says whether it started.
     // A refusal settled inside the call above, and its hold must survive to the flow.
@@ -939,9 +1110,11 @@ export async function runAutoResolveAttempt(
   let settled = false;
   let timedOut = false;
   const followupAttempt: { id: string | null } = { id: null };
+  let flowHold: SessionHold | null = null;
   const wrappedDeps: RebaseDriverDeps = {
     ...deps,
     onAgentSpawned: () => { didSpawn = true; },
+    onSessionHoldTaken: (taken) => { flowHold = taken; },
     onFollowupWindowOpened: (attemptId) => {
       // The deadline may already have fired: the flow is raced, not cancelled, so it can reach
       // its first conflict afterwards, with no deadline left to close what it opens.
@@ -973,7 +1146,8 @@ export async function runAutoResolveAttempt(
           try { runner.getAgent()?.kill(); } catch { /* defensive */ }
           runner.setAgent(null);
           runner.running = false;
-          runner.systemTurnInProgress = false;
+          // The flow's own hold: a flow that wakes later can no longer start a step.
+          flowHold?.release();
           runner.onAgentFinished();
           try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
           runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
@@ -1007,7 +1181,7 @@ export async function runAutoResolveAttempt(
       if (!didSpawn) {
         const lastError = autoResolveFailureText(runner, "rebase flow", err);
         // A free deferral of a refusal git repeats every time retries forever, and silently.
-        return isUntrackedFilesRefusal(getErrorMessage(err))
+        return isUntrackedFilesRefusal(getErrorMessage(err)) || isStaleIndexLockKept(err)
           ? { outcome: "error", lastError, didWork: true }
           : { outcome: "deferred", lastError, didWork: false };
       }

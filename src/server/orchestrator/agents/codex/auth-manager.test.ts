@@ -367,10 +367,12 @@ describe.skipIf(!fs.existsSync("/proc/1/stat"))("CodexAuthManager tree teardown 
     };
   }
 
+  // A reaped zombie shows `X` until its pid is released.
   function alive(pid: number): boolean {
     try {
       const raw = fs.readFileSync(`/proc/${String(pid)}/stat`, "utf-8");
-      return raw.slice(raw.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
+      const state = raw.slice(raw.lastIndexOf(")") + 2).split(" ")[0];
+      return state !== "Z" && state !== "X";
     } catch {
       return false;
     }

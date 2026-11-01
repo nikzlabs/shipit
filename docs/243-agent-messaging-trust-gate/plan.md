@@ -104,6 +104,72 @@ Admission must precede all behavior observable as accepting a new turn. Move war
 
 Input shape validation may happen before admission if it is pure and has no session mutation, disk read, persistence, or agent effect. The security contract is that an untrusted request cannot graduate, steer, enqueue, persist transcript content, set running state, or start a process.
 
+### Spawned sessions: admission before the claim
+
+A spawn is the one ingress where the boundary above is too late. `spawnChildSession`
+(`services/child-sessions.ts`) claims a session, clones it, graduates it, creates its runner and
+container, and only then dispatches the first prompt. The dispatch gate refused there, so a
+"failed" `shipit session create` left a titled child with a branch and a running container and
+no prompt. On 2026-10-10 an Ops session did that three times against a ShipIt source repository
+its host had never trusted.
+
+Three rules close it. Each is verified at the function named.
+
+1. **The same check runs before the claim.** `spawnChildSession` asks
+   `repoStore.isTrusted(claimUrl)` before `claimService.claim` and throws
+   `SpawnRepositoryUntrustedError`: status `403`, code `repository_untrusted`, and a message
+   that names the repository and the Trust action. It is the predicate
+   `assertSessionCanDispatch` applies to the child, because a spawned child is never an `ops`
+   or `sandbox` session and its remote is the claim URL. The runner boundary stays; this is
+   that boundary's answer, given before the side effects. It covers every caller: the spawn
+   route and the cross-repository proposal's start route.
+2. **A spawn that fails after the claim removes the child.** Any throw after the claim —
+   the pinned commit is not in the clone, environment preparation fails, the dispatch is
+   refused — runs `discardSpawnedChild` (`services/session.ts`): runner, container, volumes,
+   checkout and row. "Failed" therefore never describes a session that exists. This is also
+   what makes the docs/306-spawn-retry-safety rule "a failed spawn drops its claim" correct:
+   the retry of a failed spawn finds nothing left from the first attempt.
+
+   The removal declines in two cases, and the error then names the child's id and says
+   that the session still exists. **A turn has started in the child:** graduation shows it
+   in the sidebar before the spawn ends and the failed spawn dispatched nothing, so that
+   turn is someone else's work. **Its container cannot be destroyed:** deleting the row
+   would hide a container that is still there.
+3. **The ShipIt source repository is trusted for an Ops fix spawn (req 7).**
+   `prepareShipitFixSpawn` (`api-routes-shipit-fix.ts`) calls `grantRepoTrust` after the
+   Ops-only check and the write-access check, never before, so a spawn that those checks
+   refuse grants nothing. A spawn that is refused later — a quota, an unknown role — has
+   already granted it: the trust describes the repository, not the outcome of one spawn.
+   `grantRepoTrust` (`services/repos.ts`) is also what `POST /api/repos/trust` calls, so
+   both grants start the setup the gate deferred in the same way.
+
+The spawn route maps the refusal to `{ error, code }`. It gives a dispatch-time
+`AgentTurnAdmissionError` the same status and code, in place of the `500` it had before.
+Once the child exists and has its prompt, the route's own bookkeeping cannot fail the spawn:
+a parent card that cannot be recorded is logged, and the caller still receives the child.
+
+Where these rules stop:
+
+- **Inside the claim.** The removal starts when `claimService.claim` returns, so the claim
+  must not reject after it allocated a session: no caller would hold the id. Verified at
+  `services/claim-session.ts`, `claim()`: a clone that fails deletes the row it created; the
+  refresh of a warm or reused session fails soft as a whole, its cache-freshness check
+  included; and the two steps after the allocation, the `markStarted` stamp and the standby
+  probe for the log line, cannot fail the claim. A stamp
+  that fails is logged and the session keeps the times it had before the claim, so the docs
+  viewer can count the files the clone wrote as changed by the session.
+- **Registration is not gated.** The cross-repository proposal registers and clones a
+  target ShipIt has never seen before `spawnChildSession` runs, so an untrusted target is
+  refused after its repository appeared in the sidebar. That is intended: this design
+  never gated a clone, the card told the user the repository would be added, and only a
+  registered repository can hold the grant.
+
+The cross-repository card is also a consent surface
+(docs/303-cross-repo-session-proposal req 12). Its button reads "Trust and start in
+owner/repo", and its start route calls `grantRepoTrust` before the spawn when the click
+carries the consent. The route is not container-accessible, so only the user can send it.
+The design is in that package's `plan.md`, "Trusting the target from the card".
+
 ### Re-checking queued and recovered work
 
 The same boundary runs both when an item is first submitted and when it is later dequeued or recovered. Initial rejection means ordinary untrusted requests never enter the queue. Re-checking at drain/recovery is deliberate defense in depth for future revocation and for durable pending work reconstructed after restart.
@@ -178,6 +244,15 @@ This design does not invent revocation requirements. It does ensure queue drains
 - Add a guard test or lintable structural assertion that interactive WS turns use `runner.dispatch` and that production code does not call the lower-level turn executor as an ingress.
 - Confirm trusted remote and no-remote/template controls retain current behavior.
 
+### Spawn ordering
+
+- `integration_tests/spawn-trust-gate.test.ts`: an untrusted target answers `403 repository_untrusted`, with no claim, no child row, no checkout and no runner; the same idempotency key succeeds after the Trust action; a child whose first dispatch is refused after it was created is removed.
+- `services/child-sessions-trust-gate.test.ts`: the refusal happens before `claimService.claim`; a failure after the claim calls the discard; a discard that fails puts the child's id in the error.
+- `services/claim-session.test.ts`: a claim whose `markStarted` stamp and standby probe both fail still returns the session.
+- `integration_tests/propose-repo-session-start.test.ts`: a card start without the consent answers `403 repository_untrusted` and grants nothing; a start with it trusts the repository and starts one session.
+- `services/session-discard-spawned-child.test.ts`: the teardown order; a child with a running turn or a queued message is kept; a container that cannot be destroyed keeps the session.
+- `integration_tests/ops-fix-spawn.test.ts`: an Ops fix spawn trusts the ShipIt source repository and the child receives its prompt; a spawn that the Ops-only check or the write-access check refuses grants no trust; a pinned commit that is not in the target repository removes the child.
+
 ### Client
 
 - `MessageInput` is disabled for an untrusted existing session and for `/{slug}/new` before warm-session graduation; it enables after authoritative trust state arrives.
@@ -196,8 +271,8 @@ This design does not invent revocation requirements. It does ensure queue drains
   `add()` / `setReady()` in its `beforeEach`. The gate is fail-closed, so a
   fixture that omits it fails at the first turn with "Trust this repository
   before sending messages to the agent", which surfaces far from the cause: as
-  a 500 from `POST /api/sessions/:id/spawn`, a wake-turn that never delivers,
-  or a `waitForClaude` timeout. The first pass covered the agent-driven PR,
+  a wake-turn that never delivers, or a `waitForClaude` timeout. A spawn is the
+  exception: it answers `403 repository_untrusted` and names the repository. The first pass covered the agent-driven PR,
   spawned-session, Ops fix-spawn, PR auto-create and quick-capture fixtures;
   `session-report`, `session-notify-on-merge`, `release-flow` and
   `warm-sessions` were missed and fixed after they went red on main.
@@ -227,6 +302,7 @@ After implementation, removing any route-specific client guard should worsen UX 
 
 - `docs/178-repo-trust-gate` remains the shipped trust-on-first-use design for install and Compose. This package supersedes only its “chat remains available while untrusted” decision and reuses its trust identity, persistence, and consent action.
 - `docs/242-agent-interface-sdk` was named as a related consumer in the request but is not present in this checkout. When that package is available, it should reference this invariant and require SDK-created turns to use `runner.dispatch`; the trust design must not be merged into or duplicated by the SDK package.
+- `docs/162-ops-remediation-sessions` is the consumer of requirement 7: its `--shipit-source` spawn is the one place a repository becomes trusted without the Trust action or a ShipIt-created template.
 - `docs/240-unlosable-turn-dispatch` and `prepared-dispatch.ts` supply the shared dispatch/queue machinery this design extends; they do not currently authorize repository trust.
 
 ## Implementation touchpoints (future production change)
@@ -236,3 +312,4 @@ After implementation, removing any route-specific client guard should worsen UX 
 - Trust resolution: `repo-store.ts`, `sessions.ts`, trust route/services.
 - Client state and rollback: `App.tsx`, `MessageInput`, `RepoTrustBanner.tsx`, `send-user-message.ts`, `dispatch-agent-message.ts`, connection/message handlers.
 - Tests: co-located unit tests plus WS/HTTP integration tests, warm-session first-turn coverage, and all direct dispatch consumers named in the ingress inventory.
+- Spawn admission: `services/child-sessions.ts` (`spawnChildSession`, `SpawnRepositoryUntrustedError`), `services/claim-session.ts` (`claim`), `services/session.ts` (`discardSpawnedChild`), `services/repos.ts` (`grantRepoTrust`), `api-routes-session-spawn.ts`, `api-routes-shipit-fix.ts`, `api-routes-propose-repo-session.ts`.

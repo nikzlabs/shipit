@@ -88,6 +88,7 @@ describe("Integration: Recover rewind after a later turn", () => {
       type: "assistant",
       message: { content: [{ type: "text", text: `Wrote ${file}` }] },
       session_id: "agent-sid",
+      uuid: `msg-${file}`,
     });
     claude.emit("event", { type: "result", subtype: "success", session_id: "agent-sid" });
     claude.emit("done", 0);

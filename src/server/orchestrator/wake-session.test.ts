@@ -5,15 +5,16 @@ import type { SessionContainerManager } from "./session-container.js";
 import type { SessionInfo } from "../shared/types.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "./wake-session.js";
 import { takeQueueHold } from "./services/recovery.js";
-import { makeDispatchTurnDeps, type FakeAgent } from "./integration_tests/dispatch-test-helpers.js";
+import { makeDispatchTurnDeps, testDispatch, type FakeAgent } from "./integration_tests/dispatch-test-helpers.js";
 import { createTestDatabaseManager } from "./integration_tests/test-helpers.js";
 import type { DatabaseManager } from "../shared/database.js";
 
 const SESSION = { id: "s1", workspaceDir: "/tmp/s1" } as SessionInfo;
 
-function setup(container: { status: string } | undefined) {
+function setup(container: { status: string } | undefined, opts: { steering?: boolean } = {}) {
   const agents: FakeAgent[] = [];
   const { deps } = makeDispatchTurnDeps(agents, []);
+  if (opts.steering) deps.steerInputs = () => ({ liveSteering: true, steeringCapable: true });
   const registry = new SessionRunnerRegistry({ onRunnerCreated: (r) => r.setSystemTurnDeps(deps) });
   const wakeDeps = {
     sessionManager: {} as SessionManager,
@@ -21,7 +22,8 @@ function setup(container: { status: string } | undefined) {
     defaultAgentId: "claude" as const,
     containerManager: { get: () => container } as unknown as SessionContainerManager,
   };
-  return { agents, registry, wakeDeps };
+  const firstPrompt = (): string => vi.mocked(deps.buildRunParams).mock.calls[0]![2];
+  return { agents, registry, wakeDeps, firstPrompt };
 }
 
 function markAwaitingContainer(runner: SessionRunnerInterface): void {
@@ -60,8 +62,22 @@ describe("wakeSessionWithTurn", () => {
     expect(fresh).not.toBe(stale);
   });
 
-  it("releases the caller's hold just before its dispatch, so the wake runs ahead of held messages", async () => {
+  it("releases the caller's hold and starts the wake when nothing waits behind the hold", async () => {
     const { registry, wakeDeps } = setup({ status: "running" });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    runners.push(runner);
+    const hold = takeQueueHold(runner, { lease: true });
+
+    const handle = await wakeSessionWithTurn(wakeDeps, SESSION, { text: "continue", releaseHold: hold });
+
+    expect(handle.admitted).toBe("started");
+    expect(runner.running).toBe(true);
+    expect(runner.queueLength).toBe(0);
+    expect(runner.postTurnWorkInFlight).toBe(false);
+  });
+
+  it("runs a message of the user's that the hold kept before the wake (docs/329 req 2)", async () => {
+    const { agents, registry, wakeDeps, firstPrompt } = setup({ status: "running" });
     const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
     runners.push(runner);
     const hold = takeQueueHold(runner, { lease: true });
@@ -69,10 +85,140 @@ describe("wakeSessionWithTurn", () => {
 
     const handle = await wakeSessionWithTurn(wakeDeps, SESSION, { text: "continue", releaseHold: hold });
 
-    expect(handle.admitted).toBe("started");
+    expect(handle.admitted).toBe("queued");
     expect(runner.running).toBe(true);
-    expect(runner.messageQueue.map((m) => m.text)).toEqual(["sent while held"]);
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["continue"]);
+    await vi.waitFor(() => expect(agents[0]?.run).toHaveBeenCalledTimes(1));
+    expect(firstPrompt()).toContain("sent while held");
     expect(runner.postTurnWorkInFlight).toBe(false);
+  });
+
+  it("runs the wake before an automatic entry that the hold kept", async () => {
+    const { agents, registry, wakeDeps, firstPrompt } = setup({ status: "running" });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    runners.push(runner);
+    const hold = takeQueueHold(runner, { lease: true });
+    runner.enqueue({ text: "ci failed", execution: "dispatched", automatic: true });
+
+    const handle = await wakeSessionWithTurn(wakeDeps, SESSION, { text: "continue", releaseHold: hold });
+
+    expect(handle.admitted).toBe("started");
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["ci failed"]);
+    await vi.waitFor(() => expect(agents[0]?.run).toHaveBeenCalledTimes(1));
+    expect(firstPrompt()).toContain("continue");
+  });
+
+  it("gives a wake a turn of its own: it waits behind a running turn and is not steered into it", async () => {
+    const { agents, registry, wakeDeps } = setup({ status: "running" }, { steering: true });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    runners.push(runner);
+    runner.dispatch(testDispatch({ text: "the user's work" }));
+    await vi.waitFor(() => expect(agents[0]?.run).toHaveBeenCalledTimes(1));
+    expect(runner.isStreamingActive).toBe(true);
+
+    // No completion callback: only the admission keeps this one out of the running turn.
+    const handle = await wakeSessionWithTurn(wakeDeps, SESSION, { text: "continue after the quota limit" });
+
+    expect(handle.admitted).toBe("queued");
+    expect(agents[0]!.sendUserMessage).not.toHaveBeenCalled();
+    expect(runner.messageQueue.map((m) => m.text)).toEqual(["continue after the quota limit"]);
+  });
+
+  it("starts a wake on a streaming process, and a message typed during it steers it (docs/329 req 1, 2)", async () => {
+    const { agents, registry, wakeDeps } = setup({ status: "running" }, { steering: true });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    runners.push(runner);
+
+    await wakeSessionWithTurn(wakeDeps, SESSION, { text: "continue after the restart", onSettled: () => {} });
+    await vi.waitFor(() => expect(agents[0]?.run).toHaveBeenCalledTimes(1));
+
+    expect(agents[0]!.run.mock.calls[0]![0]).toMatchObject({ useStreaming: true });
+    const steered = runner.dispatch(testDispatch({ text: "use the other branch" }));
+    expect(steered.admitted).toBe("steered");
+    expect(agents[0]!.sendUserMessage).toHaveBeenCalledWith("use the other branch");
+  });
+});
+
+// Every message between sessions reaches its recipient through this path
+// (docs/328-session-message-inbox), so the reconcile that `sendChildMessage` owned is here.
+describe("wakeSessionWithTurn — the agent the session runs on", () => {
+  function setupWith(runnerAgent: "claude" | "codex", running: boolean) {
+    const runner = {
+      agentId: runnerAgent,
+      running,
+      disposed: false,
+      dispatch: vi.fn(() => ({ admitted: "started", settled: new Promise(() => {}) })),
+    };
+    const deps = {
+      sessionManager: {} as SessionManager,
+      runnerRegistry: { get: () => runner, getOrCreate: () => runner, dispose: vi.fn() },
+      defaultAgentId: "claude",
+    } as unknown as WakeSessionDeps;
+    return { runner, deps };
+  }
+
+  it("runs the session's persisted agent when the registry hands back a stale runner", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const { runner, deps } = setupWith("claude", false);
+
+    await wakeSessionWithTurn(deps, { ...SESSION, agentId: "codex" } as SessionInfo, { text: "continue" });
+
+    expect(runner.agentId).toBe("codex");
+    expect(runner.dispatch).toHaveBeenCalledTimes(1);
+    vi.restoreAllMocks();
+  });
+
+  it("leaves a running turn's agent alone", async () => {
+    const { runner, deps } = setupWith("claude", true);
+
+    await wakeSessionWithTurn(deps, { ...SESSION, agentId: "codex" } as SessionInfo, { text: "continue" });
+
+    expect(runner.agentId).toBe("claude");
+  });
+
+  it("keeps the runner's agent for a session that has never run", async () => {
+    const { runner, deps } = setupWith("claude", false);
+
+    await wakeSessionWithTurn(deps, SESSION, { text: "continue" });
+
+    expect(runner.agentId).toBe("claude");
+    expect(runner.dispatch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("wakeSessionWithTurn — start now or refuse (docs/328-session-message-inbox)", () => {
+  let runners: SessionRunnerInterface[] = [];
+  afterEach(() => {
+    for (const r of runners) r.dispose({ force: true });
+    runners = [];
+  });
+
+  it("starts an ordinary turn, not a system turn, on an idle session", async () => {
+    const { registry, wakeDeps } = setup({ status: "running" });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    runners.push(runner);
+
+    const handle = await wakeSessionWithTurn(wakeDeps, SESSION, {
+      text: "inbox",
+      startOrRefuse: { automatic: true },
+    });
+
+    expect(handle.admitted).toBe("started");
+  });
+
+  it("refuses, and queues nothing, when the session is busy", async () => {
+    const { registry, wakeDeps } = setup({ status: "running" });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    runners.push(runner);
+    runner.running = true;
+
+    const handle = await wakeSessionWithTurn(wakeDeps, SESSION, {
+      text: "inbox",
+      startOrRefuse: { automatic: true },
+    });
+
+    expect(handle.admitted).toBe("refused");
+    expect(runner.queueLength).toBe(0);
   });
 });
 
@@ -113,7 +259,8 @@ describe("wakeSessionWithTurn while the agent waits for an answer (docs/322)", (
       expect.objectContaining({
         text: "Child PR #42 merged",
         automatic: true,
-        systemTurn: true,
+        // Every wake says ShipIt started it, for the docs/235 one-shot turn note.
+        unattended: true,
         deliveryId: "watch-1:1",
       }),
     ]);
@@ -129,6 +276,30 @@ describe("wakeSessionWithTurn while the agent waits for an answer (docs/322)", (
     expect(handle.admitted).toBe("queued");
     expect(getOrCreate).not.toHaveBeenCalled();
     expect(sessionManager.heldTurns("parent").map((m) => m.text)).toEqual(["Continue where you stopped."]);
+  });
+
+  it("refuses a start-or-refuse turn that is automatic, and saves nothing (docs/328)", async () => {
+    const { deps, sessionManager, getOrCreate } = setup(true);
+
+    const handle = await wakeSessionWithTurn(deps, sessionManager.get("parent")!, {
+      text: "inbox",
+      startOrRefuse: { automatic: true },
+    });
+
+    expect(handle.admitted).toBe("refused");
+    expect(getOrCreate).not.toHaveBeenCalled();
+    expect(sessionManager.heldTurns("parent")).toEqual([]);
+  });
+
+  it("goes on to the runner for a start-or-refuse turn that the user approved (docs/322 req 6)", async () => {
+    const { deps, sessionManager, getOrCreate } = setup(true);
+
+    await expect(wakeSessionWithTurn(deps, sessionManager.get("parent")!, {
+      text: "inbox",
+      startOrRefuse: { automatic: false },
+    })).rejects.toThrow("booted a runner");
+    expect(getOrCreate).toHaveBeenCalled();
+    expect(sessionManager.heldTurns("parent")).toEqual([]);
   });
 
   it("goes on to the runner when nothing is held", async () => {
@@ -159,9 +330,36 @@ describe("wakeSessionWithTurn while the agent waits for an answer (docs/322)", (
 
     expect(handle.admitted).toBe("queued");
     expect(sessionManager.heldTurns("s1").map((m) => m.text)).toEqual(["continue"]);
-    expect(runner.systemTurnInProgress).toBe(false);
     expect(runner.running).toBe(true);
     expect(runner.messageQueue).toEqual([]);
+    runner.dispose({ force: true });
+  });
+
+  it("does not report the wake as started when a late answer hold saves it instead", async () => {
+    dbManager = createTestDatabaseManager();
+    const sessionManager = new SessionManager(dbManager);
+    sessionManager.track("s1", "Session", "/tmp/s1");
+    const { deps } = makeDispatchTurnDeps([], []);
+    deps.answerHold = sessionManager;
+    const registry = new SessionRunnerRegistry({ onRunnerCreated: (r) => r.setSystemTurnDeps(deps) });
+    const runner = registry.getOrCreate("s1", "/tmp/s1", "claude");
+    const hold = takeQueueHold(runner, { lease: true });
+
+    const handle = await wakeSessionWithTurn(
+      {
+        sessionManager,
+        runnerRegistry: registry,
+        defaultAgentId: "claude",
+        // The agent asks its question after the wake's own check of the hold.
+        restoreWorkspace: async () => sessionManager.setAwaitingAnswer("s1", true),
+      },
+      sessionManager.get("s1")!,
+      { text: "continue", releaseHold: hold },
+    );
+
+    expect(handle.admitted).toBe("queued");
+    expect(runner.running).toBe(false);
+    expect(sessionManager.heldTurns("s1").map((m) => m.text)).toEqual(["continue"]);
     runner.dispose({ force: true });
   });
 });

@@ -12,6 +12,7 @@ import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
 import {
   CONTAINER_WORKSPACE_DIR,
+  CONTAINER_PERSIST_DIR,
   CONTAINER_SESSION_STATE_DIR,
   DEP_CACHE_CONTAINER_PATH,
 } from "../shared/fs-constants.js";
@@ -21,11 +22,13 @@ import {
   startNodeRuntimeProvisioning,
 } from "./node-runtime.js";
 import { linkSessionNpmCache } from "../shared/npm-cache.js";
+import { linkBakedPlaywrightBrowsers } from "../shared/playwright-browsers.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { ClaudeProcess } from "./agents/claude/process.js";
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
 import { CodexAdapter } from "./agents/codex/adapter.js";
 import { OpencodeAdapter } from "./agents/opencode/adapter.js";
+import { Opencode2Adapter } from "./agents/opencode2/adapter.js";
 import { GrokAdapter } from "./agents/grok/adapter.js";
 import { AntigravityAdapter } from "./agents/antigravity/adapter.js";
 import { registerAgentOpsRoutes } from "./agent-ops-routes.js";
@@ -59,6 +62,8 @@ export interface SessionWorkerDeps {
   port?: number;
   host?: string;
   workspaceDir?: string;
+  /** Watched beside the workspace when set; only a container has its own /persist. */
+  persistDir?: string;
   stateDir?: string;
   createFileWatcher?: () => FileWatcher;
   createTerminal?: () => TerminalProcess;
@@ -144,6 +149,7 @@ export class SessionWorker extends EventEmitter {
     this.fileWatcherController = new FileWatcherController({
       createFileWatcher: deps.createFileWatcher ?? (() => new FileWatcher()),
       workspaceDir: this.workspaceDir,
+      persistDir: deps.persistDir,
       broadcast,
     });
     this.installController = new InstallController({
@@ -335,12 +341,18 @@ export class SessionWorker extends EventEmitter {
         if (typeof body.toolName !== "string" || !body.toolName) {
           return reply.code(400).send({ error: "toolName is required" });
         }
+        const subagent = body.toolUseId ? await this.agentController.subagentCaller(body.toolUseId) : undefined;
+        // After the wait: Auto can apply during it, and that change allows only requests already in the broker.
+        if (this.agentController.approvesEveryCall) return { behavior: "allow" };
         const agentId = this.agentController.currentAgentId;
+        // A kill or an exit, also one during the wait, left no process to act on an answer.
+        if (!agentId) return { behavior: "deny", message: "The agent process that made this request has ended." };
         const opened = this.permissionBroker.openRequest({
           toolName: body.toolName,
           input: body.input,
           ...(body.toolUseId ? { toolUseId: body.toolUseId } : {}),
-          ...(agentId ? { agentId } : {}),
+          agentId,
+          ...(subagent ? { subagent } : {}),
         });
         if (opened.immediate) {
           return {
@@ -620,12 +632,15 @@ export const createWorkerAgent: WorkerAgentFactory = (agentId: AgentId) =>
       agentId === "opencode"
       ? new OpencodeAdapter()
       : // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 11: same construction switch
-        agentId === "grok"
-        ? new GrokAdapter()
+        agentId === "opencode2"
+        ? new Opencode2Adapter()
         : // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 11: same construction switch
-          agentId === "antigravity"
-          ? new AntigravityAdapter()
-          : new ClaudeAdapter(new ClaudeProcess());
+          agentId === "grok"
+          ? new GrokAdapter()
+          : // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 11: same construction switch
+            agentId === "antigravity"
+            ? new AntigravityAdapter()
+            : new ClaudeAdapter(new ClaudeProcess());
 
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   const workspaceDir = process.env.WORKSPACE_DIR || CONTAINER_WORKSPACE_DIR;
@@ -643,6 +658,7 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
     agentFactory: createWorkerAgent,
     port: Number(process.env.WORKER_PORT) || 9100,
     workspaceDir,
+    persistDir: CONTAINER_PERSIST_DIR,
     workerToken,
   });
 
@@ -652,6 +668,9 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   // docs/276 H1 — before the listener opens, so no install, terminal or service can
   // reach npm while the private index still lacks its link to the shared content store.
   linkSessionNpmCache(nodeStateDir);
+
+  // Before the listener opens, so no turn, terminal or install starts Playwright first.
+  linkBakedPlaywrightBrowsers();
 
   startNodeRuntimeProvisioning({
     workspaceDir,

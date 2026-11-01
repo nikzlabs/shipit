@@ -27,11 +27,14 @@ import {
   syncFailureAlreadyExplained,
   repoDefaultBranch,
   ServiceError,
+  buildPostRebaseFailureNotice,
   buildSyncFailureNotice,
+  postRebaseFailureOf,
   rebaseLeftoverText,
   summarizeGitError,
 } from "./services/index.js";
 import { deliverRebaseFollowup } from "./services/rebase-followup.js";
+import { indexLockStateOf } from "./services/stale-index-lock.js";
 import { detectAndReArmResetSession } from "./services/pr-rearm.js";
 import {
   buildManualResetAgentNotice,
@@ -155,6 +158,7 @@ export async function reportSyncFailure(deps: {
   err: unknown;
 }): Promise<void> {
   const message = getErrorMessage(deps.err);
+  const postRebase = postRebaseFailureOf(deps.err);
   // The abort after a failed rebase swallows its own failure, so check what it left.
   const rebaseInProgress = await deps.git.rebaseInProgressState().catch(() => null);
   // The banner drops its Abort button on this event, so it has to carry the recovery itself.
@@ -163,7 +167,8 @@ export async function reportSyncFailure(deps: {
   deps.runner.emitMessage({
     type: "rebase_aborted",
     sessionId: deps.sessionId,
-    reason: leftover ? `${summary} ${leftover}` : summary,
+    // The banner would title it "Rebase failed"; after a rebase that completed, only the notice speaks.
+    ...(postRebase ? {} : { reason: leftover ? `${summary} ${leftover}` : summary }),
   });
   // Persist failures not already recorded by the driver; WS events do not survive reload.
   if (syncFailureAlreadyExplained(deps.err)) return;
@@ -172,7 +177,9 @@ export async function reportSyncFailure(deps: {
       (msg) => deps.runner.emitMessage(msg),
       deps.chatHistoryManager,
       deps.sessionId,
-      buildSyncFailureNotice(deps.baseBranch, message, rebaseInProgress),
+      postRebase
+        ? buildPostRebaseFailureNotice(deps.baseBranch, postRebase, message)
+        : buildSyncFailureNotice(deps.baseBranch, message, rebaseInProgress, indexLockStateOf(deps.err)),
       "warn",
     );
   } catch (noticeErr) {
@@ -253,6 +260,20 @@ export async function registerGitRoutes(
         },
       });
       return outcome;
+    },
+  );
+
+  // What `buildAgentRunParams` gives a new agent process, for the hook of one that is already up.
+  app.get<{ Params: { id: string } }>(
+    "/api/sessions/:id/branch/destructive-git-guard",
+    { config: { containerAccessible: true } },
+    (request, reply) => {
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      return { guarded: Boolean(session.mergedHeadSha) };
     },
   );
 
@@ -496,7 +517,7 @@ export async function registerGitRoutes(
         void (async () => {
           try {
             const outcome = await flowPromise;
-            // The flow's `finally` has run: the system-turn hold is released and LFS restored.
+            // The flow's `finally` has run: the session hold is released and LFS restored.
             if (outcome.status === "conflicts_resolved" && outcome.followup) {
               deliverRebaseFollowup(
                 { runner, sessionManager: deps.sessionManager },
@@ -538,7 +559,7 @@ export async function registerGitRoutes(
         if (agent) {
           agent.kill();
           // Settle the driver's wait before clearing the agent drops its terminal events.
-          if (runner?.systemTurnInProgress) agent.emit("superseded");
+          if (runner?.sessionHold) agent.emit("superseded");
           if (runner) {
             runner.setAgent(null);
             runner.running = false;

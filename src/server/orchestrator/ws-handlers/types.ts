@@ -18,6 +18,7 @@ import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
 import type { SettingsProposalStore } from "../settings-proposal-store.js";
 import type { ScheduleProposalStore } from "../schedule-proposal-store.js";
 import type { ScheduleNotesRequestStore } from "../schedule-notes-request-store.js";
+import type { SessionInboxStore } from "../session-inbox-store.js";
 import type { SecretStore } from "../secret-store.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { AgentMergeClaimStore } from "../agent-merge-claims.js";
@@ -27,9 +28,10 @@ import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { ReleaseStatusPoller } from "../release-status-poller.js";
 import type { AgentId, AgentProcess } from "../../shared/types.js";
 import type { SubscriptionLimitsMap } from "../../shared/types.js";
-import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage } from "../session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage, SystemTurnDeps } from "../session-runner.js";
 import type { GenerateText } from "../non-turn-model.js";
 import type { RequestedRestartTurn } from "../services/agent-restart-request.js";
+import type { QuotaContinuationManager } from "../services/quota-continuation.js";
 
 export type { QueuedMessage };
 
@@ -112,6 +114,8 @@ export interface AppCtx {
   /** So a turn carries the outcome notice of a schedule proposal (docs/324-scheduled-sessions req 9). */
   scheduleProposals?: ScheduleProposalStore;
   scheduleNotesRequests?: ScheduleNotesRequestStore;
+  /** So a turn the user starts carries the inbox notice (docs/328-session-message-inbox). */
+  sessionInboxStore?: SessionInboxStore;
   secretStore?: SecretStore;
   serviceManagers?: Map<string, ServiceManager>;
   agentMergeClaims?: AgentMergeClaimStore;
@@ -126,6 +130,10 @@ export interface AppCtx {
   runRequestedRestart?: (turn: RequestedRestartTurn) => Promise<void>;
   /** docs/324-agent-requested-compaction — likewise. */
   runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
+  /** docs/306-quota-continuation — likewise: a resident CLI starts its own turns here too. */
+  quotaContinuation?: Pick<QuotaContinuationManager, "recordStandDown" | "continueNow">;
+  /** docs/235-agent-self-wake-liveness §9 — likewise, for a one-shot turn the user typed. */
+  reportStoppedBackgroundJobs?: SystemTurnDeps["reportStoppedBackgroundJobs"];
 
   recordAgentRateLimits?: (
     agentId: AgentId,

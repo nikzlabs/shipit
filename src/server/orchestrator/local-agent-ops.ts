@@ -17,7 +17,9 @@ const EXACT_ROUTES: Readonly<Record<string, string>> = {
   "workflow/view": "actions/workflows/view",
   "plugin/refresh": "plugin/refresh",
   "plugin/exec": "plugin/exec",
+  "plugin/exec/stdin": "plugin/exec/stdin",
   "plugin/status": "plugin/status",
+  "branch/destructive-git-guard": "branch/destructive-git-guard",
 };
 
 const NUMBERED_OPS = new Set(["comment", "ready", "close", "reopen", "merge"]);

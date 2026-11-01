@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { SessionRunner } from "./session-runner.js";
 import type { SystemTurnDeps } from "./session-runner.js";
 import { executeAgentTurn } from "./turn-executor.js";
+import { buildParkedFailoverNotice } from "./account-failover-note.js";
 import type { AgentId, SessionInfo } from "../shared/types.js";
 
 interface FakeAgent extends EventEmitter {
@@ -84,6 +85,7 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
           touchUnlessResolved: vi.fn(),
           setMuted: vi.fn(),
           list: vi.fn().mockReturnValue([]),
+          appendPendingAgentNotice: vi.fn(),
         } as never,
         chatHistoryManager: {
           replaceInProgress: vi.fn(),
@@ -227,6 +229,90 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
     expect(history.finalizeInProgress).toHaveBeenCalledWith("s1");
     runner.dispose({ force: true });
   });
+
+  // planning#710 — the killed process takes its background tasks with it; the retry's
+  // streaming flag must not bring them back as "Waiting for: …".
+  it("does not carry the refused process's background tasks into the retry", async () => {
+    const session = { billingMode: "sub", providerRouteBillingMode: "sub", serviceId: "anthropic" };
+    const { agents, deps, runner } = harness(session as Partial<SessionInfo>);
+    const first = makeFakeAgent();
+
+    await start(runner, deps, first);
+    first.emit("event", { type: "agent_background_tasks", tasks: [{ id: "t1", description: "sleep 600" }] });
+    expect(runner.backgroundWorkDescriptions).toEqual(["sleep 600"]);
+    first.emit("event", { type: "agent_result", status: "error", error: EXHAUSTED });
+    await waitFor(() => agents.length === 1, "retry dispatched");
+    await waitFor(() => runner.isStreamingActive, "retry streaming");
+
+    expect(runner.backgroundWorkDescriptions).toEqual([]);
+    runner.dispose({ force: true });
+  });
+
+  // planning#712 — the CLI reads everything after `/goal ` as the objective (docs/297).
+  it("sends a verbatim command again unchanged, and parks the failover note for the next turn", async () => {
+    const session = { billingMode: "sub", providerRouteBillingMode: "sub", serviceId: "anthropic" };
+    const { agents, deps, runner } = harness(session as Partial<SessionInfo>);
+    deps.buildRunParams = vi.fn(async (_sessionId: string, _agentId: AgentId, prompt: string) => ({ prompt, cwd: repoDir }));
+    const first = makeFakeAgent();
+
+    await executeAgentTurn(runner, deps, first as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "/goal ship the release",
+      verbatimCommand: true,
+      userText: "/goal ship the release",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext: async () => {},
+      emit: () => {},
+      useStreaming: true,
+    });
+    first.emit("event", { type: "agent_background_tasks", tasks: [{ id: "t1", description: "sleep 600" }] });
+    first.emit("event", { type: "agent_result", status: "error", error: EXHAUSTED });
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "retry started");
+
+    expect((agents[0]!.run.mock.calls[0]?.[0] as { prompt: string }).prompt).toBe("/goal ship the release");
+    expect(deps.listenerDeps.sessionManager.appendPendingAgentNotice)
+      .toHaveBeenCalledWith("s1", buildParkedFailoverNotice(["sleep 600"]));
+    runner.dispose({ force: true });
+  });
+
+  // The clear at turn start is for a new process only: these still run the tasks they reported.
+  for (const [label, extra] of [
+    ["a turn that reuses the resident", { reuseExistingAgent: true }],
+    ["an adopted turn", { adopt: true }],
+  ] as const) {
+    it(`keeps the task list of the process ${label} runs on`, async () => {
+      const session = { billingMode: "sub", providerRouteBillingMode: "sub", serviceId: "anthropic" };
+      const { deps, runner } = harness(session as Partial<SessionInfo>);
+      const resident = Object.assign(makeFakeAgent(), { sendUserMessage: vi.fn() });
+      runner.setAgent(resident as never);
+      runner.isStreamingActive = true;
+      runner.setBackgroundTasks([{ id: "t1", description: "sleep 600" }]);
+
+      await executeAgentTurn(runner, deps, resident as never, {
+        agentId: "claude" as AgentId,
+        sessionId: "s1",
+        prompt: "p",
+        userText: "do work",
+        emitUserEcho: false,
+        persistUserMessage: vi.fn(),
+        isNewSession: false,
+        fallbackTitle: "t",
+        turnStartHeadHash: null,
+        drainNext: async () => {},
+        emit: () => {},
+        useStreaming: true,
+        ...extra,
+      });
+
+      expect(runner.backgroundWorkDescriptions).toEqual(["sleep 600"]);
+      runner.dispose({ force: true });
+    });
+  }
 
   it("leaves an ordinary process error alone", async () => {
     const session = { billingMode: "sub", providerRouteBillingMode: "sub", serviceId: "anthropic" };

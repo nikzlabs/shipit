@@ -136,6 +136,8 @@ export type ClaudeContentBlock = ClaudeContentBlockText | ClaudeContentBlockTool
 export interface ClaudeAssistantEvent {
   type: "assistant";
   message: {
+    /** Shared by the several events one API call produces. */
+    id?: string;
     content: ClaudeContentBlock[];
     /** Per-call counts; some providers omit result.usage.iterations. */
     usage?: ClaudeUsageIteration;
@@ -148,6 +150,8 @@ export interface ClaudeAssistantEvent {
   is_meta?: boolean;
   /** docs/297 — `<local-command-stdout>…</local-command-stdout>`; CLI-only. */
   local_command_source?: string;
+  /** The message's id in the CLI's conversation file. */
+  uuid?: string;
 }
 
 export interface ClaudeUserEvent {
@@ -157,6 +161,7 @@ export interface ClaudeUserEvent {
   };
   parent_tool_use_id?: string;
   isReplay?: boolean;
+  uuid?: string;
 }
 
 /** Last iteration's input and cache counts measure context; turn sums do not. */
@@ -165,6 +170,11 @@ export interface ClaudeUsageIteration {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  /** Cache writes by lifetime (docs/333-idle-compaction). */
+  cache_creation?: {
+    ephemeral_5m_input_tokens?: number;
+    ephemeral_1h_input_tokens?: number;
+  };
   type?: string;
 }
 
@@ -185,6 +195,8 @@ export interface ClaudeResultEvent {
   subtype: "success" | "error" | "error_max_turns" | "error_during_execution";
   /** docs/297 — 0 for a command the CLI answered itself; a model turn is >= 1. */
   num_turns?: number;
+  /** What the CLI answered, when it was not a prompt: "task-notification" for a background task's notice. */
+  origin?: { kind?: string };
   is_error?: boolean;
   terminal_reason?: string;
   session_id: string;

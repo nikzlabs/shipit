@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { assertSessionCanDispatch, createRunnerRegistry } from "./runner-registry-factory.js";
 import { ContainerSessionRunner, PLACEHOLDER_WORKER_URL } from "./container-session-runner.js";
+import { SessionRunner } from "./session-runner.js";
+import { createDepCacheDirHelper } from "./session-dir-factory.js";
 
 describe("assertSessionCanDispatch", () => {
   it.each(["ops", "sandbox"] as const)(
@@ -27,6 +29,57 @@ describe("assertSessionCanDispatch", () => {
         () => false,
       ),
     ).toThrow(expect.objectContaining({ code: "repository_untrusted" }));
+  });
+});
+
+describe("createRunnerRegistry — /dep-cache wiring", () => {
+  // The cross-session lock in shipit-docs/environment.md relies on one folder per repo.
+  it("gives every session of a repo the same folder, another repo a different one, a sandbox none", () => {
+    const remoteUrls: Record<string, string | undefined> = {
+      a: "https://github.com/acme/app.git",
+      b: "https://github.com/acme/app.git",
+      other: "https://github.com/acme/other.git",
+      sandbox: undefined,
+    };
+    const seen = new Map<string, string | undefined>();
+    const registry = createRunnerRegistry({
+      effectiveRunnerFactory: (opts) => {
+        seen.set(opts.sessionId, opts.depCacheDir);
+        return new SessionRunner(opts);
+      },
+      sessionManager: {
+        get: (id: string) => ({ remoteUrl: remoteUrls[id] }),
+        getPrStatus: () => undefined,
+      } as never,
+      repoStore: { isTrusted: () => true } as never,
+      createGitManager: (() => ({})) as never,
+      githubAuthManager: { authenticated: false } as never,
+      agentFactory: undefined,
+      chatHistoryManager: {} as never,
+      autoPushScheduler: {
+        schedule: () => {}, cancel: () => {}, cancelAll: () => {}, pending: () => false,
+      },
+      sseBroadcast: () => {},
+      enforceIdleContainerLimit: () => {},
+      getDepCacheDir: createDepCacheDirHelper("/state"),
+      serviceManagers: new Map(),
+      composeStopPromises: new Map(),
+      composeWarnings: new Map(),
+      composeNotConfigured: new Set(),
+      containerManager: null,
+      serviceEnvDir: "/tmp/service-env",
+      runtimeMode: "local",
+      broadcastLog: () => {},
+      usageManager: {} as never,
+    });
+    for (const id of Object.keys(remoteUrls)) {
+      registry.getOrCreate(id, `/tmp/${id}`, "claude").dispose({ force: true });
+    }
+
+    expect(seen.get("a")).toMatch(/^\/state\/dep-cache\/[^/]+$/);
+    expect(seen.get("b")).toBe(seen.get("a"));
+    expect(seen.get("other")).not.toBe(seen.get("a"));
+    expect(seen.get("sandbox")).toBeUndefined();
   });
 });
 

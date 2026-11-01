@@ -1,12 +1,13 @@
 import type { ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess, WorkerAgentStartBody, WorkerAgentStatus } from "../shared/types.js";
-import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
+import type { WsServerMessage, WsQueueRow, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
-import type { AgentGoalCommand, AgentGoalCommandResult, WorkerAgentGoalBody } from "../shared/types/agent-types.js";
+import type { AgentGoalCommand, AgentGoalCommandResult, WorkerAgentGoalBody, WorkerResidentSpawn } from "../shared/types/agent-types.js";
 import type { PresentStore } from "./present-store.js";
 import { emitChatCard, type InProgressPersister } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, AnswerHoldStore, ChatMessageGroup, SteeredMessage, RecordedChatCard, DispatchAdmission } from "./session-runner.js";
+import type { SessionHold } from "./session-hold.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../shared/sub-agent-run.js";
 import { AgentTurnAdmissionError, runDispatchedTurn, dispatchOnRunner } from "./session-runner.js";
@@ -16,11 +17,12 @@ import type { TurnHandle } from "./turn-settlement.js";
 import type { SSEEvent } from "./sse-client.js";
 import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPostMessage, PLACEHOLDER_WORKER_URL, WorkerUnavailableError } from "./worker-http.js";
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
-import type { ProxyAgentRunner } from "./proxy-agent-process.js";
+import type { ProxyAgentRunner, WorkerTurnIdentity } from "./proxy-agent-process.js";
 import { adoptInFlightTurn, type InFlightTurnInfo } from "./turn-adoption.js";
 import { reconcilePermissionCards } from "./permission-cards.js";
-import { workerReportsNoTurn } from "./restart-turn-reattach.js";
-import { originView, type ServiceManager, type ManagedService, type SecretsStatusInternalSnapshot } from "./service-manager.js";
+import { attachableResident, workerReportsNoTurn } from "./restart-turn-reattach.js";
+import { recordStatusCardSpawn } from "./session-status-spawn-record.js";
+import { originView, unknownServiceError, type ServiceManager, type ManagedService, type SecretsStatusInternalSnapshot } from "./service-manager.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
 import { BackgroundTaskTracker, type BackgroundTaskInfo } from "./background-task-tracker.js";
@@ -30,11 +32,19 @@ import { TurnAccumulator } from "./turn-accumulator.js";
 import type { CommittedBodyIds } from "./transcript-projection.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 import { stopTokenWriteBackWatch } from "./session-token-publisher.js";
-import { beginTurnSetup } from "./turn-stop-request.js";
+import { beginTurnSetup, turnAwaitsAgent, turnInSetup } from "./turn-stop-request.js";
 import { readAnswerHold } from "./turn-admission.js";
 import { forgetHeldEntries } from "./held-turns.js";
 import { modelListField } from "../shared/catalogue/model-list.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
+import {
+  recordServiceMcpSpawn,
+  resolveServiceMcp,
+  serviceMcpSetKey,
+  serviceMcpSpawnKey,
+  type SessionServiceMcp,
+} from "./service-mcp.js";
+import type { WorkerServiceMcpBody, WorkerServiceMcpResult } from "../shared/types/agent-types.js";
 import {
   dependencyGapNotice,
   dependencyGapSummary,
@@ -55,6 +65,7 @@ const INSTALL_POST_TIMEOUT_MS = 180_000;
 const GOAL_WORKER_TIMEOUT_MS = 30_000;
 
 const PLUGIN_PREPARE_TIMEOUT_MS = 30_000;
+const SERVICE_MCP_SYNC_TIMEOUT_MS = 30_000;
 
 // Recovers lost completion events. The install itself has no deadline.
 const INSTALL_STATUS_PROBE_INTERVAL_MS = 30_000;
@@ -63,6 +74,12 @@ export interface InstallCompletion {
   ok: boolean;
   /** True when `ok` was synthesized rather than observed. Never proof. */
   unverified?: boolean;
+}
+
+interface UnfollowedResident {
+  runToken: string;
+  agentId: AgentId;
+  spawn?: WorkerResidentSpawn;
 }
 
 // The worker's `startsOwnTurn`, read off the wire.
@@ -91,8 +108,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _agent: ProxyAgentProcess | null = null;
   private _agentId: AgentId;
   private _isRunning = false;
-  private _systemTurnInProgress = false;
-  private _systemHoldSeq = 0;
+  sessionHold: SessionHold | null = null;
   private _mergeHold = false;
   private _wasInterrupted = false;
   turnEpoch = 0;
@@ -100,13 +116,16 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _guardedUnavailable = false;
   readonly awaitingPermissionIds = new Set<string>();
   private _isStreamingActive = false;
-  private _backgroundTasks = new BackgroundTaskTracker();
+  private _backgroundTasks = new BackgroundTaskTracker(() => this.clearBackgroundTasks());
   // Retain the resident proxy when a one-shot process displaces `_agent`.
   private _streamingProxy: ProxyAgentProcess | null = null;
   // A streaming process the worker already held at the first connect: after an orchestrator
   // restart nothing here follows it, and it starts turns of its own (planning#639).
-  private _unfollowedResident: { runToken: string; agentId: AgentId } | null = null;
+  private _unfollowedResident: UnfollowedResident | null = null;
   private _statusUnreadSince = 0;
+  // planning#700 — the first connect's status reading, and whether one has succeeded.
+  private _firstReading: Promise<unknown> | null = null;
+  private _statusRead = false;
   private _firstConnectRetry: ReturnType<typeof setTimeout> | null = null;
   private _firstConnectAttempt = 0;
   // A turn may be live there, so the idle reclaim waits too, for at most the hold's deadline.
@@ -169,7 +188,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   private _disposed = false;
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
-  private _subAgentSpawnsThisTurn = 0;
   private readonly _subAgentAborts = new Map<string, { controller: AbortController; agentId: AgentId }>();
   private _lastAnnouncedWork = "[]";
   private readonly _postTurnHold = new PostTurnHold();
@@ -255,13 +273,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (v && !this._isRunning) beginTurnSetup(this);
     this._isRunning = v;
   }
-  get systemTurnInProgress(): boolean { return this._systemTurnInProgress; }
-  set systemTurnInProgress(v: boolean) {
-    // Every acquisition is a new hold, including one taken while the flag is already set.
-    if (v) this._systemHoldSeq += 1;
-    this._systemTurnInProgress = v;
-  }
-  get systemHoldSeq(): number { return this._systemHoldSeq; }
   get mergeHold(): boolean { return this._mergeHold; }
   set mergeHold(v: boolean) { this._mergeHold = v; }
   get answerHold(): boolean { return readAnswerHold(this._systemTurnDeps, this.sessionId); }
@@ -309,15 +320,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (!this._postTurnHold.active) this.emit("work_released");
   }
   get turnCommitPending(): boolean { return this._turnCommitHold.active; }
-  beginTurnCommit(): void { this._turnCommitHold.begin(); }
-  endTurnCommit(): void { this._turnCommitHold.end(); }
+  beginTurnCommit(): number { return this._turnCommitHold.begin(); }
+  endTurnCommit(hold: number): void { this._turnCommitHold.end(hold); }
   setBackgroundTasks(tasks: BackgroundTaskInfo[]): void {
     this._backgroundTasks.set(tasks);
     this.announceBackgroundWork();
   }
   clearBackgroundTasks(): void {
-    this._backgroundTasks.clear();
+    if (this._backgroundTasks.clear()) this.emitBackgroundWorkToChat();
     this.announceBackgroundWork();
+  }
+  // The SSE announcement updates the sidebar only; the open chat's row needs this message.
+  // It names the consults that still run, as the history load does.
+  private emitBackgroundWorkToChat(): void {
+    const descriptions = this.backgroundWorkDescriptions;
+    this.emitMessage({ type: "background_tasks", sessionId: this.sessionId, count: descriptions.length, descriptions });
   }
   private announceBackgroundWork(): void {
     const next = JSON.stringify(this.backgroundWorkDescriptions);
@@ -363,8 +380,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
-  get subAgentSpawnsThisTurn(): number { return this._subAgentSpawnsThisTurn; }
-  set subAgentSpawnsThisTurn(n: number) { this._subAgentSpawnsThisTurn = n; }
 
   // Independent of the primary turn; disposal aborts the request, and transport has its own cap.
   async spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult> {
@@ -391,6 +406,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
           ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
           ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
+          ...(req.sandbox ? { sandbox: true } : {}),
           ...modelListField(),
         },
         { timeoutMs: SUB_AGENT_TRANSPORT_TIMEOUT_MS, signal: controller.signal },
@@ -456,7 +472,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     forgetHeldEntries(this.answerHoldStore, this.turn.messageQueue);
     this.turn.clearQueue();
   }
-  getQueueSnapshot(): { text: string; position: number }[] { return this.turn.getQueueSnapshot(); }
+  getQueueSnapshot(): WsQueueRow[] { return this.turn.getQueueSnapshot(); }
 
   activeDeliveryId: string | undefined;
   hasDelivery(deliveryId: string): boolean {
@@ -742,14 +758,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     agentId: AgentId,
     params: AgentRunParams,
     runToken?: string,
-    turn?: { deliveryId?: string },
+    turn?: WorkerTurnIdentity,
+    spawnIdentity?: string,
   ): Promise<void> {
     const prev = this._startInFlight;
     let release: () => void = () => {};
     this._startInFlight = new Promise<void>((r) => { release = r; });
     try {
       await prev.catch(() => {});
-      await this._doStartAgentViaProxy(agentId, params, runToken, turn);
+      await this._doStartAgentViaProxy(agentId, params, runToken, turn, spawnIdentity);
     } finally {
       release();
     }
@@ -759,7 +776,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     agentId: AgentId,
     params: AgentRunParams,
     runToken?: string,
-    turn?: { deliveryId?: string },
+    turn?: WorkerTurnIdentity,
+    spawnIdentity?: string,
   ): Promise<void> {
     await this._workerReady;
     this.assertWorkerReachable("/agent/start");
@@ -773,9 +791,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     const body: WorkerAgentStartBody = {
       agentId,
-      params,
+      params: this.withCurrentServiceMcp(params),
       ...(runToken !== undefined ? { runToken } : {}),
       ...(turn?.deliveryId !== undefined ? { deliveryId: turn.deliveryId } : {}),
+      ...(turn?.silentCompaction ? { silentCompaction: true } : {}),
+      ...(spawnIdentity !== undefined ? { spawnIdentity } : {}),
       ...modelListField(),
     };
 
@@ -787,6 +807,24 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._startPosted = false;
       throw err;
     }
+    // A set that changed while the start was on its way had no process to go to.
+    void this.syncServiceMcp();
+  }
+
+  /**
+   * docs/327 — the params were built before the install wait, which can take
+   * minutes; a plugin whose version went live in it must be in this start.
+   */
+  private withCurrentServiceMcp(params: AgentRunParams): AgentRunParams {
+    const current = this.serviceMcp();
+    if (!current) return params;
+    recordServiceMcpSpawn(this.sessionId, current.servers);
+    const { serviceMcpServers: _servers, serviceMcpCandidates: _candidates, ...rest } = params;
+    return {
+      ...rest,
+      ...(current.servers.length > 0 ? { serviceMcpServers: current.servers } : {}),
+      ...(current.candidates.length > 0 ? { serviceMcpCandidates: current.candidates } : {}),
+    };
   }
 
   private async postAgentStart(body: WorkerAgentStartBody): Promise<void> {
@@ -852,7 +890,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // The process this reading describes may be the one that was killed meanwhile.
     if (this._kills !== killsBefore) return "unread";
 
-    if (status.turnActive === true && !this._agent && !this._isRunning) {
+    // A claim still in setup waits for that turn (planning#703).
+    if (status.turnActive === true && !this._agent && (!this._isRunning || turnInSetup(this))) {
       await this.adoptWorkerTurn(status);
       return status;
     }
@@ -864,7 +903,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     this.sse.fastForwardLastSeenSeq(status.latestSseSeq ?? 0);
     if (status.streaming === true && status.runToken !== undefined && !this._agent) {
-      this._unfollowedResident = { runToken: status.runToken, agentId: status.agentId ?? this._agentId };
+      this._unfollowedResident = {
+        runToken: status.runToken,
+        agentId: status.agentId ?? this._agentId,
+        ...(status.resident ? { spawn: status.resident } : {}),
+      };
     }
     return status;
   }
@@ -896,14 +939,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       ...(status.deliveryId !== undefined ? { deliveryId: status.deliveryId } : {}),
       streaming: status.streaming === true,
       ...(status.ownTurn !== undefined ? { ownTurn: status.ownTurn } : {}),
-    });
+      ...(status.silentCompaction === true ? { silentCompaction: true } : {}),
+    }, status.resident);
     if (!adopted) return false;
     await adopted;
     return true;
   }
 
   // The listeners are wired when this returns: adoption does all of it before its first await.
-  private wireWorkerTurn(turn: InFlightTurnInfo): Promise<void> | null {
+  private wireWorkerTurn(turn: InFlightTurnInfo, spawn: WorkerResidentSpawn | undefined): Promise<void> | null {
     const deps = this._systemTurnDeps;
     if (!deps) return null;
     this._agentId = turn.agentId;
@@ -911,6 +955,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       ...(turn.runToken !== undefined ? { runToken: turn.runToken } : {}),
       ...(turn.deliveryId !== undefined ? { deliveryId: turn.deliveryId } : {}),
     });
+    this.restoreResidentSpawn(spawn);
     const adopted = adoptInFlightTurn(this, deps, proxy, turn);
     this.emitMessage({
       type: "session_status",
@@ -933,6 +978,102 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (this._disposed) return false;
     await this.ensureWorkerResourcesStarted();
     return !this._disposed && this._isRunning;
+  }
+
+  /**
+   * planning#700 — what the process was started with, so the spawn guards of the next turn
+   * compare it with the session (docs/334 req 3). Without it, a guard keeps the process for ever.
+   */
+  private restoreResidentSpawn(spawn: WorkerResidentSpawn | undefined): void {
+    if (!spawn) return;
+    this._appliedSpawnIdentity = spawn.spawnIdentity;
+    this._appliedPermissionMode = spawn.permissionMode;
+    recordStatusCardSpawn(this.sessionId, spawn.sessionStatusCard);
+    recordServiceMcpSpawn(this.sessionId, spawn.serviceMcpServers);
+  }
+
+  /** planning#700 — an idle process the next turn can take over; also before the worker is read. */
+  get residentToAttach(): boolean {
+    // A container still being created holds no process.
+    if (this._agent !== null || this._disposed || this.workerUrl === PLACEHOLDER_WORKER_URL) return false;
+    return this._unfollowedResident !== null || !this._statusRead;
+  }
+
+  /**
+   * planning#700 — takes over the idle process the worker kept through an orchestrator restart,
+   * before the turn's spawn guards, which retire it when the session no longer matches.
+   */
+  async attachIdleResident(): Promise<boolean> {
+    if (!this.residentToAttach) return false;
+    // The status reading only: the stream replays this turn's events when it opens.
+    void this.ensureWorkerResourcesStarted();
+    await this._firstReading;
+    const resident = this._unfollowedResident;
+    if (!resident || this._agent || this._disposed) return false;
+    let status: WorkerAgentStatus;
+    try {
+      status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as WorkerAgentStatus;
+    } catch (err) {
+      console.warn(
+        `[container-runner:${this.sessionId}] not taking over the idle process: the worker's status did not read `
+        + `(${err instanceof Error ? err.message : String(err)})`,
+      );
+      return false;
+    }
+    if (this._agent || this._disposed || this._unfollowedResident !== resident) return false;
+    // planning#703 — the CLI started a turn of its own that the stream has not delivered yet:
+    // follow it now, as its first event would. The turn that called this then waits for it.
+    if (
+      status.runToken === resident.runToken && status.running && status.streaming === true
+      && (status.turnActive === true || status.selfWakeActive === true)
+    ) {
+      this.adoptOwnTurn(status.resident ? { ...resident, spawn: status.resident } : resident);
+      return false;
+    }
+    // The first connect's reading can be old, and an unfollowed process that exited told no one.
+    const spawn = status.runToken === resident.runToken ? attachableResident(status) : null;
+    if (!spawn) {
+      console.log(
+        `[container-runner:${this.sessionId}] not taking over the idle process ${resident.runToken}: `
+        + `the worker reports runToken=${status.runToken ?? "none"}, turnActive=${String(status.turnActive)}, `
+        + `spawn facts ${status.resident ? "kept" : "not kept"}`,
+      );
+      return false;
+    }
+    const proxy = this.createAgent(resident.agentId, { runToken: resident.runToken });
+    this.restoreResidentSpawn(spawn);
+    this._residentRoute ??= this._systemTurnDeps?.recoverResidentRoute?.(this.sessionId, resident.agentId);
+    // The first connect moved the replay past the event that listed them.
+    this._backgroundTasks.set(status.backgroundTasks ?? []);
+    this.isStreamingActive = true;
+    this.tendUntilTaken(proxy, resident);
+    console.log(
+      `[container-runner:${this.sessionId}] took over the idle process ${resident.runToken} `
+      + `(agent=${resident.agentId}, ${status.backgroundTasks?.length ?? 0} background task(s))`,
+    );
+    return true;
+  }
+
+  /**
+   * Until a turn takes the proxy (`reused`), nothing listens to it: a turn the CLI starts is still
+   * adopted from the unfollowed mark, and these keep its tasks and its exit seen.
+   */
+  private tendUntilTaken(proxy: ProxyAgentProcess, resident: UnfollowedResident): void {
+    this._unfollowedResident = resident;
+    const forget = (): void => {
+      if (this._unfollowedResident === resident) this._unfollowedResident = null;
+    };
+    const exited = (): void => {
+      forget();
+      if (this._agent === proxy) this.clearResidentProcessState();
+    };
+    proxy.once("reused", forget);
+    proxy.once("superseded", forget);
+    proxy.once("done", exited);
+    proxy.once("error", exited);
+    proxy.on("event", (event) => {
+      if (event.type === "agent_background_tasks") this.setBackgroundTasks(event.tasks);
+    });
   }
 
   // The last delay repeats until the status reads or the runner is disposed.
@@ -975,7 +1116,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private async _doStartWorkerResources(): Promise<void> {
     // A container still being created holds none of the requests saved cards refer to.
     const newContainer = this.workerUrl === PLACEHOLDER_WORKER_URL;
-    const status = await this.reconcileWorkerTurnBeforeFirstConnect();
+    const reading = this.reconcileWorkerTurnBeforeFirstConnect();
+    this._firstReading = reading;
+    const status = await reading;
     if (this._disposed) return;
     if (status === "unread") {
       // Without the status the replay would drop a live turn's events (planning#665).
@@ -987,6 +1130,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this.retryFirstConnect();
       return;
     }
+    this._statusRead = true;
     if (this._statusUnreadSince > 0) {
       this._statusUnreadSince = 0;
       this._firstConnectAttempt = 0;
@@ -1040,6 +1184,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     return proxy;
   }
 
+  /** The worker and the install, which a fresh agent process waits for before it starts. */
+  async whenReadyForAgent(): Promise<void> {
+    await this._workerReady;
+    await this._waitForInstallBeforeAgent();
+  }
+
   // Keep install and CLI memory peaks from overlapping in the container.
   private async _waitForInstallBeforeAgent(): Promise<void> {
     if (this._installComplete) {
@@ -1088,8 +1238,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await workerPost(this.workerUrl, "/agent/stdin", { data });
   }
 
-  async sendAgentMessage(text: string): Promise<void> {
-    await workerPostMessage(this.workerUrl, text);
+  async sendAgentMessage(text: string, turn?: WorkerTurnIdentity): Promise<void> {
+    await workerPostMessage(this.workerUrl, text, turn);
   }
 
   // null means ShipIt auto; the adapter maps it to CLI default.
@@ -1219,6 +1369,51 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get dependencyGap(): DependencyGap | null {
     return this._dependencyGap;
+  }
+
+  serviceMcp(): SessionServiceMcp | null {
+    return resolveServiceMcp(this.sessionDir, this._serviceManager);
+  }
+
+  /**
+   * docs/327 — a plugin's version can go live after the agent started. The worker
+   * gives an added server to a resident process while it runs, and answers with
+   * what the process holds; recording that makes the next turn respawn only for
+   * a change the process could not take.
+   */
+  syncServiceMcp(): Promise<void> {
+    // One at a time: a late answer must not replace what a newer request recorded.
+    const previous = this._serviceMcpSync;
+    this._serviceMcpSync = (async () => {
+      await previous;
+      await this.syncServiceMcpNow();
+    })();
+    return this._serviceMcpSync;
+  }
+
+  private _serviceMcpSync: Promise<void> = Promise.resolve();
+
+  private async syncServiceMcpNow(): Promise<void> {
+    const desired = this.serviceMcp()?.servers;
+    const agent = this._agent;
+    if (!desired || !agent) return;
+    if (serviceMcpSpawnKey(this.sessionId) === serviceMcpSetKey(desired)) return;
+    try {
+      this.assertWorkerReachable("/agent/service-mcp");
+      const body: WorkerServiceMcpBody = { serviceMcpServers: desired };
+      // Longer than the worker's own wait for the agent's answer.
+      const result = await workerPost(this.workerUrl, "/agent/service-mcp", body, {
+        timeoutMs: SERVICE_MCP_SYNC_TIMEOUT_MS,
+      }) as WorkerServiceMcpResult | undefined;
+      // The answer describes the process that ran when the request left.
+      if (Array.isArray(result?.live) && this._agent === agent) recordServiceMcpSpawn(this.sessionId, result.live);
+    } catch (err) {
+      // The next turn's check still sees the difference and respawns.
+      console.warn(
+        `[mcp:${this.sessionId}] could not give the running agent its MCP servers:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   async preparePlugins(): Promise<void> {
@@ -1644,12 +1839,26 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const resident = this._unfollowedResident;
     if (!resident || this._disposed || event.type !== "agent_event") return;
     if (data.runToken !== resident.runToken || !startsOwnTurn(resident.agentId, data)) return;
+    this.adoptOwnTurn(resident);
+  }
+
+  private adoptOwnTurn(resident: UnfollowedResident): void {
     console.log(
       `[container-runner:${this.sessionId}] adopting a turn the CLI started on its own (agent=${resident.agentId})`,
     );
-    void this.wireWorkerTurn({ ...resident, streaming: true, ownTurn: "unheard" })?.catch((err: unknown) => {
+    const { runToken, agentId, spawn } = resident;
+    // A tended proxy already carries the facts, newer than the first connect's reading.
+    const tended = this._agent?.runToken === runToken;
+    void this.wireWorkerTurn({ runToken, agentId, streaming: true, ownTurn: "unheard" }, tended ? undefined : spawn)?.catch((err: unknown) => {
       console.error(`[container-runner:${this.sessionId}] adopting a CLI-started turn failed:`, err);
     });
+  }
+
+  // planning#700 — an exited process is not one a turn can take over.
+  private forgetExitedUnfollowed(data: Record<string, unknown>): void {
+    if (data.runToken !== undefined && data.runToken === this._unfollowedResident?.runToken) {
+      this._unfollowedResident = null;
+    }
   }
 
   private handleSSEEvent(event: SSEEvent): void {
@@ -1677,6 +1886,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         case "agent_done": {
           const target = this.resolveEventTarget();
           if (!target) {
+            this.forgetExitedUnfollowed(data);
             console.warn(`[sse-drop:${this.sessionId}] agent_done dropped (no _agent)`);
             break;
           }
@@ -1689,6 +1899,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         case "agent_error": {
           const target = this.resolveEventTarget();
           if (!target) {
+            this.forgetExitedUnfollowed(data);
             console.warn(`[sse-drop:${this.sessionId}] agent_error dropped (no _agent)`);
             break;
           }
@@ -1953,8 +2164,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           break;
         case "logs": {
           if (!name) throw new Error("Service name is required");
-          if (!mgr.getService(name)) throw new Error(`Unknown service: ${name}`);
-          const logs = stripAnsi(await mgr.snapshotLogs(name, lines ?? 2000));
+          if (!mgr.getService(name)) throw unknownServiceError(name, mgr.projectComposeFailure);
+          const logs = stripAnsi(await mgr.snapshotLogs(name, lines));
           result = { name, logs };
           break;
         }
@@ -2018,15 +2229,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._appliedSpawnIdentity = undefined;
     this._residentRoute = undefined;
     this._agent = null;
-    // Update the open chat as well as the sidebar; independent consults may still be running.
-    if (this.backgroundWorkDescriptions.length === 0) {
-      this.emitMessage({
-        type: "background_tasks",
-        sessionId: this.sessionId,
-        count: 0,
-        descriptions: [],
-      });
-    }
+    this.emitBackgroundWorkToChat();
     // Announce last: listeners can synchronously start a new turn and install its agent.
     this.announceBackgroundWork();
   }
@@ -2034,6 +2237,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   async verifyRunningState(): Promise<boolean> {
     const staleResidentOnly = !this._isRunning && this._isStreamingActive;
     if (!this._isRunning && !staleResidentOnly) return false;
+    // A turn in setup has no agent on the worker yet; that is not a stuck turn
+    // (docs/329-user-steers-every-turn).
+    if (turnAwaitsAgent(this)) return true;
     const wasRunning = this._isRunning;
     const turnEpochAtCheck = this.turnEpoch;
     let workerRunning: boolean;

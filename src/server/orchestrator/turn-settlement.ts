@@ -1,5 +1,7 @@
-import type { QueuedMessage } from "./session-runner.js";
+import type { QueuedMessage, SessionRunnerInterface } from "./session-runner.js";
+import { isCompactCommand } from "../shared/compact-command.js";
 import type { LastTurnOutcome } from "../shared/types.js";
+import { forgetHeldTurn } from "./held-turns.js";
 
 /** How a turn ended, as `sessions.last_turn_outcome` keeps it (docs/324-scheduled-sessions req 31). */
 export interface TurnEnd {
@@ -11,6 +13,17 @@ export interface TurnEnd {
   first: boolean;
   detail?: string;
 }
+
+/**
+ * planning#222 — why a successful turn ended with no reply and no tool call, as
+ * `sessions.last_turn_empty_reason` keeps it.
+ */
+export type EmptyTurnReason =
+  | "stopped"
+  | "compaction"
+  | "no-model-call"
+  | "prompt-not-echoed"
+  | "model-returned-nothing";
 
 export type TurnOutcomeStatus =
   | "completed"
@@ -26,6 +39,18 @@ export interface TurnOutcome {
   /** Legacy flag; new consumers should use status. Interrupted turns keep this false. */
   readonly errored: boolean;
   readonly detail?: string;
+  /**
+   * docs/306-quota-continuation — no credential was left to run the turn, and at least one
+   * refused it for quota. One reset per quota refusal, as the provider stated it; `null`
+   * where it stated none.
+   */
+  readonly quotaRefused?: { readonly resetsAt: readonly (string | null)[] };
+  /**
+   * A `completed` turn whose own result came after the user's Stop, or was an error. Read at
+   * that result: a turn the CLI starts on the same process resets the runner's flags first.
+   */
+  readonly stoppedByUser?: boolean;
+  readonly resultErrored?: boolean;
 }
 
 /**
@@ -55,6 +80,40 @@ export function turnErrored(detail?: string): TurnOutcome {
   return { status: "errored", errored: true, ...(detail ? { detail } : {}) };
 }
 
+/**
+ * Prefix of the only `errored` outcome that means the prompt never reached the agent. Every
+ * other `errored` can describe a turn the agent ran and then failed, so a consumer deciding
+ * whether to re-deliver must tell the two apart rather than reading the status alone.
+ */
+export const DISPATCH_SETUP_FAILURE = "dispatched turn failed to start";
+
+/**
+ * Setup can fail before the executor owns settlement or cleanup, so its sender is told here.
+ * Not when a failed pre-turn compaction had put the dispatch back in the queue: that one has
+ * not failed, and settles when it runs. `chained` is `settleWhenRunnerLetsGo`'s, so a turn
+ * that is already settled is not settled again.
+ */
+export function settleDispatchSetupFailure(
+  runner: Pick<SessionRunnerInterface, "messageQueue" | "answerHoldStore">,
+  chained: Pick<QueuedMessage, "heldId" | "onTurnComplete">,
+  err: unknown,
+): void {
+  const { onTurnComplete, heldId } = chained;
+  // A held turn restored after a restart can have no callback; its saved row names it.
+  const requeued = runner.messageQueue.some((m) =>
+    (onTurnComplete !== undefined && m.onTurnComplete === onTurnComplete)
+    || (heldId !== undefined && m.heldId === heldId));
+  if (requeued) return;
+  // Told it errored, the caller owns any retry; a saved copy would run it a second time.
+  forgetHeldTurn(runner.answerHoldStore, chained);
+  const detail = err instanceof Error ? err.message : String(err);
+  onTurnComplete?.(turnErrored(`${DISPATCH_SETUP_FAILURE}: ${detail}`));
+}
+
+export function turnQuotaRefused(resetsAt: readonly (string | null)[]): TurnOutcome {
+  return { status: "errored", errored: true, quotaRefused: { resetsAt } };
+}
+
 export function turnNoResult(detail?: string): TurnOutcome {
   return { status: "no-result", errored: false, ...(detail ? { detail } : {}) };
 }
@@ -65,6 +124,17 @@ export function turnDropped(detail?: string): TurnOutcome {
 
 export function turnInterrupted(detail?: string): TurnOutcome {
   return { status: "interrupted", errored: false, ...(detail ? { detail } : {}) };
+}
+
+const INFORMED_STATUSES: ReadonlySet<TurnOutcomeStatus> = new Set(["completed", "steered", "interrupted"]);
+
+/**
+ * Whether a wake that only informs the agent is parked for its next turn. Wider than
+ * `shouldRepark`: an outcome cannot tell every unread prompt from a read one, a repeat costs
+ * little, and a loss leaves the agent waiting. A stopped turn is the user's choice.
+ */
+export function informingWakeMissed(outcome: TurnOutcome): boolean {
+  return !INFORMED_STATUSES.has(outcome.status);
 }
 
 /**
@@ -200,4 +270,72 @@ export function settleDroppedQueueEntries(queue: QueuedMessage[], reason: string
       console.error("[turn-settlement] dropped-entry callback threw:", err);
     }
   }
+}
+
+/**
+ * A runner can let go of a started turn with no terminal agent event: it is disposed, or
+ * the worker reports no agent. The turn's sender is told here, for a turn that `dispatch`
+ * started and for one that a drain started. A turn that produced its result is
+ * interrupted, never dropped as if it had not run.
+ */
+/** How to stop each live `settleWhenRunnerLetsGo` watch, keyed by its callback. */
+const letGoWatches = new WeakMap<(outcome: TurnOutcome) => void, () => boolean>();
+
+/**
+ * planning#703 — a started turn goes back to the queue. A disposed runner or an abandoned turn
+ * no longer settles it: the queue does, and the turn that ends meanwhile is another one. The
+ * callback stays the same, so the queue still knows it (`settleDispatchSetupFailure`). False
+ * when the runner already settled it: its sender was told, and may deliver it again.
+ */
+export function stopLetGoWatch(callback: ((outcome: TurnOutcome) => void) | undefined): boolean {
+  const stop = callback ? letGoWatches.get(callback) : undefined;
+  return stop ? stop() : true;
+}
+
+export function settleWhenRunnerLetsGo<
+  T extends { text: string; deliveryId?: string; onTurnComplete?: (outcome: TurnOutcome) => void },
+>(
+  runner: Pick<SessionRunnerInterface, "sessionId" | "activeDeliveryId" | "on" | "off">,
+  opts: T,
+): T {
+  const onTurnComplete = opts.onTurnComplete;
+  if (!onTurnComplete) return opts;
+  let settled = false;
+  // Latched: a queue drain can replace the runner's state before the settlement.
+  let sawTurnResult = false;
+  const ownIsCompact = isCompactCommand(opts.text);
+  const onTurnResult = ({ compact }: { compact: boolean }): void => {
+    if (compact && !ownIsCompact) return;
+    if (runner.activeDeliveryId === opts.deliveryId) sawTurnResult = true;
+  };
+  const settle = (outcome: TurnOutcome): void => {
+    if (settled) return;
+    settled = true;
+    runner.off("turn_result", onTurnResult);
+    runner.off("disposed", onRunnerDisposed);
+    runner.off("turn_abandoned", onTurnAbandoned);
+    onTurnComplete(outcome);
+  };
+  const letGo = (reason: string): void => {
+    if (settled) return;
+    console.warn(
+      `[dispatch] settling the dispatched turn for ${runner.sessionId} as `
+      + `${sawTurnResult ? "interrupted" : "dropped"} — ${reason}`,
+    );
+    settle(sawTurnResult ? turnInterrupted(`${reason} — after the turn produced its result`) : turnDropped(reason));
+  };
+  const onRunnerDisposed = (): void => letGo("runner disposed mid-turn");
+  const onTurnAbandoned = (): void => letGo("turn abandoned — worker reported no agent running");
+  runner.on("turn_result", onTurnResult);
+  runner.on("disposed", onRunnerDisposed);
+  runner.on("turn_abandoned", onTurnAbandoned);
+  letGoWatches.set(settle, () => {
+    letGoWatches.delete(settle);
+    if (settled) return false;
+    runner.off("turn_result", onTurnResult);
+    runner.off("disposed", onRunnerDisposed);
+    runner.off("turn_abandoned", onTurnAbandoned);
+    return true;
+  });
+  return { ...opts, onTurnComplete: settle };
 }

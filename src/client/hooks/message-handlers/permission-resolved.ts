@@ -3,5 +3,5 @@ import { usePermissionStore } from "../../stores/permission-store.js";
 import type { Handler } from "./types.js";
 
 export const handlePermissionResolved: Handler<WsPermissionResolved> = (_ctx, data) => {
-  usePermissionStore.getState().setResolved(data.requestId, data.phase, data.remembered);
+  usePermissionStore.getState().setResolved(data.requestId, data.phase, data.remembered, data.unanswered);
 };

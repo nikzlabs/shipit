@@ -5,7 +5,7 @@ AGENT_CLI_DIR="${AGENT_CLI_DIR:-/opt/agent-cli}"
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 INSTALL_REPORT="${SHIPIT_AGENTS_INSTALL_REPORT:-/opt/shipit/agents/installed.json}"
 
-KNOWN_HARNESSES="claude codex opencode grok antigravity"
+KNOWN_HARNESSES="claude codex opencode opencode2 grok antigravity"
 # New harnesses are opt-in until added here and to the setup pickers' defaults.
 DEFAULT_HARNESSES="claude codex opencode"
 
@@ -28,6 +28,8 @@ harness_pkg_prefix() {
     claude) echo "@anthropic-ai/claude-code" ;;
     codex) echo "@openai/codex" ;;
     opencode) echo "opencode" ;;
+    # Covers the @opencode/cli-<platform> payloads; v1's `opencode*` never matches a scope.
+    opencode2) echo "@opencode/cli" ;;
     grok) echo "@xai-official/grok" ;;
     # Not an npm package; the sentinel matches no node_modules entry so the
     # generic prune loop is a no-op for it (the tarball prune is explicit).
@@ -41,6 +43,7 @@ harness_bin() {
     claude) echo "claude" ;;
     codex) echo "codex" ;;
     opencode) echo "opencode" ;;
+    opencode2) echo "opencode2" ;;
     grok) echo "grok" ;;
     antigravity) echo "antigravity" ;;
     *) return 1 ;;
@@ -85,7 +88,7 @@ if [ -z "$selected" ]; then
 fi
 # OpenCode needs Codex for ChatGPT login/renewal, without offering its harness.
 required_clis="$selected"
-if contains opencode $selected && ! contains codex $selected; then
+if { contains opencode $selected || contains opencode2 $selected; } && ! contains codex $selected; then
   required_clis="$required_clis codex"
 fi
 echo "[install-agent-clis] installing harnesses:$selected"
@@ -100,6 +103,16 @@ fi
 
 if contains opencode $selected; then
   npm rebuild opencode-ai
+fi
+
+if contains opencode2 $selected; then
+  npm rebuild @opencode/cli
+fi
+
+# @opencode/cli also declares an `opencode` bin, which npm links over v1's after
+# an install or a rebuild that includes it. The OpenCode 1 harness spawns `opencode`.
+if contains opencode $selected; then
+  ln -sfn ../opencode-ai/bin/opencode.exe "$AGENT_CLI_DIR/node_modules/.bin/opencode"
 fi
 
 # Grok's postinstall writes outside node_modules. Decompress once here to avoid
@@ -193,6 +206,15 @@ for harness in $required_clis; do
   echo "[install-agent-clis] verified $bin --version: $(printf '%s' "$out" | head -n 1)"
 done
 rm -rf "$verify_home"
+
+if contains opencode $selected; then
+  case "$("$BIN_DIR/opencode" --version 2>&1 | head -n 1)" in
+    2.*|*" v2."*)
+      echo "ERROR: opencode resolves to OpenCode 2; the OpenCode 1 harness would run the wrong CLI." >&2
+      exit 1
+      ;;
+  esac
+fi
 
 ln -sf "$AGENT_CLI_DIR/node_modules/.bin/playwright-mcp" "$BIN_DIR/playwright-mcp"
 

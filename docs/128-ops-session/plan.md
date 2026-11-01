@@ -37,8 +37,9 @@ This doc proposes the **middle ground**: a dedicated session inside
 the production ShipIt where the agent has read-only access to the
 Docker socket and the host's systemd journal. The agent stays in its
 container (existing architecture), but it can run the investigation
-prompts we already have ("show all session containers, grep journal
-for `LOOP DETECTED` in the last hour, cross-reference docker events")
+prompts we already have ("show all session containers, grep the
+orchestrator's log for `LOOP DETECTED` in the last hour, cross-reference
+docker events")
 without the operator ever leaving the ShipIt tab.
 
 ## Design
@@ -62,7 +63,7 @@ declares the privileged mounts).
 | Mount / env | Purpose | Risk surface |
 |---|---|---|
 | `DOCKER_HOST=tcp://docker-socket-proxy:2375` | Reach the daemon **only** through the read-only proxy (see below) — `docker ps`, `docker logs`, `docker inspect`, `docker events`, `docker stats` | Read access only — proxy rejects stop/rm/exec |
-| `/var/log/journal` (read-only) | `journalctl --since`, grep for `LOOP DETECTED`, `[container]`, dispose stack traces | Read access only |
+| `/var/log/journal` (read-only) | `journalctl --since` for the host's side: kernel OOM kills, systemd units. Not ShipIt's own lines — see "What the journal carries, and what it does not" | Read access only |
 | `/run/log/journal` (read-only, fallback) | Volatile journal when `/var/log/journal` isn't persistent | Read access only |
 | `/var/run/docker.sock` — **NOT mounted into the agent container** | The real socket is mounted only into the proxy sibling, never the agent | — |
 | `/var/lib/docker` — **NOT mounted** | Avoid leaking container layer data, secrets in env files, etc. | — |
@@ -249,7 +250,8 @@ inline surface, and the conditional-tab pattern makes it cheap.
 ### What we explicitly do NOT do
 
 - **No host access beyond Docker + journal.** No `/proc`, no `/sys`,
-  no `/etc`, no SSH from inside the container.
+  no `/etc` from inside the container. SSH reaches only a destination
+  the operator grants, as in any session (docs/305-ssh-hosts req 6).
 - **No mutation of Docker state.** Read-only via proxy.
 - **No automatic creation** of the ops session — the operator
   bootstraps it deliberately. We never silently provision a
@@ -351,7 +353,10 @@ independently.)
     live network does it force-disconnect any dangling endpoint (clearing
     `connectToNetwork`'s "already exists" swallow) and reconnect, re-opening
     egress to the recreated subnet. Wired via a new `ServicePoller.afterPoll`
-    hook → `ServiceManager.networkHealFn` → the container manager. Key files:
+    hook → `ServiceManager.networkHealFn` → the container manager. Since
+    docs/332-event-driven-service-status the heartbeat it rode is gone: Docker
+    `network` `disconnect`/`destroy` events now drive it, through
+    `ServiceEventRouter` → `ServiceManager.healNetwork`. Key files:
     `session-container.ts`, `service-poller.ts`, `service-manager.ts`,
     `service-manager-setup.ts`; tests in `session-container-network-heal.test.ts`
     and `service-poller.test.ts`.
@@ -388,6 +393,42 @@ independently.)
       `SESSION_WORKER_DOCKER_IMAGE=shipit-session-worker:docker`. This also fixes
       ordinary `capabilities.docker` sessions, which shared the same gap. A redeploy
       must run `deploy.sh` (not the no-rebuild `restart.sh`) to build the new image.
+
+    - **The local stacks had the same gap, and the fallback said nothing.** Found
+      2026-10-10 from an ops session on a local prod stack: `command -v docker
+      journalctl` printed nothing, while `DOCKER_HOST`, the proxy and the journal
+      mount all worked. The fix above reached only `deployment/vps/`; neither
+      `docker/local/prod/compose.yml` nor `docker/local/dev/compose.yml` built the
+      image or set `SESSION_WORKER_DOCKER_IMAGE`. Three parts:
+
+      - *Every stack builds and names the image.* Both local compose files have
+        the `session-worker-docker` build-only service and the env var, and
+        `docker/local/prod.sh`, `docker/local/dev.sh` and `deployment/local/lib.sh`
+        (`shipit_build_and_up`, which `update.sh` runs) build it right after the
+        worker image, in a separate step with no `--pull`. The dev stack tags it
+        `shipit-session-worker:docker-dev`: dev and prod stacks can share one
+        daemon, and one tag on two different bases would be rebuilt by whichever
+        stack built last. Local prod and the VPS stack share
+        `shipit-session-worker:docker` because they share its base tag.
+      - *The fallback is logged.* `resolveWorkerImageName`
+        (`container-lifecycle.ts`) warns with the session id when an ops or
+        Docker-access session starts on the base image, and the orchestrator warns
+        once at boot when `SESSION_WORKER_DOCKER_IMAGE` is unset. The image name
+        now also reaches the container manager at construction, not only through
+        `setDockerProxy`: an ops session does not use that read-write proxy, so
+        its image must not depend on the proxy having started.
+      - *The agent is not told it has tools it lacks.* The ops system-prompt
+        overlay, `shipit-docs/ops-session.md` and check 0 of
+        `prompts/verify-ops-access.md` all make `command -v docker journalctl` the
+        first step and name a miss as one deployment defect. The doc gives the
+        Docker Engine HTTP API through the proxy as the Docker fallback; the
+        journal has none. This is prompt text, not a new prompt variant — the
+        orchestrator does not thread "image configured" into the system prompt.
+
+      `orchestrator-compose.test.ts` holds the stacks together: every compose file
+      that names a worker image must name and build the Docker-capable one on that
+      same base, and every script that builds the stack must build it after the
+      worker image and without `--pull`.
 
     - **Warm-standby bypass — checked, does not exist.** A natural worry is that an
       ops session could be handed a pre-booted *warm standby*, which is built from
@@ -610,6 +651,38 @@ journal must never fail a container boot, but it must also never fail
 *silently* again — that is what let this regression sit unnoticed.
 `session-worker-entrypoint.test.ts` executes the real script against
 stubbed `stat`/`getent`/`groupadd`/`usermod`/`gosu` to pin both.
+
+## What the journal carries, and what it does not
+
+The journal pillar is the **host's** log, not ShipIt's. What it holds depends on
+the host: normally the kernel (OOM kills) and the host's systemd units, and the
+Docker daemon where systemd runs it (not on Docker Desktop). The orchestrator's
+own lines (`LOOP DETECTED`, `[containers] …`, anything with a session id) are its
+container's output, and they reach the journal only when that container uses
+Docker's `journald` logging driver. No stack arranges that: the VPS compose file
+sets `json-file` for the orchestrator, and the local stacks take the daemon's
+default.
+
+The recipes once grepped the journal for `LOOP DETECTED` and for session ids, and
+said that an empty result was fine — a clean result that the grep could not have
+contradicted. On a Docker Desktop / WSL2 host, 24 hours of a readable journal held
+no ShipIt line at all. So:
+
+- A ShipIt line is read with `docker logs` on the orchestrator container, which
+  works with the `json-file`, `local` and `journald` drivers. The recipes keep the
+  journal grep for the host's side only, and add `2>&1`, because the
+  orchestrator's warnings and errors are on stderr.
+- No recipe or doc names the orchestrator container. Its name comes from the
+  install's Compose project (`shipit-shipit-1`, `shipit-prod-shipit-1`, …); the
+  recipes find it by the Compose service label.
+
+Two checks of the verify recipe could not do their job, and are corrected: the
+`docker events` window had equal bounds and so was empty, and the
+leaked-host-directory check matched its pattern anywhere on a `mount` line, where
+overlay options name host paths on every container. It now matches the mount
+point. `templates.test.ts` holds these: no hard-coded container name, no journal
+grep for a ShipIt line, no `docker events` call that is empty or never returns,
+and the leak check run against real `mount` lines.
 
 ## Risks / open questions
 

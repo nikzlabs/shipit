@@ -16,6 +16,15 @@ export const ALLOWLIST_PATH = ".dependency-age-allowlist.json";
 
 const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
+// An alias installs a second copy of a package under another name (docs/335).
+const NPM_ALIAS = /^npm:((?:@[^/@]+\/)?[^@]+)@(.*)$/;
+
+/** The registry package and version a manifest entry installs. */
+export function pinnedPackage(name: string, spec: string): { pkg: string; version: string } {
+  const alias = NPM_ALIAS.exec(spec);
+  return alias ? { pkg: alias[1], version: alias[2] } : { pkg: name, version: spec };
+}
+
 const VIEW_ATTEMPTS = 4;
 const VIEW_BACKOFF_MS = 1500;
 
@@ -201,12 +210,13 @@ export function findViolations(
   const violations: Violation[] = [];
 
   for (const { manifest, deps } of manifests) {
-    for (const [name, version] of deps) {
+    for (const [name, spec] of deps) {
+      const { pkg, version } = pinnedPackage(name, spec);
       if (!EXACT_SEMVER.test(version)) {
         violations.push({
           manifest,
           name,
-          version,
+          version: spec,
           kind: "not-pinned",
           detail: `version must be an exact semver (no ^, ~, ranges, tags, or URLs)`,
         });
@@ -215,14 +225,14 @@ export function findViolations(
 
       let publishedAt: number;
       try {
-        const stamp = options.lookup(name, version);
+        const stamp = options.lookup(pkg, version);
         if (!stamp) {
           violations.push({
             manifest,
             name,
             version,
             kind: "lookup-failed",
-            detail: `registry returned no publish time for ${name}@${version}`,
+            detail: `registry returned no publish time for ${pkg}@${version}`,
           });
           continue;
         }

@@ -5,6 +5,9 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ensureManagedOpenCodeData,
+  ensureOpenCodeAccountHome,
+  openCode2CredentialImport,
+  openCodeAccountHome,
   openCodeAccessToken,
   openCodeAccountFile,
   writeOpenCodeAccount,
@@ -129,5 +132,33 @@ describe("OpenCode managed ChatGPT account", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe("OpenCode 2's account projection (docs/269)", () => {
+  it("lives under OpenCode 2's own root, and creating it copies nothing from v1", () => {
+    const root = home();
+    fs.mkdirSync(path.join(root, ".local/share/opencode"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".local/share/opencode/opencode.db"), "v1");
+    const dir = ensureOpenCodeAccountHome(root, "opencode2");
+    expect(dir).toBe(path.join(root, ".local/share/opencode2/shipit-account"));
+    expect(openCodeAccountHome(root)).toBe(path.join(root, ".local/share/opencode/shipit-data"));
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it("builds an import whose id follows the token and which carries no refresh token", () => {
+    const token = openCodeAccessToken(auth());
+    const first = openCode2CredentialImport(token);
+    expect(openCode2CredentialImport(token).id).toBe(first.id);
+    expect(openCode2CredentialImport({ ...token, access: `${token.access}x` }).id).not.toBe(first.id);
+    const [entry] = JSON.parse(first.json) as [Record<string, unknown>];
+    expect(entry).toEqual({
+      id: first.id,
+      integrationID: "openai",
+      label: "ShipIt",
+      active: true,
+      value: { type: "oauth", methodID: "chatgpt-browser", refresh: "", access: token.access, expires: token.expires, metadata: { accountID: "account-a" } },
+    });
+    expect(first.json).not.toContain("must-never-be-copied");
   });
 });
