@@ -129,8 +129,11 @@ async function runDispatchedTurnInner(
   // compaction while the resident has background work: a turn of the CLI's own could then come
   // between it and the message, and its result would start the message too early. The claim on
   // `running` keeps other turns out from the decision to the compaction.
+  // An automatic turn admitted under the answer hold passed it (docs/322 req 2); re-queued, it
+  // would be held until the user replies. The next turn compacts instead.
+  const passedAnswerHold = opts.automatic === true && runner.answerHold;
   if (
-    sessionDir && opts.postTurn !== "none" && !isCompactRequest
+    sessionDir && opts.postTurn !== "none" && !isCompactRequest && !passedAnswerHold
     && residentBackgroundWork(runner).length === 0
     && await (deps.shouldCompactBeforeTurn?.(
       runner, agentId, runner.sessionId, sessionDir, opts.compactContext,

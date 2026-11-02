@@ -112,7 +112,16 @@ trigger at a time can start a session; a second one that arrives meanwhile waits
 **A question does not hold the turn** (docs/322-question-holds-automatic-turns req 2).
 The started turn is `automatic`, so it does not release the hold, but it passes it:
 `startOrRefuse.passesQuestionHold` in `wake-session.ts`, and the `passesQuestionHold`
-admission at the dispatch gate. Its prompt is `session-inbox-question-turn.md`, which
+admission at the dispatch gate. Both read the stopped-run half of the hold again
+(`automaticTurnsHeld(id, { exceptQuestion: true })`), since a run can stop while the wake
+boots. `runDispatchedTurn` runs no pre-turn compaction for an automatic turn admitted under
+the hold, because it re-queues its turn and the drain would hold it. While a question waits,
+`SessionInbox` starts one turn for each new batch and marks that batch told
+(`markNotified`), so no retry and no restart tells it again: each such turn could ask the
+question again. It marks the batch only when that turn completes, so a turn that fails in setup
+leaves it owed. The messages stay unread, so the user's reply carries the notice. A reply or
+an approved message during the boot changes the turn; `stillWanted` refuses it and the inbox
+tells again with the new state. Its prompt is `session-inbox-question-turn.md`, which
 says the question still waits and asks the agent to ask it again if it still needs the
 answer: a later turn leaves the old card answerable but no longer at the end of the chat.
 A stopped scheduled run (docs/324 req 33) still refuses the turn. A message that the

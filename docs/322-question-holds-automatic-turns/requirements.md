@@ -1,7 +1,7 @@
 ---
 issue: planning#630
 title: A question holds automatic turns
-description: While the agent waits for the user's answer, ShipIt starts no automatic turn on that session.
+description: While the agent waits for the user's answer, ShipIt starts no automatic turn on that session, except an idle compaction and the inbox turn.
 ---
 
 # A question holds automatic turns

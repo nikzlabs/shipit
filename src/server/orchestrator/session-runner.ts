@@ -31,6 +31,7 @@ import { runDispatchedTurn } from "./dispatched-turn.js";
 export { runDispatchedTurn };
 
 import {
+  ANSWER_HOLD_REASON,
   automaticTurnHeldForAnswer,
   isSilentCompaction,
   readAnswerHold,
@@ -287,8 +288,8 @@ export interface DispatchAdmission {
    */
   underHold?: SessionHold;
   /**
-   * docs/322 req 2 — the inbox turn starts while a question waits. The caller has checked
-   * that the hold is a question's and not a stopped run's. Automatic, so it keeps the hold.
+   * docs/322 req 2 — the inbox turn starts while a question waits, but not while a run is
+   * stopped. Automatic, so it keeps the hold.
    */
   passesQuestionHold?: boolean;
 }
@@ -398,9 +399,15 @@ export function dispatchOnRunner(
   const uncommitted = step ? null : turnBlockedByPendingCommit(runner);
   if (uncommitted) return enqueueOrRefuse(uncommitted);
 
-  const answerHeld = isSilentCompaction(opts) || admission?.passesQuestionHold === true
+  const answerHeld = isSilentCompaction(opts)
     ? null
-    : automaticTurnHeldForAnswer(runner, opts.automatic);
+    : admission?.passesQuestionHold === true
+      // Read again here: the run can have been stopped while the wake booted the container.
+      ? opts.automatic === true
+        && readAnswerHold({ answerHold: runner.answerHoldStore }, runner.sessionId, { exceptQuestion: true })
+        ? ANSWER_HOLD_REASON
+        : null
+      : automaticTurnHeldForAnswer(runner, opts.automatic);
   if (answerHeld) return enqueueOrRefuse(answerHeld);
 
   // Only once admitted: a refused step must not end the process of a turn it did not start.

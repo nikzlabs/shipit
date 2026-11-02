@@ -75,10 +75,10 @@ export async function wakeSessionWithTurn(
   const { sessionManager } = deps;
 
   // docs/322 — nothing may run before the user replies, so nothing is booted to wait.
-  const answerHeld = readAnswerHold({ answerHold: sessionManager }, session.id);
   // docs/322 req 2 — such a turn passes a waiting question, but not a stopped run (docs/324 req 33).
-  const passesHold = opts.startOrRefuse?.passesQuestionHold === true && !session.runStoppedAt;
-  if (answerHeld && opts.startOrRefuse?.automatic && !passesHold) {
+  const passesHold = opts.startOrRefuse?.passesQuestionHold === true;
+  const answerHeld = readAnswerHold({ answerHold: sessionManager }, session.id, { exceptQuestion: passesHold });
+  if (answerHeld && opts.startOrRefuse?.automatic) {
     const settlement = createTurnSettlement();
     settlement.noteAdmission("refused");
     settlement.settle(turnRefused("the agent waits for the user's answer"));

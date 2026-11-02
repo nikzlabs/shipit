@@ -1216,11 +1216,14 @@ export class SessionManager {
     ).run(id).changes > 0;
   }
 
-  /** docs/322 and docs/324 req 33 — a question that waits for the user, or a stopped run, holds every automatic turn. */
-  automaticTurnsHeld(id: string): boolean {
+  /**
+   * docs/322 and docs/324 req 33 — a question that waits for the user, or a stopped run, holds every
+   * automatic turn. `exceptQuestion` reads the stopped run only: the inbox turn passes a question (docs/322 req 2).
+   */
+  automaticTurnsHeld(id: string, opts: { exceptQuestion?: boolean } = {}): boolean {
     const row = this.db.prepare("SELECT awaiting_answer, run_stopped_at FROM sessions WHERE id = ?").get(id) as
       { awaiting_answer: number; run_stopped_at: string | null } | undefined;
-    return row?.awaiting_answer === 1 || !!row?.run_stopped_at;
+    return (!opts.exceptQuestion && row?.awaiting_answer === 1) || !!row?.run_stopped_at;
   }
 
   setRunStoppedAt(id: string, at: string | null): void {

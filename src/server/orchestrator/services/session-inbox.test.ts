@@ -34,6 +34,7 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
   let steering: boolean;
   let liveWork: boolean;
   let inline: boolean;
+  let turnDeps: SystemTurnDeps;
 
   beforeEach(() => {
     dbManager = new DatabaseManager(":memory:");
@@ -46,6 +47,7 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     inline = false;
 
     const { deps } = makeDispatchTurnDeps(agents, []);
+    turnDeps = deps;
     // Echo the real prompt through, so the assertions read what the agent was given.
     deps.buildRunParams = vi.fn(async (_sessionId: string, _agentId: AgentId, prompt: string) => ({
       prompt,
@@ -484,6 +486,84 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     await endTurn();
     expect(sessionManager.isAwaitingAnswer("parent")).toBe(true);
     expect(ran()).toHaveLength(1);
+  });
+
+  it("starts one turn for each new batch while the question waits, even when the agent did not read", async () => {
+    sessionManager.setAwaitingAnswer("parent", true);
+    await inbox.post(parent(), { origin: CHILD, body: "a report" });
+    await nextRun(1);
+    await endTurn();
+    // Still unread, so the user's reply carries the notice; but no turn tells it again.
+    expect(store.unread("parent")).toHaveLength(1);
+
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + 2 * 60 * 60_000);
+    await inbox.sweep();
+    // A restart forgets what the class kept in memory; the told batch is saved.
+    inbox = new SessionInbox({ store, sessionManager, runnerRegistry: registry, defaultAgentId: "claude" });
+    await inbox.sweep();
+    expect(ran()).toHaveLength(1);
+
+    expect((await inbox.post(parent(), { origin: CHILD, body: "a second report" })).told).toBe("started");
+    expect(await nextRun(2)).toContain(buildInboxNotice(2));
+  });
+
+  it("leaves a batch owed while the question waits when its turn fails before the agent gets it", async () => {
+    turnDeps.buildRunParams = vi.fn(async () => {
+      throw new Error("setup failed");
+    }) as unknown as SystemTurnDeps["buildRunParams"];
+    sessionManager.setAwaitingAnswer("parent", true);
+
+    expect((await inbox.post(parent(), { origin: CHILD, body: "a report" })).told).toBe("started");
+    await waitForTurn(() => registry.get("parent")?.running === false, "the failed setup");
+    await flushTurn();
+    expect(ran()).toHaveLength(0);
+    expect(store.owed("parent")).toMatchObject({ unread: 1 });
+  });
+
+  it("tells again as the user's response when they approve a message while the session boots (docs/322 req 6)", async () => {
+    sessionManager.setAwaitingAnswer("parent", true);
+    let approve: (() => void) | undefined = () => store.add("parent", { origin: APPROVED, body: "approved" });
+    inbox = new SessionInbox({
+      store,
+      sessionManager,
+      runnerRegistry: registry,
+      defaultAgentId: "claude",
+      restoreWorkspace: async () => {
+        approve?.();
+        approve = undefined;
+        return true;
+      },
+    });
+
+    expect((await inbox.post(parent(), { origin: CHILD, body: "a report" })).told).toBe("later");
+    const prompt = await nextRun(1);
+    expect(prompt).toContain(buildInboxNotice(2));
+    expect(prompt.endsWith(INBOX_TURN_TEXT)).toBe(true);
+    expect(sessionManager.isAwaitingAnswer("parent")).toBe(false);
+  });
+
+  it("runs no compaction before the inbox turn while the question waits, so the turn is not held", async () => {
+    turnDeps.shouldCompactBeforeTurn = vi.fn(async () => true);
+    sessionManager.setAwaitingAnswer("parent", true);
+
+    await inbox.post(parent(), { origin: CHILD, body: "a report" });
+    const prompt = await nextRun(1);
+    expect(prompt.endsWith(INBOX_QUESTION_TURN_TEXT)).toBe(true);
+    expect(sessionManager.heldTurns("parent")).toEqual([]);
+  });
+
+  it("refuses the inbox turn at the gate when the run was stopped after the wake read the hold", () => {
+    sessionManager.setAwaitingAnswer("parent", true);
+    const runner = registry.getOrCreate("parent", "/tmp/parent", "claude");
+    sessionManager.setRunStoppedAt("parent", "2026-11-02T09:00:00.000Z");
+
+    const handle = runner.dispatch(
+      testDispatch({ text: INBOX_QUESTION_TURN_TEXT, automatic: true }),
+      { whenBusy: "refuse", passesQuestionHold: true },
+    );
+    expect(handle.admitted).toBe("refused");
+    expect(ran()).toHaveLength(0);
   });
 
   it("holds the turn for a stopped scheduled run (docs/324 req 33)", async () => {
