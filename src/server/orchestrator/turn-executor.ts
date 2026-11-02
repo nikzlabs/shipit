@@ -116,6 +116,7 @@ export interface TurnInput {
     files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
     uploadPaths?: string[];
     userReview?: { filePaths: string[]; commentCount: number };
+    whileAnswerWaits?: boolean;
   };
   /** A number returned is the row it wrote, which the CLI's echo of the prompt stamps (docs/007 req 5). */
   persistUserMessage: (sessionId: string) => unknown;
@@ -634,6 +635,7 @@ export async function executeAgentTurn(
         ...(input.userEcho?.files ? { files: input.userEcho.files } : {}),
         ...(input.userEcho?.uploadPaths ? { uploadPaths: input.userEcho.uploadPaths } : {}),
         ...(input.userEcho?.userReview ? { userReview: input.userEcho.userReview } : {}),
+        ...(input.userEcho?.whileAnswerWaits ? { whileAnswerWaits: true } : {}),
       });
     }
     return true;

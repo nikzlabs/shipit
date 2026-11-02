@@ -63,7 +63,7 @@ export function ToolCallGroup({ items, isStreaming }: {
   );
 }
 
-export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, onSendFollowUp, isQuestionDisabled, grouped: _grouped, planContent }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: AnswerQuestionFn; onSendFollowUp?: (text: string) => void; isQuestionDisabled: boolean; grouped?: boolean; planContent?: string }) {
+export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestion, onSendFollowUp, isQuestionDisabled, grouped: _grouped, planContent, askedAgain }: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean; isStreaming: boolean; onAnswerQuestion?: AnswerQuestionFn; onSendFollowUp?: (text: string) => void; isQuestionDisabled: boolean; grouped?: boolean; planContent?: string; askedAgain?: boolean }) {
   // IMPORTANT: all hooks must be called before any conditional `return` below.
 
   const [showModal, setShowModal] = useState(false);
@@ -138,6 +138,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
         disabled={isQuestionDisabled}
 
         resolvedAnswer={result?.content}
+        replaced={!!askedAgain && !result}
       />
     );
   }
@@ -161,6 +162,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
         planContent={planContent}
 
         resolved={!!result}
+        replaced={!!askedAgain && !result}
       />
     );
   }

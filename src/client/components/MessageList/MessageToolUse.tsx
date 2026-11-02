@@ -12,6 +12,7 @@ export function MessageToolElement({
   findPlanContent,
   onAnswerQuestion,
   onSendFollowUp,
+  askedAgain,
 }: {
   el: Extract<VisualElement, { kind: "tool-group" | "subagent" | "standalone-tool" }>;
   messages: ChatMessage[];
@@ -19,6 +20,8 @@ export function MessageToolElement({
 
   onAnswerQuestion?: AnswerQuestionFn;
   onSendFollowUp?: (text: string) => void;
+  /** docs/337-waiting-card-stays-last req 2 — a newer question or plan card follows this one. */
+  askedAgain?: boolean;
 }) {
 
   if (el.kind === "tool-group") {
@@ -75,6 +78,7 @@ export function MessageToolElement({
         onSendFollowUp={onSendFollowUp}
         isQuestionDisabled={questionDisabled}
         planContent={resolvedPlanContent}
+        askedAgain={askedAgain}
       />
     </div>
   );

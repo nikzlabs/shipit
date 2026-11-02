@@ -49,6 +49,18 @@ describe("handleSystemUserMessage (dispatch echo)", () => {
       { role: "user", text: "Create a PR" },
     ]);
   });
+
+  it("keeps the marker of a turn that runs while a question waits (docs/337-waiting-card-stays-last req 1)", () => {
+    handleSystemUserMessage(ctx, {
+      type: "system_user_message",
+      sessionId: "s1",
+      text: "New messages from other sessions.",
+      whileAnswerWaits: true,
+    });
+    expect(useSessionStore.getState().messages).toEqual([
+      { role: "user", text: "New messages from other sessions.", whileAnswerWaits: true },
+    ]);
+  });
 });
 
 describe("handleSystemUserMessage (user-typed echo)", () => {

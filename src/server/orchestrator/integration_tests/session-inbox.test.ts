@@ -148,9 +148,15 @@ describe("Integration: session message inbox", () => {
 
   it("tells the agent while its question waits, and the question waits on (docs/322 req 2)", async () => {
     sessionManager.setAwaitingAnswer(parentId, true);
+    const viewer = await TestClient.connect(port, parentId);
+    await viewer.receive();
 
     expect((await report("Found while you were waiting.")).json().recipients[0].told).toBe("started");
     const inboxTurn = await agentRun(0);
+    // docs/337-waiting-card-stays-last req 1 — a live viewer gets the marker with the row.
+    const echo = await viewer.receiveType("system_user_message");
+    viewer.close();
+    expect(echo).toMatchObject({ whileAnswerWaits: true });
     expect(inboxTurn.lastPrompt).toContain(buildInboxNotice(1));
     expect(inboxTurn.lastPrompt.endsWith(INBOX_QUESTION_TURN_TEXT)).toBe(true);
     expect(await readInbox(parentId)).toHaveLength(1);
@@ -167,6 +173,13 @@ describe("Integration: session message inbox", () => {
     expect(sessionManager.isAwaitingAnswer(parentId)).toBe(false);
     await finish(reply);
     expect(agents.filter((a) => a.runCalled)).toHaveLength(2);
+
+    // docs/337-waiting-card-stays-last req 3 — the chat steps over the inbox turn after a reload.
+    const history = await app.inject({ method: "GET", url: `/api/sessions/${parentId}/history` });
+    const users = (history.json() as { messages: { role: string; text: string; whileAnswerWaits?: boolean }[] })
+      .messages.filter((m) => m.role === "user");
+    expect(users.find((m) => m.text.endsWith(INBOX_QUESTION_TURN_TEXT))?.whileAnswerWaits).toBe(true);
+    expect(users.find((m) => m.text === "Use SQLite.")?.whileAnswerWaits).toBeUndefined();
   });
 
   it("404s a read for a session that does not exist", async () => {

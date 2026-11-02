@@ -377,6 +377,19 @@ export function MessageList({
   // planning#375 — every row is a memoized `TranscriptRow`. This loop must
 
   const compact = useCompactConversation(messages, deferred.sessionId, compactConversation, visualElements, matchesByMessage, containerRef);
+  // docs/303 req 32 — a card the user answers is never inside a row group: it
+  // gets a container of its own, keyed by its tool, so that moving the pending
+  // one to the end of the conversation and back is a reorder among siblings
+  // rather than a change of DOM parent. A remount there would discard the
+  // selections and the typed "Other" answer it holds in component state.
+  const answerCards = useMemo(
+    () => answerCardElements(visualElements, messages),
+    [visualElements, messages],
+  );
+  // docs/337-waiting-card-stays-last req 2 — only the newest answer card can be answered. By
+  // message, not row: questions the agent asked in one message can be split into rows of their
+  // own, and it waits on all of them.
+  const newestAnswerMessage = Math.max(-1, ...[...answerCards.keys()].map((row) => elementMessageIndex(visualElements[row])));
   const rows = visualElements.map((el, rowIndex) => {
     const view = compact.rows[rowIndex];
     const anchorIndex = elementMessageIndex(el);
@@ -460,6 +473,7 @@ export function MessageList({
           showGapBefore={!view.hidden && gapBefore && !closes}
           gapPreviousRole={isBubble ? previousRoleBefore(el.index) : null}
           collapseTools={view.collapseTools}
+          askedAgain={answerCards.has(rowIndex) && anchorIndex < newestAnswerMessage}
         />
           </div>
         </div>
@@ -492,15 +506,6 @@ export function MessageList({
 
   // FRONT, and that is the load-bearing detail. A row that changes group changes
 
-  // docs/303 req 32 — a card the user answers is never inside a row group: it
-  // gets a container of its own, keyed by its tool, so that moving the pending
-  // one to the end of the conversation and back is a reorder among siblings
-  // rather than a change of DOM parent. A remount there would discard the
-  // selections and the typed "Other" answer it holds in component state.
-  const answerCards = useMemo(
-    () => answerCardElements(visualElements, messages),
-    [visualElements, messages],
-  );
   const pendingAnswerIndex = useMemo(
     () => pendingAnswerElementIndex(visualElements, messages),
     [visualElements, messages],
