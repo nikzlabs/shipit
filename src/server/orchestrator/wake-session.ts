@@ -50,7 +50,7 @@ export interface WakeTurnOptions {
    * docs/328-session-message-inbox — a turn that starts now or is refused, never a queued
    * one. Its caller does not wait for its settlement.
    */
-  startOrRefuse?: { automatic: boolean };
+  startOrRefuse?: { automatic: boolean; passesQuestionHold?: boolean };
   /** An earlier attempt of this wake put `text` in the transcript already. */
   promptShown?: boolean;
   /** Read again just before dispatch, after a preparation that can take tens of seconds. */
@@ -76,7 +76,9 @@ export async function wakeSessionWithTurn(
 
   // docs/322 — nothing may run before the user replies, so nothing is booted to wait.
   const answerHeld = readAnswerHold({ answerHold: sessionManager }, session.id);
-  if (answerHeld && opts.startOrRefuse?.automatic) {
+  // docs/322 req 2 — such a turn passes a waiting question, but not a stopped run (docs/324 req 33).
+  const passesHold = opts.startOrRefuse?.passesQuestionHold === true && !session.runStoppedAt;
+  if (answerHeld && opts.startOrRefuse?.automatic && !passesHold) {
     const settlement = createTurnSettlement();
     settlement.noteAdmission("refused");
     settlement.settle(turnRefused("the agent waits for the user's answer"));
@@ -109,7 +111,10 @@ export async function wakeSessionWithTurn(
   if (opts.releaseHold && !opts.startOrRefuse) return queueAheadAndRelease(runner, opts.releaseHold, prepared);
   opts.releaseHold?.release();
   // A wake is work of its own: it waits for a running turn and is never steered into it.
-  return runner.dispatch(prepared, { whenBusy: opts.startOrRefuse ? "refuse" : "queue" });
+  return runner.dispatch(prepared, {
+    whenBusy: opts.startOrRefuse ? "refuse" : "queue",
+    ...(passesHold ? { passesQuestionHold: true } : {}),
+  });
 }
 
 /**

@@ -8,7 +8,7 @@ import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { DatabaseManager } from "../../shared/database.js";
-import { buildInboxNotice, INBOX_TURN_TEXT } from "../services/session-inbox-notice.js";
+import { buildInboxNotice, INBOX_QUESTION_TURN_TEXT, INBOX_TURN_TEXT } from "../services/session-inbox-notice.js";
 import { clearSessionReportRateLimits } from "../services/session-report.js";
 import {
   TestClient,
@@ -146,29 +146,26 @@ describe("Integration: session message inbox", () => {
     expect(agents.filter((a) => a.runCalled)).toHaveLength(2);
   });
 
-  it("holds the notice while the agent waits for the user's answer, and the user's reply carries it", async () => {
+  it("tells the agent while its question waits, and the question waits on (docs/322 req 2)", async () => {
     sessionManager.setAwaitingAnswer(parentId, true);
 
-    expect((await report("Found while you were waiting.")).json().recipients[0].told).toBe("later");
-    await new Promise((r) => setTimeout(r, 150));
-    expect(agents.filter((a) => a.runCalled)).toHaveLength(0);
+    expect((await report("Found while you were waiting.")).json().recipients[0].told).toBe("started");
+    const inboxTurn = await agentRun(0);
+    expect(inboxTurn.lastPrompt).toContain(buildInboxNotice(1));
+    expect(inboxTurn.lastPrompt.endsWith(INBOX_QUESTION_TURN_TEXT)).toBe(true);
+    expect(await readInbox(parentId)).toHaveLength(1);
+    await finish(inboxTurn);
+    // The turn was not the user's reply, so automatic turns still wait for it.
+    expect(sessionManager.isAwaitingAnswer(parentId)).toBe(true);
 
     const client = await TestClient.connect(port, parentId);
     await client.receive();
     client.send({ type: "send_message", text: "Use SQLite." });
-    const agent = await agentRun(0);
-
-    expect(agent.lastPrompt).toContain(buildInboxNotice(1));
-    expect(agent.lastPrompt.endsWith("Use SQLite.")).toBe(true);
-
-    await finish(agent);
-    // The agent did not read in the user's turn, so ShipIt tells it again (planning#222).
-    const inboxTurn = await agentRun(1);
+    const reply = await agentRun(1);
     client.close();
-    expect(inboxTurn.lastPrompt).toContain(buildInboxNotice(1));
-    expect(inboxTurn.lastPrompt.endsWith(INBOX_TURN_TEXT)).toBe(true);
-    expect(await readInbox(parentId)).toHaveLength(1);
-    await finish(inboxTurn);
+    expect(reply.lastPrompt.endsWith("Use SQLite.")).toBe(true);
+    expect(sessionManager.isAwaitingAnswer(parentId)).toBe(false);
+    await finish(reply);
     expect(agents.filter((a) => a.runCalled)).toHaveLength(2);
   });
 

@@ -12,7 +12,12 @@ import {
   type FakeAgent,
 } from "../integration_tests/dispatch-test-helpers.js";
 import { requeueUndeliveredSteers } from "../ws-handlers/agent-message-builder.js";
-import { buildInboxNotice, INBOX_TURN_TEXT, prepareInboxNotice } from "./session-inbox-notice.js";
+import {
+  buildInboxNotice,
+  INBOX_QUESTION_TURN_TEXT,
+  INBOX_TURN_TEXT,
+  prepareInboxNotice,
+} from "./session-inbox-notice.js";
 import { SessionInbox } from "./session-inbox.js";
 import { noteTurnReady } from "../turn-stop-request.js";
 
@@ -48,6 +53,8 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     })) as unknown as SystemTurnDeps["buildRunParams"];
     deps.inboxNotice = (sessionId) => prepareInboxNotice(store, sessionId, { inline });
     deps.steerInputs = () => ({ liveSteering: steering, steeringCapable: steering });
+    // The dispatch gate reads the hold too, so a test of the hold must reach it.
+    deps.answerHold = sessionManager;
 
     registry = new SessionRunnerRegistry({
       onRunnerCreated: (runner) => runner.setSystemTurnDeps(deps),
@@ -464,16 +471,35 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     expect(await nextRun(1)).toContain(buildInboxNotice(1));
   });
 
-  it("starts no automatic turn while the agent waits for the user's answer, and saves none (docs/322)", async () => {
+  it("tells the agent while its question waits, and the question still holds other turns (docs/322 req 2)", async () => {
     sessionManager.setAwaitingAnswer("parent", true);
+
+    expect((await inbox.post(parent(), { origin: CHILD, body: "a report" })).told).toBe("started");
+    const prompt = await nextRun(1);
+    expect(prompt).toContain(buildInboxNotice(1));
+    expect(prompt.endsWith(INBOX_QUESTION_TURN_TEXT)).toBe(true);
+    expect(sessionManager.heldTurns("parent")).toEqual([]);
+
+    inbox.read("parent");
+    await endTurn();
+    expect(sessionManager.isAwaitingAnswer("parent")).toBe(true);
+    expect(ran()).toHaveLength(1);
+  });
+
+  it("holds the turn for a stopped scheduled run (docs/324 req 33)", async () => {
+    sessionManager.setRunStoppedAt("parent", "2026-11-02T09:00:00.000Z");
 
     expect((await inbox.post(parent(), { origin: CHILD, body: "a report" })).told).toBe("later");
     expect(registry.get("parent")).toBeUndefined();
     expect(sessionManager.heldTurns("parent")).toEqual([]);
+  });
 
-    // A message the user approved is not automatic work, so it does not wait (docs/322 req 6).
+  it("takes a message the user approved as the user's response to the question (docs/322 req 6)", async () => {
+    sessionManager.setAwaitingAnswer("parent", true);
+
     expect((await inbox.post(parent(), { origin: APPROVED, body: "approved by the user" })).told).toBe("started");
-    expect(await nextRun(1)).toContain(buildInboxNotice(2));
+    expect(await nextRun(1)).toContain(buildInboxNotice(1));
+    expect(sessionManager.isAwaitingAnswer("parent")).toBe(false);
   });
 
   it("tells every session that is owed a notice from the sweep", async () => {

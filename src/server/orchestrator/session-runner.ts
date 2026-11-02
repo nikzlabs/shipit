@@ -286,6 +286,11 @@ export interface DispatchAdmission {
    * which could not tell its result from that of a turn the CLI starts by itself.
    */
   underHold?: SessionHold;
+  /**
+   * docs/322 req 2 — the inbox turn starts while a question waits. The caller has checked
+   * that the hold is a question's and not a stopped run's. Automatic, so it keeps the hold.
+   */
+  passesQuestionHold?: boolean;
 }
 
 
@@ -393,7 +398,9 @@ export function dispatchOnRunner(
   const uncommitted = step ? null : turnBlockedByPendingCommit(runner);
   if (uncommitted) return enqueueOrRefuse(uncommitted);
 
-  const answerHeld = isSilentCompaction(opts) ? null : automaticTurnHeldForAnswer(runner, opts.automatic);
+  const answerHeld = isSilentCompaction(opts) || admission?.passesQuestionHold === true
+    ? null
+    : automaticTurnHeldForAnswer(runner, opts.automatic);
   if (answerHeld) return enqueueOrRefuse(answerHeld);
 
   // Only once admitted: a refused step must not end the process of a turn it did not start.

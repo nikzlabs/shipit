@@ -15,10 +15,13 @@ shouldn't be interrupted by rebase, fix ci, and any other automatic turns".
 2. An automatic turn is any turn the user did not start in that session: an
    automatic rebase or conflict resolution, an automatic CI fix, a merge notice,
    a child session's report, a message from a parent session, a finished consult,
-   a quota continuation, and any turn of this kind that is added later. One
-   exception: an idle compaction ([docs/333](../333-idle-compaction/requirements.md)
+   a quota continuation, and any turn of this kind that is added later. Two
+   exceptions: an idle compaction ([docs/333](../333-idle-compaction/requirements.md)
    req 12) runs while the agent waits, and does not count as the user's
-   response.
+   response; and the short turn that tells the agent about messages from other
+   sessions ([docs/328](../328-session-message-inbox/requirements.md) req 3)
+   runs while the agent waits, does not count as the user's response, and keeps
+   the other automatic turns held.
 3. The user responds by starting any turn in the session: an answer on the card,
    a plan approval or rejection, or any message they type.
 4. Automatic work that comes due while the agent waits is held, not dropped.
@@ -56,6 +59,12 @@ None.
   is useless, because the prompt cache is cold by then. The user chose to let
   it run as an exception. Recorded in req 2; docs/333-idle-compaction req 12
   carries it.
+- 2026-11-02 — While a question waits, should messages from other sessions
+  (a child's report, a parent's message, a child PR notice) wait for the
+  user's reply, or reach the agent? The user saw that child messages no longer
+  reached a parent that asked a question, and chose to let all messages pass
+  the hold. Recorded in req 2. A stopped scheduled run (docs/324 req 33) still
+  holds them.
 
 Requirements 2–6 spell out the words of the request: "automatic" is
 the class requirement 2 lists, and "shouldn't be interrupted" is about *when*

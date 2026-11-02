@@ -232,9 +232,13 @@ which writes raise a prompt and when the line comes.
 While a question card or a plan card waits, ShipIt starts **no automatic turn**
 in the session: no CI auto-fix, no automatic conflict resolution, no merge
 notice, finished consult or preview auto-fix. They wait, and run after the
-user's reply turn ends — unless that turn ends on a new question. A child's
-report or a parent's message still goes to the inbox; no turn starts to tell you
-about it, and the notice comes in front of the user's reply instead. The hold and the held turns are saved, so a stopped or
+user's reply turn ends — unless that turn ends on a new question. A message
+from another session — a child's report, a parent's message, a child PR notice —
+is the exception: it goes to the inbox, and ShipIt starts the short inbox turn
+while the question waits. That turn is not the user's reply, so the hold stays
+on. Read the messages, do not do the work that needs the answer, and ask the
+question again if you still need the answer, so that the user finds it at the
+end of the chat. The hold and the held turns are saved, so a stopped or
 restarted container, or a ShipIt restart, loses neither. A turn your own CLI
 starts by itself — a background job of yours finishing — is stopped at once; you
 read what the job returned together with the user's reply. What the user starts

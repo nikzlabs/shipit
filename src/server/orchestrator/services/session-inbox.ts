@@ -5,6 +5,7 @@ import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
 import {
   buildInboxNotice,
   containerPredatesShipIt,
+  INBOX_QUESTION_TURN_TEXT,
   INBOX_TURN_TEXT,
   renderInboxMessage,
 } from "./session-inbox-notice.js";
@@ -217,9 +218,9 @@ export class SessionInbox {
       // The agent can have read its inbox while the probe ran.
       if (!store.owed(sessionId)) return LATER;
       const handle = await wakeSessionWithTurn(this.deps, session, {
-        text: INBOX_TURN_TEXT,
+        text: sessionManager.isAwaitingAnswer(sessionId) ? INBOX_QUESTION_TURN_TEXT : INBOX_TURN_TEXT,
         activity: "Reading messages from other sessions…",
-        startOrRefuse: { automatic: owed.automatic },
+        startOrRefuse: { automatic: owed.automatic, passesQuestionHold: true },
       });
       if (handle.admitted !== "started") return LATER;
       // An earlier start whose end was never seen did not reach the agent either.
