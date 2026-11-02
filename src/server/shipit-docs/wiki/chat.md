@@ -237,8 +237,10 @@ from another session — a child's report, a parent's message, a child PR notice
 is the exception: it goes to the inbox, and ShipIt starts the short inbox turn
 while the question waits. That turn is not the user's reply, so the hold stays
 on. Read the messages, do not do the work that needs the answer, and ask the
-question again (or present the plan again) if you still need the answer, so
-that the user finds it at the end of the chat. ShipIt starts one such turn for
+question again (or present the plan again) if you still need the answer. The
+waiting card stays the last thing in the chat, below that turn. When a newer
+question or plan card follows it, the older card turns read-only, with an
+"Asked again below" label. ShipIt starts one such turn for
 each new batch of messages while the question waits. The hold and the held turns are saved, so a stopped or
 restarted container, or a ShipIt restart, loses neither. A turn your own CLI
 starts by itself — a background job of yours finishing — is stopped at once; you

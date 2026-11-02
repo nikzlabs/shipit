@@ -60,6 +60,7 @@ export const handleSystemUserMessage: Handler<WsSystemUserMessage> = (_ctx, data
     ...(data.files ? { files: data.files } : {}),
     ...(data.uploadPaths ? { uploadPaths: data.uploadPaths } : {}),
     ...(data.userReview ? { userReview: data.userReview } : {}),
+    ...(data.whileAnswerWaits ? { whileAnswerWaits: true } : {}),
 
     ...(echoedRequestId !== undefined ? { clientRequestId: echoedRequestId } : {}),
   };
@@ -76,6 +77,7 @@ export const handleSystemUserMessage: Handler<WsSystemUserMessage> = (_ctx, data
       delete replaced.pendingDispatch;
       if (data.agentInterface) replaced.agentInterface = data.agentInterface;
       if (data.messageOrigin) replaced.messageOrigin = data.messageOrigin;
+      if (data.whileAnswerWaits) replaced.whileAnswerWaits = true;
       next[next.length - 1] = replaced;
       return next;
     }

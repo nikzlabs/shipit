@@ -21,9 +21,12 @@ card and the new card can both be answered.
 1. While a question or plan card waits for the user's answer, a turn that ran
    without the user's reply (docs/322-question-holds-automatic-turns req 2:
    the inbox turn, an idle compaction) does not move the waiting card away from
-   the end of the chat.
+   the end of the chat. When the agent did not ask again in that turn, the
+   waiting card shows below the rows of that turn, as the last thing in the
+   chat.
 2. When a newer question or plan card follows an older one that waits, only the
-   newer card can be answered. The older card is read-only.
+   newer card can be answered. The older card is read-only: it shows its
+   questions with an "Asked again below" label and no answer controls.
 3. Requirements 1 and 2 hold the same way after a page reload, a session
    switch, and on a second device that views the session.
 4. A message the user types past a waiting question keeps today's behaviour:
@@ -31,16 +34,16 @@ card and the new card can both be answered.
 
 ## Open questions
 
-- Requirement 1: where does the waiting card show when the agent did not ask
-  again? Below the rows of that turn, as the last thing in the chat
-  (recommended), or in its place with a pointer to it at the end?
-- Requirement 2: what does a read-only older card show? The questions with a
-  "Asked again below" label and no answer controls (recommended), or folded to
-  one line?
+None.
 
 ## Resolved questions
 
-None yet.
+- 2026-11-02 — Where does the waiting card show when the agent did not ask
+  again? The user chose below the rows of that turn, as the last thing in the
+  chat, not in its place with a pointer at the end. Recorded in req 1.
+- 2026-11-02 — What does a read-only older card show? The user chose its
+  questions with an "Asked again below" label and no answer controls, not a
+  card folded to one line. Recorded in req 2.
 
 Requirement 3 comes from the approved follow-up, which names a persisted marker
 on the transcript row. Requirement 4 restates the current behaviour that the

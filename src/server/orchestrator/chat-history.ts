@@ -85,6 +85,8 @@ export interface PersistedMessage {
   text: string;
   agentInterface?: AgentInterfaceProvenance;
   messageOrigin?: SessionMessageOrigin;
+  /** docs/337-waiting-card-stays-last req 1 — a user row of a turn that ran while a question waits. */
+  whileAnswerWaits?: boolean;
   toolUse?: {
     type: "tool_use";
     id: string;
@@ -238,6 +240,7 @@ interface MessageRow {
   notice_id: string | null;
   agent_interface: string | null;
   message_origin: string | null;
+  while_answer_waits: number;
   /** Legacy column; new usage records live in `usage_turns`. */
   turn_usage: string | null;
   subagent_events: string | null;
@@ -245,8 +248,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, client_request_id, agent_message_id, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, non_turn_failure, action_checklist, repo_session_proposal, session_message_proposal, present_inline, branch_auto_reset, branch_synced, session_renamed, session_settings_change, ssh_host_key, settings_proposal, schedule_proposal, schedule_notes_access, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @client_request_id, @agent_message_id, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @non_turn_failure, @action_checklist, @repo_session_proposal, @session_message_proposal, @present_inline, @branch_auto_reset, @branch_synced, @session_renamed, @session_settings_change, @ssh_host_key, @settings_proposal, @schedule_proposal, @schedule_notes_access, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, client_request_id, agent_message_id, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, non_turn_failure, action_checklist, repo_session_proposal, session_message_proposal, present_inline, branch_auto_reset, branch_synced, session_renamed, session_settings_change, ssh_host_key, settings_proposal, schedule_proposal, schedule_notes_access, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin, while_answer_waits)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @client_request_id, @agent_message_id, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @non_turn_failure, @action_checklist, @repo_session_proposal, @session_message_proposal, @present_inline, @branch_auto_reset, @branch_synced, @session_renamed, @session_settings_change, @ssh_host_key, @settings_proposal, @schedule_proposal, @schedule_notes_access, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin, @while_answer_waits)
 `;
 
 const UPDATE_SQL = `
@@ -257,7 +260,7 @@ const UPDATE_SQL = `
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
     voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, non_turn_failure=@non_turn_failure, action_checklist=@action_checklist, repo_session_proposal=@repo_session_proposal, session_message_proposal=@session_message_proposal, present_inline=@present_inline, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, session_renamed=@session_renamed, session_settings_change=@session_settings_change, ssh_host_key=@ssh_host_key, settings_proposal=@settings_proposal, schedule_proposal=@schedule_proposal, schedule_notes_access=@schedule_notes_access, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
-    spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id, agent_interface=@agent_interface, message_origin=@message_origin
+    spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id, agent_interface=@agent_interface, message_origin=@message_origin, while_answer_waits=@while_answer_waits
   WHERE id = @id
 `;
 
@@ -443,6 +446,7 @@ export class ChatHistoryManager {
       notice_id: msg.noticeId ?? null,
       agent_interface: msg.agentInterface ? JSON.stringify(msg.agentInterface) : null,
       message_origin: msg.messageOrigin ? JSON.stringify(msg.messageOrigin) : null,
+      while_answer_waits: msg.whileAnswerWaits ? 1 : 0,
     };
   }
 
@@ -520,6 +524,7 @@ export class ChatHistoryManager {
     if (row.notice_id) msg.noticeId = row.notice_id;
     if (row.agent_interface) msg.agentInterface = JSON.parse(row.agent_interface) as PersistedMessage["agentInterface"];
     if (row.message_origin) msg.messageOrigin = JSON.parse(row.message_origin) as PersistedMessage["messageOrigin"];
+    if (row.while_answer_waits) msg.whileAnswerWaits = true;
     return msg;
   }
 

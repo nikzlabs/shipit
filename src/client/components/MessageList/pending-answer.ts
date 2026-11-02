@@ -83,26 +83,41 @@ export function answerCardElements(
  * answer, when that card is what the conversation ends with, or `null`.
  *
  * The scan steps over trailing card rows, so a voice note emitted after the
- * question does not hide it. It stops at anything else — a user row above all,
- * so a question the user replied past rather than answered is left where it is.
+ * question does not hide it, and over every turn that ran while the question
+ * waited (docs/337-waiting-card-stays-last req 1). It stops at anything else —
+ * a user row above all, so a question the user replied past rather than
+ * answered is left where it is (req 4).
  */
 export function pendingAnswerElementIndex(
   elements: VisualElement[],
   messages: ChatMessage[],
 ): number | null {
+  // Rows seen below this point that no turn which ran while the question waited
+  // has claimed yet. The scan meets a turn's output before the user row that
+  // started it, so the claim is settled at that row.
+  let unclaimed = false;
   for (let i = elements.length - 1; i >= 0; i--) {
     const el = elements[i];
     const card = answerCard(el, messages);
-    if (card) return card.pending ? i : null;
+    if (card) return card.pending && !unclaimed ? i : null;
     // `buildVisualElements` emits a to-do panel and a sub-agent chip AFTER the
     // element for the message they were folded out of, so the agent updating
     // its task list or spawning a sub-agent in the same message as the question
     // puts one below it. Neither is the end of the conversation any more than a
     // card row is; a reply from the user still stops the scan.
     if (el.kind === "task-panel" || el.kind === "subagent") continue;
-    if (el.kind !== "message") return null;
+    if (el.kind !== "message") {
+      unclaimed = true;
+      continue;
+    }
     const msg = messages[el.index];
-    if (!msg || !isCardRow(msg)) return null;
+    if (!msg) return null;
+    if (msg.role === "user") {
+      if (!msg.whileAnswerWaits) return null;
+      unclaimed = false;
+      continue;
+    }
+    if (!isCardRow(msg)) unclaimed = true;
   }
   return null;
 }

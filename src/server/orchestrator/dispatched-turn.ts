@@ -481,6 +481,7 @@ async function runDispatchedTurnInner(
           : {}),
         ...(historyFiles ? { files: historyFiles } : {}),
         ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
+        ...(passedAnswerHold ? { whileAnswerWaits: true } : {}),
       },
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
       ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
@@ -499,6 +500,7 @@ async function runDispatchedTurnInner(
                 ...(historyFiles ? { files: historyFiles } : {}),
                 ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
                 ...(opts.clientRequestId !== undefined ? { clientRequestId: opts.clientRequestId } : {}),
+                ...(passedAnswerHold ? { whileAnswerWaits: true } : {}),
               })
           : () => { /* already persisted, shown before, or silent */ },
       isNewSession: false,

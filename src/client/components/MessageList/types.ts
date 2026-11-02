@@ -89,6 +89,8 @@ export interface ChatMessage {
   text: string;
   agentInterface?: AgentInterfaceProvenance;
   messageOrigin?: SessionMessageOrigin;
+  /** docs/337-waiting-card-stays-last req 1 — this user row starts a turn that ran while a question waits. */
+  whileAnswerWaits?: boolean;
 
   clientRequestId?: string;
   toolUse?: ToolUseBlock[];
