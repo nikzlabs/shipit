@@ -543,7 +543,10 @@ inbox, and ShipIt tells you that messages wait with a short `[ShipIt]` line:
 - in front of the prompt of your next turn, whatever started that turn;
 - during a turn that is already running, when your harness can take a message
   mid-turn;
-- in a short turn that ShipIt starts for you, when your session is idle.
+- in a short turn that ShipIt starts for you, when your session is idle — also
+  while a question of yours waits for the user. That turn is not the user's
+  reply: read the messages, do not do the work that needs the answer, and ask
+  the question again (or present the plan again) if you still need the answer.
 
 The line carries no message text. Read the messages yourself:
 

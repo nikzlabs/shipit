@@ -97,6 +97,9 @@ question.
    result or quota continuation for a session that is waiting is saved at once,
    without restoring its workspace or booting a container, and merge-watch counts
    a saved delivery as in flight so its retry loop does not spend attempts on it.
+   The inbox turn (docs/328) is the exception of req 2: `startOrRefuse.passesQuestionHold`
+   lets it start while a question waits, and the matching admission lets it pass the
+   dispatch gate. It is automatic, so it keeps the hold. A stopped run still refuses it.
 5. **The agent's own turns** (`agent-listeners.ts`, req 7): a turn a resident CLI
    starts by itself — a background job of its own finishing — is interrupted as
    soon as it is adopted while the mark is set. It ends as the question did,

@@ -109,11 +109,23 @@ whether it still has a turn, background tasks or an install, so ShipIt asks it
 counts as a stopped session, whatever the runner says: the wake path replaces it. One
 trigger at a time can start a session; a second one that arrives meanwhile waits.
 
-**A question holds the turn** (docs/322-question-holds-automatic-turns). The started
-turn is `automatic`, so it is refused while the agent waits for the user's answer,
-and nothing is saved for later: the user's reply is a turn, and the notice rides it.
-A message that the user approved on a proposal card is not automatic, as it is not
-today, so its turn starts.
+**A question does not hold the turn** (docs/322-question-holds-automatic-turns req 2).
+The started turn is `automatic`, so it does not release the hold, but it passes it:
+`startOrRefuse.passesQuestionHold` in `wake-session.ts`, and the `passesQuestionHold`
+admission at the dispatch gate. Both read the stopped-run half of the hold again
+(`automaticTurnsHeld(id, { exceptQuestion: true })`), since a run can stop while the wake
+boots. `runDispatchedTurn` runs no pre-turn compaction for an automatic turn admitted under
+the hold, because it re-queues its turn and the drain would hold it. While a question waits,
+`SessionInbox` starts one turn for each new batch and marks that batch told
+(`markNotified`), so no retry and no restart tells it again: each such turn could ask the
+question again. It marks the batch only when that turn completes, so a turn that fails in setup
+leaves it owed. The messages stay unread, so the user's reply carries the notice. A reply or
+an approved message during the boot changes the turn; `stillWanted` refuses it and the inbox
+tells again with the new state. Its prompt is `session-inbox-question-turn.md`, which
+says the question still waits and asks the agent to ask it again if it still needs the
+answer: a later turn leaves the old card answerable but no longer at the end of the chat.
+A stopped scheduled run (docs/324 req 33) still refuses the turn. A message that the
+user approved on a proposal card is not automatic, so its turn is the user's response.
 
 ### Senders
 

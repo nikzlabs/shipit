@@ -10,6 +10,8 @@ const INBOX_INLINE = loadPrompt(import.meta.url, "./session-inbox-inline.md");
 
 /** The prompt of the turn ShipIt starts so that the notice has a prompt to ride. */
 export const INBOX_TURN_TEXT = loadPrompt(import.meta.url, "./session-inbox-turn.md").trim();
+/** The same, while a question of the agent's waits for the user (docs/322 req 2). */
+export const INBOX_QUESTION_TURN_TEXT = loadPrompt(import.meta.url, "./session-inbox-question-turn.md").trim();
 
 function waiting(unread: number): string {
   return unread === 1 ? "1 unread message waits" : `${unread} unread messages wait`;
