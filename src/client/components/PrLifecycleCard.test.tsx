@@ -739,6 +739,14 @@ describe("PrLifecycleCard", () => {
       useSettingsStore.setState({ autoResolveConflicts: false });
     });
 
+    it("docs/338 — is hidden while auto-resolve is paused for this session, where Retry would do nothing", () => {
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1", autoResolveConflictsPaused: true })] });
+      setCard("s1", exhausted("timeout"));
+
+      render(<PrLifecycleCard sessionId="s1" />);
+      expect(screen.queryByTestId("auto-resolve-last-error")).toBeNull();
+    });
+
     it("caps the error message height and scrolls the overflow", () => {
       setCard("s1", exhausted("error: could not apply abc1234\n".repeat(200)));
 

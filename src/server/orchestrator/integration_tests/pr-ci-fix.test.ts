@@ -185,6 +185,43 @@ describe("POST /api/sessions/:id/pr/auto-fix-pause (docs/186)", () => {
   });
 });
 
+describe("POST /api/sessions/:id/pr/auto-resolve-pause (docs/338)", () => {
+  it("persists the per-session pause flag, leaves the CI pause alone, and clears it on resume", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/auto-resolve-pause`,
+      payload: { paused: true },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ paused: true });
+    expect(sessionManager.list().find((s) => s.id === sessionId)?.autoResolveConflictsPaused).toBe(true);
+    expect(sessionManager.get(sessionId)!.autoFixCiPaused).toBeUndefined();
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/auto-resolve-pause`,
+      payload: { paused: false },
+    });
+    expect(sessionManager.get(sessionId)!.autoResolveConflictsPaused).toBeUndefined();
+  });
+
+  it("returns 404 for an unknown session and 400 without a boolean", async () => {
+    const missing = await app.inject({
+      method: "POST",
+      url: `/api/sessions/does-not-exist/pr/auto-resolve-pause`,
+      payload: { paused: true },
+    });
+    expect(missing.statusCode).toBe(404);
+
+    const invalid = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/auto-resolve-pause`,
+      payload: { paused: "yes" },
+    });
+    expect(invalid.statusCode).toBe(400);
+  });
+});
+
 describe("POST /api/sessions/:id/pr/compact-after-merge (docs/295 reqs 5, 16)", () => {
   it("keeps the session's choice on the session row", async () => {
     const off = await app.inject({

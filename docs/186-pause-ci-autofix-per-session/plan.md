@@ -35,8 +35,8 @@ time in both `runTransition` (the poll path) and `onRunnerIdle` (the
 runner-just-went-idle re-fire path). docs/186 adds an optional
 `isSessionEnabled(sessionId)` config hook checked right after the global gate in
 both places — return false ⇒ suppress for that session. Default-absent means
-"always enabled," so the conflict-resolve automation (which has no per-session
-override) is unaffected. `AutoFixManager` wires the hook to
+"always enabled". The conflict-resolve automation now has the same pause
+(docs/338-pause-conflict-resolve-per-session). `AutoFixManager` wires the hook to
 `!sessionManager.get(id)?.autoFixCiPaused`, read at decision time so a resume
 takes effect on the next poll with no per-session fan-out.
 

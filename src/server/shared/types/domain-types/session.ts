@@ -114,6 +114,7 @@ export interface SessionInfo {
   rootSessionId?: string;
   lastTurnErrored?: boolean;
   autoFixCiPaused?: boolean;
+  autoResolveConflictsPaused?: boolean;
   /** The parent's watch on this session's PR (docs/196). */
   mergeWatch?: SessionMergeWatch;
   /** This session's watch on its own PR (docs/239). Stored apart, so neither arm displaces the other. */

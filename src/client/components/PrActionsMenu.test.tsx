@@ -44,7 +44,7 @@ beforeEach(() => {
   useGitStore.getState().reset();
   useGitStore.setState({ startRebase: realStartRebase, resetBranchToBase: realResetBranchToBase });
   useSessionStore.setState({ activeRunnerSessions: new Set<string>(), sessions: [] });
-  useSettingsStore.setState({ autoFixCi: false });
+  useSettingsStore.setState({ autoFixCi: false, autoResolveConflicts: false });
   useRepoStore.setState({ repos: [] });
 });
 
@@ -137,6 +137,73 @@ describe("PrActionsMenu", () => {
     await user.click(screen.getByLabelText("Pull request actions"));
     const toggle = screen.getByRole("button", { name: /Auto-fix CI/ });
     expect(toggle).toHaveAttribute("title", "Resume CI auto-fixing for this session");
+  });
+
+  describe("docs/338: the Auto-resolve conflicts toggle", () => {
+    beforeEach(() => {
+      usePrStore.setState({ cardBySession: { s1: openCard } });
+    });
+
+    it("is hidden when the workspace setting is off", async () => {
+      const user = userEvent.setup();
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+      useSettingsStore.setState({ autoResolveConflicts: false, autoFixCi: true });
+      render(<PrActionsMenu sessionId="s1" />);
+
+      await user.click(screen.getByLabelText("Pull request actions"));
+      expect(screen.queryByRole("button", { name: /Auto-resolve conflicts/ })).toBeNull();
+    });
+
+    it("is hidden for a session with no remote", async () => {
+      const user = userEvent.setup();
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1", remoteUrl: "" })] });
+      useSettingsStore.setState({ autoResolveConflicts: true });
+      render(<PrActionsMenu sessionId="s1" />);
+
+      await user.click(screen.getByLabelText("Pull request actions"));
+      expect(screen.queryByRole("button", { name: /Auto-resolve conflicts/ })).toBeNull();
+    });
+
+    it("pauses this session alone, independent of the Auto-fix CI pause", async () => {
+      const user = userEvent.setup();
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ paused: true }) });
+      vi.stubGlobal("fetch", fetchMock);
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" }), makeSession({ id: "s2" })] });
+      useSettingsStore.setState({ autoResolveConflicts: true, autoFixCi: true });
+      render(<PrActionsMenu sessionId="s1" />);
+
+      await user.click(screen.getByLabelText("Pull request actions"));
+      const toggle = screen.getByRole("button", { name: /Auto-resolve conflicts/ });
+      expect(toggle).toHaveAttribute("title", "Pause auto-resolving conflicts for this session");
+      await user.click(toggle);
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/sessions/s1/pr/auto-resolve-pause",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ paused: true }) }),
+      );
+      const sessions = useSessionStore.getState().sessions;
+      expect(sessions.find((s) => s.id === "s1")).toMatchObject({ autoResolveConflictsPaused: true });
+      expect(sessions.find((s) => s.id === "s1")?.autoFixCiPaused).toBeUndefined();
+      expect(sessions.find((s) => s.id === "s2")?.autoResolveConflictsPaused).toBeUndefined();
+      vi.unstubAllGlobals();
+    });
+
+    it("reverts the switch when the server refuses", async () => {
+      const user = userEvent.setup();
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, json: () => Promise.resolve({ error: "nope" }) }));
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+      useSettingsStore.setState({ autoResolveConflicts: true });
+      render(<PrActionsMenu sessionId="s1" />);
+
+      await user.click(screen.getByLabelText("Pull request actions"));
+      await user.click(screen.getByRole("button", { name: /Auto-resolve conflicts/ }));
+
+      await waitFor(() => {
+        expect(useSessionStore.getState().sessions[0]?.autoResolveConflictsPaused).toBe(false);
+      });
+      vi.unstubAllGlobals();
+    });
   });
 
   describe("docs/295 req 16: the Compact after merge toggle", () => {

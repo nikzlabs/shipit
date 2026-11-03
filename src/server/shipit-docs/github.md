@@ -264,7 +264,8 @@ own (read the current value with `shipit settings get <key>`):
 - **After a merge**, at the next turn, it resets the branch to the fresh base
   and force-pushes (`advanced.autoResetMergedBranch`, on by default).
 - **On a conflict** with the base, it rebases the branch and gives you a turn
-  for the conflicts (`advanced.autoResolveConflicts`, off by default).
+  for the conflicts (`advanced.autoResolveConflicts`, off by default). The
+  user can pause this for one session from the PR's ⋮ menu.
 
 Any such rewrite reconciles the Compose services and, when dependencies
 changed, re-runs `agent.install`, which stops and restarts the services that

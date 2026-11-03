@@ -3,8 +3,8 @@
  *
  * Holds only actions that act on the *pull request / branch*: arm auto-merge,
  * sync the branch onto its base, copy the branch name, and close the PR — plus
- * this session's switches for what happens around the PR (auto-fix CI, the
- * compaction after a merge). It is
+ * this session's switches for what happens around the PR (auto-fix CI,
+ * auto-resolve conflicts, the compaction after a merge). It is
  * fully self-contained — everything is derived from `sessionId` + the stores —
  * so it can be dropped, verbatim, into both the inline `PrLifecycleCard` and the
  * detail-panel header (`PrDetailHeader`) and stay in sync.
@@ -28,6 +28,7 @@ import { DropdownMenuItem, DropdownMenuSeparator } from "./ui/dropdown-menu.js";
 import {
   AutoFixPauseToggle,
   AutoMergeToggle,
+  AutoResolvePauseToggle,
   ClosePrDropdownItem,
   CompactAfterMergeToggle,
   useClosePr,
@@ -44,6 +45,7 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
 
   const globalAutoFixCi = useSettingsStore((s) => s.autoFixCi);
+  const globalAutoResolveConflicts = useSettingsStore((s) => s.autoResolveConflicts);
   const repoDefaultBranch = useSessionDefaultBranch(sessionId);
   const closeState = useClosePr(sessionId);
 
@@ -78,6 +80,7 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const showAutoMergeToggle = canAutoMerge && !isOpen;
 
   const showAutoFixPause = canAutoMerge && globalAutoFixCi;
+  const showAutoResolvePause = canAutoMerge && globalAutoResolveConflicts;
 
   // docs/295-compact-context-on-merge req 16 — hidden where the composer control could never show (reqs 10, 11).
   const autoResetMergedBranch = useSettingsStore((s) => s.autoResetMergedBranch);
@@ -108,6 +111,14 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
         <>
           <div className="px-2 py-1">
             <AutoFixPauseToggle sessionId={sessionId} />
+          </div>
+          <DropdownMenuSeparator />
+        </>
+      )}
+      {showAutoResolvePause && (
+        <>
+          <div className="px-2 py-1">
+            <AutoResolvePauseToggle sessionId={sessionId} />
           </div>
           <DropdownMenuSeparator />
         </>

@@ -1246,6 +1246,10 @@ const MIGRATIONS: Migration[] = [
       db.exec("ALTER TABLE messages ADD COLUMN while_answer_waits INTEGER NOT NULL DEFAULT 0");
     }
   },
+  // docs/338-pause-conflict-resolve-per-session req 3 — persisted beside the docs/186 CI pause.
+  (db) => {
+    addSessionColumnIfMissing(db, "auto_resolve_conflicts_paused", "INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

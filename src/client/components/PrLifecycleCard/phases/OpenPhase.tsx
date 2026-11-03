@@ -12,7 +12,7 @@ import { PrMergeActions, PrStatusActions } from "../PrStatusActions.js";
 import { BranchLabel } from "../shared.js";
 import { Spinner } from "../../Spinner.js";
 import { FailedChecksList, DeploymentStatusRow } from "../indicators/index.js";
-import { autoFixRunningLabel, useAutoFixHalt } from "../../PrStatusControls.js";
+import { autoFixRunningLabel, useAutoFixHalt, useAutoResolvePaused } from "../../PrStatusControls.js";
 
 export function OpenPhase({
   card,
@@ -123,7 +123,10 @@ export function OpenPhase({
 }
 
 function AutoResolveFailureBanner({ sessionId, card }: { sessionId: string; card: PrCardState }) {
-  const enabled = useSettingsStore((s) => s.autoResolveConflicts);
+  const globallyEnabled = useSettingsStore((s) => s.autoResolveConflicts);
+  // Retry runs through the same gate as the poll, so it does nothing while paused.
+  const paused = useAutoResolvePaused(sessionId);
+  const enabled = globallyEnabled && !paused;
   const setToast = useUiStore((s) => s.setToast);
 
   const lastError =

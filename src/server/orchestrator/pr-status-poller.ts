@@ -192,6 +192,7 @@ export class PrStatusPoller {
         this.remediationArbiter,
         opts.ensureRunner,
         automaticTurnsHeld,
+        (sessionId) => !this.sessionManager.get(sessionId)?.autoResolveConflictsPaused,
       );
     }
 

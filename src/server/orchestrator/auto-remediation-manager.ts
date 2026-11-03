@@ -145,8 +145,21 @@ export abstract class AutoRemediationManager<TSignal> {
     // Cache while disabled so re-enabling uses the latest signal.
     this.cacheSignal(sessionId, signal);
 
-    if (!this.cfg.isGlobalEnabled()) return;
-    if (this.cfg.isSessionEnabled && !this.cfg.isSessionEnabled(sessionId)) return;
+    if (!this.isEnabledFor(sessionId)) {
+      // A resolution seen while off still ends the episode, so a resume does not inherit its exhausted
+      // budget. A running attempt keeps its state for its result, and the budget resets after it.
+      const state = this.states.get(sessionId);
+      if (kind !== "fire" && state) {
+        if (state.status === "running") {
+          state.pendingReset = true;
+        } else {
+          this.states.delete(sessionId);
+          this.onDelete(sessionId);
+          this.onChange(sessionId);
+        }
+      }
+      return;
+    }
 
     let state = this.states.get(sessionId);
     if (!state) {
@@ -231,11 +244,14 @@ export abstract class AutoRemediationManager<TSignal> {
       // The idle handler may already have fired the attempt.
       return;
     }
-    // Again past the awaits: a turn can have ended on a question meanwhile.
+    // Again past the awaits: a turn can have ended on a question meanwhile, or the user paused.
     if (!byUser && this.heldForAnswer(sessionId)) {
       this.defer(sessionId, state);
       return;
     }
+    if (!this.isEnabledFor(sessionId)) return;
+    // A resolution polled during the awaits ended this episode.
+    if (this.states.get(sessionId) !== state) return;
 
     if (!this.tryClaim(sessionId, headSha)) {
       this.defer(sessionId, state);
@@ -278,6 +294,8 @@ export abstract class AutoRemediationManager<TSignal> {
     if (this.cfg.arbiter?.shouldSuppress(sessionId, state.lastHeadSha)) return;
     const byUser = state.byUser === true;
     if (!byUser && this.heldForAnswer(sessionId)) return;
+    if (!this.isEnabledFor(sessionId)) return;
+    if (this.states.get(sessionId) !== state) return;
 
     const signal = this.rebuildSignalForIdle(sessionId);
     if (!signal) return;

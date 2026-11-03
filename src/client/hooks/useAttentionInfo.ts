@@ -31,6 +31,9 @@ export interface AttentionInputs {
   autoFixEnabled: boolean;
 
   autoResolveEnabled: boolean;
+  /** docs/186 and docs/338 — the session's own pause subtracts from the workspace setting. */
+  autoFixPaused?: boolean;
+  autoResolvePaused?: boolean;
   /**
    * The session's PR has reached a terminal state — merged or
    * closed-without-merge — and hasn't been reopened (worked in) since. This is
@@ -76,8 +79,13 @@ export function runAttentionReason(session: SessionListRow, statusCardOn: boolea
 export function rowAttentionInputs(
   session: SessionListRow,
   statusCardOn: boolean,
-): Pick<AttentionInputs, "resolved" | "muted" | "workspaceBlockKind" | "runReason" | "runAwaitingAnswer"> {
+): Pick<
+  AttentionInputs,
+  "resolved" | "muted" | "workspaceBlockKind" | "runReason" | "runAwaitingAnswer" | "autoFixPaused" | "autoResolvePaused"
+> {
   return {
+    autoFixPaused: !!session.autoFixCiPaused,
+    autoResolvePaused: !!session.autoResolveConflictsPaused,
     resolved: isWorkResolved(session),
     muted: !!session.mutedAt,
     workspaceBlockKind: session.workspaceBlock,
@@ -108,6 +116,8 @@ export function computeAttentionReason({
   hasBackgroundTasks,
   autoFixEnabled,
   autoResolveEnabled,
+  autoFixPaused,
+  autoResolvePaused,
   resolved,
   muted,
   workspaceBlockKind,
@@ -152,19 +162,22 @@ export function computeAttentionReason({
   if (prState === "merged" || prState === "closed") return null;
   if (card?.phase === "merged" || card?.phase === "closed") return null;
 
-  if (checks?.state === "failure") {
+  const ciFailed = checks?.state === "failure";
+  if (ciFailed) {
     if (autoFix?.status === "exhausted") return "CI fix failed after 3 attempts";
-    if (autoFix?.status === "running") return null;
-    if (autoFixEnabled) return null;                                     
-    return "CI checks failed";
+    const autoFixing = autoFix?.status === "running" || (autoFixEnabled && !autoFixPaused);
+    if (!autoFixing) return "CI checks failed";
   }
 
+  // Not inside the CI branch: a CI failure auto-fix is handling must not hide a conflict nobody is.
   if (prState === "open" && mergeable === "conflicting") {
     if (autoResolve?.status === "exhausted") return "Conflict resolution failed after 3 attempts";
     if (autoResolve?.status === "running") return null;
-    if (autoResolveEnabled) return null;                                     
+    if (autoResolveEnabled && !autoResolvePaused) return null;
     return "PR has merge conflicts";
   }
+
+  if (ciFailed) return null;
 
   if (autoMerge?.error) {
     return "Auto-merge needs repo configuration";
