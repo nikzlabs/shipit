@@ -15,11 +15,15 @@ repository for branches, PRs, and CI.
   create/switch commands are blocked before they run, so just stay on the
   current branch and run your `git` / `gh` commands there.
 - **Git worktrees are allowed**, so parallel agents can each work in their own
-  tree: `git worktree add -b <name> <path>`, or your harness's own worktree
-  isolation. This checkout stays on the session branch. ShipIt commits and
-  pushes only `/workspace`, so a worktree's work ships only after you merge its
-  branch into the session branch (`git merge <name>`). Worktree branches stay
-  local; nothing pushes them. ShipIt keeps `.claude/worktrees/` out of its
+  tree: `git worktree add -b <name> <path>`, `git worktree add --detach <path>`,
+  or your harness's own worktree isolation. A worktree on an existing branch
+  (no `-b` / `--detach`, or with `--force` / `-B`) is blocked, because ShipIt
+  moves the session and base branch refs under it. This checkout stays on the
+  session branch. ShipIt commits and pushes only `/workspace`, so a worktree's
+  work ships only after you commit it in the worktree yourself and merge it
+  into the session branch from `/workspace` (`git merge <name>`, or
+  `git merge <commit>` for a detached tree). Worktree branches stay local;
+  nothing pushes them. ShipIt keeps `.claude/worktrees/` out of its
   auto-commit; a worktree elsewhere inside `/workspace` would be committed as an
   embedded repository, so put it there or outside the repo (`/persist` survives
   a container restart, `/tmp` does not).
