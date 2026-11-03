@@ -154,9 +154,14 @@ describe("Integration: a compaction the agent asked for (docs/324-agent-requeste
     expect(sessionManager.getPendingCompaction(SESSION_ID)).toBeUndefined();
   });
 
-  it("refuses a harness that cannot compact, an unknown session and overlong text", async () => {
+  it("accepts long instructions and a long note", async () => {
+    const long = "x".repeat(50_000);
+    expect((await request(SESSION_ID, { instructions: long, note: long })).statusCode).toBe(200);
+    expect(sessionManager.getPendingCompaction(SESSION_ID)).toMatchObject({ instructions: long, note: long });
+  });
+
+  it("refuses a harness that cannot compact and an unknown session", async () => {
     expect((await request("no-such-session", {})).statusCode).toBe(404);
-    expect((await request(SESSION_ID, { note: "x".repeat(4001) })).statusCode).toBe(400);
     sessionManager.setAgentId(SESSION_ID, "antigravity");
     expect((await request(SESSION_ID, { instructions: "keep A" })).statusCode).toBe(409);
     expect(sessionManager.getPendingCompaction(SESSION_ID)).toBeUndefined();

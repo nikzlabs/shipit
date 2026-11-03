@@ -146,12 +146,19 @@ describe("recordCompactionRequest", () => {
     expect(state.request).toBeUndefined();
   });
 
-  it("refuses an unknown session, non-text fields and overlong text", () => {
+  it("refuses an unknown session and non-text fields", () => {
     const { manager } = makeSessionManager();
     const deps = { sessionManager: manager, defaultAgentId: "claude" as const, isEnabled: () => true };
     expect(() => recordCompactionRequest(deps, "other", {})).toThrow(expect.objectContaining({ statusCode: 404 }));
     expect(() => recordCompactionRequest(deps, SESSION, { note: 42 })).toThrow(ServiceError);
-    expect(() => recordCompactionRequest(deps, SESSION, { instructions: "x".repeat(4001) })).toThrow(ServiceError);
+  });
+
+  it("stores long instructions and a long note whole", () => {
+    const { manager, state } = makeSessionManager();
+    const deps = { sessionManager: manager, defaultAgentId: "claude" as const, isEnabled: () => true };
+    const long = "x".repeat(50_000);
+    recordCompactionRequest(deps, SESSION, { instructions: long, note: long });
+    expect(state.request).toEqual({ instructions: long, note: long });
   });
 });
 
