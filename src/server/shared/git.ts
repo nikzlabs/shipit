@@ -30,8 +30,10 @@ const DEFAULT_WORKSPACE_DIR = "/workspace";
 const STDERR_TAIL_LIMIT = 8192;
 
 // pnpm can relocate its store to the workspace mountpoint despite store-dir config.
-export function ensurePnpmStoreGitExcluded(repoDir: string): void {
-  ensureGitExcluded(repoDir, [".pnpm-store/"]);
+// Claude's worktree tools create agent worktrees under .claude/worktrees/, which
+// `git add -A` would commit as embedded repositories.
+export function ensureWorkspaceGitExcluded(repoDir: string): void {
+  ensureGitExcluded(repoDir, [".pnpm-store/", ".claude/worktrees/"]);
 }
 
 export function ensureGitExcluded(repoDir: string, entries: readonly string[]): boolean {
@@ -322,7 +324,7 @@ export class GitManager {
   }
 
   async autoCommit(summary: string): Promise<AutoCommitResult> {
-    ensurePnpmStoreGitExcluded(this.workspaceDir);
+    ensureWorkspaceGitExcluded(this.workspaceDir);
     this.resetStderr();
     const status = await this.git.status();
     // Detect before the clean-tree return: inaccessible changes can look clean.

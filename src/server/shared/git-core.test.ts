@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { safeSimpleGit } from "./git-hooks-guard.js";
-import { GitManager, ensurePnpmStoreGitExcluded, ensureGitExcluded, ensureGitExcludedBlock } from "./git.js";
+import { GitManager, ensureWorkspaceGitExcluded, ensureGitExcluded, ensureGitExcludedBlock } from "./git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
 describe("GitManager: init & autoCommit", () => {
@@ -204,17 +204,17 @@ describe("GitManager: init & autoCommit", () => {
     return fs.readFileSync(path.join(tmpDir, ".git", "info", "exclude"), "utf-8");
   }
 
-  it("ensurePnpmStoreGitExcluded writes the .pnpm-store entry once and is idempotent", async () => {
+  it("ensureWorkspaceGitExcluded writes the .pnpm-store entry once and is idempotent", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
 
-    ensurePnpmStoreGitExcluded(tmpDir);
+    ensureWorkspaceGitExcluded(tmpDir);
     const after1 = readExclude();
     expect(after1).toContain(".pnpm-store/");
     const occurrences1 = after1.split("\n").filter((l) => l.trim() === ".pnpm-store/").length;
     expect(occurrences1).toBe(1);
 
-    ensurePnpmStoreGitExcluded(tmpDir);
+    ensureWorkspaceGitExcluded(tmpDir);
     const after2 = readExclude();
     const occurrences2 = after2.split("\n").filter((l) => l.trim() === ".pnpm-store/").length;
     expect(occurrences2).toBe(1);
@@ -282,10 +282,10 @@ describe("GitManager: init & autoCommit", () => {
     });
   });
 
-  it("ensurePnpmStoreGitExcluded is best-effort on a missing .git (no throw)", () => {
+  it("ensureWorkspaceGitExcluded is best-effort on a missing .git (no throw)", () => {
     const noRepo = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-no-repo-"));
     try {
-      expect(() => ensurePnpmStoreGitExcluded(noRepo)).not.toThrow();
+      expect(() => ensureWorkspaceGitExcluded(noRepo)).not.toThrow();
     } finally {
       fs.rmSync(noRepo, { recursive: true, force: true });
     }
@@ -306,5 +306,21 @@ describe("GitManager: init & autoCommit", () => {
     const tracked = await safeSimpleGit(tmpDir).raw(["ls-files"]);
     expect(tracked).toContain("src.txt");
     expect(tracked).not.toContain(".pnpm-store");
+  });
+
+  it("autoCommit does not stage an agent worktree under .claude/worktrees", async () => {
+    const git = new GitManager(tmpDir);
+    await git.init();
+
+    await safeSimpleGit(tmpDir).raw(["worktree", "add", "-b", "agent-a", ".claude/worktrees/agent-a"]);
+    fs.writeFileSync(path.join(tmpDir, ".claude", "worktrees", "agent-a", "wip.txt"), "agent work");
+    fs.writeFileSync(path.join(tmpDir, "src.txt"), "real change");
+
+    const result = await git.autoCommit("turn with a worktree");
+    expect(result.commitHash).toBeTruthy();
+
+    const tracked = await safeSimpleGit(tmpDir).raw(["ls-files", "--stage"]);
+    expect(tracked).toContain("src.txt");
+    expect(tracked).not.toContain(".claude/worktrees");
   });
 });

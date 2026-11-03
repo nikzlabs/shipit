@@ -50,10 +50,41 @@ PreToolUse JSON envelope on stdin and:
     (a plain switch moves off the session branch)
   - `git branch <name>` without a delete (`-d`/`-D`/`--delete`) or list
     (`--list`, `-a`, `--merged`, `--contains`, …) flag — i.e. create / rename / move
-  - `git worktree add`
+  - `git worktree add` with `-f` / `--force` / `-B`, or without `-b`,
+    `--orphan`, `-d` or `--detach` — i.e. a worktree on an existing branch
 - Allows everything else, including `git checkout -- <file>` (discard
-  changes), `git branch` / `git branch -a` (list), and `git branch -d`
-  (delete).
+  changes), `git branch` / `git branch -a` (list), `git branch -d`
+  (delete), and `git worktree add -b <new-branch>` / `--detach`.
+
+**Why a worktree on a new branch is allowed (2026-11-03).** Every
+`git worktree add` was refused at first, which also stopped agents in one
+session from working in parallel, each in its own tree. A worktree does not
+strand work the way a branch switch does: the main checkout stays on the
+session branch, and work in a worktree reaches the PR only when the agent
+merges it back, which the agent prompt (`git-workflow.md`) and
+`shipit-docs/github.md` say.
+
+A worktree on an EXISTING branch stays refused, because ShipIt moves two
+branch refs that such a tree could hold. The session branch: `--force` checks
+it out in a second tree, a commit there leaves `/workspace`'s index stale, and
+the next auto-commit writes the old files back over it. The base branch:
+`syncLocalDefaultBranchToOrigin` (`git-utils.ts`) advances it with
+`update-ref`, which leaves a tree on it with a moved `HEAD` and an unchanged
+index, and the rebase driver's `git branch -f` refuses a branch checked out
+elsewhere and swallows the error. A new branch or a detached `HEAD` is in
+neither position. `-B` is refused too, because it resets an existing branch.
+
+The other new hazard is auto-commit's `git add -A`, which stages a worktree
+inside `/workspace` as an embedded repository (a `160000` gitlink). Claude's
+worktree tools put their trees under `.claude/worktrees/`, so
+`ensureWorkspaceGitExcluded` (`shared/git.ts`) adds that path to
+`.git/info/exclude` beside `.pnpm-store/`. A worktree the agent places
+elsewhere in the repo is not covered; the docs tell it where to put one.
+Claude's own worktree tools run `git worktree add -B <a branch of their own>`
+outside Bash (read from the CLI binary, 2026-11-03), so this hook does not see
+them, and the branch they reset is one they named for the worktree. `git checkout` / `git switch` inside a worktree
+are still judged by the rules above, because the hook cannot tell which tree a
+command runs in.
 
 It's a heuristic, not a shell parser: exotic quoting can slip a false
 negative through, which is acceptable. False positives are avoided by

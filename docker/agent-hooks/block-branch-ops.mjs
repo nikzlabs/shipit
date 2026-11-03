@@ -130,8 +130,21 @@ function offends(seg) {
     }
     return null;
   }
+  // Parallel agents need their own trees, so a worktree on a NEW branch or a
+  // detached HEAD is allowed. One on an existing branch is not: ShipIt moves the
+  // session and base branch refs under it (docs/130-block-branch-ops).
   if (sub === "worktree" && rest[0] === "add") {
-    return "`git worktree add` creates a separate branch/worktree";
+    const end = rest.indexOf("--");
+    const flags = rest.slice(1, end === -1 ? undefined : end);
+    if (flags.some((t) => t === "-f" || t === "--force" || t.startsWith("-B"))) {
+      return "`git worktree add --force` / `-B` can check out or reset a branch already in use";
+    }
+    if (!flags.some((t) => t.startsWith("-b") || ["--orphan", "-d", "--detach"].includes(t))) {
+      return (
+        "`git worktree add` without `-b <new-branch>` or `--detach` checks out an existing branch. "
+        + "(Write `git worktree add -b <new-branch> <path>`)"
+      );
+    }
   }
   return null;
 }

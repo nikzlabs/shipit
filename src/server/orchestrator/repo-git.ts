@@ -15,7 +15,7 @@ import {
   sanitizeGitEnv,
   withPreemptiveAuthFallback,
 } from "../shared/git-remote-credential.js";
-import { ensurePnpmStoreGitExcluded } from "../shared/git.js";
+import { ensureWorkspaceGitExcluded } from "../shared/git.js";
 import { hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
 import { handWorkspaceBackToWorker } from "./session-worker-uid.js";
 import { ensureSharedTreeOwnedByShipIt } from "./shared-tree-ownership.js";
@@ -204,7 +204,7 @@ export class RepoGit {
     await safeSimpleGit().raw(["clone", "--local", this.repoDir, sessionDir]);
     // clone --local omits the LFS store.
     linkLfsObjectsIntoClone(this.repoDir, sessionDir);
-    ensurePnpmStoreGitExcluded(sessionDir);
+    ensureWorkspaceGitExcluded(sessionDir);
     // Hand back before dropped-uid config writes. Never chown hardlinked object files.
     handWorkspaceBackToWorker(sessionDir);
     // Auto-gc would break shared object hardlinks.
