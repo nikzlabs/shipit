@@ -31,8 +31,12 @@ describe("egress settings routes", () => {
   let resolvedEgress: Map<string, ResolvedEgressConfig>;
   let knownSessions: Map<string, { id: string; warm: boolean }>;
   let appendedCards: unknown[];
+  let serviceManagers: Map<string, unknown>;
+  let replacementContainment: { isolated: boolean; dns: boolean; proxy: boolean; policy: string };
 
   beforeEach(async () => {
+    serviceManagers = new Map();
+    replacementContainment = { isolated: true, dns: true, proxy: true, policy: "contained" };
     db = new DatabaseManager(":memory:");
     store = new EgressAllowlistStore(db);
     reloadEgress = vi.fn(async () => true);
@@ -56,7 +60,9 @@ describe("egress settings routes", () => {
         reloadEgress,
         get: (id: string) => liveContainers.get(id),
         resolveEgress: (id: string) => resolvedEgress.get(id),
+        replacementEgressContainment: () => replacementContainment,
       } as unknown,
+      serviceManagers,
       runnerRegistry: { get: () => undefined },
       chatHistoryManager: { append: (_id: string, m: unknown) => appendedCards.push(m) },
       sessionManager: { get: (id: string) => knownSessions.get(id) },
@@ -431,6 +437,7 @@ describe("egress settings routes", () => {
       enforcementActive: true,
       startedContained: null,
       pendingRestart: false,
+      agentRestartRebuildsServices: false,
     });
   });
 
@@ -526,6 +533,23 @@ describe("egress settings routes", () => {
         expect(res.statusCode).toBe(400);
       }
       expect(store.getSessionOverride("session-1")).toBeNull();
+    });
+  });
+
+  describe("agentRestartRebuildsServices", () => {
+    const startedContained = { isolated: true, dns: true, proxy: true, policy: "contained" };
+
+    it("is true when the services started under a containment the replacement would not have", async () => {
+      serviceManagers.set("session-1", { egressContainment: () => startedContained });
+      replacementContainment = { isolated: false, dns: false, proxy: false, policy: "open" };
+      const res = await app.inject({ method: "GET", url: "/api/egress/session/session-1" });
+      expect(res.json<EgressSessionSettings>().agentRestartRebuildsServices).toBe(true);
+    });
+
+    it("is false when the containment would not change", async () => {
+      serviceManagers.set("session-1", { egressContainment: () => startedContained });
+      const res = await app.inject({ method: "GET", url: "/api/egress/session/session-1" });
+      expect(res.json<EgressSessionSettings>().agentRestartRebuildsServices).toBe(false);
     });
   });
 

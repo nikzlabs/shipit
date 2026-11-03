@@ -118,6 +118,21 @@ export function originView(origin: ComposeServiceOrigin): ComposeServiceOriginVi
   return { kind: "plugin", repo: origin.repo, alias: origin.alias, plugin: origin.plugin };
 }
 
+/** How a stack's services were started: containment flags, and what the containment installs. */
+export interface EgressContainment {
+  isolated: boolean;
+  dns: boolean;
+  proxy: boolean;
+  policy: EgressPolicy;
+}
+
+/** Whether services started under `a` must stop, and their network be reset, to run under `b`. */
+export function egressContainmentDiffers(a: EgressContainment, b: EgressContainment): boolean {
+  const contained = (c: EgressContainment) => c.isolated && c.policy === "contained";
+  return a.isolated !== b.isolated || a.dns !== b.dns || a.proxy !== b.proxy
+    || contained(a) !== contained(b);
+}
+
 export const INSTALL_FAILED_GATE_MESSAGE =
   "agent.install failed — dependent service not started";
 
@@ -603,16 +618,22 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     prepareContainedStartFn?: (serviceNames: string[]) => Promise<void>,
     firewallPolicy: EgressPolicy = "contained",
   ): boolean {
-    const wasContained = this.egressContained();
-    const changed = Boolean(this.containServicesFn) !== Boolean(containServicesFn)
-      || this.containServiceDns !== containServiceDns
-      || this.containServiceProxy !== containServiceProxy;
+    const before = this.egressContainment();
     this.containServicesFn = containServicesFn;
     this.firewallPolicy = firewallPolicy;
     this.containServiceDns = containServiceDns;
     this.containServiceProxy = containServiceProxy;
     this.prepareContainedStartFn = prepareContainedStartFn;
-    return changed || wasContained !== this.egressContained();
+    return egressContainmentDiffers(before, this.egressContainment());
+  }
+
+  egressContainment(): EgressContainment {
+    return {
+      isolated: Boolean(this.containServicesFn),
+      dns: this.containServiceDns,
+      proxy: this.containServiceProxy,
+      policy: this.firewallPolicy,
+    };
   }
 
   private egressContained(): boolean {

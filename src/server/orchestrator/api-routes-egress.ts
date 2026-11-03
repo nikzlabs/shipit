@@ -28,6 +28,7 @@ import {
 } from "./services/settings-apply.js";
 import type { EgressApplyDeps } from "./services/settings-apply.js";
 import { serializeNetworkModeWrite } from "./services/network-mode-writes.js";
+import { agentRestartRebuildsServices } from "./services/recovery.js";
 import type { ApplyOutcome } from "../shared/settings-catalogue/index.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
 
@@ -63,11 +64,16 @@ function globalSettings(
   };
 }
 
+interface LiveSessionEgress {
+  startedContained: boolean | null;
+  agentRestartRebuildsServices: boolean;
+}
+
 function sessionSettings(
   store: EgressAllowlistStore,
   sessionId: string,
   enforcement: EgressEnforcementStatus,
-  startedContained: boolean | null,
+  { startedContained, agentRestartRebuildsServices }: LiveSessionEgress,
 ): EgressSessionSettings {
   const effectiveContained = store.resolveContained(sessionId);
   return {
@@ -79,6 +85,7 @@ function sessionSettings(
     ...enforcementFields(enforcement),
     startedContained,
     pendingRestart: startedContained !== null && startedContained !== effectiveContained,
+    agentRestartRebuildsServices,
   };
 }
 
@@ -87,7 +94,7 @@ function allowlistView(
   credentialStore: CredentialStore | undefined,
   sessionId: string | undefined,
   enforcement: EgressEnforcementStatus,
-  startedContained: boolean | null,
+  live: LiveSessionEgress | null,
 ): EgressAllowlistView {
   const entries = buildEffectiveAllowlist({
     credentialStore,
@@ -99,7 +106,7 @@ function allowlistView(
     entries,
     globalEnabled: store.getGlobalEnabled(),
     ...enforcementFields(enforcement),
-    session: sessionId ? sessionSettings(store, sessionId, enforcement, startedContained) : null,
+    session: sessionId && live ? sessionSettings(store, sessionId, enforcement, live) : null,
     defaultsCustomized: store.hasSuppressedDefaults(),
   };
 }
@@ -116,6 +123,15 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
     if (sc?.status !== "running") return null;
     return sc.egressContainedAtStart ?? null;
   };
+
+  const liveEgress = (sessionId: string): LiveSessionEgress => ({
+    startedContained: liveContained(sessionId),
+    agentRestartRebuildsServices: agentRestartRebuildsServices(
+      deps.serviceManagers?.get(sessionId),
+      deps.containerManager,
+      sessionId,
+    ),
+  });
 
   // A running container's topology takes precedence over policy awaiting a restart.
   const reachFor = (sessionId: string | null, host: string): EgressHostReach => {
@@ -148,7 +164,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
       async (request) => {
         const sessionId =
           typeof request.query.session === "string" && request.query.session ? request.query.session : undefined;
-        return allowlistView(store, deps.credentialStore, sessionId, enforcement, sessionId ? liveContained(sessionId) : null);
+        return allowlistView(store, deps.credentialStore, sessionId, enforcement, sessionId ? liveEgress(sessionId) : null);
       },
     );
 
@@ -211,11 +227,11 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
           reply.code(503);
           return {
             error: "allowlist saved, but live service refresh failed closed",
-            settings: sessionSettings(store, scope, enforcement, liveContained(scope)),
+            settings: sessionSettings(store, scope, enforcement, liveEgress(scope)),
           };
         }
         if (!isGlobal) {
-          return { ...sessionSettings(store, scope, enforcement, liveContained(scope)), grant: grant(written.reloaded) };
+          return { ...sessionSettings(store, scope, enforcement, liveEgress(scope)), grant: grant(written.reloaded) };
         }
         return { ...globalSettings(store, enforcement), grant: grant(false) };
       },
@@ -234,7 +250,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         if (refuseUnapplied(outcome, reply, "Failed to remove the host")) return;
         return scope === EGRESS_GLOBAL_SCOPE
           ? globalSettings(store, enforcement)
-          : sessionSettings(store, scope, enforcement, liveContained(scope));
+          : sessionSettings(store, scope, enforcement, liveEgress(scope));
       },
     );
 
@@ -254,7 +270,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
       "/api/egress/session/:id",
       async (request, reply) => {
         if (!knownSession(request.params.id, reply)) return;
-        return sessionSettings(store, request.params.id, enforcement, liveContained(request.params.id));
+        return sessionSettings(store, request.params.id, enforcement, liveEgress(request.params.id));
       },
     );
 
@@ -303,11 +319,11 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
               from: egressModeLabel(previous),
               to: egressModeLabel(override),
             }],
-            sessionSettings(store, sessionId, enforcement, liveContained(sessionId)).pendingRestart,
+            sessionSettings(store, sessionId, enforcement, liveEgress(sessionId)).pendingRestart,
           );
         }
         deps.sseBroadcast("session_egress_changed", { sessionId });
-        return sessionSettings(store, sessionId, enforcement, liveContained(sessionId));
+        return sessionSettings(store, sessionId, enforcement, liveEgress(sessionId));
       },
     );
   }

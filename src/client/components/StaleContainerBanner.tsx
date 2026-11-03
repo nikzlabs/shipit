@@ -15,7 +15,14 @@ type RestartResult =
 // A slow answer must not overwrite the state that a newer request, or another session, set.
 let latestRequest = 0;
 
-export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
+export function StaleContainerBanner({
+  sessionId,
+  agentRestartRebuildsServices: restartAll = false,
+}: {
+  sessionId: string;
+  /** An agent-only restart would stop the compose stack, so offer only a full restart. */
+  agentRestartRebuildsServices?: boolean;
+}) {
   const freshness = useSessionStore((s) => s.containerFreshness);
   const turnRunning = useSessionStore((s) => s.isLoading);
   const restartScheduled = useSessionStore((s) => s.restartScheduled);
@@ -35,6 +42,7 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
   const waiting = restartScheduled && !turnRunning && !restarting;
   const disabled = restarting || cancelling;
   const url = `/api/sessions/${encodeURIComponent(sessionId)}/agent/container/restart`;
+  const restartAllUrl = `/api/sessions/${encodeURIComponent(sessionId)}/container/restart`;
   const answerIsCurrent = (request: number) =>
     request === latestRequest && useSessionStore.getState().sessionId === sessionId;
 
@@ -59,11 +67,13 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
     const startedAt = Date.now();
     setRequesting(true);
     setRecoveryActionError(null);
-    if (!turnRunning) setRescueState({ phase: "restarting_agent", startedAt });
+    if (!turnRunning) setRescueState({ phase: restartAll ? "stopping_stack" : "restarting_agent", startedAt });
     try {
-      const result = await (turnRunning
-        ? api.post<RestartResult>(url, { afterTurn: true })
-        : api.post<RestartResult>(url));
+      const result = await (restartAll
+        ? api.post<RestartResult>(restartAllUrl)
+        : turnRunning
+          ? api.post<RestartResult>(url, { afterTurn: true })
+          : api.post<RestartResult>(url));
       if ("scheduled" in result) {
         if (answerIsCurrent(request)) setRestartScheduled(true);
         return;
@@ -74,9 +84,11 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
       window.dispatchEvent(new CustomEvent("shipit:reconnect-ws"));
     } catch (error) {
       const message = error instanceof ApiError ? error.message : String(error instanceof Error ? error.message : error);
-      setRecoveryActionError(`Restart agent container failed: ${message}`);
+      setRecoveryActionError(`${restartAll ? "Restart all" : "Restart agent container"} failed: ${message}`);
       if (!turnRunning) setRescueState({ phase: "failed", reason: "request_error", message, startedAt });
-      useUiStore.getState().setToast({ message: `Failed to restart the agent container: ${message}` });
+      useUiStore.getState().setToast({
+        message: `Failed to restart ${restartAll ? "the session" : "the agent container"}: ${message}`,
+      });
     } finally {
       setRequesting(false);
     }
@@ -99,7 +111,9 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
                 ? "It restarts when this turn ends."
                 : waiting
                   ? "The scheduled restart waits for the end of the agent's work. Restart it now if you do not want to wait."
-                  : "Restart it to use the latest updates."}
+                  : restartAll
+                    ? "Restart it to use the latest updates. Its network mode changed, so the preview services restart too."
+                    : "Restart it to use the latest updates."}
             </div>
           </div>
         </div>
@@ -123,16 +137,20 @@ export function StaleContainerBanner({ sessionId }: { sessionId: string }) {
             variant="secondary"
             size="md"
             className="w-full sm:w-auto"
-            disabled={disabled}
-            title={turnRunning
-              ? "Restart the agent container when this turn ends; the turn is not interrupted"
-              : "Restart only the agent container; preview services keep running"}
+            disabled={disabled || (restartAll && turnRunning)}
+            title={restartAll
+              ? turnRunning
+                ? "Available when this turn ends"
+                : "Stop the compose stack, destroy the agent container, then recreate everything under the new network mode"
+              : turnRunning
+                ? "Restart the agent container when this turn ends; the turn is not interrupted"
+                : "Restart only the agent container; preview services keep running"}
             onClick={() => void restart()}
           >
             {restarting
               ? <Spinner size={ICON_SIZE.XS} />
               : <ArrowsClockwiseIcon size={ICON_SIZE.XS} />}
-            {turnRunning ? "Restart after turn" : "Restart agent container"}
+            {restartAll ? "Restart all" : turnRunning ? "Restart after turn" : "Restart agent container"}
           </Button>
         )}
       </Banner>

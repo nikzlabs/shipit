@@ -183,6 +183,37 @@ function ownsStack(
   return false;
 }
 
+export const CONTAINMENT_CHANGE_STOP_LINE =
+  "[compose] Network mode changed since these services started — stopping them and recreating the session network.";
+
+/** Automatic services come back with the reconcile; a manual one that was running needs its own start. */
+async function restartServicesStoppedByTransition(
+  runner: SessionRunnerInterface,
+  mgr: ServiceManager,
+  wereRunning: readonly string[],
+  broadcastLog: ((sessionId: string, source: LogSource, text: string) => void) | undefined,
+): Promise<void> {
+  const manual = wereRunning.filter((name) => {
+    const svc = mgr.getService(name);
+    return svc?.preview === "manual" && svc.status === "stopped";
+  });
+  let started = 0;
+  for (const name of manual) {
+    try {
+      await mgr.startService(name);
+      started++;
+    } catch (err) {
+      // startService records the failure on the service, where the panel shows it.
+      console.warn(`[compose:${runner.sessionId}] could not start ${name} again after the network change:`, getErrorMessage(err));
+    }
+  }
+  if (manual.length === 0) return;
+  appendAgentLog(
+    broadcastLog, runner.sessionId, runner, "server",
+    `[compose] Started ${started} of ${manual.length} manual service(s) again that were running before the network mode changed.`,
+  );
+}
+
 export function adoptExistingServiceManager(
   runner: SessionRunnerInterface,
   mgr: ServiceManager,
@@ -239,6 +270,26 @@ export function adoptExistingServiceManager(
         deps.firewallPolicy,
       )
     : false;
+  // Read before the stop below marks every service stopped.
+  const runningBeforeTransition = containmentChanged
+    ? mgr.getServices().filter((s) => s.status === "running" || s.status === "starting").map((s) => s.name)
+    : [];
+  if (containmentChanged) {
+    console.log(
+      `[compose:${runner.sessionId}] egress containment changed since the services started — ` +
+      `stopping them (running: ${runningBeforeTransition.join(", ") || "none"}) and resetting the session network`,
+    );
+    if (runningBeforeTransition.length > 0) {
+      appendAgentLog(broadcastLog, runner.sessionId, runner, "server", CONTAINMENT_CHANGE_STOP_LINE);
+    }
+  }
+  const reconcileStack = async (): Promise<void> => {
+    await serializeStackOp(runner.sessionId, async () => {
+      if (!ownsStack(serviceManagers, runner.sessionId, mgr)) return;
+      await mgr.reconcile();
+      if (containmentChanged) await restartServicesStoppedByTransition(runner, mgr, runningBeforeTransition, broadcastLog);
+    });
+  };
   // Stop old-policy services before waiting for the worker, then reset their network.
   const policyTransition = containmentChanged
     ? mgr.stop().catch((error: unknown) => {
@@ -275,11 +326,7 @@ export function adoptExistingServiceManager(
           // Disposal resolves the readiness wait too, and another manager can have the network by now.
           if (serviceManagers.get(runner.sessionId) === mgr) await deps.resetSessionNetwork?.();
         }
-        if (containmentChanged || overlayChanged || wasPreStartedWarm) {
-          await serializeStackOp(runner.sessionId, async () => {
-            if (ownsStack(serviceManagers, runner.sessionId, mgr)) await mgr.reconcile();
-          });
-        }
+        if (containmentChanged || overlayChanged || wasPreStartedWarm) await reconcileStack();
         try {
           await containerManager.connectToNetwork(runner.sessionId, networkName);
         } catch (err) {
@@ -303,9 +350,7 @@ export function adoptExistingServiceManager(
     void (async () => {
       await policyTransition;
       if (serviceManagers.get(runner.sessionId) === mgr) await deps.resetSessionNetwork?.();
-      await serializeStackOp(runner.sessionId, async () => {
-        if (ownsStack(serviceManagers, runner.sessionId, mgr)) await mgr.reconcile();
-      });
+      await reconcileStack();
     })().catch((error: unknown) => {
       mgr.emit("stack_error", error instanceof Error ? error : new Error(getErrorMessage(error)));
     });

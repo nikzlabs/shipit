@@ -751,7 +751,9 @@ shipit session restart --note "check that node -v prints 22, then run the tests"
 
 That records the request; ShipIt restarts the agent container **after your
 turn ends**, so the turn that asked is not cut off. The preview services keep
-running. ShipIt then starts a new turn on the new container with your note, so
+running — unless the session's network mode changed since they started. Then
+ShipIt stops them, recreates the session network, and starts again the ones
+that were running, manual ones included; the Logs tab says so. ShipIt then starts a new turn on the new container with your note, so
 write in it what to check or do next. A message the user sent during the
 restart runs first, and your note's turn comes after it. Say in your reply what you restart and
 why. See [sessions.md](sessions.md) → `shipit session restart`.

@@ -274,4 +274,35 @@ describe("SessionHealthStrip", () => {
       });
     });
   });
+
+  describe("when an agent-only restart would stop the compose stack", () => {
+    function routeFetch(agentRestartRebuildsServices: boolean) {
+      fetchMock.mockImplementation(async (url: string) => {
+        const body = url.startsWith("/api/egress/session/")
+          ? { sessionId: "sess-1", override: false, pendingRestart: true, agentRestartRebuildsServices }
+          : healthRunning;
+        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      });
+    }
+
+    it("offers only Restart all", async () => {
+      routeFetch(true);
+      render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
+
+      await waitFor(() => {
+        expect(screen.queryByRole("button", { name: "Restart agent container" })).not.toBeInTheDocument();
+      });
+      expect(screen.getByRole("button", { name: "Restart all" })).toBeEnabled();
+    });
+
+    it("keeps the agent-only restart when the stack would survive it", async () => {
+      routeFetch(false);
+      render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith("/api/egress/session/sess-1");
+      });
+      expect(screen.getByRole("button", { name: "Restart agent container" })).toBeInTheDocument();
+    });
+  });
 });

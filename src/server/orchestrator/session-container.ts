@@ -54,6 +54,7 @@ import {
   type LocalTcpAccept,
 } from "./egress-firewall-install.js";
 import { localBlockActive, hostAddresses as readHostAddresses } from "./local-block.js";
+import type { EgressContainment } from "./service-manager.js";
 import { extractNetworkGateways, extractNetworkSubnets } from "./egress-firewall.js";
 import {
   containComposeServices as applyComposeServiceEgress,
@@ -631,6 +632,17 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
   isEgressProxyContained(sessionId: string): boolean {
     return this.isEgressContained(sessionId) && egressProxyEnabled();
+  }
+
+  /** The containment a replacement container would start its services under, from current policy. */
+  replacementEgressContainment(sessionId: string): EgressContainment {
+    const contained = egressEnforceEnabled() && (this.resolveEgressConfig?.(sessionId)?.contained ?? true);
+    return {
+      isolated: contained || localBlockActive(),
+      dns: contained && egressDnsEnabled(),
+      proxy: contained && egressProxyEnabled(),
+      policy: contained ? "contained" : "open",
+    };
   }
 
   async resetSessionNetwork(sessionId: string): Promise<void> {

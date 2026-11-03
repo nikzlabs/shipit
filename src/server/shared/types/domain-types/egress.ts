@@ -21,6 +21,8 @@ export interface EgressSessionSettings {
   /** Startup policy of the live container; null when none exists. Mode changes require restart. */
   startedContained: boolean | null;
   pendingRestart: boolean;
+  /** An agent-only restart would stop the compose stack, since its egress containment would change. */
+  agentRestartRebuildsServices: boolean;
 }
 
 export type EgressAllowlistSource = "builtin" | "operator" | "mcp" | "user-global" | "user-session";

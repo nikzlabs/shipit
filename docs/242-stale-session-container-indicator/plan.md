@@ -256,7 +256,10 @@ The pieces, each verified in code:
   *adopts* the surviving `ServiceManager` (`adoptExistingServiceManager`) rather
   than calling `start()`. It restarts the stack only when the egress containment
   policy or the overlay dep-dir set changed on the new container, which triggers
-  a `stop()`/`reconcile()`.
+  a `stop()`/`reconcile()`. After a containment change it starts again the manual
+  services that were running, and the banner offers **Restart all** in place of
+  the agent-only restart while one would happen (docs/127-restart-agent →
+  "network mode changed since the services started").
 
 So this sweep leaves the stack alone because taking it is someone else's job that
 is already done — not because a preview is being preserved across the update.

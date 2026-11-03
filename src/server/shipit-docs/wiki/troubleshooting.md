@@ -306,6 +306,9 @@ container restarts when the turn ends, and shows **Cancel restart**, which remov
 the scheduled restart. No follow-up turn starts after that restart. If the turn
 leaves background work running, the restart waits for the end of the next turn;
 the banner says so, and **Restart agent container** on it then restarts at once.
+When the session's network mode changed since its services started, the banner
+offers **Restart all** instead, because the new container would stop the Compose
+stack anyway; that button is disabled until the turn ends.
 
 A container that has simply *stopped* is not automatically one of these. It may
 be idle reclaim, which is normal and explained in [sessions.md](sessions.md), or

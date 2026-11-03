@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
 import { adoptExistingServiceManager } from "../app-lifecycle.js";
+import { CONTAINMENT_CHANGE_STOP_LINE } from "../service-manager-setup.js";
+import { isOpsSafeLine } from "../services/host-session-logs.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { SessionContainerManager } from "../session-container.js";
@@ -221,6 +223,80 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     expect(mgr._stopCalls).toBe(1);
     expect(cm._connectCalls).toHaveLength(0);
     runner.dispose({ force: true });
+  });
+
+  describe("a network-mode change across the restart", () => {
+    interface Svc { name: string; status: string; preview: "auto" | "manual" }
+    async function adoptAcrossModeChange(services: Svc[]) {
+      const runner = makeRunner("s1");
+      const calls: string[] = [];
+      const mgr = makeStubServiceManager() as StubServiceManager & {
+        updateEgressContainment: () => boolean;
+        reconcile: () => Promise<void>;
+        startService: (name: string) => Promise<void>;
+        getService: (name: string) => Svc | undefined;
+      };
+      mgr.updateEgressContainment = () => true;
+      mgr.getServices = () => services.map((s) => ({ ...s }));
+      mgr.getService = (name) => services.find((s) => s.name === name);
+      mgr.stop = async () => {
+        calls.push("stop");
+        for (const s of services) s.status = "stopped";
+      };
+      mgr.reconcile = async () => {
+        calls.push("reconcile");
+        for (const s of services) if (s.preview === "auto") s.status = "running";
+      };
+      mgr.startService = async (name) => {
+        calls.push(`start ${name}`);
+        const svc = services.find((s) => s.name === name);
+        if (svc) svc.status = "running";
+      };
+      const logged: string[] = [];
+      const serviceManagers = new Map([["s1", mgr as unknown as ServiceManager]]);
+
+      adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
+        serviceManagers,
+        composeStopPromises: new Map(),
+        containerManager: buildContainerManager(),
+        broadcastLog: (_sid, _source, text) => logged.push(text),
+        installPromise: null,
+        resetSessionNetwork: async () => { calls.push("reset network"); },
+      });
+      runner.setWorkerUrl("http://10.0.0.42:4000");
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
+      runner.preserveComposeOnDispose = true;
+      runner.dispose({ force: true });
+      return { calls, logged, services };
+    }
+
+    it("says it stops the services, and starts the manual ones that were running again", async () => {
+      const { calls, logged, services } = await adoptAcrossModeChange([
+        { name: "web", status: "running", preview: "auto" },
+        { name: "unwritten", status: "running", preview: "manual" },
+        { name: "db", status: "stopped", preview: "manual" },
+      ]);
+
+      expect(calls).toEqual(["stop", "reset network", "reconcile", "start unwritten"]);
+      expect(services.map((s) => [s.name, s.status])).toEqual([
+        ["web", "running"], ["unwritten", "running"], ["db", "stopped"],
+      ]);
+      expect(logged).toEqual([
+        CONTAINMENT_CHANGE_STOP_LINE,
+        "[compose] Started 1 of 1 manual service(s) again that were running before the network mode changed.",
+      ]);
+      for (const line of logged) expect(isOpsSafeLine(line)).toBe(true);
+    });
+
+    it("tells the user nothing when no service was running", async () => {
+      const { calls, logged } = await adoptAcrossModeChange([
+        { name: "db", status: "stopped", preview: "manual" },
+      ]);
+
+      expect(calls).toEqual(["stop", "reset network", "reconcile"]);
+      expect(logged).toEqual([]);
+    });
   });
 
   it("disposed handler preserves the manager when preserveComposeOnDispose is true", async () => {
