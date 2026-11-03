@@ -186,19 +186,31 @@ function ownsStack(
 export const CONTAINMENT_CHANGE_STOP_LINE =
   "[compose] Network mode changed since these services started — stopping them and recreating the session network.";
 
-/** Automatic services come back with the reconcile; a manual one that was running needs its own start. */
+interface RunningService {
+  name: string;
+  userStops: number;
+}
+
+/**
+ * Automatic services come back with the reconcile; a manual one that was running needs its own
+ * start, unless the user stopped it since the transition began.
+ */
 async function restartServicesStoppedByTransition(
   runner: SessionRunnerInterface,
   mgr: ServiceManager,
-  wereRunning: readonly string[],
+  wereRunning: readonly RunningService[],
   broadcastLog: ((sessionId: string, source: LogSource, text: string) => void) | undefined,
 ): Promise<void> {
-  const manual = wereRunning.filter((name) => {
+  const stillWanted = ({ name, userStops }: RunningService): boolean => {
     const svc = mgr.getService(name);
-    return svc?.preview === "manual" && svc.status === "stopped";
-  });
+    return svc?.preview === "manual" && svc.status === "stopped" && mgr.userStopCount(name) === userStops;
+  };
+  const manual = wereRunning.filter(stillWanted);
   let started = 0;
-  for (const name of manual) {
+  for (const svc of manual) {
+    // Each start awaits Docker, so a Stop can arrive while an earlier one runs.
+    if (!stillWanted(svc)) continue;
+    const { name } = svc;
     try {
       await mgr.startService(name);
       started++;
@@ -272,12 +284,15 @@ export function adoptExistingServiceManager(
     : false;
   // Read before the stop below marks every service stopped.
   const runningBeforeTransition = containmentChanged
-    ? mgr.getServices().filter((s) => s.status === "running" || s.status === "starting").map((s) => s.name)
+    ? mgr.getServices()
+      .filter((s) => s.status === "running" || s.status === "starting")
+      .map((s) => ({ name: s.name, userStops: mgr.userStopCount(s.name) }))
     : [];
   if (containmentChanged) {
     console.log(
       `[compose:${runner.sessionId}] egress containment changed since the services started — ` +
-      `stopping them (running: ${runningBeforeTransition.join(", ") || "none"}) and resetting the session network`,
+      `stopping them (running: ${runningBeforeTransition.map((s) => s.name).join(", ") || "none"}) ` +
+      "and resetting the session network",
     );
     if (runningBeforeTransition.length > 0) {
       appendAgentLog(broadcastLog, runner.sessionId, runner, "server", CONTAINMENT_CHANGE_STOP_LINE);
@@ -286,8 +301,12 @@ export function adoptExistingServiceManager(
   const reconcileStack = async (): Promise<void> => {
     await serializeStackOp(runner.sessionId, async () => {
       if (!ownsStack(serviceManagers, runner.sessionId, mgr)) return;
-      await mgr.reconcile();
-      if (containmentChanged) await restartServicesStoppedByTransition(runner, mgr, runningBeforeTransition, broadcastLog);
+      try {
+        await mgr.reconcile();
+      } finally {
+        // A failed automatic service must not keep the manual ones down.
+        if (containmentChanged) await restartServicesStoppedByTransition(runner, mgr, runningBeforeTransition, broadcastLog);
+      }
     });
   };
   // Stop old-policy services before waiting for the worker, then reset their network.

@@ -227,7 +227,10 @@ describe("adoptExistingServiceManager (docs/127)", () => {
 
   describe("a network-mode change across the restart", () => {
     interface Svc { name: string; status: string; preview: "auto" | "manual" }
-    async function adoptAcrossModeChange(services: Svc[]) {
+    async function adoptAcrossModeChange(
+      services: Svc[],
+      opts: { reconcileFails?: boolean; stoppedByUserDuringReconcile?: string[]; stoppedByUserDuringStop?: string[] } = {},
+    ) {
       const runner = makeRunner("s1");
       const calls: string[] = [];
       const mgr = makeStubServiceManager() as StubServiceManager & {
@@ -235,16 +238,23 @@ describe("adoptExistingServiceManager (docs/127)", () => {
         reconcile: () => Promise<void>;
         startService: (name: string) => Promise<void>;
         getService: (name: string) => Svc | undefined;
+        userStopCount: (name: string) => number;
       };
+      const userStops = new Map<string, number>();
+      const userStop = (name: string) => userStops.set(name, (userStops.get(name) ?? 0) + 1);
+      mgr.userStopCount = (name) => userStops.get(name) ?? 0;
       mgr.updateEgressContainment = () => true;
       mgr.getServices = () => services.map((s) => ({ ...s }));
       mgr.getService = (name) => services.find((s) => s.name === name);
       mgr.stop = async () => {
         calls.push("stop");
         for (const s of services) s.status = "stopped";
+        for (const name of opts.stoppedByUserDuringStop ?? []) userStop(name);
       };
       mgr.reconcile = async () => {
         calls.push("reconcile");
+        for (const name of opts.stoppedByUserDuringReconcile ?? []) userStop(name);
+        if (opts.reconcileFails) throw new Error("web failed to build");
         for (const s of services) if (s.preview === "auto") s.status = "running";
       };
       mgr.startService = async (name) => {
@@ -296,6 +306,34 @@ describe("adoptExistingServiceManager (docs/127)", () => {
 
       expect(calls).toEqual(["stop", "reset network", "reconcile"]);
       expect(logged).toEqual([]);
+    });
+
+    it("still starts the manual services when an automatic one fails the reconcile", async () => {
+      const { calls } = await adoptAcrossModeChange([
+        { name: "web", status: "running", preview: "auto" },
+        { name: "unwritten", status: "running", preview: "manual" },
+      ], { reconcileFails: true });
+
+      expect(calls).toEqual(["stop", "reset network", "reconcile", "start unwritten"]);
+    });
+
+    it("leaves stopped a manual service the user stopped while the reconcile ran", async () => {
+      const { calls } = await adoptAcrossModeChange([
+        { name: "unwritten", status: "running", preview: "manual" },
+        { name: "worker", status: "running", preview: "manual" },
+      ], { stoppedByUserDuringReconcile: ["worker"] });
+
+      expect(calls).toEqual(["stop", "reset network", "reconcile", "start unwritten"]);
+    });
+
+    // The reconcile's own start clears ServiceManager's stop markers, so this one must survive it.
+    it("leaves stopped a manual service the user stopped while the old stack went down", async () => {
+      const { calls } = await adoptAcrossModeChange([
+        { name: "unwritten", status: "running", preview: "manual" },
+        { name: "worker", status: "running", preview: "manual" },
+      ], { stoppedByUserDuringStop: ["worker"] });
+
+      expect(calls).toEqual(["stop", "reset network", "reconcile", "start unwritten"]);
     });
   });
 

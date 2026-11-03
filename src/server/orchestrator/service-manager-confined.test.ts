@@ -378,6 +378,17 @@ describe("stop", () => {
     }]);
   });
 
+  it("counts a Stop in a way a reconcile does not clear", async () => {
+    const dir = setup(MANUAL_WEB);
+    const { mgr } = harness(dir);
+    await mgr.start();
+
+    await mgr.stopService("web");
+    await mgr.reconcile();
+
+    expect(mgr.userStopCount("web")).toBe(1);
+  });
+
   it("stops without a model once the start's files are gone", async () => {
     const dir = setup(AUTO_WEB);
     const { mgr, runs } = harness(dir);

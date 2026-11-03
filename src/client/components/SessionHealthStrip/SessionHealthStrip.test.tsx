@@ -4,6 +4,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
 import { SessionHealthStrip } from "./SessionHealthStrip.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { notifySessionNetworkModeChanged } from "../../hooks/useSessionNetworkMode.js";
 
 const fetchMock = vi.fn();
 
@@ -290,19 +291,23 @@ describe("SessionHealthStrip", () => {
       render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
 
       await waitFor(() => {
-        expect(screen.queryByRole("button", { name: "Restart agent container" })).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Restart all" }).title).toContain("network mode changed");
       });
+      expect(screen.queryByRole("button", { name: "Restart agent container" })).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Restart all" })).toBeEnabled();
     });
 
-    it("keeps the agent-only restart when the stack would survive it", async () => {
-      routeFetch(false);
+    it("offers the agent-only restart again once the stack would survive it", async () => {
+      routeFetch(true);
       render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
-
       await waitFor(() => {
-        expect(fetchMock).toHaveBeenCalledWith("/api/egress/session/sess-1");
+        expect(screen.queryByRole("button", { name: "Restart agent container" })).not.toBeInTheDocument();
       });
-      expect(screen.getByRole("button", { name: "Restart agent container" })).toBeInTheDocument();
+
+      routeFetch(false);
+      act(() => notifySessionNetworkModeChanged("sess-1"));
+
+      expect(await screen.findByRole("button", { name: "Restart agent container" })).toBeInTheDocument();
     });
   });
 });

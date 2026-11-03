@@ -396,6 +396,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
   private upSettled = new Map<string, Set<Promise<void>>>();
 
   private stoppedByUser = new Set<string>();
+  private userStopCounts = new Map<string, number>();
 
   private readonly startingWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -781,6 +782,11 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
 
   get projectComposeFailure(): ComposeFailure | null {
     return this._projectComposeFailure;
+  }
+
+  /** Counts Stop requests for a service; unlike `stoppedByUser`, a reconcile does not clear it. */
+  userStopCount(name: string): number {
+    return this.userStopCounts.get(name) ?? 0;
   }
 
   getService(name: string): ManagedService | undefined {
@@ -1204,6 +1210,7 @@ export class ServiceManager extends EventEmitter<ServiceManagerEvents> {
     if (!svc) throw unknownServiceError(name, this._projectComposeFailure);
 
     this.stoppedByUser.add(name);
+    this.userStopCounts.set(name, this.userStopCount(name) + 1);
     this.retry.clearRetryState(name);
     // Capture before awaiting stop; a start that settles during it removes its own entry.
     const pendingUps = [...(this.upSettled.get(name) ?? [])];
