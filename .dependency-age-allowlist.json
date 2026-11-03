@@ -1,9 +1,1 @@
-[
-  {
-    "manifest": "docker/agent-cli/package.json",
-    "package": "@anthropic-ai/claude-code",
-    "version": "2.1.300",
-    "reason": "User explicitly approved updating Claude Code to the latest release, 2.1.300 (published 2026-10-14), ahead of the 7-day cooldown on 2026-10-15.",
-    "expires": "2026-10-21"
-  }
-]
+[]
