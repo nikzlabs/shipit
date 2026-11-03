@@ -102,6 +102,7 @@ function makeFixture(opts?: {
   enabled?: boolean;
   cb?: RecordingCb;
   paused?: boolean;
+  ensureRunner?: () => Promise<RunnerStub | undefined>;
 }): Fixture {
   let time = 1_000_000;
   let enabled = opts?.enabled ?? true;
@@ -116,7 +117,7 @@ function makeFixture(opts?: {
     cb,
     () => time,
     undefined,
-    undefined,
+    opts?.ensureRunner as ((id: string) => Promise<SessionRunnerInterface | undefined>) | undefined,
     undefined,
     () => !paused,
   );
@@ -193,6 +194,119 @@ describe("AutoConflictResolveManager", () => {
     await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
     await tick();
     expect(fx.cb.count).toBe(1);
+  });
+
+  it("docs/338 — a pause while the runner is being made starts nothing and costs no cooldown", async () => {
+    const runner = makeRunner(false);
+    fx = makeFixture({
+      ensureRunner: () => {
+        fx.setPaused(true);
+        return Promise.resolve(runner);
+      },
+    });
+    fx.setRunner(undefined);
+    const conflicting = () =>
+      fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+
+    await conflicting();
+    await tick();
+    expect(fx.cb.count).toBe(0);
+    expect(fx.manager.get("s1")?.status).not.toBe("running");
+    expect(fx.manager.get("s1")?.nextEligibleAt).toBeUndefined();
+
+    fx.setRunner(runner);
+    fx.setPaused(false);
+    await conflicting();
+    await tick();
+    expect(fx.cb.count).toBe(1);
+  });
+
+  it("docs/338 req 5 — a conflict resolved while paused ends an exhausted episode, so a resume can fire", async () => {
+    fx = makeFixture({ cb: recordingCb(() => ({ outcome: "error", lastError: "boom", didWork: true })) });
+    const poll = (mergeable: PrStatusSummary["mergeable"]) =>
+      fx.manager.handleTransition("s1", makeSummary({ mergeable }), "main", "sha1");
+    for (let i = 0; i < 3; i++) {
+      await poll("conflicting");
+      await tick();
+      fx.advance(AUTO_RESOLVE_COOLDOWN_MS + 1);
+    }
+    await poll("conflicting");
+    expect(fx.manager.get("s1")?.status).toBe("exhausted");
+
+    fx.setPaused(true);
+    await poll("mergeable");
+    expect(fx.manager.get("s1")).toBeUndefined();
+
+    fx.setPaused(false);
+    await poll("conflicting");
+    await tick();
+    expect(fx.cb.count).toBe(4);
+  });
+
+  it("docs/338 — a resolution seen while paused leaves a running attempt's state for its own result", async () => {
+    let settle!: (r: AutoResolveResult) => void;
+    fx = makeFixture({ cb: recordingCb(() => new Promise((resolve) => { settle = resolve; })) });
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+    await tick();
+    expect(fx.manager.get("s1")?.status).toBe("running");
+
+    fx.setPaused(true);
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "mergeable" }), "main", "sha1");
+    expect(fx.manager.get("s1")?.status).toBe("running");
+
+    settle({ outcome: "error", lastError: "boom", didWork: true });
+    await tick();
+    expect(fx.cb.count).toBe(1);
+    expect(fx.manager.get("s1")).toMatchObject({ status: "idle", attemptCount: 0 });
+  });
+
+  it("docs/338 req 5 — a last attempt that ends after a paused resolution does not leave the session exhausted", async () => {
+    let settle!: (r: AutoResolveResult) => void;
+    let calls = 0;
+    fx = makeFixture({
+      cb: recordingCb(() => {
+        calls++;
+        return calls < MAX_AUTO_RESOLVE_ATTEMPTS
+          ? { outcome: "error", lastError: "boom", didWork: true }
+          : new Promise((resolve) => { settle = resolve; });
+      }),
+    });
+    const poll = (mergeable: PrStatusSummary["mergeable"]) =>
+      fx.manager.handleTransition("s1", makeSummary({ mergeable }), "main", "sha1");
+    for (let i = 0; i < MAX_AUTO_RESOLVE_ATTEMPTS; i++) {
+      await poll("conflicting");
+      await tick();
+      fx.advance(AUTO_RESOLVE_COOLDOWN_MS + 1);
+    }
+    expect(fx.manager.get("s1")?.status).toBe("running");
+
+    fx.setPaused(true);
+    await poll("mergeable");
+    settle({ outcome: "error", lastError: "boom", didWork: true });
+    await tick();
+    expect(fx.manager.get("s1")?.status).not.toBe("exhausted");
+
+    fx.setPaused(false);
+    await poll("conflicting");
+    await tick();
+    expect(fx.cb.count).toBe(MAX_AUTO_RESOLVE_ATTEMPTS + 1);
+  });
+
+  it("a resolution polled while the runner is being made stops the stale transition", async () => {
+    const runner = makeRunner(false);
+    let release!: () => void;
+    fx = makeFixture({
+      ensureRunner: () => new Promise((resolve) => { release = () => resolve(runner); }),
+    });
+    fx.setRunner(undefined);
+
+    const stale = fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+    await tick();
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "mergeable" }), "main", "sha1");
+    release();
+    await stale;
+    await tick();
+    expect(fx.cb.count).toBe(0);
   });
 
   it("docs/338 — a deferred attempt does not fire on idle once the session is paused", async () => {

@@ -162,19 +162,22 @@ export function computeAttentionReason({
   if (prState === "merged" || prState === "closed") return null;
   if (card?.phase === "merged" || card?.phase === "closed") return null;
 
-  if (checks?.state === "failure") {
+  const ciFailed = checks?.state === "failure";
+  if (ciFailed) {
     if (autoFix?.status === "exhausted") return "CI fix failed after 3 attempts";
-    if (autoFix?.status === "running") return null;
-    if (autoFixEnabled && !autoFixPaused) return null;
-    return "CI checks failed";
+    const autoFixing = autoFix?.status === "running" || (autoFixEnabled && !autoFixPaused);
+    if (!autoFixing) return "CI checks failed";
   }
 
+  // Not inside the CI branch: a CI failure auto-fix is handling must not hide a conflict nobody is.
   if (prState === "open" && mergeable === "conflicting") {
     if (autoResolve?.status === "exhausted") return "Conflict resolution failed after 3 attempts";
     if (autoResolve?.status === "running") return null;
     if (autoResolveEnabled && !autoResolvePaused) return null;
     return "PR has merge conflicts";
   }
+
+  if (ciFailed) return null;
 
   if (autoMerge?.error) {
     return "Auto-merge needs repo configuration";

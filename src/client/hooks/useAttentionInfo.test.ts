@@ -177,6 +177,17 @@ describe("computeAttentionReason", () => {
       ).toBe("PR has merge conflicts");
     });
 
+    it("docs/338 — a CI failure auto-fix is handling does not hide a paused conflict", () => {
+      const both = {
+        autoFixEnabled: true,
+        autoResolveEnabled: true,
+        status: conflicting,
+        card: card({ checks: FAILURE, autoFix: { status: "idle" as const, attemptCount: 0, maxAttempts: 3 } }),
+      };
+      expect(computeAttentionReason(inputs({ ...both, autoResolvePaused: true }))).toBe("PR has merge conflicts");
+      expect(computeAttentionReason(inputs(both))).toBeNull();
+    });
+
     it("still notifies on conflict when auto-merge is on but auto-resolve is off", () => {
       expect(
         computeAttentionReason(

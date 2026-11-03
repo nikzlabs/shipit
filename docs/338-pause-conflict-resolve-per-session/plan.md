@@ -21,10 +21,24 @@ records only what differs.
 `isSessionEnabled` hook to `AutoRemediationManager`, which checks it after the
 workspace gate in `runTransition` and `onRunnerIdle`. The poller wires it to
 `!sessionManager.get(id)?.autoResolveConflictsPaused`, read at decision time, so a
-resume takes effect on the next poll. `rebaseAndResolveCb` (`app-lifecycle.ts`)
-reads the pause once more after the manager's runner await and returns
-`deferred` (`paused`), which costs no attempt and ends the "Rebasing…" banner the
-attempt announced.
+resume takes effect on the next poll. Both base paths now check the two gates
+once more after their awaits (`ensureRunner`, `verifyRunningState`) and before
+they claim the attempt, so a pause made while a runner was being created starts
+nothing, announces nothing and sets no cooldown. That re-check is in the shared
+base, so it closes the same window for the docs/186 CI pause and for either
+workspace setting going off.
+
+A resolved signal (the PR merges cleanly again) seen while the gate is off still
+deletes the session's state. Before, the gate returned first, so a session that
+had exhausted its three attempts, was paused, and saw the conflict clear kept
+`exhausted` and never fired for a later conflict on the same head after a resume
+(req 5). The fix is in the shared base, so it holds for the CI pause too. A
+`running` state is not deleted, since deleting it would let its attempt's result
+land on a new episode started after a resume. It gets `pendingReset` instead, the
+mechanism user activity already uses: the result writes back, then the budget
+resets. And after its awaits, a transition fires only if its state is still the
+session's current one, so a resolution polled while a runner was being created
+stops the stale attempt (this race existed without a pause, too).
 
 **No withdraw.** The CI pause has to remove a fix turn that waits in the queue or
 the hold store. The conflict-resolution turn never waits: `rebase-driver.ts`
@@ -52,7 +66,7 @@ input now carries the docs/186 CI pause, which the marker ignored before.
 - `src/server/orchestrator/sessions.ts` — row mapping and setter.
 - `src/server/orchestrator/auto-conflict-resolve-manager.ts` — forwards `isSessionEnabled`.
 - `src/server/orchestrator/pr-status-poller.ts` — wires the gate to the flag.
-- `src/server/orchestrator/app-lifecycle.ts` — the pre-flight pause read in `rebaseAndResolveCb`.
+- `src/server/orchestrator/auto-remediation-manager.ts` — the gate re-check after the awaits.
 - `src/server/orchestrator/api-routes-github.ts` — `POST /pr/auto-resolve-pause`.
 - `src/client/stores/session-store.ts` — `setAutoResolveConflictsPaused`.
 - `src/client/components/PrStatusControls.tsx` — `AutoResolvePauseToggle`, `useAutoResolvePaused`.
@@ -62,9 +76,9 @@ input now carries the docs/186 CI pause, which the marker ignored before.
 
 ## Tests
 
-- `auto-conflict-resolve-manager.test.ts` — paused session never fires, resume fires on the next poll; a deferred attempt does not fire on idle once paused.
+- `auto-conflict-resolve-manager.test.ts` — paused session never fires, resume fires on the next poll; a pause while the runner is made starts nothing and sets no cooldown; a deferred attempt does not fire on idle once paused.
 - `sessions.test.ts` — the flag persists across manager instances.
 - `integration_tests/pr-ci-fix.test.ts` — route persists and clears the flag; 404 / 400.
 - `PrActionsMenu.test.tsx` — switch hidden without the setting or a remote; toggles this session only; reverts on refusal.
 - `PrLifecycleCard.test.tsx` — failure banner hidden while paused.
-- `useAttentionInfo.test.ts` — paused sessions flag a conflict / CI failure.
+- `useAttentionInfo.test.ts` — paused sessions flag a conflict / CI failure; a CI failure under auto-fix does not hide a paused conflict.
