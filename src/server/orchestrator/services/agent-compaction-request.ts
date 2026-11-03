@@ -30,7 +30,6 @@ const NOT_STARTED = loadPrompt(import.meta.url, "../prompts/agent-compaction-not
 const UNDER_MINIMUM = loadPrompt(import.meta.url, "../prompts/agent-compaction-under-minimum.md").trim();
 const COMPACTION_ACTIVITY = "Compacting context…";
 const FOLLOWUP_ACTIVITY = "Continuing after the compaction…";
-const MAX_CHARS = 4000;
 
 const SETTING = GLOBAL_SETTINGS["advanced.agentCompaction"];
 
@@ -77,12 +76,7 @@ export function recordCompactionRequest(
 function optionalText(value: unknown, label: string): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") throw new ServiceError(400, `The ${label} must be text.`);
-  const text = value.trim();
-  if (!text) return undefined;
-  if (text.length > MAX_CHARS) {
-    throw new ServiceError(400, `The ${label} is longer than ${MAX_CHARS} characters.`);
-  }
-  return text;
+  return value.trim() || undefined;
 }
 
 function canCompact(agentId: AgentId): boolean {
