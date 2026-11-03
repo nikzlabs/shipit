@@ -73,6 +73,7 @@ interface SessionRow {
   role_name: string | null;
   last_turn_errored: number;
   auto_fix_ci_paused: number;
+  auto_resolve_conflicts_paused: number;
   pinned_at: string | null;
   keep_preview_running: number;
   muted_at: string | null;
@@ -434,6 +435,7 @@ export class SessionManager {
     if (row.root_session_id) info.rootSessionId = row.root_session_id;
     if (row.last_turn_errored) info.lastTurnErrored = true;
     if (row.auto_fix_ci_paused) info.autoFixCiPaused = true;
+    if (row.auto_resolve_conflicts_paused) info.autoResolveConflictsPaused = true;
     if (row.pinned_at) info.pinnedAt = row.pinned_at;
     if (row.keep_preview_running) info.keepPreviewRunning = true;
     if (row.muted_at) info.mutedAt = row.muted_at;
@@ -1145,6 +1147,10 @@ export class SessionManager {
 
   setAutoFixCiPaused(id: string, paused: boolean): void {
     this.db.prepare("UPDATE sessions SET auto_fix_ci_paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
+  }
+
+  setAutoResolveConflictsPaused(id: string, paused: boolean): void {
+    this.db.prepare("UPDATE sessions SET auto_resolve_conflicts_paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
   }
 
   setCompactAfterMergeOff(id: string, off: boolean): void {

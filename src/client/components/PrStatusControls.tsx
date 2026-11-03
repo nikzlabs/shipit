@@ -3,6 +3,7 @@ import {
   BroomIcon,
   CaretDownIcon,
   CheckCircleIcon,
+  GitDiffIcon,
   GitMergeIcon,
   InfoIcon,
   WrenchIcon,
@@ -194,6 +195,27 @@ export function AutoFixPauseToggle({ sessionId }: { sessionId: string }) {
       enabled={!paused}
       onToggle={() => void setAutoFixCiPaused(sessionId, !paused)}
       title={paused ? "Resume CI auto-fixing for this session" : "Pause CI auto-fixing for this session"}
+    />
+  );
+}
+
+export function useAutoResolvePaused(sessionId: string): boolean {
+  return useSessionStore(
+    (s) => s.sessions.find((sess) => sess.id === sessionId)?.autoResolveConflictsPaused ?? false,
+  );
+}
+
+/** docs/338-pause-conflict-resolve-per-session — the conflict counterpart of {@link AutoFixPauseToggle}. */
+export function AutoResolvePauseToggle({ sessionId }: { sessionId: string }) {
+  const paused = useAutoResolvePaused(sessionId);
+  const setAutoResolveConflictsPaused = useSessionStore((s) => s.setAutoResolveConflictsPaused);
+
+  return (
+    <ToggleSwitch
+      label={<span className="inline-flex items-center gap-1"><GitDiffIcon size={ICON_SIZE.XS} />Auto-resolve conflicts</span>}
+      enabled={!paused}
+      onToggle={() => void setAutoResolveConflictsPaused(sessionId, !paused)}
+      title={paused ? "Resume auto-resolving conflicts for this session" : "Pause auto-resolving conflicts for this session"}
     />
   );
 }

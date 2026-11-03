@@ -70,6 +70,7 @@ interface Fixture {
   readonly runner: RunnerStub | undefined;
   setRunner: (r: RunnerStub | undefined) => void;
   setEnabled: (v: boolean) => void;
+  setPaused: (v: boolean) => void;
   changes: string[];
   cb: RecordingCb;
   advance: (ms: number) => void;
@@ -100,9 +101,11 @@ function makeFixture(opts?: {
   initialRunner?: RunnerStub | undefined;
   enabled?: boolean;
   cb?: RecordingCb;
+  paused?: boolean;
 }): Fixture {
   let time = 1_000_000;
   let enabled = opts?.enabled ?? true;
+  let paused = opts?.paused ?? false;
   let runner: RunnerStub | undefined = opts?.initialRunner ?? makeRunner(false);
   const changes: string[] = [];
   const cb = opts?.cb ?? recordingCb(() => ({ outcome: "success", forcePushed: true, didWork: true }));
@@ -112,12 +115,17 @@ function makeFixture(opts?: {
     () => enabled,
     cb,
     () => time,
+    undefined,
+    undefined,
+    undefined,
+    () => !paused,
   );
   return {
     manager,
     get runner() { return runner; },
     setRunner: (r) => { runner = r; },
     setEnabled: (v) => { enabled = v; },
+    setPaused: (v) => { paused = v; },
     changes,
     cb,
     advance: (ms) => { time += ms; },
@@ -172,6 +180,31 @@ describe("AutoConflictResolveManager", () => {
     runner.running = false;
     await fx.manager.onRunnerIdle("s1");
     expect(fx.cb.count).toBe(1);
+  });
+
+  it("docs/338 — does NOT fire while the session is paused, and fires on the next poll once resumed", async () => {
+    fx = makeFixture({ paused: true });
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+    await tick();
+    expect(fx.cb.count).toBe(0);
+    expect(fx.manager.get("s1")).toBeUndefined();
+
+    fx.setPaused(false);
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+    await tick();
+    expect(fx.cb.count).toBe(1);
+  });
+
+  it("docs/338 — a deferred attempt does not fire on idle once the session is paused", async () => {
+    const runner = makeRunner(true);
+    fx.setRunner(runner);
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+    expect(fx.manager.get("s1")?.status).toBe("deferred");
+
+    fx.setPaused(true);
+    runner.running = false;
+    await fx.manager.onRunnerIdle("s1");
+    expect(fx.cb.count).toBe(0);
   });
 
   it("5. onRunnerIdle after conflict resolved (mergeable in cache) does NOT fire", async () => {

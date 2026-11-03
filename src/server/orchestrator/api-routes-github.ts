@@ -1433,6 +1433,26 @@ export async function registerGitHubRoutes(
     },
   );
 
+  // docs/338-pause-conflict-resolve-per-session. The resolution turn is never queued, so unlike
+  // the CI pause there is no waiting turn to withdraw; an attempt already under way finishes.
+  app.post<{ Params: { id: string }; Body: { paused: boolean } }>(
+    "/api/sessions/:id/pr/auto-resolve-pause",
+    async (request, reply) => {
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      if (typeof request.body?.paused !== "boolean") {
+        reply.code(400).send({ error: "\"paused\" field is required (boolean)" });
+        return;
+      }
+      sessionManager.setAutoResolveConflictsPaused(request.params.id, request.body.paused);
+      deps.sseBroadcast("session_list", { sessions: sessionManager.list() });
+      return { paused: request.body.paused };
+    },
+  );
+
   // docs/295-compact-context-on-merge reqs 5, 16 — the composer control and the PR card menu both
   // write here; the session's viewers get the new value on `session_details`.
   app.post<{ Params: { id: string }; Body: { enabled: boolean } }>(

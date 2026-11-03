@@ -190,6 +190,19 @@ describe("SessionManager", () => {
     expect(new SessionManager(dbManager).get("sess-1")!.autoFixCiPaused).toBeUndefined();
   });
 
+  it("docs/338 req 3: autoResolveConflictsPaused defaults to false and survives a new manager", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("sess-1", "Pausable");
+    expect(mgr.get("sess-1")!.autoResolveConflictsPaused).toBeUndefined();
+
+    mgr.setAutoResolveConflictsPaused("sess-1", true);
+    expect(new SessionManager(dbManager).get("sess-1")!.autoResolveConflictsPaused).toBe(true);
+    expect(mgr.get("sess-1")!.autoFixCiPaused).toBeUndefined();
+
+    mgr.setAutoResolveConflictsPaused("sess-1", false);
+    expect(new SessionManager(dbManager).get("sess-1")!.autoResolveConflictsPaused).toBeUndefined();
+  });
+
   it("docs/322: the answer hold defaults to off and survives a new manager (req 5)", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("sess-1", "Asks");

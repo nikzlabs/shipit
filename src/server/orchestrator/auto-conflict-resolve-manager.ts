@@ -57,6 +57,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     arbiter?: RemediationArbiter,
     ensureRunner?: (sessionId: string) => Promise<SessionRunnerInterface | undefined>,
     automaticTurnsHeld?: (sessionId: string) => boolean,
+    isSessionEnabled?: (sessionId: string) => boolean,
   ) {
     super({
       name: "auto-resolve",
@@ -68,6 +69,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
       ...(arbiter ? { arbiter } : {}),
       ...(ensureRunner ? { ensureRunner } : {}),
       ...(automaticTurnsHeld ? { automaticTurnsHeld } : {}),
+      ...(isSessionEnabled ? { isSessionEnabled } : {}),
     });
     this.rebaseAndResolveCb = rebaseAndResolveCb;
   }

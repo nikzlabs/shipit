@@ -224,6 +224,7 @@ interface SessionState {
   bumpModelSelectionEcho: (sessionId: string) => void;
 
   setAutoFixCiPaused: (sessionId: string, paused: boolean) => Promise<void>;
+  setAutoResolveConflictsPaused: (sessionId: string, paused: boolean) => Promise<void>;
   /** docs/295-compact-context-on-merge reqs 5, 16 — the post-merge compaction, kept for the session. */
   setCompactAfterMerge: (sessionId: string, enabled: boolean) => Promise<void>;
 
@@ -487,6 +488,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       console.error("[session-store] Auto-fix pause toggle failed:", err);
+      patch(prev);
+    }
+  },
+
+  setAutoResolveConflictsPaused: async (sessionId, paused) => {
+    const patch = (value: boolean) =>
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === sessionId ? { ...s, autoResolveConflictsPaused: value } : s,
+        ),
+      }));
+    const prev = get().sessions.find((s) => s.id === sessionId)?.autoResolveConflictsPaused ?? false;
+    patch(paused);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pr/auto-resolve-pause`, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ paused }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        console.error("[session-store] Auto-resolve pause toggle failed:", data.error);
+        patch(prev);
+      }
+    } catch (err) {
+      console.error("[session-store] Auto-resolve pause toggle failed:", err);
       patch(prev);
     }
   },

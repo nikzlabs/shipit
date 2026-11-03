@@ -856,6 +856,10 @@ export function createPrStatusPoller(
       if (!runner) {
         return { outcome: "deferred", lastError: "no_runner", didWork: false };
       }
+      // Paused while the manager awaited a runner; the pause gate ran before that await.
+      if (sessionManager.get(sessionId)?.autoResolveConflictsPaused) {
+        return { outcome: "deferred", lastError: "paused", didWork: false };
+      }
       // `new GitManager(dir)` throws SYNCHRONOUSLY from simple-git's
       // gitInstanceFactory when the directory is absent, and the disk janitor
       // reclaims an idle session's tree routinely (docs/161). Outside this

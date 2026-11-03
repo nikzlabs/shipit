@@ -115,6 +115,18 @@ describe("computeAttentionReason", () => {
         ),
       ).toBe("CI fix failed after 3 attempts");
     });
+
+    it("docs/186 — notifies when auto-fix is on but paused for this session", () => {
+      expect(
+        computeAttentionReason(
+          inputs({
+            autoFixEnabled: true,
+            autoFixPaused: true,
+            card: card({ checks: FAILURE, autoFix: { status: "idle", attemptCount: 0, maxAttempts: 3 } }),
+          }),
+        ),
+      ).toBe("CI checks failed");
+    });
   });
 
   describe("merge conflict", () => {
@@ -150,6 +162,19 @@ describe("computeAttentionReason", () => {
           }),
         ),
       ).toBe("Conflict resolution failed after 3 attempts");
+    });
+
+    it("docs/338 — notifies when auto-resolve is on but paused for this session", () => {
+      expect(
+        computeAttentionReason(
+          inputs({
+            autoResolveEnabled: true,
+            autoResolvePaused: true,
+            status: conflicting,
+            card: card({ autoResolve: { status: "deferred", attemptCount: 1, maxAttempts: 3 } }),
+          }),
+        ),
+      ).toBe("PR has merge conflicts");
     });
 
     it("still notifies on conflict when auto-merge is on but auto-resolve is off", () => {
@@ -414,5 +439,12 @@ describe("runAttentionReason", () => {
   it("marks a run's question for the background-work rule, and only a run's", () => {
     expect(rowAttentionInputs(row({ awaitingAnswer: true }), false).runAwaitingAnswer).toBe(true);
     expect(rowAttentionInputs(row({ scheduleId: undefined, awaitingAnswer: true }), false).runAwaitingAnswer).toBe(false);
+  });
+
+  it("carries the session's own auto-fix and auto-resolve pauses", () => {
+    expect(rowAttentionInputs(row({ autoResolveConflictsPaused: true }), false))
+      .toMatchObject({ autoResolvePaused: true, autoFixPaused: false });
+    expect(rowAttentionInputs(row({ autoFixCiPaused: true }), false))
+      .toMatchObject({ autoResolvePaused: false, autoFixPaused: true });
   });
 });
