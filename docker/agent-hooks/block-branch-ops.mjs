@@ -130,9 +130,8 @@ function offends(seg) {
     }
     return null;
   }
-  if (sub === "worktree" && rest[0] === "add") {
-    return "`git worktree add` creates a separate branch/worktree";
-  }
+  // `git worktree add` is allowed: it leaves this checkout on the session
+  // branch, and parallel agents need their own trees (docs/130-block-branch-ops).
   return null;
 }
 

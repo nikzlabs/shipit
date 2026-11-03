@@ -14,6 +14,15 @@ repository for branches, PRs, and CI.
   your work off the branch ShipIt is tracking. ShipIt enforces this — branch
   create/switch commands are blocked before they run, so just stay on the
   current branch and run your `git` / `gh` commands there.
+- **Git worktrees are allowed**, so parallel agents can each work in their own
+  tree: `git worktree add -b <name> <path>`, or your harness's own worktree
+  isolation. This checkout stays on the session branch. ShipIt commits and
+  pushes only `/workspace`, so a worktree's work ships only after you merge its
+  branch into the session branch (`git merge <name>`). Worktree branches stay
+  local; nothing pushes them. ShipIt keeps `.claude/worktrees/` out of its
+  auto-commit; a worktree elsewhere inside `/workspace` would be committed as an
+  embedded repository, so put it there or outside the repo (`/persist` survives
+  a container restart, `/tmp` does not).
 
 ## Auto-push
 

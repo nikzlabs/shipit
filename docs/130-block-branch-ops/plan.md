@@ -50,10 +50,23 @@ PreToolUse JSON envelope on stdin and:
     (a plain switch moves off the session branch)
   - `git branch <name>` without a delete (`-d`/`-D`/`--delete`) or list
     (`--list`, `-a`, `--merged`, `--contains`, …) flag — i.e. create / rename / move
-  - `git worktree add`
 - Allows everything else, including `git checkout -- <file>` (discard
-  changes), `git branch` / `git branch -a` (list), and `git branch -d`
-  (delete).
+  changes), `git branch` / `git branch -a` (list), `git branch -d`
+  (delete), and `git worktree add`.
+
+**Why `git worktree add` is allowed (2026-11-03).** It was refused at first,
+which also stopped agents in one session from working in parallel, each in its
+own tree. It does not strand work the way a branch switch does: the main
+checkout stays on the session branch, and work in a worktree reaches the PR
+only when the agent merges it back, which the agent prompt (`git-workflow.md`)
+and `shipit-docs/github.md` say. The one new hazard is auto-commit's
+`git add -A`, which stages a worktree inside `/workspace` as an embedded
+repository (a `160000` gitlink). Claude's worktree tools put their trees under
+`.claude/worktrees/`, so `ensureWorkspaceGitExcluded` (`shared/git.ts`) adds
+that path to `.git/info/exclude` beside `.pnpm-store/`. A worktree the agent
+places elsewhere in the repo is not covered; the docs tell it where to put one.
+`git checkout` / `git switch` inside a worktree are still judged by the rules
+above, because the hook cannot tell which tree a command runs in.
 
 It's a heuristic, not a shell parser: exotic quoting can slip a false
 negative through, which is acceptable. False positives are avoided by

@@ -112,7 +112,6 @@ describe("block-branch-ops.mjs", () => {
       "git switch main",
       "git branch feature/foo",
       "git branch -f feature/foo origin/main",
-      "git worktree add ../wt -b feature/foo",
       'echo hi && git checkout -b feature/foo',
       "git add -A; git checkout -b feature/foo; git commit -m x",
       "git status | cat && git switch -c feature/foo",
@@ -155,6 +154,10 @@ describe("block-branch-ops.mjs", () => {
       "git add -A && git commit -m wip",
       "npm test",
       "git switch",
+      "git worktree add ../wt -b feature/foo",
+      "git worktree add --detach .claude/worktrees/a",
+      "git worktree list",
+      "git worktree remove ../wt",
     ];
     for (const command of allowed) {
       it(`allows: ${command}`, () => {
