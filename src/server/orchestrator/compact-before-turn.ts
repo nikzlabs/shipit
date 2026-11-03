@@ -11,6 +11,7 @@ import {
 } from "./services/pre-turn-merge-recheck.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS } from "../shared/compaction-threshold.js";
 import { emitNoticePostTurn } from "./chat-card-persistence.js";
 import type { PersistedMessage } from "./chat-history.js";
 
@@ -22,17 +23,6 @@ export const POST_MERGE_COMPACTION_INSTRUCTIONS =
   + "short statement of what it changed, and drop its step-by-step implementation detail.";
 
 export const POST_MERGE_COMPACT_PROMPT = `/compact ${POST_MERGE_COMPACTION_INSTRUCTIONS}`;
-
-/** docs/295 req 15 — under this, a continuation with nobody at the composer is not compacted. */
-export const UNATTENDED_COMPACTION_FLOOR_TOKENS = 50_000;
-
-/**
- * docs/295 req 15 — ShipIt started the turn (`unattended`, every wake) or the browser's own
- * automation did (`automatic`): the composer's tick boxes were in front of nobody.
- */
-export function startedUnattended(opts: { unattended?: boolean; automatic?: boolean }): boolean {
-  return opts.unattended === true || opts.automatic === true;
-}
 
 export const MISSED_COMPACTION_NOTICE =
   "The context was not compacted; the agent continues with the context as it was.";
@@ -54,12 +44,10 @@ export interface CompactBeforeTurnArgs {
   sessionDir: string;
   /** Requeued messages use false to prevent a second compaction. Absent: the session's own choice. */
   intent?: boolean;
-  /** docs/295 req 15 — no user is at the composer for this turn, so none could untick it. */
-  unattended?: boolean;
 }
 
 export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Promise<boolean> {
-  const { deps, runner, agentId, sessionId, sessionDir, intent, unattended } = args;
+  const { deps, runner, agentId, sessionId, sessionDir, intent } = args;
   // An untick answers this merge's compaction offer too, so it still reaches the record below.
   // The session's own choice is that untick, kept for every turn (docs/295 reqs 5, 17). A send
   // carries a value only while the user's last click is still being saved, so that value wins.
@@ -70,16 +58,15 @@ export async function shouldCompactBeforeTurn(args: CompactBeforeTurnArgs): Prom
   if (!deps.getAutoResetMergedBranch()) return false;
   if (!(getAgentCapabilities(agentId)?.supportsCompaction ?? false)) return false;
 
-  // Not recorded against the merge: nothing was offered, so nothing is spent.
-  if (unattended) {
-    const context = deps.getContextTokens(sessionId);
-    if (context !== undefined && context < UNATTENDED_COMPACTION_FLOOR_TOKENS) {
-      console.log(
-        `[compact-before-turn] skipping for ${sessionId}: an unattended turn, and the context `
-        + `is ${context} tokens (floor ${UNATTENDED_COMPACTION_FLOOR_TOKENS})`,
-      );
-      return false;
-    }
+  // docs/295 req 15, also with the box ticked; an unknown size compacts. Not recorded against
+  // the merge: nothing is spent.
+  const context = deps.getContextTokens(sessionId);
+  if (context !== undefined && context < AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS) {
+    console.log(
+      `[compact-before-turn] skipping for ${sessionId}: the context is ${context} tokens `
+      + `(minimum ${AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS})`,
+    );
+    return false;
   }
 
   if (!unticked) {

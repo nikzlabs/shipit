@@ -169,7 +169,11 @@ Four rules govern it.
 **One card, one change — and the whole of that change.** A card that carried two
 changes could only be applied whole, and per-change failure gives that away
 anyway. Propose the change that unblocks the work; if a second one is needed,
-that is a second card. Some single changes move more than the field they are
+that is a second card — and when both change the same stored value (one
+setting, one role, one MCP server; the session and weekly failover cutoffs of
+one service are one stored pair), post the second after the first is applied,
+because applying one makes the other `stale`. Separate list entries, such as two egress hosts, do not
+conflict. Some single changes move more than the field they are
 named after: a role's model is a tuple, so picking one can move the role's
 harness and drop a reasoning level the new model does not offer. That is still
 one change, and the card shows those fields too — you do not propose them

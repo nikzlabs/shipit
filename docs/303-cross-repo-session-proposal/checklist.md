@@ -56,3 +56,15 @@
 - [x] Independent review, two passes (applied: recovery removes no session; the
       evidence is the card's prompt, not any message; a write that finds no card
       fails the spawn; work under way is checked before "not this card's")
+
+## The target runs the proposing session's role (req 13)
+
+- [x] The start route inherits the role; `verbatimPrompt` keeps the card's prompt as the first message
+- [x] The brief reaches the target's first turn outside the transcript (`originRoleName` left for that turn)
+- [x] The role name is written before graduation, so the first sidebar row already names it
+- [x] Integration test: the role name in that row, the brief in the agent's prompt, the prompt as the first message
+- [x] `sessions.md` and the chat wiki say the target starts on the proposing session's role
+- [x] lint:dev + typecheck clean
+- [x] Independent review against req 13, two passes (applied: the start route drops a
+      `target` that was the default; a role deleted before the click gives a start with
+      no role, which the user chose over a refusal)

@@ -62,7 +62,7 @@ known here. And a **⋮** menu:
 | **Auto-merge** switch | Only when the pull request is *not* open — while it is open the switch is on the card itself. Before one exists it arms in advance, and ShipIt applies it the moment the pull request opens |
 | **Auto-fix CI** switch | Only when the workspace auto-fix setting is on. Off here pauses auto-fixing for this session alone. A fix turn that is still waiting to start is removed; one already running finishes |
 | **Compact after merge** switch | When *"Start from the latest base after a merge"* is on and the session's harness can compact. The same choice as the composer's **Compact the context** box, kept for this session: off here, no turn of this session compacts after a merge |
-| **Sync with `<base>`** | Whenever the session has a remote. Rebases onto the base; on a session whose pull request already merged it resets the branch to the base instead |
+| **Sync with `<base>`** | Whenever the session has a remote. Rebases onto the base; on a session whose pull request already merged it resets the branch to the base instead. When no turn runs, a `.git/index.lock` older than ten minutes is removed as stale and the rebase runs once more |
 | **Copy branch name** | Whenever the branch is known |
 | **Close pull request** | Only while the pull request is open. Two clicks — the second confirms |
 
@@ -316,9 +316,14 @@ button on a ShipIt card, and a message that a page you built sends through
 `window.shipit`. A turn that starts with nobody at the composer — a wake after a
 merge, a message from another session — has no tick to read, so the setting
 decides and it resets and compacts — unless the session's compaction choice is
-off, which holds for these turns too. One more exception: such a turn does not
-compact a context under 50,000 tokens, so a session that was compacted not long
-before is only reset.
+off, which holds for these turns too.
+
+No continuation compacts a context under 200,000 tokens — not even one sent
+with **Compact the context** ticked. The box is still shown, with a hint under
+it that says so, and the branch is still reset; only the compaction is left
+out. Under that size, the context is compacted only when the user asks for it:
+they send `/compact`, or they ask you to compact and you run
+`shipit compact --user-asked`.
 
 The context is compacted at most once for each merge: after a message
 compacted it, or was sent with **Compact the context** unticked, that box does

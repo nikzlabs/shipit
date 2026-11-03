@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isOpenCodeHarness } from "../../shared/opencode-harness.js";
 import type { AgentId, AgentRequestUsage, NonTurnFailureCard } from "../../shared/types.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { UsageManager } from "../usage.js";
@@ -491,11 +492,11 @@ async function runNonTurnSpawn(
   const { sessionId, purpose, target, runner } = args;
   const spawnId = randomUUID();
   const credentialsDir = deps.credentialsDir;
-  const provisioned = (runner instanceof ContainerSessionRunner || target.harnessId === "opencode") && !!credentialsDir;
+  const provisioned = (runner instanceof ContainerSessionRunner || isOpenCodeHarness(target.harnessId)) && !!credentialsDir;
   const accountId = target.route?.kind === "account" ? target.route.id : undefined;
   try {
     // Provision inside try so a partial failure still releases the home.
-    if (target.harnessId === "opencode" && accountId && deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", accountId)) throw new Error("ChatGPT account renewal failed.");
+    if (isOpenCodeHarness(target.harnessId) && accountId && deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", accountId)) throw new Error("ChatGPT account renewal failed.");
     // A private home for each run, as in runSubAgent: runs that share one home break each other's CLI state.
     if (provisioned && credentialsDir) {
       provisionSubAgentSpawnHome(credentialsDir, sessionId, spawnId, target.harnessId, accountId);

@@ -936,9 +936,22 @@ before or after the HTTP history it contradicts.
 request time, so history is the single attach-time source and there is no race
 left to lose.
 
-**Residual, accepted.** `BackgroundTaskTracker` decays a non-zero count after
-its TTL through the getter alone, with no mutation to announce. A marker can
-therefore outlive the tracker's own honoring of it by up to one window in a
-browser that stays connected. The decay only fires when events stopped arriving
-entirely — the liveness gate catches the ordinary process-death case first — and
-the connect snapshot corrects it.
+**The expiry is announced (planning#710).** The decay first worked through the
+getter alone, with no mutation to announce, so an open chat kept "Waiting for:
+…" after the tracker had stopped honoring it. `BackgroundTaskTracker` now keeps
+one timer, armed only while its list is not empty and restarted by each list
+update. At the TTL it calls the runner, which clears the list through
+`clearBackgroundTasks()` — the same path a kill site takes. A clear that drops
+a list sends the WS `background_tasks` message (with the consults that still
+run, else count 0) as well as the SSE announcement, because `session_attention`
+updates the sidebar and not the open chat's row; `clearResidentProcessState`
+already did this. The announcement also releases a turn queued behind the work,
+which the getter alone never did.
+
+A streaming turn that starts on a new process clears the list first
+(`executeAgentTurn`, unless it reuses the resident or adopts a turn; a one-shot
+turn already counts no tasks). Several
+paths kill a resident and drop it from the slot without clearing its list — a
+quota or account failover, a credential change, an answer that replaces a
+one-shot process — and the new turn's `isStreamingActive = true` made the dead
+process's tasks count again.

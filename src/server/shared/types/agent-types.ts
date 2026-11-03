@@ -3,7 +3,7 @@ import type { ImageAttachment, PermissionMode } from "./attachment-types.js";
 import type { ApiStyle, BillingMode, CredentialTarget } from "../catalogue/types.js";
 import type { McpServerConfig, McpServerStatus, ServiceMcpServer } from "./mcp-types.js";
 
-export type AgentId = "claude" | "codex" | "opencode" | "grok" | "antigravity";
+export type AgentId = "claude" | "codex" | "opencode" | "opencode2" | "grok" | "antigravity";
 
 export const CLAUDE_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded"];
 
@@ -179,6 +179,11 @@ export interface AgentCapabilities {
   supportsSteering: boolean;
   /** Resolve through the registry, not proxy defaults. Absent is false; late output alone is not a new turn. */
   startsOwnTurns?: boolean;
+  /**
+   * The CLI echoes every prompt back when it reads it (`agent_user_replay`). Resolve through
+   * the registry; no adapter declares it. Absent is false.
+   */
+  echoesPrompt?: boolean;
   supportsCompaction: boolean;
   /**
    * docs/007 — the CLI can start a conversation from a message of a stored one (`resumeAt`).
@@ -287,6 +292,10 @@ export interface AgentResultEvent {
   error?: string;
   /** Classifier denials only, not model self-refusals. */
   permissionDenials?: { toolName: string; toolUseId?: string; toolInput?: unknown }[];
+  /** Model calls the turn made: 0 when the CLI answered by itself. Absent where the harness does not say. */
+  numTurns?: number;
+  /** What the CLI answered when it was not a prompt, such as "task-notification". */
+  origin?: string;
 }
 
 /** One model call's tokens, disjoint like `AgentResultEvent.tokens`. */
@@ -353,6 +362,11 @@ export interface AgentPermissionResolvedEvent {
   requestId: string;
   behavior: "allow" | "deny";
   remembered?: boolean;
+  /**
+   * The agent stopped waiting before anyone answered: the gated call got its result, or Codex
+   * withdrew it. `waitedMs` is the broker's measured wait; a worker image older than it sends none.
+   */
+  callEnded?: { summary: string; waitedMs?: number };
 }
 
 export interface PermissionDecision {

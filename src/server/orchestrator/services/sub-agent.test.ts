@@ -52,6 +52,7 @@ interface FakeSession {
   serviceId?: string;
   billingMode?: "sub" | "key";
   model?: string;
+  kind?: "ops" | "sandbox";
 }
 
 function explicit(
@@ -651,6 +652,17 @@ describe("runSubAgent — happy path", () => {
     label: id,
     createdAt: 0,
     updatedAt: 0,
+  });
+
+  // The branch-block hook exempts a sandbox session; without the flag a spawn there would be refused.
+  it("marks the spawn of a sandbox session as sandbox, and no other", async () => {
+    const sandboxed = makeDeps({ session: { id: "s1", agentId: "claude", agentPinned: true, kind: "sandbox" } });
+    await runSubAgent(sandboxed.deps, "s1", { target: explicit("codex"), prompt: "review this", depth: 0 });
+    expect(sandboxed.runner.spawnSubAgent).toHaveBeenCalledWith(expect.objectContaining({ sandbox: true }));
+
+    const plain = makeDeps({});
+    await runSubAgent(plain.deps, "s1", { target: explicit("codex"), prompt: "review this", depth: 0 });
+    expect(plain.runner.spawnSubAgent).toHaveBeenCalledWith(expect.not.objectContaining({ sandbox: expect.anything() }));
   });
 
   it("passes the consult's request list to its usage row (docs/329-tiered-model-pricing)", async () => {

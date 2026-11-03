@@ -30,6 +30,13 @@ import {
   restorePluginSkills,
   retryClearingPluginSkills,
 } from "./plugin-skill-clearing.js";
+import {
+  formatLockAge,
+  isStaleIndexLockKept,
+  retryRemovingStaleIndexLock,
+  STALE_INDEX_LOCK_MS,
+  type IndexLockState,
+} from "./stale-index-lock.js";
 import { withWorkspaceLock } from "./marketplace.js";
 import { getErrorMessage } from "../validation.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
@@ -224,14 +231,16 @@ export function buildSyncFailureNotice(
   baseBranch: string,
   errorMessage: string,
   rebaseInProgress: boolean | null,
+  indexLock: IndexLockState | null = null,
 ): string {
   const leftover = rebaseLeftoverText(rebaseInProgress);
+  if (indexLock) return indexLockNotice(baseBranch, indexLock, leftover);
   const paths = untrackedOverwritePaths(errorMessage);
   if (paths && paths.length > 0) {
     return `Sync with \`${baseBranch}\` failed: a commit being replayed adds files at paths where this `
       + "workspace already has untracked files, and git will not overwrite them. These are usually files "
       + `this branch ignores but \`${baseBranch}\` does not, such as build caches: ${formatPathList(paths)}. `
-      + `${leftover ?? "Your branch was not changed by ShipIt."} To sync, delete those `
+      + `${leftover ?? "The rebase did not change your branch."} To sync, delete those `
       + "files if they can be regenerated, squash this branch so the commit that adds them and the later one "
       + `that stops tracking them cancel out, or add the ignore rule to \`${baseBranch}\` first.`;
   }
@@ -239,12 +248,27 @@ export function buildSyncFailureNotice(
   if (dirs && dirs.length > 0) {
     return `Sync with \`${baseBranch}\` failed: the rebase replaces ${formatPathList(dirs)} with a file or symlink, `
       + "and git will not delete the untracked files still inside. They are usually ignored files, which "
-      + `\`git status\` does not show. ${leftover ?? "Your branch was not changed by ShipIt."} To sync, move or `
+      + `\`git status\` does not show. ${leftover ?? "The rebase did not change your branch."} To sync, move or `
       + "delete those files, then sync again.";
   }
   const summary = summarizeGitError(errorMessage).replace(/[.:]$/, "");
-  const state = leftover ?? "Your branch was not changed by ShipIt; check the workspace state and try again.";
+  const state = leftover ?? "The rebase did not change your branch; check the workspace state and try again.";
   return `Sync with \`${baseBranch}\` failed: ${summary}. ${state}`;
+}
+
+function indexLockNotice(baseBranch: string, lock: IndexLockState, leftover: string | null): string {
+  const unchanged = leftover ?? "The rebase did not change your branch.";
+  const found = `Sync with \`${baseBranch}\` failed: git found this workspace's index lock, \`.git/index.lock\``;
+  if (lock.ageMs === null) return `${found}, and it was gone when ShipIt looked again. ${unchanged} Sync again.`;
+  const intro = `${found} (${formatLockAge(lock.ageMs)} old). A git command is still running, or one stopped `
+    + `without removing the lock. ${unchanged}`;
+  const deleteIt = "If no git command is running in this workspace, delete that file, then sync again.";
+  if (lock.removeError) return `${intro} ShipIt could not remove this stale lock (${lock.removeError}). ${deleteIt}`;
+  if (lock.ageMs < STALE_INDEX_LOCK_MS) {
+    return `${intro} ShipIt removes the lock only once it is ${formatLockAge(STALE_INDEX_LOCK_MS)} old, so that `
+      + `it does not stop a running command. Wait for the command to finish, then sync again. ${deleteIt}`;
+  }
+  return `${intro} ${deleteIt}`;
 }
 
 // The container's file watcher may miss a rewrite from the orchestrator.
@@ -366,6 +390,37 @@ export function syncFailureAlreadyExplained(err: unknown): boolean {
   );
 }
 
+/** A step that failed after the rebase had already rewritten the branch. */
+export interface PostRebaseFailure {
+  step: string;
+  forcePushed: boolean;
+}
+
+const POST_REBASE_FAILURE = Symbol("shipit.postRebaseFailure");
+
+function markPostRebaseFailure<T>(err: T, failure: PostRebaseFailure): T {
+  if (err !== null && typeof err === "object") {
+    Object.defineProperty(err, POST_REBASE_FAILURE, { value: failure, enumerable: false, configurable: true });
+  }
+  return err;
+}
+
+export function postRebaseFailureOf(err: unknown): PostRebaseFailure | null {
+  if (err === null || typeof err !== "object") return null;
+  return ((err as Record<symbol, unknown>)[POST_REBASE_FAILURE] as PostRebaseFailure | undefined) ?? null;
+}
+
+export function buildPostRebaseFailureNotice(
+  baseBranch: string,
+  failure: PostRebaseFailure,
+  errorMessage: string,
+): string {
+  const pushed = failure.forcePushed ? " and force-pushed it" : "";
+  const summary = summarizeGitError(errorMessage).replace(/[.:]$/, "");
+  return `Sync with \`${baseBranch}\` rebased this branch onto \`${baseBranch}\`${pushed}, but a later step `
+    + `failed: ${failure.step} (${summary}). The rebase is done and was not undone.`;
+}
+
 function unreadableReason(detail: string): string {
   return (
     `git cannot read \`${detail}\` in this workspace, so a rebase would rewrite the `
@@ -448,6 +503,8 @@ export async function runRebaseFlow(
   const hold = new RebaseRunnerHold(runner);
   let published = false;
   let pushProhibited = false;
+  // From here a failure must not be reported as a sync that left the branch unchanged.
+  let rebaseConcluded = false;
   let savedCommit: string | null = null;
   // Our sweep removes them where git 2.39 refuses; newer git deletes ignored files itself.
   let pluginSkillsBefore: string[] = [];
@@ -500,10 +557,15 @@ export async function runRebaseFlow(
       }
       worktreeRewritten = true;
       pluginSkillsBefore = presentPluginSkillCopies(runner.sessionDir);
-      return retryClearingPluginSkills(git, runner.sessionDir, () => git.rebase(baseRef));
+      return retryRemovingStaleIndexLock(
+        runner.sessionDir,
+        () => runner.running,
+        () => retryClearingPluginSkills(git, runner.sessionDir, () => git.rebase(baseRef)),
+      );
     });
 
     if (result.status === "clean") {
+      rebaseConcluded = true;
       // Nothing refreshed the lease since the flow started; fetch and rebase alone can
       // outrun POST_TURN_HOLD_MAX_MS on a large repo.
       hold.take();
@@ -591,6 +653,7 @@ export async function runRebaseFlow(
       }
     }
 
+    rebaseConcluded = true;
     hold.take();
     reevaluateSessionAfterRewrite(runner);
     const resolvedPushOutcome = await tryForcePush(deps, baseBranch);
@@ -624,7 +687,12 @@ export async function runRebaseFlow(
         }
         : {}),
     };
+  } catch (err) {
+    throw rebaseConcluded
+      ? markPostRebaseFailure(err, { step: "finishing the sync after the rebase", forcePushed: published })
+      : err;
   } finally {
+    let cleanupStep = "cleaning up after the rebase";
     // Released last, so a throw in this teardown cannot strand the lease. Re-taken
     // first: restoreLfsForSync's own begin/end would otherwise zero an expired depth
     // and then drop it, leaving the handback and the queue drain uncovered.
@@ -660,13 +728,18 @@ export async function runRebaseFlow(
           }
         }
       }
+      cleanupStep = "handing the workspace files back to the session";
       handWorkspaceBackToWorker(runner.sessionDir);
+      cleanupStep = "cleaning up after the rebase";
       // After the handback, since the worker may write into a root the rebase created; before
       // the queue drains, since a turn started now would spawn without the skills.
       if (pluginSkillCopiesGone(pluginSkillsBefore)) {
         hold.take();
         await restorePluginSkills(runner);
       }
+    } catch (err) {
+      // eslint-disable-next-line no-unsafe-finally -- the cleanup's own error, which left this `finally` before; only annotated
+      throw rebaseConcluded ? markPostRebaseFailure(err, { step: cleanupStep, forcePushed: published }) : err;
     } finally {
       try {
         // In a `finally` of its own, so a throw in the cleanup above cannot leave the session
@@ -1108,7 +1181,7 @@ export async function runAutoResolveAttempt(
       if (!didSpawn) {
         const lastError = autoResolveFailureText(runner, "rebase flow", err);
         // A free deferral of a refusal git repeats every time retries forever, and silently.
-        return isUntrackedFilesRefusal(getErrorMessage(err))
+        return isUntrackedFilesRefusal(getErrorMessage(err)) || isStaleIndexLockKept(err)
           ? { outcome: "error", lastError, didWork: true }
           : { outcome: "deferred", lastError, didWork: false };
       }

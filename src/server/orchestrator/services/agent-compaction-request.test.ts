@@ -35,7 +35,8 @@ function makeSessionManager(request?: PendingCompaction, agentId = "claude") {
     setPendingCompaction: (_id: string, value: PendingCompaction | null) => { state.request = value ?? undefined; },
     dropPendingCompactionNote: () => {
       if (state.request?.note === undefined) return;
-      state.request = state.request.instructions !== undefined ? { instructions: state.request.instructions } : {};
+      const { note: _dropped, ...kept } = state.request;
+      state.request = kept;
     },
     appendPendingCompactionNotice: (_id: string, notice: string) => { state.notices.push(notice); },
   } as unknown as SessionManager;
@@ -44,7 +45,10 @@ function makeSessionManager(request?: PendingCompaction, agentId = "claude") {
 
 let runner: SessionRunnerInterface | undefined;
 
-function setup(request: PendingCompaction | undefined, opts: { agentId?: string; enabled?: boolean } = {}) {
+function setup(
+  request: PendingCompaction | undefined,
+  opts: { agentId?: string; enabled?: boolean; context?: number } = {},
+) {
   const { manager, state } = makeSessionManager(request, opts.agentId);
   const runnerRegistry = new SessionRunnerRegistry();
   runner = runnerRegistry.getOrCreate(SESSION, "/tmp/ws", "claude");
@@ -69,6 +73,7 @@ function setup(request: PendingCompaction | undefined, opts: { agentId?: string;
       append: (_sid: string, msg: { text?: string }) => { userNotices.push(msg.text ?? ""); },
     },
     isEnabled: () => opts.enabled ?? true,
+    getContextTokens: () => opts.context,
   };
   const turn = {
     sessionId: SESSION,
@@ -98,6 +103,16 @@ describe("recordCompactionRequest", () => {
     expect(state.request).toEqual({ instructions: "keep A", note: "start B" });
     expect(recordCompactionRequest(deps, SESSION, {})).toEqual({ requested: true, continues: false });
     expect(state.request).toEqual({});
+  });
+
+  it("stores that the user asked, and only a true value (req 13)", () => {
+    const { manager, state } = makeSessionManager();
+    const deps = { sessionManager: manager, defaultAgentId: "claude" as const, isEnabled: () => true };
+    recordCompactionRequest(deps, SESSION, { userAsked: true });
+    expect(state.request).toEqual({ userAsked: true });
+    recordCompactionRequest(deps, SESSION, { userAsked: false });
+    expect(state.request).toEqual({});
+    expect(() => recordCompactionRequest(deps, SESSION, { userAsked: "yes" })).toThrow(ServiceError);
   });
 
   it("refuses a harness that cannot compact, and records nothing (req 7)", () => {
@@ -235,6 +250,46 @@ describe("runRequestedCompaction — the compaction turn", () => {
     expect(userNotices).toContain(MISSED_COMPACTION_NOTICE);
     expect(state.notices).toHaveLength(1);
     expect(state.notices[0]).toContain(buildContinuationPrompt("start B"));
+  });
+
+  it("compacts nothing under 200K tokens, tells the agent, and does not warn the user (req 12)", async () => {
+    const { deps, state, turn, prompts, userNotices } = setup({ instructions: "keep A" }, { context: 199_999 });
+    await runRequestedCompaction(deps, turn);
+    await flushTurn();
+    expect(prompts).toHaveLength(0);
+    expect(state.request).toBeUndefined();
+    expect(userNotices).toEqual([]);
+    expect(state.notices).toHaveLength(1);
+    expect(state.notices[0]).toContain("199,999 tokens");
+    expect(state.notices[0]).not.toContain(buildInstructionsNotice("keep A"));
+  });
+
+  it("under 200K tokens, a note still starts the agent's next turn, with no compaction (req 8, 12)", async () => {
+    const { deps, state, turn, prompts, compactFlags } = setup({ note: "start B" }, { context: 199_999 });
+    await runRequestedCompaction(deps, turn);
+    await waitForTurn(() => prompts.length === 1, "continuation spawn");
+    expect(compactFlags[0]).toBeFalsy();
+    expect(prompts[0]).toContain("199,999 tokens");
+    expect(prompts[0]).toContain(buildContinuationPrompt("start B"));
+    expect(state.notices).toHaveLength(0);
+  });
+
+  it("compacts under 200K tokens when the user asked for it (req 13)", async () => {
+    const { deps, state, turn, prompts, userNotices } = setup(
+      { instructions: "keep A", userAsked: true }, { context: 1_000 },
+    );
+    await runRequestedCompaction(deps, turn);
+    await waitForTurn(() => prompts.length === 1, "compaction spawn");
+    expect(prompts[0]?.startsWith("/compact keep A")).toBe(true);
+    expect(state.notices).toEqual([buildInstructionsNotice("keep A")]);
+    expect(userNotices).toEqual([]);
+  });
+
+  it("compacts at 200K tokens", async () => {
+    const { deps, turn, prompts } = setup({}, { context: 200_000 });
+    await runRequestedCompaction(deps, turn);
+    await waitForTurn(() => prompts.length === 1, "compaction spawn");
+    expect(prompts[0]?.trim()).toBe("/compact");
   });
 
   it("re-checks the harness: one that can no longer compact never receives /compact (req 6)", async () => {

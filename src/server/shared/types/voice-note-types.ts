@@ -6,7 +6,7 @@ export interface VoiceNoteContext {
   sessionName?: string;
 }
 
-export type VoiceNoteSource = "authored" | "ask" | "plan";
+export type VoiceNoteSource = "authored" | "ask" | "plan" | "permission";
 
 /** Every note asks for user attention; summary is a short spoken headline. */
 export interface VoiceNotePayload {

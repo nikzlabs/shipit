@@ -3,7 +3,7 @@ import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import { isLiveMergeWatch, type SessionManager } from "../sessions.js";
 import { addUnreportedPr, unreportedPrs, withUnreportedPrs } from "../merge-watch-prs.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
-import { REPOSITORY_UNTRUSTED_CODE } from "../session-runner.js";
+import { REPOSITORY_UNTRUSTED_CODE, isAgentWorking } from "../session-runner.js";
 import { parseGitHubRemote, stripUrlCredentials } from "../git-utils.js";
 import type {
   SessionInfo,
@@ -98,7 +98,7 @@ function isChildLive(
   seen.add(child.id);
   const runner = runnerRegistry.get(child.id);
   const busy = runner?.agentBusy === true || (runner?.queueLength ?? 0) > 0;
-  if (busy || !isSessionDone(child, { hasUnfinishedDescendant: false })) return true;
+  if (!isSessionDone(child, { hasUnfinishedDescendant: false, agentWorking: busy })) return true;
   return sessionManager.findChildren(child.id)
     .some((grandchild) => isChildLive(sessionManager, runnerRegistry, grandchild, seen));
 }
@@ -152,6 +152,11 @@ export interface SpawnChildSessionOptions {
   repoUrlOverride?: string;
   /** No parent/root linkage; the originating turn still counts toward the spawn cap. */
   detached?: boolean;
+  /**
+   * Send the prompt unchanged: the role's standing instructions reach the agent with the
+   * first turn, outside the transcript, as for a session the user starts on a role.
+   */
+  verbatimPrompt?: boolean;
   /**
    * Called once the child exists and before anything is sent to it, so a caller can record
    * the id durably. A throw fails the spawn and the child is removed.
@@ -274,7 +279,7 @@ async function claimAndStartChild(
   if (!task) {
     throw new ServiceError(400, "prompt is required");
   }
-  const trimmedPrompt = roleForChild
+  const trimmedPrompt = roleForChild && !opts.verbatimPrompt
     ? joinRolePrompt(task, roleForChild, ROLE_PROMPT_LIMITS.child)
     : task;
   if (trimmedPrompt.length > ROLE_PROMPT_LIMITS.child) {
@@ -494,6 +499,9 @@ async function claimAndStartChild(
     const options = getAgentCapabilities(childAgentId)?.reasoning?.options;
     return options?.some((o) => o.value === level) ? level : undefined;
   })();
+  // Before graduation, whose session-list broadcast is what the child's composer reads.
+  // The live role can later clear; originRoleName remains the creation record.
+  if (roleForChild?.roleName) sessionManager.setRoleName(newSessionId, roleForChild.roleName);
   graduateSession(graduationDeps, {
     sessionId: newSessionId,
     userText: trimmedPrompt,
@@ -504,13 +512,11 @@ async function claimAndStartChild(
     ...(selection.serviceId ? { serviceId: selection.serviceId } : {}),
     ...(selection.billingMode ? { billingMode: selection.billingMode } : {}),
     ...(inheritedReasoning ? { reasoning: inheritedReasoning } : {}),
-    ...(roleForChild?.roleName ? { originRoleName: roleForChild.roleName } : {}),
+    // Left unset for a verbatim prompt: the first turn sets it when it delivers the brief.
+    ...(roleForChild?.roleName && !opts.verbatimPrompt ? { originRoleName: roleForChild.roleName } : {}),
     ...(opts.detached ? {} : { parentSessionId, rootSessionId }),
     ...(opts.spawnedByTurn ? { spawnedByTurn: opts.spawnedByTurn } : {}),
   });
-
-  // The live role can later clear; originRoleName remains the creation record.
-  if (roleForChild?.roleName) sessionManager.setRoleName(newSessionId, roleForChild.roleName);
 
   const child = sessionManager.get(newSessionId);
   if (!child) throw new ServiceError(500, "Failed to read back spawned child session");
@@ -705,10 +711,10 @@ export async function sendChildMessage(
     throw new ServiceError(400, "Message text exceeds 50,000 characters");
   }
   const child = assertChildOfParent(sessionManager, parentSessionId, childSessionId);
-  if (
-    runnerRegistry.get(child.id)?.running !== true
-    && isSessionDone(child, { hasUnfinishedDescendant: hasVisibleDirectChildren(sessionManager, child.id) })
-  ) {
+  if (isSessionDone(child, {
+    hasUnfinishedDescendant: hasVisibleDirectChildren(sessionManager, child.id),
+    agentWorking: isAgentWorking(runnerRegistry.get(child.id)),
+  })) {
     throw new ResolvedChildMessageError(child);
   }
   if (child.archived) {

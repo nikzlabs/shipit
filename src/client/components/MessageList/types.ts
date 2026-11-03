@@ -17,6 +17,7 @@ import type {
   ScheduleNotesAccessCard as ScheduleNotesAccessCardData,
   SelfMergeWatchCard as SelfMergeWatchCardData,
   AiReviewCard,
+  PermissionUnanswered,
 } from "../../../server/shared/types.js";
 import type { ReleaseStatusSummary } from "../../../server/shared/types/release-types.js";
 import type { AgentInterfaceProvenance } from "../../../server/shared/agent-interface-sdk/protocol.js";
@@ -88,6 +89,8 @@ export interface ChatMessage {
   text: string;
   agentInterface?: AgentInterfaceProvenance;
   messageOrigin?: SessionMessageOrigin;
+  /** docs/337-waiting-card-stays-last req 1 — this user row starts a turn that ran while a question waits. */
+  whileAnswerWaits?: boolean;
 
   clientRequestId?: string;
   toolUse?: ToolUseBlock[];
@@ -234,7 +237,7 @@ export interface ChatMessage {
   voiceNote?: {
     id: string;
     headline: string;
-    kind: "authored" | "ask" | "plan";
+    kind: "authored" | "ask" | "plan" | "permission";
     createdAt: string;
   };
 
@@ -270,6 +273,7 @@ export interface ChatMessage {
     agentId?: string;
     createdAt?: string;
     remembered?: boolean;
+    unanswered?: PermissionUnanswered;
   };
 
   egressPrompt?: {

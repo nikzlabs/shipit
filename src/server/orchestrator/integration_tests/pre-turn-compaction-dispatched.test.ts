@@ -219,9 +219,9 @@ describe("Integration: a dispatched message on a merged session with a real orig
       .record(SESSION_ID, 0, 1000, 100, 10, { contextTokens });
   };
 
-  it("does not compact an unattended turn under 50k tokens, and still resets the branch (req 15)", async () => {
+  it("does not compact an unattended turn under 200K tokens, and still resets the branch (req 15)", async () => {
     markMerged();
-    recordContext(20_000);
+    recordContext(199_999);
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
 
@@ -235,9 +235,9 @@ describe("Integration: a dispatched message on a merged session with a real orig
     client.close();
   });
 
-  it("compacts an unattended turn at 50k tokens or more (req 13)", async () => {
+  it("compacts an unattended turn at 200K tokens or more (req 13)", async () => {
     markMerged();
-    recordContext(80_000);
+    recordContext(200_000);
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
 
@@ -248,9 +248,24 @@ describe("Integration: a dispatched message on a merged session with a real orig
     client.close();
   });
 
-  it("compacts a page message under 50k tokens: its checkbox is the opt-out (req 3)", async () => {
+  it("does not compact a page message under 200K tokens, though its box is ticked (req 15)", async () => {
     markMerged();
-    recordContext(20_000);
+    recordContext(199_999);
+    const client = await TestClient.connect(port, SESSION_ID);
+    await client.receive();
+
+    await dispatch("from the page", { compactContext: true });
+    const turn = await waitForClaude(() => spawns.at(-1) ?? (null as never));
+    expect(turn.lastCompact).toBeFalsy();
+    expect(turn.lastPrompt).toContain("automatically reset to the latest origin/main");
+    expect(spawns.some((s) => s.lastCompact)).toBe(false);
+
+    client.close();
+  });
+
+  it("compacts a page message at 200K tokens or more (req 4)", async () => {
+    markMerged();
+    recordContext(200_000);
     const client = await TestClient.connect(port, SESSION_ID);
     await client.receive();
 

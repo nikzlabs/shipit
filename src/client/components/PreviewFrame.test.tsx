@@ -1996,6 +1996,44 @@ describe("PreviewFrame", () => {
       });
     });
   });
+
+  describe("maximize", () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+
+    it("covers the window in place, keeping the same iframe", async () => {
+      const { container } = render(<PreviewFrame preview={preview} {...defaultProps} />);
+      const iframe = await screen.findByTitle("Live Preview");
+      const root = container.firstElementChild as HTMLElement;
+      const reload = vi.spyOn(HTMLIFrameElement.prototype, "src", "set");
+
+      fireEvent.click(screen.getByRole("button", { name: "Maximize preview" }));
+      expect(root).toHaveClass("fixed", "inset-0");
+      expect(screen.getByTitle("Live Preview")).toBe(iframe);
+
+      fireEvent.click(screen.getByRole("button", { name: "Restore preview" }));
+      expect(root).not.toHaveClass("fixed");
+      expect(screen.getByTitle("Live Preview")).toBe(iframe);
+      expect(reload).not.toHaveBeenCalled();
+      reload.mockRestore();
+    });
+
+    it("restores on Escape, unless a menu or dialog already handled it", async () => {
+      const { container } = render(<PreviewFrame preview={preview} {...defaultProps} />);
+      await screen.findByTitle("Live Preview");
+      const root = container.firstElementChild as HTMLElement;
+      fireEvent.click(screen.getByRole("button", { name: "Maximize preview" }));
+
+      // What a Radix layer does with an Escape it dismisses on.
+      const handle = (e: KeyboardEvent) => e.preventDefault();
+      document.addEventListener("keydown", handle, { capture: true });
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      document.removeEventListener("keydown", handle, { capture: true });
+      expect(root).toHaveClass("fixed");
+
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      expect(root).not.toHaveClass("fixed");
+    });
+  });
 });
 
 describe("formatErrorForMessage", () => {

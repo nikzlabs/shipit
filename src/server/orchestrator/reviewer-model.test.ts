@@ -392,8 +392,10 @@ describe("reviewer harness derivation", () => {
     const { harnessesPreferring } = await import("./non-turn-model.js");
     const all = harnessesPreferring().map((h) => h.id);
 
-    expect(harnessesPreferring("claude").map((h) => h.id)).toEqual(["codex", "opencode", "grok", "antigravity", "claude"]);
-    expect(harnessesPreferring("codex").map((h) => h.id)).toEqual(["claude", "opencode", "grok", "antigravity", "codex"]);
+    expect(harnessesPreferring("claude").map((h) => h.id)).toEqual(["codex", "opencode2", "opencode", "grok", "antigravity", "claude"]);
+    expect(harnessesPreferring("codex").map((h) => h.id)).toEqual(["claude", "opencode2", "opencode", "grok", "antigravity", "codex"]);
+    // docs/269 req 5: the avoidance rule stays ahead of OpenCode 2's list position.
+    expect(harnessesPreferring("opencode2").map((h) => h.id)).toEqual(["claude", "codex", "opencode", "grok", "antigravity", "opencode2"]);
     expect(harnessesPreferring("claude").map((h) => h.id).sort()).toEqual([...all].sort());
   });
 
@@ -690,7 +692,8 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
     expect(result.target.slot).toBe("second");
     expect(result.target.selection.modelId).toBe("claude-sonnet-5");
     expect(result.tier).toBe(3);
-    expect(result.target.harnessId).toBe("opencode");
+    // Both OpenCode harnesses run it; ShipIt picks OpenCode 2 (docs/269 req 5).
+    expect(result.target.harnessId).toBe("opencode2");
   });
 
   it("prefers a different family over a different service of the same one", async () => {
@@ -888,7 +891,7 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
     if (!result.ok) return;
     expect(result.tierBasis).toBe("harness-only");
     expect(result.target.slot).toBe("first");
-    expect(result.target.harnessId).toBe("opencode");
+    expect(result.target.harnessId).toBe("opencode2");
     expect(result.tier).toBe(1);
   });
 

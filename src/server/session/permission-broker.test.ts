@@ -309,10 +309,16 @@ describe("PermissionBroker", () => {
   it("endToolUse denies the request once the gated call has a result, and a later poll fails closed", async () => {
     const { broker, events } = makeBroker();
     const opened = broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "toolu_1" });
+    const { summary } = events[0] as { summary: string };
 
     broker.endToolUse("toolu_1");
 
-    expect(events[1]).toEqual({ type: "agent_permission_resolved", requestId: opened.requestId, behavior: "deny" });
+    expect(events[1]).toEqual({
+      type: "agent_permission_resolved",
+      requestId: opened.requestId,
+      behavior: "deny",
+      callEnded: { summary, waitedMs: expect.any(Number) },
+    });
     expect(broker.pendingCount).toBe(0);
     await expect(broker.poll(opened.requestId!, 5000)).resolves.toEqual({
       settled: true,
@@ -353,13 +359,34 @@ describe("PermissionBroker", () => {
     const { broker, events } = makeBroker();
     const withdrawn = new AbortController();
     const decision = broker.request({ toolName: "shell", input: { command: "curl x" }, signal: withdrawn.signal });
-    const requestId = (events[0] as { requestId: string }).requestId;
+    const { requestId, summary } = events[0] as { requestId: string; summary: string };
 
     withdrawn.abort();
 
     await expect(decision).resolves.toEqual({ behavior: "deny" });
-    expect(events[1]).toEqual({ type: "agent_permission_resolved", requestId, behavior: "deny" });
+    expect(events[1]).toEqual({
+      type: "agent_permission_resolved",
+      requestId,
+      behavior: "deny",
+      callEnded: { summary, waitedMs: expect.any(Number) },
+    });
     expect(broker.pendingCount).toBe(0);
+  });
+
+  // docs/193-sensitive-file-permission req 8 — the card names the wait only as measured here.
+  it("reports how long an unanswered request waited before its call ended", () => {
+    vi.useFakeTimers();
+    try {
+      const { broker, events } = makeBroker();
+      broker.openRequest({ toolName: "Bash", input: { command: "curl x" }, toolUseId: "toolu_1" });
+
+      vi.advanceTimersByTime(1_800_000);
+      broker.endToolUse("toolu_1");
+
+      expect(events[1]).toMatchObject({ callEnded: { waitedMs: 1_800_000 } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("an abort after the user answered changes nothing", async () => {

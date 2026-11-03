@@ -346,6 +346,19 @@ export function scheduleStartupTasks(
   }, 0);
 }
 
+/**
+ * ShipIt's own stops mark the container `stopping`, and the `die` of such a container is never
+ * reported, so a clean exit 0 here came from outside ShipIt (planning#222).
+ */
+function containerExitDetail(exitCode: number | undefined, error: string | undefined): string {
+  const code = exitCode === undefined ? "" : ` (exit ${exitCode})`;
+  if (error) return `: ${error}${code}`;
+  if (exitCode === 0) {
+    return `${code}: it was stopped from outside ShipIt, for example by a host or Docker restart or a manual \`docker stop\``;
+  }
+  return code;
+}
+
 export function handleContainerExited(
   sessionId: string,
   exitCode: number | undefined,
@@ -355,12 +368,8 @@ export function handleContainerExited(
   chatHistoryManager?: ChatHistoryManager,
   sseBroadcast?: (event: string, data: unknown) => void,
 ): void {
-  console.error(`[container] Session ${sessionId} container exited: ${error ?? "unknown"}`);
-  const exitDetail = error
-    ? `: ${error}`
-    : exitCode !== undefined && exitCode !== 0
-      ? ` (exit ${exitCode})`
-      : "";
+  const exitDetail = containerExitDetail(exitCode, error);
+  console.error(`[container] Session ${sessionId} container exited${exitDetail}`);
   if (broadcastLog) {
     broadcastLog(sessionId, "server", `Session container exited unexpectedly${exitDetail}.`);
   }

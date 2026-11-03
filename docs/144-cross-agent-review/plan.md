@@ -438,6 +438,17 @@ in a home of its own.
   carries the container path of that home as `homeDir`, and each adapter prefers
   it over its own home. The session's own subtree is never written: not the
   pinned agent's (docs/138 §"write-once"), and not another harness's.
+- **A Claude spawn runs under the managed settings.** `buildSubAgentRunParams`
+  passes `--settings /etc/shipit/managed-settings.json`, as a main turn does, so
+  the deny list (docs/097-explicit-session-agent-permissions) and the
+  branch-block hook apply to it. A sandbox session's `shipit agent run` spawn
+  carries `sandbox`, so the hook's sandbox exemption (docs/211) holds for it as
+  for its parent. Session-naming and PR-description spawns (`non-turn-work.ts`)
+  do not carry it: they have no reason to move a branch. The
+  Stop hook stays quiet: a spawn sets no `autoCreatePr`, so
+  `SHIPIT_AUTO_CREATE_PR` is unset. A tools-off spawn still has no tools
+  (measured with Claude Code 2.1.300). The post-merge destructive-git guard
+  (`SHIPIT_GUARD_DESTRUCTIVE_GIT`) is not passed to a spawn.
 - **Token-sync-back before delete.** If the CLI rotated its OAuth refresh token
   during the run (docs/142), the new token lives in the spawn home.
   `releaseSubAgentSpawnHome` publishes it to the root the home's

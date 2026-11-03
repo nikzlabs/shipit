@@ -44,7 +44,10 @@ free"*. Neither asks the user for anything (req 3), and neither says which kind
 of turn was interrupted (req 2) — the notice is about the credential. The two
 existing gates are untouched — the turn must be CLI-started, and the credential
 must be one that can fail over at all, which is what keeps a metered key out
-(req 5, docs/140's second gate).
+(req 5, docs/140's second gate). Behind the same gates the stand-down parks a note
+for the next turn (`appendPendingAgentNotice`, planning#712): a sub-agent result
+that ended with the refusal's error did not do its work. The note names no
+background tasks, because the stand-down does not kill the process.
 
 **Both terminal paths, not just the result.** The same refusal reaches the
 executor two ways: as an `agent_result` whose text or error carries the provider

@@ -274,6 +274,10 @@ export function createRunnerRegistry(
         onRunnerSettled?.(runner.sessionId);
       });
       if (onRunnerSettled) runner.on("work_released", () => onRunnerSettled(runner.sessionId));
+      // `idle` fires inside the post-turn hold, where reconciliation reads the session as busy (#3296).
+      if (reconcileAgentMergeClaimsFor) {
+        runner.on("work_released", () => reconcileAgentMergeClaimsFor(runner.sessionId));
+      }
       // The worker reports no agent, so nothing can answer a request the lost one raised.
       // A throw here would stop verifyRunningState before it releases the queue.
       runner.on("turn_abandoned", () => {
@@ -501,7 +505,7 @@ export function createRunnerRegistry(
             ...(intent !== undefined ? { intent } : {}),
           });
         },
-        shouldCompactBeforeTurn: async (runner, agentId, sessionId, sessionDir, intent, unattended) => {
+        shouldCompactBeforeTurn: async (runner, agentId, sessionId, sessionDir, intent) => {
           if (!credentialStore) return false;
           const prStatusPoller = getPrStatusPoller?.();
           return await shouldCompactBeforeTurn({
@@ -528,7 +532,6 @@ export function createRunnerRegistry(
             sessionId,
             sessionDir,
             ...(intent !== undefined ? { intent } : {}),
-            ...(unattended ? { unattended } : {}),
           });
         },
         consumePendingAgentNotice: (sessionId) => sessionManager.consumePendingAgentNotice(sessionId),

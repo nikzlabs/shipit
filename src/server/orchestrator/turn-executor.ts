@@ -10,6 +10,12 @@ import {
 import { credentialFailurePolicyForRoute, quotaRefusalCanFailOver } from "./credential-failure-policy.js";
 import type { CredentialFailurePolicy } from "./credential-failure-policy.js";
 import { ProviderRouteUnavailableError } from "./provider-route-preflight.js";
+import {
+  buildAccountFailoverNote,
+  buildParkedFailoverNotice,
+  FAILED_SUB_AGENTS_NOTICE,
+  withAccountFailoverNote,
+} from "./account-failover-note.js";
 
 export interface RefusedAttempt {
   routeId: string;
@@ -79,7 +85,7 @@ import { formatCommitHookNotice } from "./services/commit-hook-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn, finalizeTurnRows } from "./chat-card-persistence.js";
 import { denyAbandonedPermissionCards } from "./permission-cards.js";
-import { TURN_COMPLETED, resultIsTheAgentsOwn, turnDropped, turnErrored, turnInterrupted, turnNoResult, turnQuotaRefused, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
+import { TURN_COMPLETED, resultIsTheAgentsOwn, turnDropped, turnErrored, turnInterrupted, turnNoResult, turnQuotaRefused, type EmptyTurnReason, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
 
@@ -94,6 +100,10 @@ export interface TurnInput {
    * that failed. Absent on a prompt composed without a block, which stays without one.
    */
   statusContext?: InsertedStatusContext;
+  /** planning#712 — a retry on another account: its prompt carries a note naming these tasks. */
+  accountFailover?: { stoppedTasks: readonly string[] };
+  /** docs/297 — the prompt is a goal command the CLI reads only as the whole message. */
+  verbatimCommand?: boolean;
   userText: string;
   agentInterface?: AgentInterfaceProvenance;
   messageOrigin?: SessionMessageOrigin;
@@ -106,6 +116,7 @@ export interface TurnInput {
     files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
     uploadPaths?: string[];
     userReview?: { filePaths: string[]; commentCount: number };
+    whileAnswerWaits?: boolean;
   };
   /** A number returned is the row it wrote, which the CLI's echo of the prompt stamps (docs/007 req 5). */
   persistUserMessage: (sessionId: string) => unknown;
@@ -183,6 +194,21 @@ function wrapsPrompt(echoed: string, sent: string): boolean {
   return echoed.endsWith(`\n\n${sent}`) || echoed.startsWith(`${sent}\n\n`);
 }
 
+// A stopped turn and a compaction end empty as asked, so they get no notice.
+const EMPTY_TURN_NOTICES: Readonly<Partial<Record<EmptyTurnReason, string>>> = {
+  "prompt-not-echoed":
+    "The agent CLI ended this turn before it read the message, so there is no reply. Send the message again to retry.",
+  "no-model-call":
+    "The agent CLI ended this turn without a call to the model, so there is no reply. Send the message again to retry.",
+  "model-returned-nothing":
+    "The model ended this turn with no reply and no tool call. Send the message again, or say it in different words.",
+};
+/**
+ * A CLI that ends a turn before it reads the prompt usually reads it at once afterwards, and then
+ * works on it as a turn of its own, so the notice waits this long for the echo.
+ */
+export const UNREAD_PROMPT_NOTICE_DELAY_MS = 5_000;
+
 // A timer can fire a little early, which would read the hold as still open.
 const COMMIT_HOLD_EXPIRY_MARGIN_MS = 1_000;
 
@@ -207,11 +233,15 @@ export async function executeAgentTurn(
   // Per ATTEMPT, not per turn: this function is re-entered by every retry with the prompt
   // the first attempt was given, and the card has moved since (docs/303 req 35). Read
   // before the closures below capture it, so the echo check compares what was submitted.
-  const prompt = refreshStatusContextInPrompt(
+  const refreshedPrompt = refreshStatusContextInPrompt(
     input.prompt,
     input.statusContext,
     readStatusContext(deps, sessionId),
   );
+  // Added after the swap, whose offset is into `input.prompt`.
+  const prompt = input.accountFailover
+    ? withAccountFailoverNote(refreshedPrompt, buildAccountFailoverNote(input.accountFailover.stoppedTasks))
+    : refreshedPrompt;
   // The prompt as spawned: a fork's replay leads its first one (docs/007 req 8).
   let submittedPrompt = prompt;
   // docs/333-idle-compaction piece 4 — a silent compaction is maintenance: it does not move the
@@ -365,6 +395,7 @@ export async function executeAgentTurn(
     cliTurnPending = true;
   };
 
+  let promptEchoed = false;
   /**
    * The CLI echoing this prompt back is the one positive proof it has read it —
    * stronger than the worker's own answer to the submission, and it can arrive
@@ -374,6 +405,7 @@ export async function executeAgentTurn(
     const echoed = text.trim();
     const exact = echoed === prompt.trim() || echoed === submittedPrompt.trim();
     if (!exact && !wrapsPrompt(echoed, submittedPrompt.trim())) return;
+    promptEchoed = true;
     // docs/007 req 5 — the prompt's own echo comes first. Read behind a turn of the CLI's own,
     // the prompt is stored as a queued command under another id (measured on 2.1.300).
     if (messageId && !cliTurnPending && promptMessageId === undefined) {
@@ -462,14 +494,14 @@ export async function executeAgentTurn(
   // reading wins; a retry that takes the turn over is a new executor and records its own.
   // Unlike the settlement, this also runs for a result that does not answer this turn's prompt.
   let turnEndRecorded = false;
-  const recordTurnEnd = (outcome: LastTurnOutcome, detail?: string): void => {
+  const recordTurnEnd = (outcome: LastTurnOutcome, detail?: string, emptyReason?: EmptyTurnReason): void => {
     if (turnEndRecorded || maintenanceTurn) return;
     turnEndRecorded = true;
     try {
       const { sessionManager, sseBroadcast } = deps.listenerDeps;
       const before = sessionManager.get(sessionId);
       const first = before?.lastTurnOutcome === undefined;
-      sessionManager.setLastTurnOutcome(sessionId, outcome);
+      sessionManager.setLastTurnOutcome(sessionId, outcome, emptyReason ?? null);
       // "Needs you" reads a run's outcome from its list row (req 31), and the run's finish,
       // which lists it too, need not change: an open PR already kept it unfinished.
       if (before?.scheduleId && before.lastTurnOutcome !== outcome) {
@@ -568,6 +600,9 @@ export async function executeAgentTurn(
   if (runner) {
     runner.running = true;
     runner.activeDeliveryId = input.deliveryId;
+    // A new process holds none of the tasks an earlier, killed one reported; the
+    // streaming flag below would show them again (planning#710).
+    if (useStreaming && input.reuseExistingAgent !== true && input.adopt !== true) runner.clearBackgroundTasks();
     runner.isStreamingActive = useStreaming;
     resetRunnerTurnState(runner);
     noteCompactionTurn(runner, input.compact === true);
@@ -600,6 +635,7 @@ export async function executeAgentTurn(
         ...(input.userEcho?.files ? { files: input.userEcho.files } : {}),
         ...(input.userEcho?.uploadPaths ? { uploadPaths: input.userEcho.uploadPaths } : {}),
         ...(input.userEcho?.userReview ? { userReview: input.userEcho.userReview } : {}),
+        ...(input.userEcho?.whileAnswerWaits ? { whileAnswerWaits: true } : {}),
       });
     }
     return true;
@@ -759,6 +795,15 @@ export async function executeAgentTurn(
       servingCliStartedTurn(),
     );
 
+  // planning#712 — where no replayed prompt can carry the failover note, the next turn does.
+  const parkFailoverNotice = (notice: string): void => {
+    try {
+      deps.listenerDeps.sessionManager.appendPendingAgentNotice(sessionId, notice);
+    } catch (err) {
+      console.error(`[turn] parking the account failover notice for ${sessionId} failed:`, err);
+    }
+  };
+
   const retryOnNextAccount = async (
     entry: RefusedAttempt,
     consumeRecoveryBudget = false,
@@ -767,6 +812,16 @@ export async function executeAgentTurn(
       `[turn] ${agentId} reported a quota refusal for ${sessionId} on ${entry.routeId}; `
       + "retrying on the next eligible credential",
     );
+    // planning#712 — before the kill, and before the retry's turn start clears the list.
+    const stoppedNow = useStreaming
+      ? (runner?.backgroundTaskDescriptions ?? [])
+      : [...trackedJobs.values()];
+    // A note this CLI never echoed may be missing from the conversation the next one resumes.
+    const carried = promptEchoed ? [] : (input.accountFailover?.stoppedTasks ?? []);
+    const stoppedTasks = [...new Set([...carried, ...stoppedNow])];
+    // The harness reads a compaction or a verbatim command only as the whole prompt.
+    const promptIsCommand = input.compact === true || input.verbatimCommand === true;
+    if (promptIsCommand) parkFailoverNotice(buildParkedFailoverNotice(stoppedTasks));
     // Stop the old process before reprovisioning its credential subtree.
     try {
       agent.kill();
@@ -781,6 +836,7 @@ export async function executeAgentTurn(
     }
     await executeAgentTurn(runner, deps, freshAgent, {
       ...input,
+      ...(promptIsCommand ? {} : { accountFailover: { stoppedTasks } }),
       attemptLedger: [...(input.attemptLedger ?? []), entry],
       ...(consumeRecoveryBudget ? { recoveryRetryUsed: true } : {}),
       reuseExistingAgent: false,
@@ -833,6 +889,8 @@ export async function executeAgentTurn(
       deps.listenerDeps.markSessionAccountExhausted?.(sessionId, opts.benchUntil, routeId);
     }
     const label = routeId ? (deps.routeLabel?.(routeId) ?? routeId) : "This account";
+    // The stand-down kills no process, so no background task stopped.
+    parkFailoverNotice(FAILED_SUB_AGENTS_NOTICE);
     // The turn's prompt cannot be replayed, but ShipIt can start a turn of its own, so ask
     // the router before deciding what to tell the user (docs/306-quota-continuation, superseding docs/140).
     continuationPending = deps.recordStandDown?.({
@@ -1036,6 +1094,8 @@ export async function executeAgentTurn(
   };
 
   deps.listenerDeps.sseBroadcast("session_agent_started", { sessionId, activity });
+  // docs/316-done-sessions-return-memory req 11 — a row the sidebar cap left out returns while its agent works.
+  deps.listenerDeps.sseBroadcast("session_list", { sessions: deps.listenerDeps.sessionManager.list() });
 
   // Before the listeners below, so `onError` can read the error that ended the turn.
   agent.on("error", (err: Error) => { lastAgentError = err; });
@@ -1573,6 +1633,63 @@ export async function executeAgentTurn(
     }
   });
 
+  /**
+   * planning#222 — a successful turn of this prompt that left no reply and no tool call. Judged
+   * only where the harness reports the turn's model calls: without the count, a CLI that never
+   * asked the model cannot be told from a model that returned nothing.
+   */
+  const emptyTurnReason = (
+    event: Extract<AgentEvent, { type: "agent_result" }>,
+  ): EmptyTurnReason | null => {
+    if (event.numTurns === undefined) return null;
+    if (!runner || !turnIsCurrent() || input.adopt || servingCliStartedTurn()) return null;
+    if (!resultIsTheAgentsOwn(event)) return null;
+    if (runner.accumulatedText.trim() || runner.turnSummary.trim() || runner.accumulatedToolUse.length > 0) return null;
+    if (runner.wasInterrupted || stoppedByUser(runner)) return "stopped";
+    if (input.compact === true || harnessCommandTurn) return "compaction";
+    // The CLI answers a slash command itself and need not echo it.
+    if (!promptEchoed && !slashCommandTurn() && getAgentCapabilities(agentId)?.echoesPrompt) return "prompt-not-echoed";
+    if (event.numTurns === 0) return "no-model-call";
+    return "model-returned-nothing";
+  };
+  const slashCommandTurn = (): boolean => submittedPrompt.trimStart().startsWith("/");
+
+  // Synchronous, so the result keeps its place before `done`; it never throws (post-turn invariant 3).
+  const noticeEmptyTurn = (reason: EmptyTurnReason): void => {
+    const notice = EMPTY_TURN_NOTICES[reason];
+    if (!notice || !runner || slashCommandTurn()) return;
+    try {
+      emitNoticeInTurn(runner, sessionId, notice, deps.listenerDeps.chatHistoryManager, "warn");
+    } catch (err) {
+      console.error(`[turn] ${sessionId}: the notice about the empty turn failed:`, err);
+    }
+  };
+
+  const tellEmptyTurn = (reason: EmptyTurnReason, event: Extract<AgentEvent, { type: "agent_result" }>): void => {
+    console.log(
+      `[turn] ${sessionId}: the turn ended with no reply and no tool call (${reason}; `
+      + `numTurns=${event.numTurns ?? "unknown"}, origin=${event.origin ?? "none"})`,
+    );
+    if (reason !== "prompt-not-echoed") {
+      noticeEmptyTurn(reason);
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (promptEchoed) {
+        console.log(`[turn] ${sessionId}: the agent CLI read the prompt after it ended the turn`);
+        return;
+      }
+      // The notice must not land in the place of a later turn. A disposed runner cannot tell
+      // whether its replacement started one, so it gives the notice up; the reason is stored.
+      if (!runner || runner.disposed || !turnIsCurrent() || runner.running) {
+        console.log(`[turn] ${sessionId}: no notice for the unread prompt, as the session has moved on`);
+        return;
+      }
+      noticeEmptyTurn(reason);
+    }, UNREAD_PROMPT_NOTICE_DELAY_MS);
+    timer.unref?.();
+  };
+
   const handleResult = async (
     event: Extract<AgentEvent, { type: "agent_result" }>,
     answersThisPrompt: boolean,
@@ -1592,6 +1709,7 @@ export async function executeAgentTurn(
     const exhausted = event.error
       ? detectHardExhaustion(event.error)
       : detectHardExhaustionInTurnText(runner?.turnSummary);
+    let empty: EmptyTurnReason | null = null;
     if (exhausted) {
       if (quotaRetryAllowed()) {
         quotaRetryInProgress = true;
@@ -1607,7 +1725,9 @@ export async function executeAgentTurn(
       });
       if (!continuationPending) recordTurnEnd("quota-refused", refusal);
     } else {
-      recordTurnEnd(resultIsTheAgentsOwn(event) ? "ok" : "errored", event.error);
+      empty = settlesThisTurn ? emptyTurnReason(event) : null;
+      recordTurnEnd(resultIsTheAgentsOwn(event) ? "ok" : "errored", event.error, empty ?? undefined);
+      if (empty) tellEmptyTurn(empty, event);
     }
     // Anything riding this prompt is delivered here, and must not be delivered
     // in `settleTurn`: a turn can settle without its prompt having been read, and
@@ -1634,9 +1754,10 @@ export async function executeAgentTurn(
     // left to settle. The failover and quota-retry paths do NOT set the flag,
     // deliberately: those re-dispatch the same prompt on a new executor, which
     // records its own submission and acknowledges that.
+    // A prompt that the CLI never read delivered nothing that rode it (planning#222).
     if (
       answersThisPrompt && !exhausted && !wasSuperseded
-      && resultIsTheAgentsOwn(event)
+      && resultIsTheAgentsOwn(event) && empty !== "prompt-not-echoed"
     ) {
       notePromptDelivered();
     }

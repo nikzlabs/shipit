@@ -1,4 +1,5 @@
 import type { AgentProcess, AgentRunParams, AgentEvent, AgentId, AgentRequestUsage, ServiceRouting } from "./types.js";
+import { CLAUDE_MANAGED_SETTINGS_PATH } from "./claude-managed-settings.js";
 import { redactCredentials } from "./credential-redaction.js";
 import { createRedactedTail } from "./redacted-tail.js";
 
@@ -36,6 +37,7 @@ export interface SubAgentRunOptions {
   maxOutputChars?: number;
   /** Empty the harness's tool set for a one-shot run (docs/299). */
   toolsOff?: boolean;
+  sandbox?: boolean;
 }
 
 export type SubAgentRunStatus = "success" | "error" | "timeout" | "cancelled";
@@ -114,6 +116,8 @@ export interface SubAgentSpawnRequest {
   timeoutMs?: number;
   maxOutputChars?: number;
   toolsOff?: boolean;
+  /** The parent is a sandbox session, so its branch-block exemption applies to the spawn too (docs/211). */
+  sandbox?: boolean;
 }
 
 export interface SubAgentRunHandle {
@@ -314,10 +318,13 @@ export function buildSubAgentRunParams(opts: SubAgentRunOptions): AgentRunParams
   return {
     prompt: opts.prompt,
     cwd: opts.cwd,
+    // The deny list and the branch-block hook bind a spawn as they bind a main turn; only Claude reads it.
+    settingsPath: CLAUDE_MANAGED_SETTINGS_PATH,
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     ...(opts.serviceRouting !== undefined ? { serviceRouting: opts.serviceRouting } : {}),
     ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
     ...(opts.homeDir !== undefined ? { homeDir: opts.homeDir } : {}),
     ...(opts.toolsOff !== undefined ? { toolsOff: opts.toolsOff } : {}),
+    ...(opts.sandbox ? { sandbox: true } : {}),
   };
 }

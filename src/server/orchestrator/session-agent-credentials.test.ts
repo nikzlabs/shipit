@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { isOpenCodeHarness } from "../shared/opencode-harness.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -144,6 +145,23 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
     expect(readSessionAccountMarker(root, SESSION).opencode).toBeUndefined();
   });
 
+  it("disconnecting managed ChatGPT from OpenCode 2 keeps its database and leaves v1's root alone", () => {
+    const v1 = path.join(sessionDir(), ".local/share/opencode/shipit-data/opencode");
+    const v2 = path.join(sessionDir(), ".local/share/opencode2");
+    fs.mkdirSync(v1, { recursive: true });
+    fs.mkdirSync(path.join(v2, "shipit-account", "opencode"), { recursive: true });
+    fs.mkdirSync(path.join(v2, "shipit-data", "opencode"), { recursive: true });
+    fs.writeFileSync(path.join(v1, "auth.json"), "v1-managed");
+    fs.writeFileSync(path.join(v2, "shipit-account", "opencode", "auth.json"), "v2-projection");
+    fs.writeFileSync(path.join(v2, "shipit-data", "opencode", "opencode.db"), "conversation");
+    writeSessionAccountMarker(root, SESSION, "opencode2", "account-a");
+    revokeSessionProviderCredentials(root, SESSION, "opencode2");
+    expect(fs.existsSync(path.join(v2, "shipit-account", "opencode", "auth.json"))).toBe(false);
+    expect(fs.readFileSync(path.join(v2, "shipit-data", "opencode", "opencode.db"), "utf8")).toBe("conversation");
+    expect(fs.readFileSync(path.join(v1, "auth.json"), "utf8")).toBe("v1-managed");
+    expect(readSessionAccountMarker(root, SESSION).opencode2).toBeUndefined();
+  });
+
   it("revocation clears the marker so the next turn reprovisions", () => {
     seedAccount("acct_a", "tok-a");
     ensureSessionAccountCredentials(root, SESSION, "claude", "acct_a");
@@ -208,7 +226,7 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
       const allAgentIds = Object.keys(AGENT_CREDENTIAL_PATHS) as AgentId[];
       for (const agentId of allAgentIds) {
         // OpenCode account provisioning deliberately refuses absent source auth.
-        if (agentId === "opencode") {
+        if (isOpenCodeHarness(agentId)) {
           const source = path.join(root, "provider-accounts", "codex", `acct_${agentId}`, ".codex");
           fs.mkdirSync(source, { recursive: true });
           const access_token = `e30.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": { chatgpt_account_id: "test-account" } })).toString("base64url")}.test`;
@@ -259,7 +277,7 @@ describe("copying a source root leaves its conversation state behind (planning#6
   const SESSION = "s1";
   const ACCOUNT = "acct_a";
   // OpenCode accounts are delivered as a projection, not as a copy of the subtree.
-  const COPIED_AGENTS = (Object.keys(AGENT_CREDENTIAL_PATHS) as AgentId[]).filter((id) => id !== "opencode");
+  const COPIED_AGENTS = (Object.keys(AGENT_CREDENTIAL_PATHS) as AgentId[]).filter((id) => !isOpenCodeHarness(id));
 
   const stateEntries = (agentId: AgentId): string[] =>
     AGENT_CREDENTIAL_PATHS[agentId].flatMap((rel) =>

@@ -8,7 +8,7 @@ import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { DatabaseManager } from "../../shared/database.js";
-import { buildInboxNotice, INBOX_TURN_TEXT } from "../services/session-inbox-notice.js";
+import { buildInboxNotice, INBOX_QUESTION_TURN_TEXT, INBOX_TURN_TEXT } from "../services/session-inbox-notice.js";
 import { clearSessionReportRateLimits } from "../services/session-report.js";
 import {
   TestClient,
@@ -146,26 +146,40 @@ describe("Integration: session message inbox", () => {
     expect(agents.filter((a) => a.runCalled)).toHaveLength(2);
   });
 
-  it("holds the notice while the agent waits for the user's answer, and the user's reply carries it", async () => {
+  it("tells the agent while its question waits, and the question waits on (docs/322 req 2)", async () => {
     sessionManager.setAwaitingAnswer(parentId, true);
+    const viewer = await TestClient.connect(port, parentId);
+    await viewer.receive();
 
-    expect((await report("Found while you were waiting.")).json().recipients[0].told).toBe("later");
-    await new Promise((r) => setTimeout(r, 150));
-    expect(agents.filter((a) => a.runCalled)).toHaveLength(0);
+    expect((await report("Found while you were waiting.")).json().recipients[0].told).toBe("started");
+    const inboxTurn = await agentRun(0);
+    // docs/337-waiting-card-stays-last req 1 — a live viewer gets the marker with the row.
+    const echo = await viewer.receiveType("system_user_message");
+    viewer.close();
+    expect(echo).toMatchObject({ whileAnswerWaits: true });
+    expect(inboxTurn.lastPrompt).toContain(buildInboxNotice(1));
+    expect(inboxTurn.lastPrompt.endsWith(INBOX_QUESTION_TURN_TEXT)).toBe(true);
+    expect(await readInbox(parentId)).toHaveLength(1);
+    await finish(inboxTurn);
+    // The turn was not the user's reply, so automatic turns still wait for it.
+    expect(sessionManager.isAwaitingAnswer(parentId)).toBe(true);
 
     const client = await TestClient.connect(port, parentId);
     await client.receive();
     client.send({ type: "send_message", text: "Use SQLite." });
-    const agent = await agentRun(0);
-
-    expect(agent.lastPrompt).toContain(buildInboxNotice(1));
-    expect(agent.lastPrompt.endsWith("Use SQLite.")).toBe(true);
-
-    await finish(agent);
+    const reply = await agentRun(1);
     client.close();
-    // The agent was told in the user's turn, so ShipIt starts no turn for the same message.
-    expect(agents.filter((a) => a.runCalled)).toHaveLength(1);
-    expect(await readInbox(parentId)).toHaveLength(1);
+    expect(reply.lastPrompt.endsWith("Use SQLite.")).toBe(true);
+    expect(sessionManager.isAwaitingAnswer(parentId)).toBe(false);
+    await finish(reply);
+    expect(agents.filter((a) => a.runCalled)).toHaveLength(2);
+
+    // docs/337-waiting-card-stays-last req 3 — the chat steps over the inbox turn after a reload.
+    const history = await app.inject({ method: "GET", url: `/api/sessions/${parentId}/history` });
+    const users = (history.json() as { messages: { role: string; text: string; whileAnswerWaits?: boolean }[] })
+      .messages.filter((m) => m.role === "user");
+    expect(users.find((m) => m.text.endsWith(INBOX_QUESTION_TURN_TEXT))?.whileAnswerWaits).toBe(true);
+    expect(users.find((m) => m.text === "Use SQLite.")?.whileAnswerWaits).toBeUndefined();
   });
 
   it("404s a read for a session that does not exist", async () => {

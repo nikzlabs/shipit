@@ -105,7 +105,7 @@ export function getSavedAgentId(): AgentId {
     const saved = localStorage.getItem(AGENT_PREFERENCE_KEY);
     if (
       saved === "claude" || saved === "codex" || saved === "opencode"
-      || saved === "grok" || saved === "antigravity"
+      || saved === "opencode2" || saved === "grok" || saved === "antigravity"
     ) return saved;
   } catch {
     // localStorage may be unavailable
@@ -164,7 +164,7 @@ export function getParkedHarness(): ParkedHarness | undefined {
         // eslint-disable-next-line no-restricted-syntax -- same validation, continued across the wrapped condition
         && value.agentId !== "opencode" && value.agentId !== "grok"
         // eslint-disable-next-line no-restricted-syntax -- same validation, continued across the wrapped condition
-        && value.agentId !== "antigravity"
+        && value.agentId !== "opencode2" && value.agentId !== "antigravity"
       ) return undefined;
       return { agentId: value.agentId, ...(value.model ? { model: value.model } : {}) };
     },

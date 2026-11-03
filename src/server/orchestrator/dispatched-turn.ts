@@ -26,7 +26,6 @@ import {
   POST_MERGE_COMPACT_PROMPT,
   compactionCardBefore,
   noteMissedCompaction,
-  startedUnattended,
 } from "./compact-before-turn.js";
 import {
   createPromptRepark,
@@ -130,11 +129,14 @@ async function runDispatchedTurnInner(
   // compaction while the resident has background work: a turn of the CLI's own could then come
   // between it and the message, and its result would start the message too early. The claim on
   // `running` keeps other turns out from the decision to the compaction.
+  // An automatic turn admitted under the answer hold passed it (docs/322 req 2); re-queued, it
+  // would be held until the user replies. The next turn compacts instead.
+  const passedAnswerHold = opts.automatic === true && runner.answerHold;
   if (
-    sessionDir && opts.postTurn !== "none" && !isCompactRequest
+    sessionDir && opts.postTurn !== "none" && !isCompactRequest && !passedAnswerHold
     && residentBackgroundWork(runner).length === 0
     && await (deps.shouldCompactBeforeTurn?.(
-      runner, agentId, runner.sessionId, sessionDir, opts.compactContext, startedUnattended(opts),
+      runner, agentId, runner.sessionId, sessionDir, opts.compactContext,
     ) ?? Promise.resolve(false))
   ) {
     // planning#703 — the decision awaited: a turn of the CLI's own may hold the process now.
@@ -479,6 +481,7 @@ async function runDispatchedTurnInner(
           : {}),
         ...(historyFiles ? { files: historyFiles } : {}),
         ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
+        ...(passedAnswerHold ? { whileAnswerWaits: true } : {}),
       },
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
       ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
@@ -497,6 +500,7 @@ async function runDispatchedTurnInner(
                 ...(historyFiles ? { files: historyFiles } : {}),
                 ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
                 ...(opts.clientRequestId !== undefined ? { clientRequestId: opts.clientRequestId } : {}),
+                ...(passedAnswerHold ? { whileAnswerWaits: true } : {}),
               })
           : () => { /* already persisted, shown before, or silent */ },
       isNewSession: false,

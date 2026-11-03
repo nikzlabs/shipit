@@ -38,6 +38,8 @@ interface AskUserQuestionProps {
   disabled: boolean;
   /** Persisted tool result, used after reload. */
   resolvedAnswer?: string;
+  /** docs/337-waiting-card-stays-last req 2 — a newer question or plan card replaced this one. */
+  replaced?: boolean;
 }
 
 export function formatAnswerText(
@@ -142,7 +144,8 @@ function hasLiveSelectionIn(el: HTMLElement): boolean {
   return el.contains(sel.anchorNode) || el.contains(sel.focusNode);
 }
 
-export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, resolvedAnswer }: AskUserQuestionProps) {
+export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled: disabledProp, resolvedAnswer, replaced }: AskUserQuestionProps) {
+  const disabled = disabledProp || !!replaced;
   const [selections, setSelections] = useState<Map<number, Set<string>>>(new Map());
   const [otherTexts, setOtherTexts] = useState<Map<number, string>>(new Map());
   const [usingOther, setUsingOther] = useState<Set<number>>(new Set());
@@ -287,6 +290,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
   const hasAnyAnswer = Object.keys(buildAnswers().answers).length > 0;
 
   const isAnswered = !!submittedAnswers;
+  const readOnly = isAnswered || !!replaced;
 
   return (
     <div className="mt-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary)/80 overflow-hidden" data-testid="ask-user-question">
@@ -307,7 +311,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
 
             <div className="space-y-1.5">
               {q.options.map((opt) => {
-                const isSelected = selectedSet.has(opt.label) && (q.multiSelect || !isOther);
+                const isSelected = !readOnly && selectedSet.has(opt.label) && (q.multiSelect || !isOther);
                 const wasAnswered = !!answered?.labels.has(opt.label);
 
                 return (
@@ -319,7 +323,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                     }}
                     disabled={disabled || isAnswered}
                     className={`w-full text-left rounded-md px-3 py-2 text-sm transition-colors border select-text ${
-                      isAnswered
+                      readOnly
                         ? wasAnswered
                           ? "border-(--color-accent) bg-(--color-accent-subtle) text-(--color-text-link)"
                           : "border-(--color-border-secondary) bg-(--color-bg-tertiary)/50 text-(--color-text-tertiary)"
@@ -350,7 +354,7 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
                 );
               })}
 
-              {!isAnswered && (
+              {!readOnly && (
                 <div>
                   <button
                     onClick={(e) => {
@@ -403,7 +407,12 @@ export function AskUserQuestion({ toolUseId, questions, onAnswer, disabled, reso
         );
       })}
 
-      {!isAnswered && (
+      {replaced && !isAnswered && (
+        <p className="px-3 pb-3 text-xs text-(--color-text-secondary)" data-testid="asked-again">
+          Asked again below
+        </p>
+      )}
+      {!readOnly && (
         <div className="px-3 pb-3">
           <Button
             variant="primary"

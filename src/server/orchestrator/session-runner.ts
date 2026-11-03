@@ -31,6 +31,7 @@ import { runDispatchedTurn } from "./dispatched-turn.js";
 export { runDispatchedTurn };
 
 import {
+  ANSWER_HOLD_REASON,
   automaticTurnHeldForAnswer,
   isSilentCompaction,
   readAnswerHold,
@@ -221,9 +222,9 @@ export interface AgentDispatchOptions {
    */
   bestEffortSteer?: boolean;
   /**
-   * docs/295-compact-context-on-merge req 15 — ShipIt started this turn by itself, so the
-   * composer's tick boxes were in front of nobody. `automatic` cannot say it: a wake that
-   * is not automatic exists (docs/328's turn for a message the user sent).
+   * ShipIt started this turn by itself; the docs/235 one-shot turn note reads it. `automatic`
+   * cannot say it: a wake that is not automatic exists (docs/328's turn for a message the user
+   * sent).
    */
   unattended?: boolean;
   /**
@@ -286,6 +287,11 @@ export interface DispatchAdmission {
    * which could not tell its result from that of a turn the CLI starts by itself.
    */
   underHold?: SessionHold;
+  /**
+   * docs/322 req 2 — the inbox turn starts while a question waits, but not while a run is
+   * stopped. Automatic, so it keeps the hold.
+   */
+  passesQuestionHold?: boolean;
 }
 
 
@@ -393,7 +399,15 @@ export function dispatchOnRunner(
   const uncommitted = step ? null : turnBlockedByPendingCommit(runner);
   if (uncommitted) return enqueueOrRefuse(uncommitted);
 
-  const answerHeld = isSilentCompaction(opts) ? null : automaticTurnHeldForAnswer(runner, opts.automatic);
+  const answerHeld = isSilentCompaction(opts)
+    ? null
+    : admission?.passesQuestionHold === true
+      // Read again here: the run can have been stopped while the wake booted the container.
+      ? opts.automatic === true
+        && readAnswerHold({ answerHold: runner.answerHoldStore }, runner.sessionId, { exceptQuestion: true })
+        ? ANSWER_HOLD_REASON
+        : null
+      : automaticTurnHeldForAnswer(runner, opts.automatic);
   if (answerHeld) return enqueueOrRefuse(answerHeld);
 
   // Only once admitted: a refused step must not end the process of a turn it did not start.
@@ -525,7 +539,6 @@ export interface SystemTurnDeps {
     sessionId: string,
     sessionDir: string,
     intent?: boolean,
-    unattended?: boolean,
   ) => Promise<boolean>;
   consumePendingAgentNotice?: (sessionId: string) => string | undefined;
   /** Restore a consumed notice if setup fails before the agent receives it. */
@@ -659,6 +672,13 @@ export function sessionHasLiveAgent(
   sessionId: string,
 ): boolean {
   return (registry?.get(sessionId)?.getAgent() ?? null) !== null;
+}
+
+// The browser's "Agent running": `active_runners` and the background work of `session_attention`.
+export function isAgentWorking(
+  runner: Pick<SessionRunnerInterface, "running" | "backgroundWorkDescriptions"> | undefined,
+): boolean {
+  return !!runner && (runner.running || runner.backgroundWorkDescriptions.length > 0);
 }
 
 export interface SessionRunnerEvents {
@@ -842,7 +862,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _lastTurnErrored = false;
   private _guardedUnavailable = false;
   readonly awaitingPermissionIds = new Set<string>();
-  private _backgroundTasks = new BackgroundTaskTracker();
+  private _backgroundTasks = new BackgroundTaskTracker(() => this.clearBackgroundTasks());
   private _isStreamingActive = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _appliedSpawnIdentity: string | undefined = undefined;
@@ -939,7 +959,11 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
     this.announceBackgroundWork();
   }
   clearBackgroundTasks(): void {
-    this._backgroundTasks.clear();
+    // The SSE announcement updates the sidebar only; the open chat's row needs this message.
+    if (this._backgroundTasks.clear()) {
+      const descriptions = this.backgroundWorkDescriptions;
+      this.emitMessage({ type: "background_tasks", sessionId: this.sessionId, count: descriptions.length, descriptions });
+    }
     this.announceBackgroundWork();
   }
   private announceBackgroundWork(): void {
@@ -990,6 +1014,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
       ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
       ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
+      ...(req.sandbox ? { sandbox: true } : {}),
     };
     const handle = runAgentToCompletion(agent, runOpts, Date.now());
     this._subAgentHandles.set(handle, req.agentId);

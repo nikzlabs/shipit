@@ -4,6 +4,7 @@ import { SessionRunner } from "../session-runner.js";
 import type { SystemTurnDeps } from "../session-runner.js";
 import type { AgentId } from "../../shared/types.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
+import { buildAccountFailoverNote } from "../account-failover-note.js";
 
 vi.mock("node:child_process", async () => {
   // eslint-disable-next-line no-restricted-syntax -- vitest's blessed form
@@ -261,6 +262,7 @@ describe("runtime-401 auto-retry (docs/179)", () => {
       billingMode: "sub",
     });
     deps.routeLabel = (routeId) => routeId === "acct-a" ? "Primary" : "Backup";
+    deps.buildRunParams = vi.fn(async (_sessionId: string, _agentId: AgentId, prompt: string) => ({ prompt, cwd: "/tmp/s1" }));
     runner.setSystemTurnDeps(deps);
 
     runner.dispatch(testDispatch({ text: "do work" }));
@@ -278,7 +280,9 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     expect(onAgentAuthRequired).toHaveBeenCalledWith("claude");
     expect(authFailedAccounts).toContain("acct-a");
     expect(prepareAgentEnv.mock.calls[1]?.[2]?.excludeRouteIds).toEqual(["acct-a"]);
-    expect(agents[1]!.run.mock.calls[0]?.[0]?.prompt).toBe("do work");
+    expect(agents[0]!.run.mock.calls[0]?.[0]?.prompt).toBe("do work");
+    // planning#712 — the sub-agents failed on that account too.
+    expect(agents[1]!.run.mock.calls[0]?.[0]?.prompt).toBe(`${buildAccountFailoverNote([])}\n\ndo work`);
     const history = deps.listenerDeps.chatHistoryManager as any;
     expect(history.replaceInProgress.mock.calls.some((call: any[]) =>
       call[1]?.some((row: { text?: string }) => row.text === "Partial work before authentication failed"),

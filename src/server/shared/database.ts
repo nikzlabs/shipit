@@ -1235,6 +1235,17 @@ const MIGRATIONS: Migration[] = [
       if (!columns.some((c) => c.name === column)) db.exec(`ALTER TABLE usage_turns ADD COLUMN ${column} ${type}`);
     }
   },
+  // planning#222 — why the last turn ended with no reply and no tool call.
+  (db) => {
+    addSessionColumnIfMissing(db, "last_turn_empty_reason");
+  },
+  // docs/337-waiting-card-stays-last req 1 — the user row of a turn that ran while a question waits.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "while_answer_waits")) {
+      db.exec("ALTER TABLE messages ADD COLUMN while_answer_waits INTEGER NOT NULL DEFAULT 0");
+    }
+  },
 ];
 
 /** Guard tests that rewind user_version and replay later migrations. */

@@ -25,6 +25,7 @@ import {
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./secret-scan-notice.js";
 import { freshenBaseRef } from "./freshen-base-ref.js";
+import type { SupersededMergedPr } from "./pr-rearm.js";
 import { formatCommitHookNotice } from "./commit-hook-notice.js";
 import { formatUnreadableWorkspaceNotice } from "./unreadable-workspace-notice.js";
 import { emitNoticePostTurn, persistNoticeUnattached } from "../chat-card-persistence.js";
@@ -62,10 +63,10 @@ async function findBranchPr(
   head: string,
 ): Promise<{
   number: number; url: string; base: string; title: string; body: string;
-  state: "open" | "closed"; merged: boolean;
+  state: "open" | "closed"; merged: boolean; headSha: string | null;
 } | null> {
   const open = await githubAuthManager.findPullRequest(owner, repo, head);
-  if (open) return { ...open, state: "open", merged: false };
+  if (open) return { ...open, state: "open", merged: false, headSha: null };
 
   const any = await githubAuthManager.findPullRequestAnyState(owner, repo, head);
   if (!any) return null;
@@ -77,6 +78,7 @@ async function findBranchPr(
     body: any.body,
     state: any.state,
     merged: any.merged_at !== null,
+    headSha: any.head_sha ?? null,
   };
 }
 
@@ -827,6 +829,8 @@ export async function agentCreatePr(
   alreadyExistedReason?: "open" | "merged-not-progressed" | "closed-not-progressed";
   notProgressedBecause?: "base-not-contained" | "no-new-work" | "base-unknown" | "fetch-failed";
   labelWarning?: string;
+  /** The branch's merged PR that the new PR replaces. */
+  supersededMergedPr?: SupersededMergedPr;
 }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
@@ -873,6 +877,7 @@ export async function agentCreatePr(
   const existingPr = await findBranchPr(githubAuthManager, resolved.owner, resolved.repo, head);
   let reArmBase: string | undefined;
   let reArmedPastDeadPr = false;
+  let supersededMergedPr: SupersededMergedPr | undefined;
   if (existingPr) {
     const returnExistingPr = async (
       alreadyExistedReason: "open" | "merged-not-progressed" | "closed-not-progressed",
@@ -931,6 +936,15 @@ export async function agentCreatePr(
     }
     if (progress === "progressed") reArmBase = existingPr.base;
     reArmedPastDeadPr = true;
+    if (existingPr.merged) {
+      supersededMergedPr = {
+        number: existingPr.number,
+        url: existingPr.url,
+        title: existingPr.title,
+        baseBranch: existingPr.base,
+        ...(existingPr.headSha ? { headSha: existingPr.headSha } : {}),
+      };
+    }
   }
 
   // The remote branch can retain old commits after a merged session returns to base.
@@ -1007,6 +1021,7 @@ export async function agentCreatePr(
     owner: resolved.owner,
     repo: resolved.repo,
     labelWarning,
+    ...(supersededMergedPr ? { supersededMergedPr } : {}),
   };
 }
 

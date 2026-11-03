@@ -466,7 +466,7 @@ fail-safe for the manual-`git reset` path and no-ops here (it has already cleare
 | User card — render | `src/client/components/` (new card component) | Render "Branch updated to latest `<base>`" + `was → now` SHAs |
 | Phase 9 — measure | `src/server/orchestrator/services/push-divergence.ts` (new) | `measurePushDivergence` (fetch → `aheadBehind` → `mergeBase` → name remote-only commits) + `formatDivergedPushNotice`, one recovery per shape |
 | Phase 9 — measure | `src/server/shared/git.ts` | `commitSubjects(range, maxCount)` — the primitive that lets the notice NAME the at-risk commits |
-| Phase 9 — report | `src/server/orchestrator/services/auto-push-scheduler.ts` | Measure at the rejection (once per episode, after the fast log line); arm the client's rebase banner only when `baseRebaseIsSafe`; `destructiveGitGuarded` dep so the notice never names a force-push the hook would block |
+| Phase 9 — report | `src/server/orchestrator/services/auto-push-scheduler.ts` | Measure at the rejection (once per episode, after the fast log line); arm the client's rebase banner only when `baseRebaseIsSafe`; `destructiveGitGuarded` dep so the notice never names a force-push the hook would block; park `DIVERGED_PUSH_AGENT_NOTICE` (`push-divergence.ts`) for the agent with the same episode — fixed text with no commit subject, git error or branch name in it, because it heads the next prompt as a command source, and the agent measures the shape itself |
 | Phase 9 — guidance | `src/server/orchestrator/prompts/pull-requests.md`, `shipit-docs/github.md`, `shipit-docs/sessions.md` | Check the branch's state before moving it; never a hand-rolled rebase/reset onto the base |
 | Phase 9 — hook | `docker/agent-hooks/block-branch-ops.mjs` | `git rebase` joins the guard-armed destructive set; in-progress verbs exempt |
 
@@ -674,7 +674,15 @@ the second time they had reported "changes are missing from the merged PR".
   legitimate pre-PR push. HEAD *equal* to `mergedHeadSha` is checked first,
   because a commit is its own ancestor: an agent that opens and merges its own
   PR in one turn ends there with nothing unshipped, so the push is still
-  refused but no notice is written.
+  refused but no notice is written. The refusal also parks an agent copy
+  (`formatMergedPushAgentNotice`, via `appendPendingAgentNotice`) for the next
+  turn's prompt: the transcript notice reaches only the user, so the agent went
+  on reporting the refused commit as shipped. It says it no longer applies if
+  a rewind removed the commit before the next turn. The pre-turn skip prefix
+  gives the same route (merge the base, then `gh pr create`): as the only
+  remedy for `head-moved`, and next to `reset-to-base` for every other clause,
+  since those are reported before the commits are checked. `shipit branch
+  reset-to-base` refuses unshipped commits, and its `--force` would discard them.
 
 **Phase 5 (planning#333) — programmatic messages continue on the fresh base too, and
 the card is unconditional.** The Agent Interface SDK (docs/242) turns a click

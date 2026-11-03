@@ -50,6 +50,19 @@ export function buildPermissionWaitNotice(
 }
 
 /**
+ * docs/193-sensitive-file-permission req 7 — the Claude CLI's timeout result reads like a
+ * broken MCP server, so the next turn learns that no user answered and the call did not run.
+ */
+export function buildUnansweredPermissionNotice(summary: string): string {
+  return "[ShipIt] A tool call in this session waited for the user's approval, and nobody answered "
+    + `before the call ended, so it did not run: \`${summary.replaceAll("`", "'")}\`. No user denied it. `
+    + "If its result said that the MCP tool `permission_prompt` sent no response, that was the Claude "
+    + "CLI's 30-minute limit on the wait, not a fault. If the step is still needed, do it in a way that "
+    + "needs no approval (/shipit-docs/environment.md, \"Writes that wait for the user's approval\"), "
+    + "or tell the user that it needs their approval.";
+}
+
+/**
  * docs/193-sensitive-file-permission req 2 — a pending request returns nothing, so the main
  * agent cannot see that a background subagent's call waits. The running turn gets one line.
  */

@@ -87,7 +87,7 @@ const HELP = `${SHIM_NAME} — agent-driven session management.
 Supported subcommands:
   shipit session create  --prompt-file FILE --title T
                           [--role NAME | --no-role]
-                          [--agent claude|codex|opencode|grok|antigravity] [--model M]
+                          [--agent claude|codex|opencode|opencode2|grok|antigravity] [--model M]
                           [--service S] [--billing-mode sub|key] [--effort E]
                           [--turn ID] [--detached] [--shipit-source] [--approximate] [--json]
                           Name no role and the child inherits what YOU run on —
@@ -97,7 +97,7 @@ Supported subcommands:
                           the child's work is not the role's work.
   shipit session list    [--turn ID] [--json]
   shipit session view    <id> [--json]
-  shipit session message <id> -m "TEXT" [--json]
+  shipit session message <id> -m "TEXT" | --body-file FILE|- [--json]
   shipit session wait    <id...> [--timeout SECONDS] [--any|--all] [--json]
   shipit session notify-on-merge <id> [--json]
   shipit session notify-on-merge --self [--json]
@@ -141,14 +141,16 @@ Supported subcommands:
   shipit session help
 
 Context (docs/324-agent-requested-compaction):
-  shipit compact [INSTRUCTIONS] [--note "TEXT"] [--json]
+  shipit compact [INSTRUCTIONS] [--note "TEXT"] [--user-asked] [--json]
                           Compact YOUR context after this turn ends — at a point
                           you choose, such as between two features. INSTRUCTIONS
                           say what the compaction must keep; your next turn
                           starts with them, word for word. With --note, ShipIt
                           gives you a new turn after the compaction with the note,
                           so you continue on your own; without one, the session
-                          waits for the user. Needs the user's setting
+                          waits for the user. When the user asks you to compact,
+                          run it yourself with --user-asked (no size minimum);
+                          never tell them to type /compact. Needs the user's setting
                           'advanced.agentCompaction' (off by default) — read it
                           with 'shipit settings get advanced.agentCompaction'.
                           'shipit compact --help' has more.
@@ -290,7 +292,7 @@ Compose services (docs/238 — start the services declared in docker-compose.yml
 
 Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   shipit agent run --role NAME [OVERRIDES] --prompt-file FILE [--json]
-  shipit agent run --agent claude|codex|opencode|grok|antigravity --service S --billing-mode sub|key
+  shipit agent run --agent claude|codex|opencode|opencode2|grok|antigravity --service S --billing-mode sub|key
                    --model M --effort E --prompt-file FILE [--json]
   shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
   shipit agent roles  [--json]     the roles configured on this install

@@ -7,12 +7,13 @@ import {
   prepareSessionAgentEnvironment,
   PUSH_AGENT_SECRETS_TIMEOUT_MS,
 } from "./session-agent-env.js";
-import type { AgentId } from "../shared/types.js";
+import type { AgentId, AgentRunParams } from "../shared/types.js";
 import { testDispatch } from "./integration_tests/dispatch-test-helpers.js";
 import { TURN_COMPLETED, type TurnOutcome } from "./turn-settlement.js";
 import { noteTurnReady } from "./turn-stop-request.js";
 import { nextSendOrder } from "./queue-identity.js";
 import { returnQueueOnStop, returnedMessages } from "./queue-return.js";
+import { BACKGROUND_TASK_TTL_MS } from "./background-task-tracker.js";
 
 describe("SessionRunner", () => {
   afterEach(() => {
@@ -53,6 +54,33 @@ describe("SessionRunner", () => {
 
     expect(res.status).toBe("error");
     expect(res.error).toMatch(/credential/);
+    runner.dispose({ force: true });
+  });
+
+  it("runs a local sub-agent under the managed settings, with a sandbox parent's flag", async () => {
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude" as AgentId,
+    });
+    let seen: AgentRunParams | undefined;
+    const agent = Object.assign(new EventEmitter(), {
+      run: (params: AgentRunParams) => { seen = params; agent.emit("auth_required"); },
+      kill: vi.fn(),
+    });
+    runner.setSystemTurnDeps({ agentFactory: () => agent } as never);
+
+    await runner.spawnSubAgent({
+      agentId: "claude" as AgentId,
+      prompt: "review",
+      spawnId: "sp-2",
+      depth: 0,
+      model: "claude-opus-5",
+      sandbox: true,
+    });
+
+    expect(seen?.settingsPath).toBe("/etc/shipit/managed-settings.json");
+    expect(seen?.sandbox).toBe(true);
     runner.dispose({ force: true });
   });
 
@@ -991,6 +1019,31 @@ describe("SessionRunner", () => {
     runner.detachViewer();
     expect(runner.lastViewerDetachAt).toBeGreaterThanOrEqual(firstZero);
     runner.dispose();
+  });
+
+  // planning#710 — the SSE announcement reaches the sidebar only, so the open chat kept its row.
+  it("tells the open chat when the task list is cleared or expires", () => {
+    vi.useFakeTimers();
+    try {
+      const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+      const seen: unknown[] = [];
+      runner.on("message", (m) => { if (m.type === "background_tasks") seen.push(m); });
+      const drained = { type: "background_tasks", sessionId: "s1", count: 0, descriptions: [] };
+      runner.isStreamingActive = true;
+
+      runner.setBackgroundTasks([{ id: "t1", description: "npm test" }]);
+      runner.clearBackgroundTasks();
+      runner.clearBackgroundTasks();
+      expect(seen).toEqual([drained]);
+
+      runner.setBackgroundTasks([{ id: "t2", description: "npm run build" }]);
+      vi.advanceTimersByTime(BACKGROUND_TASK_TTL_MS);
+      expect(seen).toEqual([drained, drained]);
+      expect(runner.backgroundWorkDescriptions).toEqual([]);
+      runner.dispose({ force: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

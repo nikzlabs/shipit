@@ -38,7 +38,11 @@ What this means in practice:
 - **Persistent scratch:** `/persist` is a writable, non-git directory that
   **survives container restarts** (like `/workspace`, but never committed). Put
   files here that should outlive the container without entering the repo — see
-  the filesystem layout below.
+  the filesystem layout below. The user sees its contents in the **Files** tab,
+  under a `/persist` heading below the workspace tree. The Files tab and chat
+  attachments do not follow a symlink out of the file's own root, so a link in
+  `/workspace` that points into `/persist` does not open there — point the user
+  at the real `/persist/…` path instead.
 - **Read-only data:** `/uploads` is mounted **read-only** (docs/172 Gap 6) —
   you can read the user's attached files but not modify or delete them. If you
   need to transform an upload, copy it into `/workspace` or `/persist` first.
@@ -62,8 +66,8 @@ What this means in practice:
 | `/workspace` | Project root. This is the git repo. Your working directory. |
 | `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts and checkout reclaim, but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). It is kept while the session is in use. After the session is archived or finished, ShipIt deletes it when a retention period ends — see [What survives what](#what-survives-what). A Compose service can mount it too: the `persist` volume in [compose.md](compose.md). |
 | `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. It has the same retention period as `/persist`. |
-| `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Write-protected (see below). |
-| `/dep-cache` | Shared download cache across sessions for the same repo: yarn's cache and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). |
+| `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode`, `~/.local/share/opencode2` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Claude's credential and settings files here are write-protected (see below). |
+| `/dep-cache` | Shared download cache across sessions for the same repo: yarn's cache and npm's *package content*. See [The npm cache is split](#the-npm-cache-is-split). Also the place for a lock between those sessions — see [A lock shared by the repo's sessions](#a-lock-shared-by-the-repos-sessions). |
 | `/workspace/.pnpm-store` | **This session's own pnpm store.** Not shared with any other session — see [The pnpm store is yours alone](#the-pnpm-store-is-yours-alone). |
 | `/session-state/npm-cache` | **`npm_config_cache` points here** — your session's own npm cache. Private to this session. |
 | `/session-state/playwright-browsers` | **`PLAYWRIGHT_BROWSERS_PATH` points here** — browser builds for the project's Playwright. Private to this session, writable, and kept across container restarts. See [Playwright](#playwright). |
@@ -160,32 +164,76 @@ some real work rather than finish instantly, and expect a native package to be c
 downloaded in this session; that is the design, not a cache miss. Nothing about it needs
 configuring, and every `pnpm` command still behaves normally.
 
+### A lock shared by the repo's sessions
+
+`/dep-cache` is one directory on the host, mounted into every session of the same repo, so a
+lock file in it is a lock all of those sessions see. Use it when only one session of the repo
+may do something at a time — a test run against a shared external account, a deploy to one
+target, a heavy run the project wants to run alone:
+
+```bash
+flock -o -w 300 /dep-cache/deploy.lock ./scripts/deploy.sh
+```
+
+- **Always pass `-o`.** Without it the command inherits the lock, and so does anything it
+  leaves running — a Gradle or Turbo daemon, a `&` child — which then holds the lock after the
+  command exits and blocks every other session indefinitely.
+- **Always pass `-w <seconds>`.** The wait counts against your shell tool's foreground limit
+  (10 minutes for Claude's Bash tool), so leave room for the command itself, or run the line as
+  a background job (what that does and does not guarantee is under *Session container
+  lifecycle* below). On timeout `flock` exits 1 without running the command.
+- **Never delete or replace the lock file.** Every session of the repo can delete files in
+  `/dep-cache`, and a new file is a new lock: the next session takes it while the old holder is
+  still running, and both commands run at once.
+- **It binds only sessions of this repo that use the same file name.** Other repos' sessions
+  have their own `/dep-cache`, and a command run without `flock` is not stopped. "This repo"
+  means the same remote URL, as written: one repository added once over SSH and once over HTTPS
+  gets two folders, and so two locks.
+- **No mount, no lock.** A sandbox session has no shared directory; its `/dep-cache` is a plain
+  directory inside the container. `mountpoint -q /dep-cache` tells you which you have.
+
+The kernel releases the lock when the process holding it exits, including when ShipIt removes
+the container, so a stopped session never leaves a stale lock behind.
+
 ### Write-protected paths
 
-The Claude agent runs under an explicit permission policy (`/etc/shipit/managed-settings.json`). Editing under `/workspace` and elsewhere is unrestricted, but the file-edit tools (Edit/Write/MultiEdit/NotebookEdit) are **denied** on a few infrastructure paths:
+The Claude agent runs under an explicit permission policy (`/etc/shipit/managed-settings.json`). Editing is otherwise unrestricted, but the file-edit tools (Edit/Write/NotebookEdit) are **denied** on a few infrastructure paths:
 
 - `/etc/shipit/**` — ShipIt's managed settings and hooks (the agent must not rewrite its own permission policy).
-- The OAuth / CLI-config credential files: `~/.claude/.credentials.json`, `~/.claude/auth.json`, `~/.claude.json`, `~/.claude/settings*.json` (and the same files under `/credentials/.claude`, which `~/.claude` symlinks to).
+- The OAuth / CLI-config credential files: `~/.claude/.credentials.json`, `~/.claude/credentials.json`, `~/.claude/auth.json`, `~/.claude/settings*.json`, `~/.claude.json` — and the same files under `/credentials/`, which `~/.claude` and `~/.claude.json` link to.
 
-These are infrastructure, not your project — you should never need to write to them. An attempt is refused with a permission error rather than silently succeeding.
+These are infrastructure, not your project — you should never need to write to them. An attempt is refused with a permission error rather than silently succeeding. A shell command whose target the CLI can read, such as `echo … > ~/.claude/auth.json`, is refused too.
+
+These rules guard against an accidental write. They are not a wall: a shell command whose target the CLI cannot read, such as `sh -c '…'`, is not refused.
 
 Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restricted — the deny list targets the specific credential files, not the whole `~/.claude` tree, precisely so memory updates keep working. Confidentiality of the credentials (reads, exfil) is handled at the network/credential layer, not by these file-edit rules.
 
 ### Writes that wait for the user's approval
 
-Some writes are neither allowed nor refused: the agent CLI asks, and ShipIt shows the user an approve/deny card. **The call returns nothing until the user answers.** With no user at the screen it waits: the Claude CLI ends an unanswered request as denied after 30 minutes. So know what asks before you plan around it, most of all for work you give to subagents.
+**In Auto mode the Claude agent never waits here:** ShipIt allows each such request at once and shows no card. A deny rule above still refuses. The rest of this section is about Plan and Guarded mode.
 
-For the Claude agent (measured with Claude Code 2.1.293):
+Some writes are neither allowed nor refused: the agent CLI asks, and ShipIt shows the user an approve/deny card. **The call returns nothing until the user answers.** With no user at the screen it waits: the Claude CLI ends an unanswered request after 30 minutes, and the call's result says that the MCP tool `permission_prompt` sent no response. Nobody denied it. ShipIt then puts a `[ShipIt]` line at the start of your next turn that names the call and says it did not run. So know what asks before you plan around it, most of all for work you give to subagents.
+
+For the Claude agent (measured with Claude Code 2.1.293 and 2.1.300, in the CLI's `default` mode, which ShipIt now answers with allow in Auto mode):
 
 | Write | Card? |
 |---|---|
 | An ordinary file under `/workspace`, by Write, Edit, or a shell command | No |
 | `/persist` or `/tmp` by its **real path**, by Write, Edit, or a shell command | No |
 | Through a **symlink in `/workspace` that points into `/persist`** | No |
+| `rm -rf` of an ordinary folder in `/workspace`, `/tmp` or `/persist`, also with a glob, a variable or `cd`; and `git config --global` | No |
 | Through a symlink in `/workspace` that points to **another place outside `/workspace`** (measured with `/tmp`), by Write, Edit, or a shell command whose target the CLI can read (`>`, `cp`, `mv`, `mkdir`, `touch`, `tee`, `sed -i`) | **Yes** |
-| A file the CLI treats as sensitive, for example `.env` or `.npmrc` | **Yes** |
+| A path with a **`.claude` segment** — for example `.claude/skills/<name>/SKILL.md`, also through a `.claude/skills` symlink, or a `.claude` folder in `/tmp` — by Write, Edit, `mkdir`, `ln -s` or `rm -rf` | **Yes** |
+| `rm -rf <dir>/.git` | **Yes** |
+| A file the CLI treats as sensitive, for example `.env`, `.npmrc`, `.gitconfig` or `.bashrc`, also when a shell command writes or deletes it (`rm -f ~/.gitconfig`, `echo … >> .bashrc`) | **Yes** |
 
 So a scratch directory that you move to `/persist` and link back into the workspace stays writable through the link. For any other place outside the workspace, use the real path, not a symlink in the workspace.
+
+For the `.claude`, `.git` and `.gitconfig` requests, an allow rule that names the path did not remove the request in any case that was measured, so do not expect a setting to remove them. Use a form that does not ask:
+
+- **Skills:** keep a Claude skill's files in `.agents/skills/<name>/`, with `.claude/skills` a symlink to `../.agents/skills`, and edit them at the `.agents/skills/` path. A write through `.claude/skills/` asks, and so does making that symlink, one time (see `/shipit-docs/skills.md`).
+- **Git config:** for a scratch repository, use `git -C <dir> config …` or `git config --file <path> …`. `git config --global` changes this session's own git config (`$GIT_CONFIG_GLOBAL`). Do not write or delete a `.gitconfig` file by its path.
+- **Cleanup:** to remove a scratch clone, remove its folder, not its `.git` folder.
 
 When a **background subagent** makes a call that asks, you get no result and no error from it. After two minutes ShipIt puts a `[ShipIt]` line in your running turn that lists the calls that wait. You can stop that subagent, or get its work done in a way that needs no approval. The line needs a turn of yours that runs and the user's live steering setting to be on: if your turn ended while you waited for the subagents, the line comes in your next turn when the call still waits then. A call of your own that asks keeps you inside the call until it has an answer, and so does a call of a subagent that you did not start in the background.
 
@@ -196,12 +244,13 @@ This section is about the Claude agent. The other harnesses were not measured.
 - **Node.js** (with npm; `pnpm` and `yarn` are available via corepack — it reads the repo's `packageManager` field and fetches the pinned version). The container bakes Node 24, but **a repo's own Node pin wins** — see [Node version](#node-version) below.
 - **git**, **git-lfs**, **curl** (see [Git LFS](#git-lfs) below)
 - **python3**, **make**, **g++** (for native npm addons)
-- **Agent CLIs** — the harnesses this install selected (`claude` / Claude Code, `codex` / Codex and `opencode` / OpenCode are installed by default; `grok` / Grok Build and `antigravity` / Antigravity are available but off by default, and an install can narrow or widen the set) are installed; ShipIt invokes whichever the user selected for the session
+- **Agent CLIs** — the harnesses this install selected (`claude` / Claude Code, `codex` / Codex and `opencode` / OpenCode are installed by default; `opencode2` / OpenCode 2, `grok` / Grok Build and `antigravity` / Antigravity are available but off by default, and an install can narrow or widen the set) are installed; ShipIt invokes whichever the user selected for the session. With both OpenCode harnesses installed, `opencode` is OpenCode 1 and `opencode2` is OpenCode 2.
 
   Codex authentication has two modes — they are not interchangeable:
 
   - **ChatGPT subscription** (preferred). The user signs in with `Sign in with ChatGPT` in the UI; the credentials are written to `~/.codex/auth.json` (a symlink onto the credentials volume). Bills against their ChatGPT plan / Codex credits.
   - **OpenCode with ChatGPT** reuses the same connected OpenAI account and quota. The image keeps the Codex CLI as a login and renewal dependency even when only the OpenCode harness is selected. This does not add Codex to the session picker. It gives OpenCode only an access token, account identity, and expiry; Codex's account machinery owns renewal. Managed OpenCode runs use a private XDG data root under `HOME/.local/share/opencode/shipit-data`. Terminal OpenCode logins do not configure this route. Use ShipIt's account settings and model selection; do not copy auth files. Existing conversation state is migrated automatically.
+  - **OpenCode 2 with ChatGPT** uses the same connected account the same way. OpenCode 2 keeps everything under its own root, `HOME/.local/share/opencode2` — data in `shipit-data`, state in `shipit-state`, config in `shipit-config` — and never reads OpenCode 1's. Each turn ShipIt starts a private `opencode2 serve` and imports the access token into its database. A bare `opencode2` in the terminal uses the CLI's default root, which is OpenCode 1's, and migrates it: do not run it for the user's work.
   - **`OPENAI_API_KEY` env var**. Bills against their OpenAI Platform account. ShipIt only injects this into the agent process when no ChatGPT login is present — when both are configured, the env var is stripped so the user isn't double-billed.
 - **Playwright** — the built-in browser behind your browser tools, and the Chromium builds of the current stable Playwright release for a project's own tests. See [Playwright](#playwright) below.
 - **Android build toolchain** — JDK 17 (`JAVA_HOME=/opt/java`), the Android SDK (`ANDROID_SDK_ROOT=/opt/android-sdk` — `sdkmanager`, `adb`, platforms 34/35, build-tools), and Gradle 8.7. Always present, so any Android/Gradle repo builds, lints, and runs JVM/snapshot tests with no per-repo setup (no `shipit.yaml` Android fields). See [android.md](android.md).

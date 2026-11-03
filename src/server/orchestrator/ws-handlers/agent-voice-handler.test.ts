@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SessionRunner } from "../session-runner.js";
-import { deriveAskHeadline, derivePlanHeadline, observeVoiceNotes } from "./agent-voice-handler.js";
+import { deriveAskHeadline, derivePermissionHeadline, derivePlanHeadline, observeVoiceNotes } from "./agent-voice-handler.js";
 import type { ClaudeContentBlockToolUse } from "../../shared/types.js";
 
 const tool = (name: string, input: unknown): ClaudeContentBlockToolUse =>
@@ -31,6 +31,19 @@ describe("derivePlanHeadline", () => {
 
   it("falls back to a generic line for an empty plan", () => {
     expect(derivePlanHeadline({ plan: "" })).toBe("I've drafted a plan — want to review it?");
+  });
+});
+
+describe("derivePermissionHeadline", () => {
+  it("says what kind of call waits, for both Claude's and Codex's tool names", () => {
+    expect(derivePermissionHeadline("Bash")).toBe("I need your approval to run a command — approve or deny it on screen.");
+    expect(derivePermissionHeadline("shell")).toContain("to run a command");
+    expect(derivePermissionHeadline("Write")).toContain("to change a file");
+    expect(derivePermissionHeadline("apply_patch")).toContain("to change a file");
+  });
+
+  it("never voices a tool name it does not know", () => {
+    expect(derivePermissionHeadline("mcp__x__y")).toBe("I need your approval for my next step — approve or deny it on screen.");
   });
 });
 

@@ -85,6 +85,9 @@ export class AgentController {
   /** docs/327 — the declared MCP servers the running agent process holds. */
   private liveServiceMcp: ServiceMcpServer[] = [];
 
+  // Undefined is ShipIt's Auto mode, as on the wire.
+  private permissionMode: PermissionMode | undefined;
+
   // Delivery identity belongs to the turn, not the resident process that can outlive it.
   private turnDeliveryId: string | undefined;
   // The id of a prompt that went in behind a turn the CLI started; the next turn takes it.
@@ -118,6 +121,13 @@ export class AgentController {
 
   get currentAgentId(): AgentId | undefined {
     return this.agent?.agentId;
+  }
+
+  // docs/193-sensitive-file-permission req 9 — ShipIt's Auto mode runs the Claude CLI in its
+  // "default" mode, which still asks for sensitive files and symlinks out of the workspace.
+  get approvesEveryCall(): boolean {
+    return this.agent?.agentId === "claude"
+      && (this.permissionMode === undefined || this.permissionMode === "auto");
   }
 
   async subagentCaller(toolUseId: string): Promise<PermissionSubagent | undefined> {
@@ -169,6 +179,7 @@ export class AgentController {
         };
         const agent = this.deps.agentFactory(agentId);
         this.agent = agent;
+        this.permissionMode = params.permissionMode;
         this.wireAgentEvents(agent, runToken);
         agent.setPermissionRequester?.((input) => this.deps.permissionBroker.request(input));
         const mcpWrite = this.deps.mcpConfig.invokeAgentMcpWriter(agent, params);
@@ -238,10 +249,10 @@ export class AgentController {
       return { cancelled: true };
     });
 
-    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; serviceRouting?: ServiceRouting; homeDir?: string; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number; toolsOff?: boolean; credentialSecret?: string; modelList?: unknown } }>(
+    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; serviceRouting?: ServiceRouting; homeDir?: string; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number; toolsOff?: boolean; sandbox?: boolean; credentialSecret?: string; modelList?: unknown } }>(
       "/agent/spawn",
       async (request, reply) => {
-        const { agentId, prompt, spawnId, depth, model, serviceRouting, homeDir, reasoningEffort, timeoutMs, maxOutputChars, toolsOff, credentialSecret } = request.body ?? {};
+        const { agentId, prompt, spawnId, depth, model, serviceRouting, homeDir, reasoningEffort, timeoutMs, maxOutputChars, toolsOff, sandbox, credentialSecret } = request.body ?? {};
         if (!agentId || typeof prompt !== "string" || !spawnId) {
           console.warn("[sub-agent] worker rejected spawn: agentId, prompt, and spawnId are required");
           return reply.code(400).send({ error: "agentId, prompt, and spawnId are required" });
@@ -274,6 +285,7 @@ export class AgentController {
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(maxOutputChars !== undefined ? { maxOutputChars } : {}),
           ...(toolsOff !== undefined ? { toolsOff } : {}),
+          ...(sandbox === true ? { sandbox: true } : {}),
         };
         const handle = runAgentToCompletion(agent, runOpts, Date.now());
         this.spawnedAgents.set(spawnId, handle);
@@ -518,6 +530,12 @@ export class AgentController {
 
   // planning#700 — a restarted orchestrator restores it, so it follows the CLI's own changes too.
   private notePermissionMode(mode: PermissionMode | undefined): void {
+    this.permissionMode = mode;
+    // A card opened in Plan or Guarded mode must not hold its call once Auto applies.
+    if (this.approvesEveryCall) {
+      const broker = this.deps.permissionBroker;
+      for (const id of broker.unansweredIds) broker.resolve(id, { behavior: "allow" });
+    }
     const resident = this.residentSpawn;
     if (!resident?.spawn) return;
     const { permissionMode: _previous, ...rest } = resident.spawn;

@@ -51,6 +51,7 @@ import { parseGitHubRemote, repoId } from "./git-utils.js";
 import { mergeMethodFor } from "./agent-merge-claims.js";
 import { resolvePrTarget, gitCredentialAllowed, mergeDisposition, agentMergeOwnership } from "./pr-target.js";
 import { recordWitnessedPrCreate } from "./services/pr-provenance.js";
+import { reArmForPrOpenedPastMerge } from "./services/pr-rearm.js";
 import type { FastifyReply } from "fastify";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
@@ -269,6 +270,16 @@ export async function registerGitHubRoutes(
           runnerRegistry: deps.runnerRegistry,
           ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
           chatHistory: deps.chatHistoryManager,
+        });
+        // Before the provenance write: clearMerged also clears the recorded PR number.
+        reArmForPrOpenedPastMerge({
+          deps: {
+            sessionManager,
+            sseBroadcast: deps.sseBroadcast,
+            ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
+          },
+          sessionId: request.params.id,
+          created: result,
         });
         recordWitnessedPrCreate(sessionManager, request.params.id, result);
         if (deps.prStatusPoller && session.remoteUrl) {
@@ -1170,6 +1181,7 @@ export async function registerGitHubRoutes(
         }
         : null;
       let turn: TurnToken | null = null;
+      let settlementHeld = false;
       try {
       if (repoBound) {
         let currentBranch: string | null;
@@ -1279,7 +1291,9 @@ export async function registerGitHubRoutes(
                   return `Not merged — PR #${num} is no longer the pull request ShipIt opened for `
                     + "this session. Nothing was merged.";
                 }
-                if (!claimDeps.claims.claim({
+                // Held until the request resolves: the turn can end before GitHub answers.
+                settlementHeld = claimDeps.claims.beginSettlement(request.params.id);
+                if (!settlementHeld || !claimDeps.claims.claim({
                   sessionId: request.params.id,
                   repoId: claimRepoId,
                   prNumber: num,
@@ -1348,6 +1362,8 @@ export async function registerGitHubRoutes(
           return;
         }
         return { success: false, message: `Merge failed: ${getErrorMessage(err)}` };
+      } finally {
+        if (settlementHeld) claimDeps?.claims.endSettlement(request.params.id);
       }
     },
   );

@@ -2410,5 +2410,96 @@ describe("session status card slot", () => {
       const content = container.querySelector("[data-chat-transcript]")!.lastElementChild!;
       expect(content.lastElementChild).toBe(screen.getByTestId("session-status-card"));
     });
+
+    // docs/337-waiting-card-stays-last — a turn that ran while the question waited.
+    const inboxTurn = (): ChatMessage[] => [
+      { role: "user", text: "New messages from other sessions.", whileAnswerWaits: true } as ChatMessage,
+      msg("assistant", "A child reported; the question still waits."),
+    ];
+
+    it("keeps the question last below a turn that ran while it waited (req 1)", () => {
+      seed(status);
+      const { container } = render(<MessageList messages={[...asked, ...inboxTurn()]} isLoading={false} />);
+
+      expect(precedes(
+        screen.getByText("A child reported; the question still waits."),
+        screen.getByTestId("option-Redis"),
+      )).toBe(true);
+      const content = container.querySelector("[data-chat-transcript]")!.lastElementChild!;
+      expect(content.lastElementChild!.contains(screen.getByTestId("option-Redis"))).toBe(true);
+    });
+
+    it("makes the older card read-only once the agent asks again (req 2)", () => {
+      const onAnswerQuestion = vi.fn();
+      const again = question({
+        toolUse: [{ type: "tool_use", id: "ask-2", name: "AskUserQuestion", input: ASK_INPUT }],
+      });
+      render(
+        <MessageList
+          messages={[...asked, ...inboxTurn(), again]}
+          isLoading={false}
+          onAnswerQuestion={onAnswerQuestion}
+        />,
+      );
+
+      const [older, newer] = screen.getAllByTestId("ask-user-question");
+      expect(within(older).getByTestId("asked-again")).toHaveTextContent("Asked again below");
+      expect(within(older).queryByTestId("submit-answer")).toBeNull();
+      expect(within(older).queryByTestId("option-other")).toBeNull();
+      expect(within(older).getByTestId("option-Redis")).toBeDisabled();
+      expect(within(newer).queryByTestId("asked-again")).toBeNull();
+
+      fireEvent.click(within(newer).getByTestId("option-Redis"));
+      fireEvent.click(within(newer).getByTestId("submit-answer"));
+      expect(onAnswerQuestion).toHaveBeenCalledWith("ask-2", { "0": "Redis" }, "Redis");
+    });
+
+    it("makes an older plan read-only once a newer card follows it (req 2)", () => {
+      const plan: ChatMessage = {
+        role: "assistant",
+        text: "",
+        toolUse: [{ type: "tool_use", id: "plan-1", name: "ExitPlanMode", input: { plan: "# Do it" } }],
+      };
+      render(
+        <MessageList
+          messages={[msg("user", "plan it"), plan, ...inboxTurn(), question()]}
+          isLoading={false}
+        />,
+      );
+
+      const card = screen.getByTestId("plan-approval");
+      expect(within(card).getByTestId("asked-again")).toHaveTextContent("Asked again below");
+      expect(within(card).queryByTestId("accept-plan")).toBeNull();
+      expect(within(card).queryByTestId("suggest-changes")).toBeNull();
+    });
+
+    it("keeps every question of one message answerable when a grouped tool splits them", () => {
+      const second = {
+        questions: [{ question: "And the queue?", header: "Queue", options: [{ label: "SQS", description: "Managed" }], multiSelect: false }],
+      };
+      const both = question({
+        toolUse: [
+          { type: "tool_use", id: "read-1", name: "Read", input: { file_path: "cache.ts" } },
+          { type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: ASK_INPUT },
+          { type: "tool_use", id: "ask-2", name: "AskUserQuestion", input: second },
+        ],
+      });
+      render(<MessageList messages={[msg("user", "decide"), both]} isLoading={false} />);
+
+      const cards = screen.getAllByTestId("ask-user-question");
+      expect(cards).toHaveLength(2);
+      for (const card of cards) expect(within(card).queryByTestId("asked-again")).toBeNull();
+    });
+
+    it("leaves an answered older card in its answered state", () => {
+      const answered = question({ toolResults: [{ toolUseId: "ask-1", content: "Redis" }] });
+      const again = question({
+        toolUse: [{ type: "tool_use", id: "ask-2", name: "AskUserQuestion", input: ASK_INPUT }],
+      });
+      render(<MessageList messages={[msg("user", "decide"), answered, msg("user", "ask again"), again]} isLoading={false} />);
+
+      const [older] = screen.getAllByTestId("ask-user-question");
+      expect(within(older).queryByTestId("asked-again")).toBeNull();
+    });
   });
 });

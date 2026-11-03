@@ -120,6 +120,13 @@ export function PreviewFrame({
   const [slotCanGoBack, setSlotCanGoBack] = useState<Map<string, boolean>>(new Map());
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const [portSelectorOpen, setPortSelectorOpen] = useState(false);
+  const [maximized, setMaximized] = useState(false);
+
+  // An Escape that a menu or dialog already handled closes only that layer.
+  // Keys typed inside the iframe go to the previewed page, never to this window.
+  useEventListener(maximized ? window : null, "keydown", (e) => {
+    if (e.key === "Escape" && !e.defaultPrevented) setMaximized(false);
+  });
 
   const {
     deviceContainerRef,
@@ -696,7 +703,11 @@ export function PreviewFrame({
   }
 
   return (
-    <div className={`flex flex-col h-full ${autoFixEnabled ? "ring-2 ring-(--color-autofix) ring-inset" : ""}`}>
+    // Maximizing restyles this root in place. Moving the iframe in the DOM (a
+    // portal, a modal) would reload it and lose the page's state (docs/089).
+    <div
+      className={`flex flex-col ${maximized ? "fixed inset-0 z-40 bg-(--color-bg-primary)" : "h-full"} ${autoFixEnabled ? "ring-2 ring-(--color-autofix) ring-inset" : ""}`}
+    >
       {/* Top bar — always rendered for layout stability */}
       <PreviewToolbar
         isRunning={isRunning}
@@ -750,6 +761,8 @@ export function PreviewFrame({
         activeSlotUrl={activeSlotUrl}
         previewPath={activePath}
         previewFullUrl={activeFullUrl}
+        maximized={maximized}
+        onToggleMaximized={() => setMaximized((m) => !m)}
       />
 
       {/* Missing-required-secrets banner (087 Phase 2). One row at the top of

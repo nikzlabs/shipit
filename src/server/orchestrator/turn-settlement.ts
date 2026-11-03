@@ -14,6 +14,17 @@ export interface TurnEnd {
   detail?: string;
 }
 
+/**
+ * planning#222 — why a successful turn ended with no reply and no tool call, as
+ * `sessions.last_turn_empty_reason` keeps it.
+ */
+export type EmptyTurnReason =
+  | "stopped"
+  | "compaction"
+  | "no-model-call"
+  | "prompt-not-echoed"
+  | "model-returned-nothing";
+
 export type TurnOutcomeStatus =
   | "completed"
   | "errored"

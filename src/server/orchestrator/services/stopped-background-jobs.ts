@@ -8,6 +8,7 @@ import {
   type InProgressPersister,
 } from "../chat-card-persistence.js";
 import { loadPrompt, fillPromptTokens } from "../load-prompt.js";
+import { listBackgroundJobs } from "../background-job-list.js";
 import { informingWakeMissed, type TurnAdmission } from "../turn-settlement.js";
 import { getErrorMessage } from "../validation.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
@@ -18,9 +19,6 @@ const WAKE_ACTIVITY = "Continuing after background work was stopped…";
 
 // Names the wake's own turn at its end, also after a restart: that turn starts no second wake.
 const WAKE_DELIVERY_PREFIX = "stopped-background-jobs:";
-
-const MAX_JOBS_LISTED = 10;
-const MAX_JOB_CHARS = 300;
 
 export interface StoppedBackgroundJobsDeps extends WakeSessionDeps {
   chatHistoryManager: InProgressPersister;
@@ -50,18 +48,9 @@ export type StoppedBackgroundJobsDecision =
         | "wake-failed";
     };
 
-function listJobs(jobs: readonly string[]): string[] {
-  const lines = jobs.slice(0, MAX_JOBS_LISTED).map((job) => {
-    const oneLine = job.replace(/\s+/g, " ").trim();
-    return oneLine.length > MAX_JOB_CHARS ? `${oneLine.slice(0, MAX_JOB_CHARS)}…` : oneLine;
-  });
-  const more = jobs.length - lines.length;
-  return more > 0 ? [...lines, `and ${more} more`] : lines;
-}
-
 export function buildStoppedBackgroundJobsPrompt(jobs: readonly string[]): string {
   return fillPromptTokens(WAKE_PROMPT, {
-    JOBS: listJobs(jobs).map((job) => `- ${job}`).join("\n"),
+    JOBS: listBackgroundJobs(jobs).map((job) => `- ${job}`).join("\n"),
   }).trimEnd();
 }
 
@@ -158,7 +147,7 @@ export async function reportStoppedBackgroundJobs(
 
 function userSummary(jobs: readonly string[]): string {
   return "Background work that the agent started was still running when its message ended, and "
-    + `most probably did not finish: ${listJobs(jobs).join("; ")}.`;
+    + `most probably did not finish: ${listBackgroundJobs(jobs).join("; ")}.`;
 }
 
 // Append, never set: a notice recorded meanwhile must survive this.

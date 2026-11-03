@@ -53,7 +53,7 @@ describe("installer script ↔ catalogue", () => {
     const setup = fs.readFileSync(path.join(REPO_ROOT, file), "utf8");
     const match = /^HARNESS_ROWS=\(\n([\s\S]*?)^\)/m.exec(setup);
     expect(match, `HARNESS_ROWS not found in ${file}`).toBeTruthy();
-    const offered = [...(match?.[1] ?? "").matchAll(/^\s*"([a-z]+)\|/gm)]
+    const offered = [...(match?.[1] ?? "").matchAll(/^\s*"([a-z0-9]+)\|/gm)]
       .map((m) => m[1])
       .sort();
     expect(offered).toEqual(HARNESSES.map((h) => h.id).slice().sort());
@@ -137,13 +137,20 @@ set -eu
 [ "\${1:-}" = "ci" ] || exit 0
 mkdir -p node_modules/@anthropic-ai/claude-code node_modules/@anthropic-ai/claude-code-linux-x64
 mkdir -p node_modules/@openai/codex node_modules/@openai/codex-linux-x64
-mkdir -p node_modules/opencode node_modules/opencode-linux-x64
+mkdir -p node_modules/opencode-ai/bin node_modules/opencode-linux-x64
+mkdir -p node_modules/@opencode/cli/bin node_modules/@opencode/cli-linux-x64
 mkdir -p node_modules/@xai-official/grok/bin "node_modules/@xai-official/grok-${PLATFORM}/bin"
 mkdir -p node_modules/@playwright/mcp node_modules/.bin
-for b in claude codex opencode playwright-mcp; do
+for b in claude codex playwright-mcp; do
   printf '#!/bin/sh\\necho %s\\n' "$b" > "node_modules/.bin/$b"
   chmod 0755 "node_modules/.bin/$b"
 done
+printf '#!/bin/sh\\necho 1.19.0\\n' > node_modules/opencode-ai/bin/opencode.exe
+printf '#!/bin/sh\\necho opencode v2.1.1\\n' > node_modules/@opencode/cli/bin/opencode.exe
+chmod 0755 node_modules/opencode-ai/bin/opencode.exe node_modules/@opencode/cli/bin/opencode.exe
+# Measured: npm links @opencode/cli's \`opencode\` bin over v1's whenever both are installed.
+ln -sfn ../@opencode/cli/bin/opencode.exe node_modules/.bin/opencode
+ln -sfn ../@opencode/cli/bin/opencode.exe node_modules/.bin/opencode2
 printf '#!/bin/sh\\necho "the grok launcher must never run" >&2\\nexit 1\\n' > node_modules/.bin/grok
 chmod 0755 node_modules/.bin/grok
 printf '%s' "${grokBr}" | base64 -d > "node_modules/@xai-official/grok-${PLATFORM}/bin/grok.br"
@@ -237,6 +244,33 @@ ${opts?.breakBin ? `printf '#!/bin/sh\\nexit 1\\n' > "node_modules/.bin/${opts.b
     expect(exists(path.join(binDir, "codex"))).toBe(true);
     expect(exists(path.join(agentCliDir, "node_modules/@openai/codex"))).toBe(true);
     expect(exists(path.join(binDir, "claude"))).toBe(false);
+  });
+
+  it("keeps OpenCode 1 on the `opencode` name when both OpenCode harnesses are installed (docs/269 req 2)", () => {
+    run("opencode,opencode2");
+    expect(declared()).toEqual(["opencode", "opencode2"]);
+    expect(execFileSync(path.join(binDir, "opencode"), ["--version"], { encoding: "utf8" })).toBe("1.19.0\n");
+    expect(execFileSync(path.join(binDir, "opencode2"), ["--version"], { encoding: "utf8" })).toBe("opencode v2.1.1\n");
+    const containerPath = `${path.join(agentCliDir, "node_modules/.bin")}${path.delimiter}${binDir}`;
+    expect(execFileSync("/bin/sh", ["-c", "opencode --version"], { encoding: "utf8", env: { PATH: containerPath } }))
+      .toBe("1.19.0\n");
+  });
+
+  it("prunes OpenCode 2's scoped packages without touching OpenCode 1", () => {
+    run("opencode");
+    expect(exists(path.join(agentCliDir, "node_modules/@opencode/cli"))).toBe(false);
+    expect(exists(path.join(agentCliDir, "node_modules/@opencode/cli-linux-x64"))).toBe(false);
+    expect(exists(path.join(agentCliDir, "node_modules/.bin/opencode2"))).toBe(false);
+    expect(exists(path.join(binDir, "opencode2"))).toBe(false);
+    expect(execFileSync(path.join(binDir, "opencode"), ["--version"], { encoding: "utf8" })).toBe("1.19.0\n");
+  });
+
+  it("leaves no `opencode` name behind on an OpenCode 2-only install", () => {
+    run("opencode2");
+    expect(exists(path.join(agentCliDir, "node_modules/opencode-ai"))).toBe(false);
+    expect(exists(path.join(agentCliDir, "node_modules/.bin/opencode"))).toBe(false);
+    expect(exists(path.join(binDir, "opencode"))).toBe(false);
+    expect(exists(path.join(binDir, "codex"))).toBe(true);
   });
 
   it("prunes a deselected harness, its platform packages and its bins", () => {

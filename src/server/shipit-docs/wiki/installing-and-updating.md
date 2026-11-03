@@ -76,8 +76,8 @@ and never write it to a file, a log, or a commit.
 ### Which agent CLIs
 
 A harness is an agent CLI plus the adapter that normalizes its events. The
-default set is **Claude Code, Codex, and OpenCode**; Grok Build and Antigravity
-are offered but not preselected, so an update never adds a CLI to the images
+default set is **Claude Code, Codex, and OpenCode**; OpenCode 2, Grok Build and
+Antigravity are offered but not preselected, so an update never adds a CLI to the images
 behind the user's back. Narrowing the set is worth it if image size or build
 time matters.
 
@@ -182,6 +182,15 @@ idle, is the whole fix.
 `/opt/shipit`, honouring the channel recorded in `/opt/shipit/.release-channel`.
 Both are spelled out in `deployment/README.md`; run them for the user rather
 than pasting them at them.
+
+**A ShipIt update does not update `cloudflared`.** On a VPS with the Cloudflare
+tunnel, the tunnel client is a host package that neither the updater nor
+cloudflared itself upgrades. When a Cloudflare advisory asks for a newer version,
+upgrade it with apt and restart the `cloudflared` service; a host set up before
+the installer used Cloudflare's apt repository needs that repository added first.
+`deployment/README.md` → *Troubleshooting* has both steps. With a shell on the host
+(an SSH destination granted to the session), do it for the user; without one,
+say that the upgrade needs a shell on that machine.
 
 ## Reaching it from a phone or another machine
 

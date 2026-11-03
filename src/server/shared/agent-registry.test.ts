@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentRegistry, ALLOWED_ENV_KEYS, isAllowedAgentEnvKey, getAgentCapabilities } from "./agent-registry.js";
+import path from "node:path";
+import os from "node:os";
+import fs from "node:fs";
+import { AgentRegistry, ALLOWED_ENV_KEYS, agentIdForModel, isAllowedAgentEnvKey, getAgentCapabilities } from "./agent-registry.js";
 
 const ORIGINAL_OPENAI_KEY = process.env.OPENAI_API_KEY;
 
@@ -133,7 +136,7 @@ describe("AgentRegistry / installed set (docs/252 phase 9, req 14)", () => {
     });
     await registry.detect();
 
-    expect(registry.list().map((a) => a.id).sort()).toEqual(["antigravity", "claude", "codex", "grok", "opencode"]);
+    expect(registry.list().map((a) => a.id).sort()).toEqual(["antigravity", "claude", "codex", "grok", "opencode", "opencode2"]);
   });
 });
 
@@ -193,5 +196,35 @@ describe("isAllowedAgentEnvKey (docs/088)", () => {
     expect(isAllowedAgentEnvKey("RANDOM_SECRET")).toBe(false);
     expect(isAllowedAgentEnvKey("mcp_linear_KEY")).toBe(false);
     expect(isAllowedAgentEnvKey("MCP__linear__KEY")).toBe(false);
+  });
+});
+
+describe("agentIdForModel (docs/269 req 5)", () => {
+  // Kimi K3 is a Zen row both OpenCode harnesses carry and no other harness does.
+  it("picks OpenCode 2 for a model both OpenCode harnesses run", () => {
+    expect(agentIdForModel("kimi-k3", ["claude", "opencode", "opencode2"])).toBe("opencode2");
+  });
+
+  it("does not name OpenCode 2 on an install that lacks it", () => {
+    expect(agentIdForModel("kimi-k3", ["claude", "codex", "opencode"])).toBe("opencode");
+  });
+
+  it("falls back to the binaries on PATH when there is no install report", () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "agent-for-model-bin-"));
+    try {
+      fs.writeFileSync(path.join(bin, "opencode"), "#!/bin/sh\n", { mode: 0o755 });
+      vi.stubEnv("PATH", bin);
+      expect(agentIdForModel("kimi-k3", null)).toBe("opencode");
+      fs.writeFileSync(path.join(bin, "opencode2"), "#!/bin/sh\n", { mode: 0o755 });
+      expect(agentIdForModel("kimi-k3", null)).toBe("opencode2");
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  it("still names an owner when no owner is installed, and none for an unknown model", () => {
+    expect(agentIdForModel("kimi-k3", ["claude"])).toBe("opencode2");
+    expect(agentIdForModel("no-such-model", null)).toBeUndefined();
   });
 });

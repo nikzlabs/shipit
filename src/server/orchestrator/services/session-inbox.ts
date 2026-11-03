@@ -1,10 +1,12 @@
 import type { SessionInfo, SessionMessageOrigin } from "../../shared/types.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
+import type { TurnOutcome } from "../turn-settlement.js";
 import type { InboxMessage, NewInboxMessage, SessionInboxStore } from "../session-inbox-store.js";
 import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
 import {
   buildInboxNotice,
   containerPredatesShipIt,
+  INBOX_QUESTION_TURN_TEXT,
   INBOX_TURN_TEXT,
   renderInboxMessage,
 } from "./session-inbox-notice.js";
@@ -57,7 +59,7 @@ function isArchived(session: SessionInfo): boolean {
   return session.archived === true || session.userArchived === true;
 }
 
-/** A turn that this started for the messages up to `through`, with no receipt yet. */
+/** A turn that this started for the messages up to `through`, which are not read yet. */
 interface StartedTurn {
   through: number;
   /** The earliest time for the next start. */
@@ -158,11 +160,11 @@ export class SessionInbox {
       return LATER;
     }
     const earlier = this.started.get(sessionId);
-    if (earlier && owed.since >= earlier.through) {
-      // That turn got its receipt, or its messages were read: what is owed now is new.
+    if (earlier && owed.through > earlier.through) {
+      // A message newer than that turn told of: it does not wait for that turn's delay.
       this.started.delete(sessionId);
     } else if (earlier?.unobserved && opts.turnEnded) {
-      // That turn has ended and its notice has no receipt: it did not reach the agent.
+      // That turn has ended and its messages are unread: it did not get the agent to read them.
       this.noteFailedStart(sessionId, owed.through);
     }
     const session = sessionManager.get(sessionId);
@@ -209,17 +211,35 @@ export class SessionInbox {
     if (this.starting.has(sessionId)) return LATER;
     const wait = this.started.get(sessionId);
     if (wait && Date.now() < wait.at) return LATER;
+    // A message the user approved makes the turn their response (docs/322 req 6).
+    const passesQuestion = (): boolean => sessionManager.isAwaitingAnswer(sessionId) && owed.automatic;
+    const questionWaits = passesQuestion();
 
     // Taken before the first await, so two triggers cannot both start the session.
     this.starting.add(sessionId);
+    let changed = false;
     try {
       if (await this.hasLiveWork(sessionId, live)) return LATER;
       // The agent can have read its inbox while the probe ran.
       if (!store.owed(sessionId)) return LATER;
       const handle = await wakeSessionWithTurn(this.deps, session, {
-        text: INBOX_TURN_TEXT,
+        text: questionWaits ? INBOX_QUESTION_TURN_TEXT : INBOX_TURN_TEXT,
         activity: "Reading messages from other sessions…",
-        startOrRefuse: { automatic: owed.automatic },
+        startOrRefuse: { automatic: owed.automatic, passesQuestionHold: true },
+        // A reply or an approved message during the boot changes the turn; it is told again below.
+        stillWanted: () => {
+          const now = store.owed(sessionId);
+          changed = !!now && (now.automatic !== owed.automatic || passesQuestion() !== questionWaits);
+          return !!now && !changed;
+        },
+        // docs/322 req 2 — once the agent had the turn, the batch is saved as told, so that no retry
+        // and no restart tells it again while the question waits: each such turn could ask it again.
+        // The messages stay unread, so the user's reply carries the notice.
+        ...(questionWaits
+          ? { onSettled: (outcome: TurnOutcome) => {
+              if (outcome.status === "completed") store.markNotified(sessionId, owed.through);
+            } }
+          : {}),
       });
       if (handle.admitted !== "started") return LATER;
       // An earlier start whose end was never seen did not reach the agent either.
@@ -238,6 +258,7 @@ export class SessionInbox {
       return { told: "failed", error: err instanceof Error ? err.message : String(err) };
     } finally {
       this.starting.delete(sessionId);
+      if (changed) void this.tellSafely(sessionId);
     }
   }
 

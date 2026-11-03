@@ -181,6 +181,59 @@ describe("pendingAnswerElementIndex", () => {
     expect(elements[[...claimed.keys()][0]].kind).toBe("standalone-tool");
   });
 
+  describe("a turn that ran while the question waited (docs/337-waiting-card-stays-last)", () => {
+    const inboxTurn = (): ChatMessage[] => [
+      { role: "user", text: "New messages from other sessions.", whileAnswerWaits: true } as ChatMessage,
+      {
+        role: "assistant",
+        text: "",
+        toolUse: [{ type: "tool_use", id: "bash-1", name: "Bash", input: { command: "shipit session inbox" } }],
+        toolResults: [{ toolUseId: "bash-1", content: "1 message" }],
+      } as ChatMessage,
+      { role: "assistant", text: "A child reported. The question still waits." } as ChatMessage,
+    ];
+
+    it("keeps the waiting card at the end, below that turn's rows (req 1)", () => {
+      const messages = [{ role: "user", text: "decide" } as ChatMessage, ask(), ...inboxTurn()];
+      expect(find(messages)).toBe(1);
+    });
+
+    it("steps over two such turns in a row", () => {
+      const messages = [{ role: "user", text: "decide" } as ChatMessage, ask(), ...inboxTurn(), ...inboxTurn()];
+      expect(find(messages)).toBe(1);
+    });
+
+    it("finds the card the agent asked again in that turn", () => {
+      const again = ask({ toolUse: [{ type: "tool_use", id: "ask-2", name: "AskUserQuestion", input: ASK_INPUT }] });
+      const messages = [{ role: "user", text: "decide" } as ChatMessage, ask(), ...inboxTurn(), again];
+      const elements = buildVisualElements(messages);
+      const index = pendingAnswerElementIndex(elements, messages);
+      expect(index).not.toBeNull();
+      expect(answerCardElements(elements, messages).get(index!)).toBe("ask-2");
+    });
+
+    it("leaves the card once the user replies past it (req 4)", () => {
+      const messages = [
+        { role: "user", text: "decide" } as ChatMessage,
+        ask(),
+        ...inboxTurn(),
+        { role: "user", text: "Use SQLite." } as ChatMessage,
+        { role: "assistant", text: "Done." } as ChatMessage,
+      ];
+      expect(find(messages)).toBeNull();
+    });
+
+    it("does not claim rows the question's own turn wrote below the card", () => {
+      const messages = [
+        { role: "user", text: "decide" } as ChatMessage,
+        ask(),
+        { role: "assistant", text: "More prose after the question." } as ChatMessage,
+        ...inboxTurn(),
+      ];
+      expect(find(messages)).toBeNull();
+    });
+  });
+
   it("ignores a malformed question, which the CLI answers itself and never interrupts", () => {
     const messages = [
       { role: "user", text: "decide" } as ChatMessage,

@@ -547,6 +547,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
       getRunner: () => runner,
       broadcastLog: () => {},
       chatHistory: { append: () => {} },
+      sessionManager: { appendPendingAgentNotice: () => {} },
     });
     scheduler.schedule({} as never, "s1");
     expect(scheduler.pending("s1")).toBe(true);

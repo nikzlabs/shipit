@@ -14,7 +14,7 @@ import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import { allHarnesses, resolveModelSelection, sameCredentialOwner } from "../shared/catalogue/index.js";
 import { repoId, stripRemoteUrlCredentials } from "./git-utils.js";
 import type { QueuedMessage } from "./session-runner.js";
-import type { TurnOutcome } from "./turn-settlement.js";
+import type { EmptyTurnReason, TurnOutcome } from "./turn-settlement.js";
 
 // Bill by the actual route, which can differ from the session's requested mode.
 export function billingModeForRoute(
@@ -186,6 +186,8 @@ function safeParseCapabilities(json: string): unknown {
 export interface PendingCompaction {
   instructions?: string;
   note?: string;
+  /** req 13 — the user asked for it, so it compacts under the req 12 minimum, as `/compact` does. */
+  userAsked?: true;
 }
 
 export interface DiskLadderThresholds {
@@ -241,6 +243,7 @@ export function toListRow(session: SessionInfo): SessionListRow {
 export function filterVisibleInSidebar<T extends SessionListRow>(
   sessions: T[],
   maxMerged = MAX_MERGED_SESSIONS_PER_REPO,
+  isAgentWorking: (sessionId: string) => boolean = () => false,
 ): T[] {
   // Archived rows keep their rank so archiving does not promote an older session.
   // docs/324-scheduled-sessions — each view has its own cap, so daily runs never
@@ -268,7 +271,7 @@ export function filterVisibleInSidebar<T extends SessionListRow>(
   // sessions, so a hidden session is always one the idle enforcer may stop.
   // A root with unfinished work below it is not done, so it stays; a done
   // member stays with its root so the spawn tree is not torn apart.
-  const isDone = doneSessionTest(sessions);
+  const isDone = doneSessionTest(sessions, isAgentWorking);
   const byId = new Map(sessions.map((s) => [s.id, s]));
   const shownOnItsOwn = (s: T | undefined): boolean =>
     !!s && !s.userArchived && (!isDone(s) || topResolvedIds.has(s.id));
@@ -289,10 +292,18 @@ export class SessionManager {
 
   readonly dataRetention: DataRetentionConfig;
 
+  // The runner registry is built after this manager, so bootstrap sets the test later.
+  private agentWorkingTest: (sessionId: string) => boolean = () => false;
+  readonly isAgentWorking = (sessionId: string): boolean => this.agentWorkingTest(sessionId);
+
   constructor(dbManager: DatabaseManager, opts: { dataRetention?: DataRetentionConfig } = {}) {
     this.db = dbManager.db;
     this.dataRetention = opts.dataRetention ?? dataRetentionConfigFromEnv();
     this.adoptLegacySelfMergeWatches();
+  }
+
+  setAgentWorkingTest(test: (sessionId: string) => boolean): void {
+    this.agentWorkingTest = test;
   }
 
   /** For a store whose rows reference `sessions`: they must be in this database, not in another. */
@@ -489,14 +500,18 @@ export class SessionManager {
     const rows = this.db.prepare(
       "SELECT * FROM sessions WHERE warm = 0 ORDER BY last_used_at DESC, rowid DESC",
     ).all() as SessionRow[];
-    return filterVisibleInSidebar(this.withDataDeletionDates(rows.map((r) => this.listRowFromRow(r))));
+    return filterVisibleInSidebar(
+      this.withDataDeletionDates(rows.map((r) => this.listRowFromRow(r))),
+      MAX_MERGED_SESSIONS_PER_REPO,
+      this.isAgentWorking,
+    );
   }
 
   // docs/323-archived-session-data-retention req 7 — needs the whole list, because
   // "done" is decided from it.
   private withDataDeletionDates(sessions: SessionListRow[]): SessionListRow[] {
     if (!sessions.some((s) => (s.retainedDataBytes ?? 0) > 0)) return sessions;
-    const isDone = doneSessionTest(sessions);
+    const isDone = doneSessionTest(sessions, this.isAgentWorking);
     for (const s of sessions) {
       if (!s.retainedDataBytes) continue;
       const at = dataDeletionTimeMs(s, isDone(s), this.dataRetention);
@@ -728,6 +743,7 @@ export class SessionManager {
       return {
         ...(typeof parsed.instructions === "string" ? { instructions: parsed.instructions } : {}),
         ...(typeof parsed.note === "string" ? { note: parsed.note } : {}),
+        ...(parsed.userAsked === true ? { userAsked: true as const } : {}),
       };
     } catch {
       return {};
@@ -738,7 +754,8 @@ export class SessionManager {
   dropPendingCompactionNote(id: string): void {
     const request = this.getPendingCompaction(id);
     if (request?.note === undefined) return;
-    this.setPendingCompaction(id, request.instructions !== undefined ? { instructions: request.instructions } : {});
+    const { note: _dropped, ...kept } = request;
+    this.setPendingCompaction(id, kept);
   }
 
   /**
@@ -1199,19 +1216,25 @@ export class SessionManager {
     ).run(id).changes > 0;
   }
 
-  /** docs/322 and docs/324 req 33 — a question that waits for the user, or a stopped run, holds every automatic turn. */
-  automaticTurnsHeld(id: string): boolean {
+  /**
+   * docs/322 and docs/324 req 33 — a question that waits for the user, or a stopped run, holds every
+   * automatic turn. `exceptQuestion` reads the stopped run only: the inbox turn passes a question (docs/322 req 2).
+   */
+  automaticTurnsHeld(id: string, opts: { exceptQuestion?: boolean } = {}): boolean {
     const row = this.db.prepare("SELECT awaiting_answer, run_stopped_at FROM sessions WHERE id = ?").get(id) as
       { awaiting_answer: number; run_stopped_at: string | null } | undefined;
-    return row?.awaiting_answer === 1 || !!row?.run_stopped_at;
+    return (!opts.exceptQuestion && row?.awaiting_answer === 1) || !!row?.run_stopped_at;
   }
 
   setRunStoppedAt(id: string, at: string | null): void {
     this.db.prepare("UPDATE sessions SET run_stopped_at = ? WHERE id = ?").run(at, id);
   }
 
-  setLastTurnOutcome(id: string, outcome: LastTurnOutcome | null): void {
-    this.db.prepare("UPDATE sessions SET last_turn_outcome = ? WHERE id = ?").run(outcome, id);
+  /** `emptyReason` is null for a turn that replied, used a tool, or failed (planning#222). */
+  setLastTurnOutcome(id: string, outcome: LastTurnOutcome | null, emptyReason: EmptyTurnReason | null = null): void {
+    this.db
+      .prepare("UPDATE sessions SET last_turn_outcome = ?, last_turn_empty_reason = ? WHERE id = ?")
+      .run(outcome, emptyReason, id);
   }
 
   /** Req 30 — one approval covers one schedule, so a grant is per schedule id. */

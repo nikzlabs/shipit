@@ -606,7 +606,7 @@ export async function registerSessionSpawnRoutes(
   );
 
   // docs/324-agent-requested-compaction — records the request only; it runs after the turn.
-  app.post<{ Params: { sessionId: string }; Body: { instructions?: string; note?: string } }>(
+  app.post<{ Params: { sessionId: string }; Body: { instructions?: string; note?: string; userAsked?: boolean } }>(
     "/api/sessions/:sessionId/compact-after-turn",
     { config: { containerAccessible: true } },
     async (request, reply) => {

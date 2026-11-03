@@ -11,6 +11,9 @@ interface PendingRequest {
   result?: PermissionDecision;
   path?: string;
   toolUseId?: string;
+  summary: string;
+  /** `performance.now()`: a wall-clock change must not alter the measured wait. */
+  openedAt: number;
 }
 
 export const DEFAULT_PERMISSION_POLL_MS = 25_000;
@@ -156,7 +159,7 @@ export class PermissionBroker {
     if (!entry) return Promise.resolve({ behavior: "deny" });
     const { signal } = input;
     if (signal) {
-      const onAbort = () => this.expire(requestId);
+      const onAbort = () => this.expire(requestId, true);
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
       void entry.decision.finally(() => signal.removeEventListener("abort", onAbort));
@@ -198,6 +201,8 @@ export class PermissionBroker {
       settled: false,
       ...(path ? { path } : {}),
       ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
+      summary,
+      openedAt: performance.now(),
     });
     if (input.toolUseId) this.byToolUse.set(input.toolUseId, requestId);
 
@@ -274,7 +279,7 @@ export class PermissionBroker {
   // ends the call without cancelling it, and the bridge would otherwise poll forever.
   endToolUse(toolUseId: string): void {
     const requestId = this.byToolUse.get(toolUseId);
-    if (requestId) this.expire(requestId);
+    if (requestId) this.expire(requestId, true);
   }
 
   // The agent exited, so no held call can be answered any more.
@@ -285,13 +290,18 @@ export class PermissionBroker {
   }
 
   // An unanswered request the agent abandoned. A later poll for its id fails closed.
-  private expire(requestId: string): void {
+  private expire(requestId: string, callEnded = false): void {
     const entry = this.pending.get(requestId);
     if (!entry || entry.settled) return;
     entry.settled = true;
     entry.settle({ behavior: "deny" });
     this.drop(requestId);
-    this.broadcast({ type: "agent_permission_resolved", requestId, behavior: "deny" });
+    this.broadcast({
+      type: "agent_permission_resolved",
+      requestId,
+      behavior: "deny",
+      ...(callEnded ? { callEnded: { summary: entry.summary, waitedMs: Math.round(performance.now() - entry.openedAt) } } : {}),
+    });
   }
 
   get pendingCount(): number {

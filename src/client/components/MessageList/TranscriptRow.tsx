@@ -79,6 +79,8 @@ export interface TranscriptRowProps {
    * a conditional render would throw away an answer the user had typed.
    */
   collapseTools?: boolean;
+  /** docs/337-waiting-card-stays-last req 2 — a newer question or plan card follows this row's. */
+  askedAgain?: boolean;
 }
 
 /**
@@ -114,6 +116,7 @@ function TranscriptRowInner({
   showGapBefore,
   gapPreviousRole,
   collapseTools,
+  askedAgain,
 }: TranscriptRowProps) {
   const handlers = useRowHandlers();
 
@@ -159,6 +162,7 @@ function TranscriptRowInner({
         findPlanContent={handlers.findPlanContent}
         onAnswerQuestion={handlers.onAnswerQuestion}
         onSendFollowUp={handlers.onSendFollowUp}
+        askedAgain={askedAgain}
       />
     );
   }
@@ -317,6 +321,7 @@ function TranscriptRowInner({
                   onSendFollowUp={handlers.onSendFollowUp}
                   isQuestionDisabled={questionDisabled}
                   planContent={resolvedPlanContent}
+                  askedAgain={askedAgain}
                 />
               );
             })}

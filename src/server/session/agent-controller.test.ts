@@ -330,6 +330,18 @@ describe("AgentController — /agent/spawn requires a model (docs/261)", () => {
     expect(res.statusCode).toBe(200);
     expect(spawned).toHaveLength(1);
     expect(spawned[0].lastParams?.homeDir).toBe("/credentials/sub-agent-homes/s-3");
+    expect(spawned[0].lastParams?.settingsPath).toBe("/etc/shipit/managed-settings.json");
+    expect(spawned[0].lastParams?.sandbox).toBeUndefined();
+  });
+
+  it("hands a sandbox spawn's flag through to agent.run", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/spawn",
+      payload: { agentId: "claude", prompt: "review", spawnId: "s-4", model: "claude-opus-5", sandbox: true, timeoutMs: 50 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(spawned[0].lastParams?.sandbox).toBe(true);
   });
 });
 
@@ -888,7 +900,12 @@ describe("AgentController — a permission request the agent stopped waiting for
       content: [{ type: "tool_result", tool_use_id: "toolu_1", is_error: true, content: "sent no response or progress for 1800s; aborting." }],
     });
 
-    expect(denials()).toEqual([{ type: "agent_permission_resolved", requestId, behavior: "deny" }]);
+    expect(denials()).toEqual([{
+      type: "agent_permission_resolved",
+      requestId,
+      behavior: "deny",
+      callEnded: { summary: expect.stringContaining("curl x"), waitedMs: expect.any(Number) },
+    }]);
     expect(denials().some((e) => e.requestId === otherId)).toBe(false);
   });
 

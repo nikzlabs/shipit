@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect } from "vitest";
-import { opencodeProviderConfig, opencodeModelArg, opencodeAccountConfig } from "./opencode-spawn-shaping.js";
+import { opencodeProviderConfig, opencodeModelArg, opencodeAccountConfig, opencode2ModelArg } from "./opencode-spawn-shaping.js";
 import {
   adoptModelList,
   applyModelList,
@@ -176,5 +176,18 @@ describe("the model id OpenCode sends", () => {
   it("sends the row id for a row without an API id, and for a model the catalogue cannot resolve", () => {
     expect(block(ANTHROPIC_KEY, "claude-haiku-5-5").models?.["claude-haiku-5-5"]?.id).toBe("claude-haiku-5-5");
     expect(block(ANTHROPIC_KEY, "no-such-model").models?.["no-such-model"]?.id).toBe("no-such-model");
+  });
+});
+
+describe("OpenCode 2 shaping (docs/269)", () => {
+  it("rides the variant on the model, since 2.x has no --variant", () => {
+    expect(opencode2ModelArg("shipit", "kimi-k3", "high")).toBe("shipit/kimi-k3#high");
+    expect(opencode2ModelArg("openai", "gpt-6-luna")).toBe("openai/gpt-6-luna");
+  });
+
+  it("declares OpenCode 2's own reasoning levels as variants", () => {
+    const config = opencodeProviderConfig(ROUTING, "claude-haiku-4-5", "opencode2") as { shipit: { models: Record<string, { variants: Record<string, unknown> }> } };
+    expect(Object.keys(config.shipit.models["claude-haiku-4-5"].variants)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(opencodeProviderConfig(ROUTING, "claude-haiku-4-5", "opencode2")).toEqual(opencodeProviderConfig(ROUTING, "claude-haiku-4-5"));
   });
 });

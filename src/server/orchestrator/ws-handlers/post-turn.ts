@@ -4,7 +4,11 @@ import type { SessionRunnerInterface } from "../session-runner.js";
 import { withWorkspaceLock } from "../services/marketplace.js";
 import { formatUnresolvedConflictNotice } from "../services/conflict-marker-notice.js";
 import { recordSecretBlock, clearSecretBlock } from "../services/secret-block.js";
-import { evaluateMergedBranchPush, formatMergedPushNotice } from "../services/merged-push-guard.js";
+import {
+  evaluateMergedBranchPush,
+  formatMergedPushAgentNotice,
+  formatMergedPushNotice,
+} from "../services/merged-push-guard.js";
 import { scanDiffForSecrets } from "../../shared/secret-scan.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import {
@@ -100,6 +104,11 @@ export async function postTurnCommit(
       );
     } catch (err) {
       console.error(`[merged-push-guard] notice failed for ${sessionId}:`, err);
+    }
+    try {
+      ctx.sessionManager.appendPendingAgentNotice(sessionId, formatMergedPushAgentNotice(block, commitHash));
+    } catch (err) {
+      console.error(`[merged-push-guard] agent notice failed for ${sessionId}:`, err);
     }
   }
 

@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
+import { opencode2Roots, type OpenCodeHarnessId } from "./opencode-harness.js";
 
 export const OPENCODE_MANAGED_DIR = ".local/share/opencode/shipit-data";
 export const OPENCODE_ACCOUNT_MARKER = ".shipit-openai-account.json";
@@ -64,6 +65,18 @@ export function openCodeAccessToken(
 
 export function managedOpenCodeDataHome(home: string): string {
   return path.join(home, OPENCODE_MANAGED_DIR);
+}
+
+/** v1 reads its projection natively from its data root; v2 imports it from a separate directory. */
+export function openCodeAccountHome(home: string, harness: OpenCodeHarnessId = "opencode"): string {
+  return harness === "opencode2" ? opencode2Roots(home).account : managedOpenCodeDataHome(home);
+}
+
+export function ensureOpenCodeAccountHome(home: string, harness: OpenCodeHarnessId = "opencode", sourceHome = home): string {
+  if (harness === "opencode") return ensureManagedOpenCodeData(home, sourceHome);
+  const dir = openCodeAccountHome(home, harness);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 export function openCodeAccountFile(dataHome: string): string {
@@ -162,4 +175,29 @@ export function readOpenCodeAccount(
       "ChatGPT credentials for OpenCode are unavailable or expired.",
     );
   }
+}
+
+/**
+ * OpenCode 2's `auth import` file for a projected token. The id follows the token, so
+ * an unchanged token needs no import and a renewed one lands beside the old one.
+ */
+export function openCode2CredentialImport(token: OpenCodeAccountToken): { id: string; json: string } {
+  const id = `shipit-${createHash("sha256").update(token.access).digest("hex").slice(0, 24)}`;
+  return {
+    id,
+    json: JSON.stringify([{
+      id,
+      integrationID: "openai",
+      label: "ShipIt",
+      active: true,
+      value: {
+        type: "oauth",
+        methodID: "chatgpt-browser",
+        refresh: "",
+        access: token.access,
+        expires: token.expires,
+        metadata: { accountID: token.accountId },
+      },
+    }]),
+  };
 }

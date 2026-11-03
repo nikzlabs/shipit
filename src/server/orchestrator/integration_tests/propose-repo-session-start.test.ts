@@ -25,6 +25,7 @@ import {
   FakeClaudeProcess,
   createTestCredentialStore,
   createTestDatabaseManager,
+  recordSse,
   seedRepoCacheWithLocalBare,
   waitFor,
 } from "./test-helpers.js";
@@ -144,9 +145,7 @@ describe("Integration: starting a proposed cross-repo session", () => {
     expect(child?.rootSessionId).toBeUndefined();
   });
 
-  it("sends the proposed prompt as the first message, unmodified", { timeout: 30_000 }, async () => {
-    // A role on the PROPOSING session is what a plain inherit would join onto the
-    // prompt; without a real one stored, this test could not see the difference.
+  it("starts the target on the proposing session's role, with the prompt as its first message", { timeout: 30_000 }, async () => {
     credentialStore.setRole("critic", {
       name: "critic",
       prompt: "REVIEW ONLY. Never edit a file.",
@@ -160,13 +159,30 @@ describe("Integration: starting a proposed cross-repo session", () => {
     });
     sessionManager.setRoleName(parentId, "critic");
 
-    await proposeAndStart();
+    const sse = await recordSse(port);
+    const { startedSessionId } = await proposeAndStart();
 
+    expect(sessionManager.get(startedSessionId)?.roleName).toBe("critic");
+    // The composer reads the role from the sidebar row, so the row that first lists the session must carry it.
+    const firstRow = () => sse.events
+      .filter((e) => e.event === "session_list")
+      .map((e) => (e.data as { sessions: { id: string; roleName?: string }[] }).sessions)
+      .map((sessions) => sessions.find((s) => s.id === startedSessionId))
+      .find(Boolean);
+    await waitFor(() => firstRow() !== undefined, "target listed in the sidebar");
+    sse.close();
+    expect(firstRow()?.roleName).toBe("critic");
     await waitFor(() => agents.some((a) => a.runCalled), "target agent started");
     const dispatched = agents.find((a) => a.runCalled)!;
-    // No role brief joined on: the card showed the user exactly this text.
-    expect(dispatched.lastPrompt).toBe(PROMPT);
-    expect(dispatched.lastPrompt).not.toContain("REVIEW ONLY");
+    expect(dispatched.lastPrompt).toContain('<role_instructions role="critic">\nREVIEW ONLY. Never edit a file.');
+    expect(dispatched.lastPrompt?.endsWith(PROMPT)).toBe(true);
+    // The card showed the user exactly this text, and recovery matches on it.
+    await waitFor(
+      () => chatHistory.load(startedSessionId).some((m) => m.role === "user"),
+      "target's first message persisted",
+    );
+    expect(chatHistory.load(startedSessionId).find((m) => m.role === "user")?.text).toBe(PROMPT);
+    expect(sessionManager.get(startedSessionId)?.originRoleName).toBe("critic");
   });
 
   it("records the started session on the card, so a reload can still open it", { timeout: 30_000 }, async () => {

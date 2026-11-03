@@ -217,7 +217,7 @@ export const SERVICES = [
         kind: "sub",
         endpoints: { [O_RESP]: "https://api.openai.com/v1" },
         quota: "openai-chatgpt-usage",
-        credentials: [{ via: "account", login: "openai-chatgpt", carriers: ["codex", "opencode"] }],
+        credentials: [{ via: "account", login: "openai-chatgpt", carriers: ["codex", "opencode2", "opencode"] }],
         // Pre-GPT-6 rows left the catalogue (req 13): each id moves to a GPT-6 successor on this route.
         retired: [
           { id: "gpt-5.6", styles: [O_RESP], successors: { [O_RESP]: "gpt-6.1-sol" } },
@@ -234,7 +234,7 @@ export const SERVICES = [
         models: [
           // `harnesses` here tracks OpenCode's own ChatGPT-route model filter,
           // transcribed and checked against the pinned binary by
-          // `opencode-subscription-models.test.ts`. Absent means both harnesses.
+          // `opencode-subscription-models.test.ts`. Absent means every carrier.
           // Keep Sol first: Astra may be hidden by account entitlement.
           { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", ...MODEL_IDENTITIES.gpt61sol, styles: [O_RESP], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt61sol, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "gpt-6-astra", label: "GPT-6 Astra", ...MODEL_IDENTITIES.gpt6astra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt6astra, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
@@ -556,7 +556,7 @@ export const SERVICES = [
             // Distinct from the CLI's auto-detected OPENCODE_API_KEY, which spawn routing scrubs.
             storageEnv: "OPENCODE_ZEN_API_KEY",
             // Claude Code's context_management request field is rejected by Zen.
-            carriers: ["opencode", "codex"],
+            carriers: ["opencode2", "opencode", "codex"],
             directCall: {},
           },
         ],
@@ -602,7 +602,7 @@ export const SERVICES = [
             via: "string",
             // Same secret as Zen, separate delivery name for the subscription route.
             storageEnv: "OPENCODE_GO_KEY",
-            carriers: ["opencode", "codex"],
+            carriers: ["opencode2", "opencode", "codex"],
             // Go refused a generic HTTP-library agent with 403/1010 and a
             // session-less request with 400 MissingSessionID when docs/252
             // measured it, so a direct call names ShipIt and carries a session.

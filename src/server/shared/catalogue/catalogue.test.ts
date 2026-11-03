@@ -1078,13 +1078,16 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
   it("names OpenCode's own inference as its harness's native service (docs/272)", () => {
     expect(HARNESSES.find((h) => h.id === "opencode")?.nativeService).toBe("opencode");
     expect(loginIntegrationForService("opencode")).toBeUndefined();
-    expect(harnessForNativeService("opencode")).toBe("opencode");
+    expect(HARNESSES.find((h) => h.id === "opencode2")?.nativeService).toBe("opencode");
+    // Both OpenCode harnesses are native to it; list order puts OpenCode 2 first (docs/269 req 5).
+    expect(harnessForNativeService("opencode")).toBe("opencode2");
   });
 
   it("offers OpenCode's inference to the harnesses whose pair was measured, and to no others", () => {
     const zenKey = { serviceId: "opencode", billingMode: "key" as const, via: "string" as const };
     const goKey = { serviceId: "opencode", billingMode: "sub" as const, via: "string" as const };
-    for (const harness of ["opencode", "codex"] as const) {
+    // OpenCode 2 carries the same API keys as OpenCode 1 (docs/269 req 4).
+    for (const harness of ["opencode2", "opencode", "codex"] as const) {
       expect(eligibleEntriesForHarness(harness, [zenKey]).length, harness).toBeGreaterThan(0);
       expect(eligibleEntriesForHarness(harness, [goKey]).length, harness).toBeGreaterThan(0);
       expect(harnessSupportsService(harness, "opencode"), harness).toBe(true);
@@ -1372,7 +1375,7 @@ describe("credentials", () => {
 
     it("fans a completed sign-in out to every harness that can use the credential", () => {
       expect(harnessesForLoginIntegration("anthropic-oauth")).toEqual(["claude"]);
-      expect(harnessesForLoginIntegration("openai-chatgpt")).toEqual(["codex", "opencode"]);
+      expect(harnessesForLoginIntegration("openai-chatgpt")).toEqual(["codex", "opencode2", "opencode"]);
       expect(harnessesForLoginIntegration("xai-oauth")).toEqual(["grok"]);
     });
 
@@ -1380,7 +1383,7 @@ describe("credentials", () => {
       const chatgpt = getService("openai")?.modes
         .find((m) => m.kind === "sub")
         ?.credentials.find((c) => c.via === "account");
-      expect(chatgpt?.carriers).toEqual(["codex", "opencode"]);
+      expect(chatgpt?.carriers).toEqual(["codex", "opencode2", "opencode"]);
       expect(harnessCanCarry("grok", {
         serviceId: "openai", billingMode: "sub", via: "account",
       })).toBe(false);

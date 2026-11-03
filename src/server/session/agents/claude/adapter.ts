@@ -439,6 +439,8 @@ export class ClaudeAdapter
                 toolInput: d.tool_input,
               }))
             : undefined,
+          ...(raw.num_turns !== undefined ? { numTurns: raw.num_turns } : {}),
+          ...(raw.origin?.kind ? { origin: raw.origin.kind } : {}),
         };
       }
 

@@ -59,9 +59,25 @@ instructions (in addition to the harness-native compaction)."
 11. The feature is behind a setting, off by default. While the setting is off,
     the agent cannot compact its own context with the command.
 
+12. The compaction runs only when the agent's context is 200,000 tokens or
+    more, the same minimum as docs/295-compact-context-on-merge req 15 and
+    docs/333-idle-compaction req 6. Under that size the command compacts
+    nothing: only a compaction that the user asks for compacts a smaller
+    context — a `/compact` that the user sends, or a compaction that the user
+    asks the agent for (requirement 13). Requirement 8 is not changed: with a
+    note, the agent still gets its new turn.
+
+13. When the user asks the agent to compact its context, the agent compacts it
+    itself with the command. It does not tell the user to type `/compact`. This
+    compaction runs at every context size, as the user's own `/compact` does.
+
+14. The agent's instructions for the compaction do not repeat its system
+    prompt — ShipIt's instructions and the user's own instructions. Every turn
+    carries the system prompt, and a compaction does not change it.
+
 ## Requirement provenance
 
-Requirements 1 to 4 and 8 to 11 come from what the user asked for and decided.
+Requirements 1 to 4 and 8 to 14 come from what the user asked for and decided.
 Requirements 5 to 7 were
 not asked for: each keeps a guarantee that already ships from becoming weaker —
 docs/178 for how a compaction appears, docs/295 req 9 for a failed compaction,
@@ -100,3 +116,19 @@ None.
 - 2026-10-07 — After the first implementation, the user asked: "Make this
   feature behind a setting, off by default." An instruction, not an answer to an
   open question; recorded here as its receipt. Requirement 11 added.
+- 2026-10-24 — The user: "let's have a single value of 200k for compaction
+  threshold: auto-compaction would always not do anything if the threshold is
+  not reached, even if the 'compact' checkbox is ticked. The only way to
+  compact in this case would be an explicit '/compact' command." An
+  instruction, not an answer to an open question; recorded here as its
+  receipt. `shipit compact` is not an explicit `/compact`, so the minimum
+  covers it. Requirement 12 added.
+- 2026-10-30 — The user: "agents never understand that when I say 'compact
+  your context' they should do it themselves, not tell me to run '/compact'".
+  An instruction, recorded here as its receipt; requirement 13 added. Asked
+  whether such a request still compacts nothing under the 200,000-token
+  minimum, the user chose: it compacts at every size, as their own `/compact`
+  does. Requirement 12 changed to match.
+- 2026-10-30 — The user: "also agents think they need to add my instructions to
+  the compact message, whereas they are injected as system prompt". An
+  instruction, recorded here as its receipt. Requirement 14 added.

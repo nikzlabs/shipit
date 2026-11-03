@@ -431,6 +431,15 @@ are escapes the hook actually leaves alone — pinned by a test, so the advice
 cannot drift from the behaviour. `pkill` gets a different message: the pgrep
 advice is all about waiting, and none of it applies to a kill.
 
+**The Monitor tool gets the same judgment (planning#710).** Monitor runs its
+`command` in the same wrapper — measured 2026-10-28, its shell's argv is
+`/bin/bash -c '… eval '<the command>' && pwd -P >| /tmp/claude-<id>-cwd'` — so a
+pattern written there matches its own shell too. Its input field is `command`,
+as for Bash, so the hook is registered for `Bash|Monitor` and judges both
+alike, the git rules included. Before that, a self-matching wait written as a
+Monitor never reached the hook, and the chat showed it as "Waiting for: …"
+until the monitor's timeout.
+
 ### Wire-up — always-on settings file
 
 Previously `managed-settings.json` was passed to the Claude CLI only when
@@ -458,7 +467,7 @@ claude.ts → claude CLI
 | File | Role |
 |---|---|
 | `docker/agent-hooks/block-branch-ops.mjs` | New PreToolUse hook. Node, no deps. Blocks branch create/switch, and (planning#267, while the session's branch is merged) destructive git. |
-| `docker/agent-hooks/managed-settings.json` | Adds the `PreToolUse` entry (matcher `Bash`) alongside the existing `Stop` entry. Also carries `"includeCoAuthoredBy": false` (always-on, ungated) so the Claude CLI drops the `Co-Authored-By: Claude` commit trailer and the `🤖 Generated with Claude Code` PR footer — ShipIt owns the commit/PR surface, so the upstream attribution is noise. Takes effect on the next session-worker image rebuild (the file is `COPY`'d in, not mounted). |
+| `docker/agent-hooks/managed-settings.json` | Adds the `PreToolUse` entry (matcher `Bash\|Monitor`; `Monitor` since planning#710) alongside the existing `Stop` entry. Also carries `"includeCoAuthoredBy": false` (always-on, ungated) so the Claude CLI drops the `Co-Authored-By: Claude` commit trailer and the `🤖 Generated with Claude Code` PR footer — ShipIt owns the commit/PR surface, so the upstream attribution is noise. Takes effect on the next session-worker image rebuild (the file is `COPY`'d in, not mounted). |
 | `docker/agent-hooks/stop-pr-check.sh` | Early-exits unless `SHIPIT_AUTO_CREATE_PR=1` — PR enforcement stays opt-in now that the settings file is always wired up. |
 | `docker/Dockerfile.session-worker.{prod,dev,dogfood}` | `COPY` + `chmod` the new hook into `/etc/shipit/agent-hooks/`. |
 | `src/server/shared/types/agent-types.ts` | `AgentRunParams.autoCreatePr?: boolean` — new optional field. |

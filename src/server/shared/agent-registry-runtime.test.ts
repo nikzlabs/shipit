@@ -43,8 +43,9 @@ describe("AgentRegistry", () => {
     await registry.detect();
 
     const agents = registry.list();
-    expect(agents).toHaveLength(5);
-    expect(agents.map((a) => a.id)).toEqual(["claude", "codex", "opencode", "grok", "antigravity"]);
+    expect(agents).toHaveLength(6);
+    // opencode2 before opencode: list order is the tie-break for a shared model (docs/269 req 5).
+    expect(agents.map((a) => a.id)).toEqual(["claude", "codex", "opencode2", "opencode", "grok", "antigravity"]);
   });
 
   it("checks Claude auth via checkClaudeAuth callback", async () => {

@@ -12,7 +12,12 @@ import {
   type FakeAgent,
 } from "../integration_tests/dispatch-test-helpers.js";
 import { requeueUndeliveredSteers } from "../ws-handlers/agent-message-builder.js";
-import { buildInboxNotice, INBOX_TURN_TEXT, prepareInboxNotice } from "./session-inbox-notice.js";
+import {
+  buildInboxNotice,
+  INBOX_QUESTION_TURN_TEXT,
+  INBOX_TURN_TEXT,
+  prepareInboxNotice,
+} from "./session-inbox-notice.js";
 import { SessionInbox } from "./session-inbox.js";
 import { noteTurnReady } from "../turn-stop-request.js";
 
@@ -29,6 +34,7 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
   let steering: boolean;
   let liveWork: boolean;
   let inline: boolean;
+  let turnDeps: SystemTurnDeps;
 
   beforeEach(() => {
     dbManager = new DatabaseManager(":memory:");
@@ -41,6 +47,7 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     inline = false;
 
     const { deps } = makeDispatchTurnDeps(agents, []);
+    turnDeps = deps;
     // Echo the real prompt through, so the assertions read what the agent was given.
     deps.buildRunParams = vi.fn(async (_sessionId: string, _agentId: AgentId, prompt: string) => ({
       prompt,
@@ -48,6 +55,8 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     })) as unknown as SystemTurnDeps["buildRunParams"];
     deps.inboxNotice = (sessionId) => prepareInboxNotice(store, sessionId, { inline });
     deps.steerInputs = () => ({ liveSteering: steering, steeringCapable: steering });
+    // The dispatch gate reads the hold too, so a test of the hold must reach it.
+    deps.answerHold = sessionManager;
 
     registry = new SessionRunnerRegistry({
       onRunnerCreated: (runner) => runner.setSystemTurnDeps(deps),
@@ -124,6 +133,7 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     // The message text is not in the turn: the agent reads the inbox for it (req 1).
     expect(prompt).not.toContain("the regen command is broken");
 
+    inbox.read("parent");
     await endTurn();
     expect(store.owed("parent")).toBeUndefined();
     expect(ran()).toHaveLength(1);
@@ -173,9 +183,24 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     expect(prompt).toContain(buildInboxNotice(1));
     expect(prompt.endsWith("the user's next message")).toBe(true);
 
+    inbox.read("parent");
     await endTurn();
     expect(store.owed("parent")).toBeUndefined();
     expect(ran()).toHaveLength(2);
+  });
+
+  it("starts a turn of its own after a turn whose agent did not read the notice (planning#222)", async () => {
+    const runner = registry.getOrCreate("parent", "/tmp/parent", "claude");
+    store.add("parent", { origin: CHILD, body: "a report" });
+    runner.dispatch(testDispatch({ text: "the user's message" }));
+    expect(await nextRun(1)).toContain(buildInboxNotice(1));
+
+    // The agent produced its result and did not run the read command.
+    await endTurn();
+
+    const prompt = await nextRun(2);
+    expect(prompt).toContain(buildInboxNotice(1));
+    expect(prompt.endsWith(INBOX_TURN_TEXT)).toBe(true);
   });
 
   it("steers the notice into a streaming turn, one time until the agent reads (req 7)", async () => {
@@ -220,7 +245,7 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     expect(await nextRun(1)).toContain(buildInboxNotice(1));
   });
 
-  it("gives the session one turn when the agent did not act on a steered notice, and then stops", async () => {
+  it("tells an agent that does not read again, after a wait that grows, until it reads (planning#222)", async () => {
     const { runner, sent } = inStreamingTurn();
     await inbox.post(parent(), { origin: CHILD, body: "a report" });
     expect(sent).toHaveLength(1);
@@ -228,13 +253,23 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     endStreamingTurn(runner);
     expect(await nextRun(1)).toContain(buildInboxNotice(1));
 
-    // The agent ends this turn too without a read. It was told; the message stays unread.
+    // The agent ends this turn too without a read: the message is still owed, after a wait.
     await endTurn();
-    expect(store.owed("parent")).toBeUndefined();
+    expect(store.owed("parent")).toMatchObject({ unread: 1 });
     expect(await inbox.tell("parent")).toBe("later");
     await inbox.sweep();
     expect(ran()).toHaveLength(1);
+
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + 61_000);
+    await inbox.sweep();
+    expect(await nextRun(2)).toContain(buildInboxNotice(1));
+
     expect(inbox.read("parent")).toHaveLength(1);
+    await endTurn();
+    expect(store.owed("parent")).toBeUndefined();
+    await inbox.sweep();
+    expect(ran()).toHaveLength(2);
   });
 
   it("starts nothing when the steered notice was read before the turn ended", async () => {
@@ -280,7 +315,7 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     // The session's turn runs and cannot take a steer, so this one waits for the turn to end.
     expect((await inbox.post(parent(), { origin: CHILD, body: "second" })).told).toBe("later");
 
-    // The turn ends with its receipt for "first". "second" is a new notice, not a retry.
+    // The turn ends without a read. "second" is newer than that turn told of, so it does not wait.
     await endTurn();
 
     expect(await nextRun(2)).toContain(buildInboxNotice(2));
@@ -438,16 +473,113 @@ describe("SessionInbox (docs/328-session-message-inbox)", () => {
     expect(await nextRun(1)).toContain(buildInboxNotice(1));
   });
 
-  it("starts no automatic turn while the agent waits for the user's answer, and saves none (docs/322)", async () => {
+  it("tells the agent while its question waits, and the question still holds other turns (docs/322 req 2)", async () => {
     sessionManager.setAwaitingAnswer("parent", true);
+
+    expect((await inbox.post(parent(), { origin: CHILD, body: "a report" })).told).toBe("started");
+    const prompt = await nextRun(1);
+    expect(prompt).toContain(buildInboxNotice(1));
+    expect(prompt.endsWith(INBOX_QUESTION_TURN_TEXT)).toBe(true);
+    expect(sessionManager.heldTurns("parent")).toEqual([]);
+
+    inbox.read("parent");
+    await endTurn();
+    expect(sessionManager.isAwaitingAnswer("parent")).toBe(true);
+    expect(ran()).toHaveLength(1);
+  });
+
+  it("starts one turn for each new batch while the question waits, even when the agent did not read", async () => {
+    sessionManager.setAwaitingAnswer("parent", true);
+    await inbox.post(parent(), { origin: CHILD, body: "a report" });
+    await nextRun(1);
+    await endTurn();
+    // Still unread, so the user's reply carries the notice; but no turn tells it again.
+    expect(store.unread("parent")).toHaveLength(1);
+
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + 2 * 60 * 60_000);
+    await inbox.sweep();
+    // A restart forgets what the class kept in memory; the told batch is saved.
+    inbox = new SessionInbox({ store, sessionManager, runnerRegistry: registry, defaultAgentId: "claude" });
+    await inbox.sweep();
+    expect(ran()).toHaveLength(1);
+
+    expect((await inbox.post(parent(), { origin: CHILD, body: "a second report" })).told).toBe("started");
+    expect(await nextRun(2)).toContain(buildInboxNotice(2));
+  });
+
+  it("leaves a batch owed while the question waits when its turn fails before the agent gets it", async () => {
+    turnDeps.buildRunParams = vi.fn(async () => {
+      throw new Error("setup failed");
+    }) as unknown as SystemTurnDeps["buildRunParams"];
+    sessionManager.setAwaitingAnswer("parent", true);
+
+    expect((await inbox.post(parent(), { origin: CHILD, body: "a report" })).told).toBe("started");
+    await waitForTurn(() => registry.get("parent")?.running === false, "the failed setup");
+    await flushTurn();
+    expect(ran()).toHaveLength(0);
+    expect(store.owed("parent")).toMatchObject({ unread: 1 });
+  });
+
+  it("tells again as the user's response when they approve a message while the session boots (docs/322 req 6)", async () => {
+    sessionManager.setAwaitingAnswer("parent", true);
+    let approve: (() => void) | undefined = () => store.add("parent", { origin: APPROVED, body: "approved" });
+    inbox = new SessionInbox({
+      store,
+      sessionManager,
+      runnerRegistry: registry,
+      defaultAgentId: "claude",
+      restoreWorkspace: async () => {
+        approve?.();
+        approve = undefined;
+        return true;
+      },
+    });
+
+    expect((await inbox.post(parent(), { origin: CHILD, body: "a report" })).told).toBe("later");
+    const prompt = await nextRun(1);
+    expect(prompt).toContain(buildInboxNotice(2));
+    expect(prompt.endsWith(INBOX_TURN_TEXT)).toBe(true);
+    expect(sessionManager.isAwaitingAnswer("parent")).toBe(false);
+  });
+
+  it("runs no compaction before the inbox turn while the question waits, so the turn is not held", async () => {
+    turnDeps.shouldCompactBeforeTurn = vi.fn(async () => true);
+    sessionManager.setAwaitingAnswer("parent", true);
+
+    await inbox.post(parent(), { origin: CHILD, body: "a report" });
+    const prompt = await nextRun(1);
+    expect(prompt.endsWith(INBOX_QUESTION_TURN_TEXT)).toBe(true);
+    expect(sessionManager.heldTurns("parent")).toEqual([]);
+  });
+
+  it("refuses the inbox turn at the gate when the run was stopped after the wake read the hold", () => {
+    sessionManager.setAwaitingAnswer("parent", true);
+    const runner = registry.getOrCreate("parent", "/tmp/parent", "claude");
+    sessionManager.setRunStoppedAt("parent", "2026-11-02T09:00:00.000Z");
+
+    const handle = runner.dispatch(
+      testDispatch({ text: INBOX_QUESTION_TURN_TEXT, automatic: true }),
+      { whenBusy: "refuse", passesQuestionHold: true },
+    );
+    expect(handle.admitted).toBe("refused");
+    expect(ran()).toHaveLength(0);
+  });
+
+  it("holds the turn for a stopped scheduled run (docs/324 req 33)", async () => {
+    sessionManager.setRunStoppedAt("parent", "2026-11-02T09:00:00.000Z");
 
     expect((await inbox.post(parent(), { origin: CHILD, body: "a report" })).told).toBe("later");
     expect(registry.get("parent")).toBeUndefined();
     expect(sessionManager.heldTurns("parent")).toEqual([]);
+  });
 
-    // A message the user approved is not automatic work, so it does not wait (docs/322 req 6).
+  it("takes a message the user approved as the user's response to the question (docs/322 req 6)", async () => {
+    sessionManager.setAwaitingAnswer("parent", true);
+
     expect((await inbox.post(parent(), { origin: APPROVED, body: "approved by the user" })).told).toBe("started");
-    expect(await nextRun(1)).toContain(buildInboxNotice(2));
+    expect(await nextRun(1)).toContain(buildInboxNotice(1));
+    expect(sessionManager.isAwaitingAnswer("parent")).toBe(false);
   });
 
   it("tells every session that is owed a notice from the sweep", async () => {

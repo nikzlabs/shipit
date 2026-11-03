@@ -64,3 +64,37 @@ describe("PermissionRequestCard details disclosure", () => {
     expect(screen.queryByText("Approve & remember")).not.toBeInTheDocument();
   });
 });
+
+describe("PermissionRequestCard reason for a call nobody answered (docs/193-sensitive-file-permission req 8)", () => {
+  const seedPending = () => {
+    usePermissionStore.getState().upsertCard({ requestId: REQUEST_ID, toolName: "Bash", summary: "Bash: rm -f ~/.gitconfig" });
+  };
+  const reason = () => screen.queryByTestId("permission-unanswered-reason");
+
+  it("keeps Denied and names the measured wait", () => {
+    seedPending();
+    usePermissionStore.getState().setResolved(REQUEST_ID, "denied", undefined, { waitedMs: 1_800_000 });
+    render(<PermissionRequestCard requestId={REQUEST_ID} />);
+
+    expect(screen.getByTestId("permission-request-card")).toHaveTextContent("Denied");
+    expect(reason()).toHaveTextContent("Nobody answered in 30 min");
+  });
+
+  it("names no duration when none was measured", () => {
+    usePermissionStore.getState().seedCards([
+      { requestId: REQUEST_ID, phase: "denied", toolName: "shell", summary: "shell: curl x", unanswered: {} },
+    ]);
+    render(<PermissionRequestCard requestId={REQUEST_ID} />);
+
+    expect(reason()).toHaveTextContent("Nobody answered before the call ended");
+  });
+
+  it("shows no reason after the user's own Deny or Stop", () => {
+    seedPending();
+    usePermissionStore.getState().setResolved(REQUEST_ID, "denied");
+    render(<PermissionRequestCard requestId={REQUEST_ID} />);
+
+    expect(screen.getByTestId("permission-request-card")).toHaveTextContent("Denied");
+    expect(reason()).not.toBeInTheDocument();
+  });
+});

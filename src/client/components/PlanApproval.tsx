@@ -19,9 +19,12 @@ interface PlanApprovalProps {
   planContent?: string;
 
   resolved?: boolean;
+  /** docs/337-waiting-card-stays-last req 2 — a newer question or plan card replaced this one. */
+  replaced?: boolean;
 }
 
-export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanApprovalProps) {
+export function PlanApproval({ onSend, disabled: disabledProp, planContent, resolved, replaced }: PlanApprovalProps) {
+  const disabled = disabledProp || !!replaced;
   const [submitted, setSubmitted] = useState<"accepted" | "feedback" | null>(null);
   const [showFeedback, setShowFeedback] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
@@ -178,11 +181,17 @@ export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanAp
       <Badge variant="info" className="text-[10px] uppercase tracking-wider mb-1.5">
         Plan Ready
       </Badge>
-      <p className="text-sm text-(--color-text-secondary) mb-3">
-        Review the plan{planContent ? "" : " above"}, then accept or suggest changes.
-      </p>
+      {replaced ? (
+        <p className="text-xs text-(--color-text-secondary)" data-testid="asked-again">
+          Asked again below
+        </p>
+      ) : (
+        <p className="text-sm text-(--color-text-secondary) mb-3">
+          Review the plan{planContent ? "" : " above"}, then accept or suggest changes.
+        </p>
+      )}
 
-      {!expanded && actionControls}
+      {!expanded && !replaced && actionControls}
 
       {expanded && (
         <Dialog open onOpenChange={(open) => { if (!open) setExpanded(false); }}>
@@ -196,9 +205,11 @@ export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanAp
               <MarkdownContent text={planContent ?? ""} />
             </div>
             {/* Action buttons pinned to the bottom */}
-            <div className="border-t border-(--color-border-secondary) px-5 py-3 shrink-0">
-              {actionControls}
-            </div>
+            {!replaced && (
+              <div className="border-t border-(--color-border-secondary) px-5 py-3 shrink-0">
+                {actionControls}
+              </div>
+            )}
           </DialogContent>
         </Dialog>
       )}

@@ -58,9 +58,14 @@ from the user's. A notice about a pull request is ShipIt's own text and has no f
 
 **The notice rides the prompt of the session's next turn.** ShipIt already tells an
 agent what became of a card in this way (`session-message-outcome-notice.ts`): a
-`[ShipIt]` line in front of the prompt, with a receipt that is recorded only when the
-agent has produced a result for that prompt. The inbox notice is one more line of
-that kind, in both places that compose a prompt. Its receipt moves the told number.
+`[ShipIt]` line in front of the prompt. The inbox notice is one more line of that
+kind, in both places that compose a prompt. Unlike a card's outcome, it has no
+receipt of its own: an agent can produce its result and end its turn without the
+read, so only `shipit session inbox` clears it (planning#222), and the notice counts
+every unread message. The told number is no longer moved. A value that an older
+ShipIt wrote still holds back a turn that ShipIt would start for those messages, so an
+update does not wake every session that holds old unread messages; the notice in
+front of the session's next prompt counts them.
 
 So the notice needs no turn of its own when a turn is coming, whatever started that
 turn: a message the user typed, a queued message, an automatic turn. It needs no
@@ -87,13 +92,12 @@ minute over the sessions that are owed a notice. The sweep is the one recovery p
 it covers a session that could not be started, a refused turn with no idle event
 after it, and a restart.
 
-**Bounds.** A message is told when the notice that covers it gets its receipt, and a
-told message causes no further notice. A turn that ShipIt started and that did not
-reach the agent is tried again after a delay that starts at one minute and doubles
-with each failure, up to one hour; a session that could not be started is tried again
-in the same way. A message that arrives after a notice got its receipt is new, and
-does not wait for that delay. A steered notice has no receipt: when the agent does
-not read, the idle trigger gives the session its turn, one time.
+**Bounds.** A message is owed until the agent reads it. A turn that ShipIt started
+and that ended without the read is tried again after a delay that starts at one
+minute and doubles with each such turn, up to one hour; a session that could not be
+started is tried again in the same way. A message newer than the last started turn
+told of does not wait for that delay. When a turn that carried the notice, or a
+steered notice, ends without the read, the idle trigger gives the session its turn.
 
 **Guards on the started turn.** It does not start while the session's resident
 process has background work, because a new ordinary turn can replace that process
@@ -105,11 +109,23 @@ whether it still has a turn, background tasks or an install, so ShipIt asks it
 counts as a stopped session, whatever the runner says: the wake path replaces it. One
 trigger at a time can start a session; a second one that arrives meanwhile waits.
 
-**A question holds the turn** (docs/322-question-holds-automatic-turns). The started
-turn is `automatic`, so it is refused while the agent waits for the user's answer,
-and nothing is saved for later: the user's reply is a turn, and the notice rides it.
-A message that the user approved on a proposal card is not automatic, as it is not
-today, so its turn starts.
+**A question does not hold the turn** (docs/322-question-holds-automatic-turns req 2).
+The started turn is `automatic`, so it does not release the hold, but it passes it:
+`startOrRefuse.passesQuestionHold` in `wake-session.ts`, and the `passesQuestionHold`
+admission at the dispatch gate. Both read the stopped-run half of the hold again
+(`automaticTurnsHeld(id, { exceptQuestion: true })`), since a run can stop while the wake
+boots. `runDispatchedTurn` runs no pre-turn compaction for an automatic turn admitted under
+the hold, because it re-queues its turn and the drain would hold it. While a question waits,
+`SessionInbox` starts one turn for each new batch and marks that batch told
+(`markNotified`), so no retry and no restart tells it again: each such turn could ask the
+question again. It marks the batch only when that turn completes, so a turn that fails in setup
+leaves it owed. The messages stay unread, so the user's reply carries the notice. A reply or
+an approved message during the boot changes the turn; `stillWanted` refuses it and the inbox
+tells again with the new state. Its prompt is `session-inbox-question-turn.md`, which
+says the question still waits and asks the agent to ask it again if it still needs the
+answer: a later turn leaves the old card answerable but no longer at the end of the chat.
+A stopped scheduled run (docs/324 req 33) still refuses the turn. A message that the
+user approved on a proposal card is not automatic, so its turn is the user's response.
 
 ### Senders
 
@@ -169,9 +185,9 @@ receipt.
 
 ## Verified dependencies
 
-- A notice in front of the prompt gets its receipt only when the agent produced its
-  own result for that prompt: `notePromptDelivered`, `turn-executor.ts`. Both
-  composition sites pass `noticeDeliveries`: `dispatched-turn.ts` and
+- The inline notice of an older container gets its receipt only when the agent
+  produced its own result for that prompt: `notePromptDelivered`, `turn-executor.ts`.
+  Both composition sites pass `noticeDeliveries`: `dispatched-turn.ts` and
   `ws-handlers/agent-execution.ts`.
 - A resident streaming turn does not settle its dispatch, so a turn's settlement is
   not evidence that a notice arrived: the note on `NoticeDelivery`,

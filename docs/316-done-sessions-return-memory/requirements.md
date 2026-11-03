@@ -33,8 +33,11 @@ expects a finished session to use no memory.
 9. The wait is a fixed 10 minutes. It is not a setting.
 10. When a session's pull request merges, the session moves under **Recently
     resolved** immediately, also when the user has it open. A merge during
-    one of the session's turns does this too: work inside a turn that started
-    before the merge is not "continuing work" for requirement 5.
+    one of the session's turns moves it there when the agent stops working
+    (req 11): work inside a turn that started before the merge is not
+    "continuing work" for requirement 5.
+11. A session in which an agent is working is not done. It is not under
+    **Recently resolved**, and the sidebar cap does not hide it.
 
 ## Open questions
 
@@ -42,6 +45,10 @@ expects a finished session to use no memory.
 
 ## Resolved questions
 
+- 2026-10-29 — The user: "If an agent is working in a session, this session
+  could not be considered 'done'." A working session had moved under
+  **Recently resolved**, which "should only happen for the sessions that are
+  'done'". Carried by req 11; req 10's merge during a turn now waits for it.
 - 2026-09-24 — *A done session has Keep preview running set: reclaimed after the
   wait, or not done?* The user chose "not done". Carried by req 7.
 - 2026-09-24 — *The wait ends while the user has the session open: reclaim, or

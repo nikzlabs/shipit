@@ -189,6 +189,7 @@ import { Spinner } from "./components/Spinner.js";
 import { runSend } from "./utils/send-handler.js";
 import { deleteUploadFromServer } from "./hooks/useFileUpload.js";
 import { removeDraftUploads } from "./utils/local-storage.js";
+import { sessionFileUrlPath } from "./utils/session-file-path.js";
 import type { NotifyContext } from "./hooks/useNotification.js";
 
 // The components below read whole session lists, so that a list change re-renders them and not the app.
@@ -263,6 +264,7 @@ export default function App() {
   const diffDialogTitle = useGitStore((s) => s.diffDialogTitle);
 
   const fileTree = useFileStore((s) => s.tree);
+  const persistTree = useFileStore((s) => s.persistTree);
   const docFiles = useFileStore((s) => s.docFiles);
   const skills = useFileStore((s) => s.skills);
   const previewFile = useFileStore((s) => s.previewFile);
@@ -1487,6 +1489,7 @@ export default function App() {
         ) : rightTab === "files" ? (
           <FileTree
             tree={fileTree}
+            persistTree={persistTree}
             onRefresh={() => {
               const sid = useSessionStore.getState().sessionId;
               if (sid) {
@@ -1515,7 +1518,7 @@ export default function App() {
               const sid = useSessionStore.getState().sessionId;
               if (sid) {
                 const a = document.createElement("a");
-                a.href = `/api/sessions/${sid}/files/download/${f}`;
+                a.href = `/api/sessions/${sid}/files/download/${sessionFileUrlPath(f)}`;
                 a.download = "";
                 document.body.appendChild(a);
                 a.click();

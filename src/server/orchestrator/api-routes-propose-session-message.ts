@@ -52,7 +52,8 @@ function resolveTarget(
       code: 400,
       error:
         `${title} is a session you spawned, so you can already reach it directly: `
-        + `run \`shipit session message ${targetSessionId} -m "…"\`. `
+        + `run \`shipit session message ${targetSessionId} --body-file - <<'EOF'\`, `
+        + "with the text on the next lines and `EOF` alone on the last. "
         + "A proposal card is for a session you cannot address.",
     };
   }
@@ -64,7 +65,8 @@ function resolveTarget(
       code: 400,
       error:
         `${title} is the session that spawned you, so you can already reach it directly: `
-        + "run `shipit session report --body-file -`. "
+        + "run `shipit session report --body-file - <<'EOF'`, "
+        + "with the text on the next lines and `EOF` alone on the last. "
         + "A proposal card is for a session you cannot address.",
     };
   }

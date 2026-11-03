@@ -478,7 +478,10 @@ check for the same reason: a 401 from an LFS host that is not GitHub must not
 mark the GitHub token invalid. The auto-push reports it as the other failures
 are, an ops-safe log line plus git-lfs's text on a separate `Git said:` line,
 and adds a chat notice (`formatLfsUploadNotice`), posted once per failure
-episode and again after a push lands. Other callers throw the message to their
+episode and again after a push lands. The same episode parks
+`LFS_UPLOAD_AGENT_NOTICE` for the agent's next turn, because the chat notice
+reaches only the user. It is fixed text with no git-lfs output and no ref name,
+because it heads the prompt as a command source. Other callers throw the message to their
 own surface (the PR-creation error, the sync's push result). git-lfs's `hint:`
 lines are dropped from the quoted detail, because they suggest turning off the
 very check that failed.

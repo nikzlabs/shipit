@@ -29,10 +29,16 @@ export function builtInBrowserUsesGpu(
   return env.SHIPIT_GPU === "granted" && exists(DIRECTX_LINK);
 }
 
+/**
+ * Also the screenshot limit. A screenshot takes about seven frames, so a WebGL page
+ * drawn in software at one frame per 1–2 s took up to 16 s; the default is 5 s (planning#709).
+ */
+const ACTION_TIMEOUT_MS = 20_000;
+
 // --isolated keeps writable profiles out of the read-only browser store.
 // Chromium supports Linux ARM64. cd preserves compatibility with older MCP builds.
 export function playwrightMcpArgs(gpu: boolean): readonly string[] {
-  const server = `${PLAYWRIGHT_MCP_BIN} --isolated --browser chromium --headless --no-sandbox --output-dir ${PLAYWRIGHT_OUTPUT_DIR}`;
+  const server = `${PLAYWRIGHT_MCP_BIN} --isolated --browser chromium --headless --no-sandbox --output-dir ${PLAYWRIGHT_OUTPUT_DIR} --timeout-action ${ACTION_TIMEOUT_MS}`;
   // The image's own store, never the session's writable one, which a project's
   // `playwright install` or `uninstall` changes (docs/335-project-playwright-browsers).
   // Exported here, not inherited: Codex gives an MCP server only the variables its config names.

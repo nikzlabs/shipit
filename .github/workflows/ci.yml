@@ -331,3 +331,28 @@ jobs:
           docker rm -f shipit-ci-agent shipit-ci-service >/dev/null
           docker network rm shipit-ci-session shipit-ci-agent-net >/dev/null
           echo "stale host drop: ok"
+
+  # Runs on every change: the pin it exists to catch is one that no PR touches.
+  image-vulns:
+    name: Image Vulnerability Scan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Install Grype
+        env:
+          GRYPE_VERSION: 0.120.1
+          GRYPE_SHA256: 0a9ee97ef5ae2ee953b0a80098105052e846cdbe319a57d808b519c33cd1343d
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/grype.tar.gz" \
+            "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          echo "${GRYPE_SHA256}  $RUNNER_TEMP/grype.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/grype-bin"
+          tar -xzf "$RUNNER_TEMP/grype.tar.gz" -C "$RUNNER_TEMP/grype-bin" grype
+          echo "$RUNNER_TEMP/grype-bin" >> "$GITHUB_PATH"
+      - run: npm run check-image-vulns

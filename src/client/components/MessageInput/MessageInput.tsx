@@ -1,7 +1,12 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: consume prefill text from external store on mount
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useEventListener } from "../../hooks/useEventListener.js";
-import { compactAfterMergeEnabled, useSessionStore } from "../../stores/session-store.js";
+import {
+  compactAfterMergeEnabled,
+  contextUnderCompactionMinimum,
+  useSessionStore,
+} from "../../stores/session-store.js";
+import { AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS } from "../../../server/shared/compaction-threshold.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useIsMobile } from "../../hooks/useMediaQuery.js";
 import { useNarrowContainer } from "../../hooks/useNarrowContainer.js";
@@ -343,6 +348,8 @@ export function MessageInput({
     agents.find((a) => a.id === activeAgentId)?.supportsCompaction ?? false;
   const compactionSpent = usePrStore((s) => (sessionId ? s.compactionSpentBySession[sessionId] ?? false : false));
   const showCompactControl = showResetControl && agentSupportsCompaction && !compactionSpent;
+  // docs/295 req 18 — still offered under the minimum, with a hint that it compacts nothing.
+  const compactUnderMinimum = useSessionStore((s) => (sessionId ? contextUnderCompactionMinimum(s, sessionId) : false));
 
   /**
    * The reset control's tick state, and why it is not component state.
@@ -978,10 +985,10 @@ export function MessageInput({
                   data-testid="compact-context-control"
                   aria-pressed={compactChecked}
                   onClick={toggleCompactControl}
-                  className="w-full flex items-center gap-2.5 px-3 pt-1.5 pb-2.5 text-left"
+                  className="w-full flex items-start gap-2.5 px-3 pt-1.5 pb-2.5 text-left"
                 >
                   <span
-                    className={`shrink-0 grid place-items-center w-4 h-4 rounded ${
+                    className={`shrink-0 mt-0.5 grid place-items-center w-4 h-4 rounded ${
                       compactChecked
                         ? "bg-(--color-accent) text-white"
                         : "border border-(--color-border-secondary) bg-(--color-bg-tertiary)"
@@ -989,8 +996,19 @@ export function MessageInput({
                   >
                     {compactChecked && <CheckIcon size={12} weight="bold" />}
                   </span>
-                  <span className="flex items-center gap-1.5 text-xs font-medium text-(--color-text-primary)">
-                    <BroomIcon size={ICON_SIZE.XS} /> Compact the context
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-1.5 text-xs font-medium text-(--color-text-primary)">
+                      <BroomIcon size={ICON_SIZE.XS} /> Compact the context
+                    </span>
+                    {compactUnderMinimum && (
+                      <span
+                        data-testid="compact-context-under-minimum"
+                        className="block text-[11px] text-(--color-text-tertiary) mt-0.5"
+                      >
+                        The context is under {AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS / 1000}K tokens, so no compaction runs.
+                        Send <code className="font-mono">/compact</code> to compact it anyway.
+                      </span>
+                    )}
                   </span>
                 </button>
               )}

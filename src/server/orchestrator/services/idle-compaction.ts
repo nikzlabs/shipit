@@ -7,13 +7,14 @@ import { modelIdentityFor } from "../../shared/catalogue/index.js";
 import { getAgentCapabilities } from "../../shared/agent-registry.js";
 import { GLOBAL_SETTINGS } from "../../shared/settings-catalogue/global-settings.js";
 import { doneSessionTest } from "../../shared/session-resolution.js";
+import { AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS } from "../../shared/compaction-threshold.js";
 import type { CompactionCard, SessionInfo } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import type { AnchoredTurn, CacheTtl, UsageManager } from "../usage.js";
 import type { PersistedMessage } from "../chat-history.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
-import { DISPATCH_SETUP_FAILURE } from "../session-runner.js";
+import { DISPATCH_SETUP_FAILURE, isAgentWorking } from "../session-runner.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import type { TurnHandle, TurnOutcome } from "../turn-settlement.js";
 import { selectionOf } from "../turn-attribution.js";
@@ -22,8 +23,6 @@ import { MISSED_COMPACTION_NOTICE } from "../compact-before-turn.js";
 import { getErrorMessage } from "../validation.js";
 import { busyReason } from "./agent-compaction-request.js";
 
-/** req 6 */
-export const IDLE_COMPACTION_MIN_CONTEXT_TOKENS = 200_000;
 /** req 11 — a shorter cache would be compacted while the user may still read the reply. */
 export const IDLE_COMPACTION_MIN_LIFETIME_MINUTES = 30;
 /** req 10 */
@@ -53,6 +52,7 @@ const HARNESS_CACHE: Readonly<Record<AgentId, HarnessCacheFacts>> = {
   // 99.1% of the previous input from the cache in a new process. It sends Anthropic
   // `cacheControl: {type: "ephemeral"}` with no ttl.
   opencode: { anthropicDefaultMinutes: 5 },
+  opencode2: { excluded: "OpenCode 2's cache across processes is not probed" },
   // req 15 — no probe has shown a new Grok process reading the previous one's cache.
   grok: { excluded: "Grok's cache across processes is not probed (req 15)" },
   antigravity: {},
@@ -272,12 +272,13 @@ export class IdleCompaction {
     };
   }
 
-  // A compaction since the reading (`/compact`, docs/295, docs/324) answers with its own size.
+  // req 6. A compaction since the reading (`/compact`, docs/295, docs/324) answers with its own
+  // size. An unknown size never wakes a container.
   private contextLargeEnough(sessionId: string): boolean {
     const context = this.deps.usageManager.latestContextTokens(
       sessionId, this.deps.chatHistoryManager.latestCompactionCard(sessionId),
     );
-    return context !== undefined && context >= IDLE_COMPACTION_MIN_CONTEXT_TOKENS;
+    return context !== undefined && context >= AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS;
   }
 
   private blockedReason(
@@ -288,7 +289,8 @@ export class IdleCompaction {
     if (!this.deps.isEnabled()) return `"${SETTING.label}" is off`;
     const session = this.deps.sessionManager.get(sessionId);
     if (!session || session.archived || session.userArchived) return "the session is archived";
-    if (doneSessionTest(this.deps.sessionManager.listAll())(session)) return "the session is done (req 7)";
+    const isWorking = (id: string): boolean => isAgentWorking(this.deps.runnerRegistry.get(id));
+    if (doneSessionTest(this.deps.sessionManager.listAll(), isWorking)(session)) return "the session is done (req 7)";
     const agentId = session.agentId ?? this.deps.defaultAgentId;
     if (agentId !== deadline.agentId || (session.model ?? null) !== deadline.model) {
       return "the session's harness or model changed, so its next turn reads another cache";

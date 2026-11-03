@@ -13,6 +13,7 @@ import {
   CONTAINER_STANDBY_LABEL,
 } from "./session-container.js";
 import {
+  CONTAINER_PERSIST_DIR,
   CONTAINER_PLUGIN_STORE_DIR,
   CONTAINER_WORKSPACE_DIR,
   DEP_CACHE_CONTAINER_PATH,
@@ -255,12 +256,12 @@ export function buildMounts(
       mounts.push({
         Type: "volume",
         Source: workspaceVolume,
-        Target: "/persist",
+        Target: CONTAINER_PERSIST_DIR,
         ReadOnly: false,
         VolumeOptions: { Subpath: scratchRelPath },
       });
     } else {
-      binds.push(`${config.scratchDir}:/persist:rw`);
+      binds.push(`${config.scratchDir}:${CONTAINER_PERSIST_DIR}:rw`);
     }
   }
 

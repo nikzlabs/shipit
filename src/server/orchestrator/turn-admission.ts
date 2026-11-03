@@ -18,10 +18,11 @@ export function isSilentCompaction(opts: { silent?: boolean; text: string }): bo
 export function readAnswerHold(
   deps: Pick<SystemTurnDeps, "answerHold"> | null,
   sessionId: string,
+  opts: { exceptQuestion?: boolean } = {},
 ): boolean {
   if (!deps?.answerHold) return false;
   try {
-    return deps.answerHold.automaticTurnsHeld(sessionId);
+    return deps.answerHold.automaticTurnsHeld(sessionId, opts);
   } catch (err) {
     console.error(`[admission] reading the answer hold for ${sessionId} failed:`, err);
     return false;

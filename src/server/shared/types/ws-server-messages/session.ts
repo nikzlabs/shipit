@@ -127,6 +127,8 @@ export interface WsSystemUserMessage {
   files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
   uploadPaths?: string[];
   userReview?: { filePaths: string[]; commentCount: number };
+  /** docs/337-waiting-card-stays-last req 1 — the turn runs while a question waits. */
+  whileAnswerWaits?: boolean;
 }
 
 /** Does not clear the loading state. */

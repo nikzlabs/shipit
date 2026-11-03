@@ -78,7 +78,8 @@ It is written down so that a review can see what was not asked for.
 ### Requirements of other features that stay
 
 - `docs/322-question-holds-automatic-turns`: no automatic turn starts while the
-  agent waits for the user's answer. Requirement 2 speaks of a "queued message
+  agent waits for the user's answer, except the ones its req 2 names (an idle
+  compaction, and the inbox turn). Requirement 2 speaks of a "queued message
   from other sources", so a message from a different source can still wait in
   a queue.
 - The user's own setting `advanced.liveSteering`. Off asks for the queue, and a

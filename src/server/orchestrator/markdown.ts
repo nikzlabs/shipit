@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { compareDocsByRecency } from "../shared/doc-sort.js";
+import { openWithinRoot } from "./session-file-open.js";
 import { isWorkspaceSkipDir } from "../shared/fs-constants.js";
 import type { DocEntry } from "../shared/types.js";
 
@@ -79,6 +80,7 @@ function titleFromPath(relativePath: string): string {
 }
 
 async function readMarkdownEntry(
+  root: string,
   fullPath: string,
   relativePath: string,
   basename: string,
@@ -92,34 +94,33 @@ async function readMarkdownEntry(
   const isChecklist = basename.toLowerCase() === "checklist.md";
 
   try {
-    if (isChecklist) {
-      const content = await fs.readFile(fullPath, "utf-8");
-      const fields = parseFrontmatterFields(content);
-      issue = fields.issue;
-      title = fields.title;
-      description = fields.description;
-      const progress = parseChecklistProgress(content);
-      if (progress.total > 0) checklist = progress;
-      const stat = await fs.stat(fullPath);
-      modifiedAt = stat.mtime.toISOString();
-    } else {
-      const handle = await fs.open(fullPath, "r");
-      try {
-        const buf = Buffer.alloc(1024);
-        const { bytesRead } = await handle.read(buf, 0, 1024, 0);
-        const content = buf.toString("utf-8", 0, bytesRead);
+    const handle = await openWithinRoot(root, path.relative(root, fullPath));
+    try {
+      const stat = await handle.stat();
+      if (stat.isFile()) {
+        let content: string;
+        if (isChecklist) {
+          content = (await handle.readFile()).toString("utf-8");
+        } else {
+          const buf = Buffer.alloc(1024);
+          const { bytesRead } = await handle.read(buf, 0, 1024, 0);
+          content = buf.toString("utf-8", 0, bytesRead);
+        }
         const fields = parseFrontmatterFields(content);
         issue = fields.issue;
         title = fields.title;
         description = fields.description;
-        const stat = await handle.stat();
+        if (isChecklist) {
+          const progress = parseChecklistProgress(content);
+          if (progress.total > 0) checklist = progress;
+        }
         modifiedAt = stat.mtime.toISOString();
-      } finally {
-        await handle.close();
       }
+    } finally {
+      await handle.close().catch(() => {});
     }
   } catch {
-    // Can't read file — skip frontmatter parsing
+    // Can't read file, or it leads outside the scan root — skip frontmatter parsing
   }
 
   return {
@@ -132,7 +133,7 @@ async function readMarkdownEntry(
   };
 }
 
-async function scanMarkdownFiles(dir: string, prefix: string): Promise<DocEntry[]> {
+async function scanMarkdownFiles(root: string, dir: string, prefix: string): Promise<DocEntry[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const results: DocEntry[] = [];
 
@@ -142,9 +143,9 @@ async function scanMarkdownFiles(dir: string, prefix: string): Promise<DocEntry[
     const fullPath = path.join(dir, entry.name);
 
     if (entry.isDirectory()) {
-      results.push(...await scanMarkdownFiles(fullPath, relativePath));
+      results.push(...await scanMarkdownFiles(root, fullPath, relativePath));
     } else if (entry.name.endsWith(".md")) {
-      results.push(await readMarkdownEntry(fullPath, relativePath, entry.name));
+      results.push(await readMarkdownEntry(root, fullPath, relativePath, entry.name));
     }
   }
 
@@ -152,7 +153,7 @@ async function scanMarkdownFiles(dir: string, prefix: string): Promise<DocEntry[
 }
 
 export async function findMarkdownFiles(dir: string, prefix = ""): Promise<DocEntry[]> {
-  const results = await scanMarkdownFiles(dir, prefix);
+  const results = await scanMarkdownFiles(dir, dir, prefix);
 
   // The viewer hides a plan's sibling checklist, so show its progress on the plan.
   const progressByDir = new Map<string, { total: number; done: number }>();

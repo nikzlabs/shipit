@@ -9,6 +9,11 @@ import { useBugReportStore } from "../stores/bug-report-store.js";
 import { useEgressPromptStore } from "../stores/egress-prompt-store.js";
 import { useIssueWriteStore } from "../stores/issue-write-store.js";
 import type { IssueWriteCard } from "../../server/shared/types.js";
+import { buildVisualElements } from "../components/visual-elements.js";
+import { pendingAnswerElementIndex } from "../components/MessageList/pending-answer.js";
+import { createElement } from "react";
+import { cleanup, render, screen } from "@testing-library/react";
+import { MessageList } from "../components/MessageList.js";
 
 describe("loadSessionHistory — modelInfo seeding", () => {
   let fetchSpy: ReturnType<typeof vi.fn>;
@@ -325,6 +330,18 @@ describe("loadSessionHistory — modelInfo seeding", () => {
                   remembered: true,
                 },
               },
+              {
+                role: "assistant",
+                text: "",
+                permissionPrompt: {
+                  requestId: "perm-unanswered",
+                  phase: "denied",
+                  toolName: "Bash",
+                  summary: "Bash: rm -f ~/.gitconfig",
+                  createdAt: "2026-06-11T00:00:00.000Z",
+                  unanswered: { waitedMs: 1_800_000 },
+                },
+              },
             ],
             commits: [],
             fileTree: [],
@@ -342,6 +359,7 @@ describe("loadSessionHistory — modelInfo seeding", () => {
     expect(card?.phase).toBe("approved");
     expect(card?.remembered).toBe(true);
     expect(card?.path).toBe(".npmrc");
+    expect(usePermissionStore.getState().cards["perm-unanswered"]?.unanswered).toEqual({ waitedMs: 1_800_000 });
   });
 });
 
@@ -936,9 +954,13 @@ describe("loadSessionHistory — the file tree is session-scoped", () => {
     useSessionStore.getState().setSessionId("A");
     const loadA = loadSessionHistory("A");
     await vi.waitFor(() => expect(treeResolvers.A).toBeDefined());
-    treeResolvers.A(ok({ tree: [{ name: "a.txt", path: "a.txt", type: "file" }] }));
+    treeResolvers.A(ok({
+      tree: [{ name: "a.txt", path: "a.txt", type: "file" }],
+      persist: [{ name: "p.md", path: "/persist/p.md", type: "file" }],
+    }));
     await loadA;
     expect(useFileStore.getState().tree.map((n) => n.name)).toEqual(["a.txt"]);
+    expect(useFileStore.getState().persistTree.map((n) => n.path)).toEqual(["/persist/p.md"]);
   });
 
   it("does not lose the transcript when the tree request fails", async () => {
@@ -950,5 +972,45 @@ describe("loadSessionHistory — the file tree is session-scoped", () => {
     useSessionStore.getState().setSessionId("A");
     await loadSessionHistory("A");
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["STILL HERE"]);
+  });
+});
+
+describe("loadSessionHistory — a question that waits through an inbox turn", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    __resetHistoryCache();
+  });
+
+  it("keeps the waiting card pinned after a reload (docs/337-waiting-card-stays-last req 3)", async () => {
+    const messages = [
+      { role: "user", text: "decide" },
+      {
+        role: "assistant",
+        text: "",
+        toolUse: [{
+          type: "tool_use",
+          id: "ask-1",
+          name: "AskUserQuestion",
+          input: { questions: [{ question: "Which?", header: "Q", options: [{ label: "A", description: "a" }], multiSelect: false }] },
+        }],
+      },
+      { role: "user", text: "New messages from other sessions.", whileAnswerWaits: true },
+      { role: "assistant", text: "A child reported; the question still waits." },
+    ];
+    globalThis.fetch = vi.fn((url: string) => Promise.resolve(url.includes("/history")
+      ? { ok: true, json: () => Promise.resolve({ messages, commits: [], fileTree: [], agentRunning: false, turnUsage: [] }) }
+      : { ok: false, status: 404 })) as unknown as typeof fetch;
+    useSessionStore.getState().reset();
+    useSessionStore.getState().setSessionId("sess-337");
+
+    await loadSessionHistory("sess-337");
+
+    const loaded = useSessionStore.getState().messages;
+    expect(pendingAnswerElementIndex(buildVisualElements(loaded), loaded)).toBe(1);
+
+    const { container } = render(createElement(MessageList, { messages: loaded, isLoading: false }));
+    const content = container.querySelector("[data-chat-transcript]")!.lastElementChild!;
+    expect(content.lastElementChild!.contains(screen.getByTestId("option-A"))).toBe(true);
+    cleanup();
   });
 });

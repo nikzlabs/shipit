@@ -381,7 +381,7 @@ describe("createHeadlessSession", () => {
         prompt: "unknown harness",
       })).rejects.toMatchObject({
         statusCode: 400,
-        message: "Unknown agent 'codexx'. Valid agents: claude, codex, opencode, grok, antigravity.",
+        message: "Unknown agent 'codexx'. Valid agents: claude, codex, opencode2, opencode, grok, antigravity.",
       });
 
       expect(service.claim).not.toHaveBeenCalled();

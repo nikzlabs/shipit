@@ -16,7 +16,7 @@ import { LogStore } from "./log-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import { ReleaseStatusPoller } from "./release-status-poller.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
-import { sessionHasLiveAgent } from "./session-runner.js";
+import { isAgentWorking, sessionHasLiveAgent } from "./session-runner.js";
 import { releaseQueuedTurn } from "./queue-drain.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
@@ -365,6 +365,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     getRunner: (sessionId) => registryHolder.ref?.get(sessionId) ?? null,
     broadcastLog,
     chatHistory: chatHistoryManager,
+    sessionManager,
     notifyAutoPush: (sessionId) => prStatusPollerRef.ref?.notifyAutoPush(sessionId),
     destructiveGitGuarded: (sessionId) => Boolean(sessionManager.get(sessionId)?.mergedHeadSha),
   });
@@ -717,6 +718,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       runnerRegistry: registry,
       chatHistoryManager,
       isEnabled: () => credentialStore.getAgentCompaction(),
+      getContextTokens: (id) => usageManager.latestContextTokens(id, chatHistoryManager.latestCompactionCard(id)),
     }, turn);
   };
 
@@ -792,6 +794,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     },
   });
   registryHolder.ref = runnerRegistry;
+  sessionManager.setAgentWorkingTest((sessionId) => isAgentWorking(runnerRegistry.get(sessionId)));
 
   const idleCompaction = new IdleCompaction({
     isEnabled: () => credentialStore.getIdleCompaction(),

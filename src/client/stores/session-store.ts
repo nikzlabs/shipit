@@ -4,6 +4,10 @@ import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
 import type { SessionCapabilities, SessionListRow, SessionStatus, TurnUsage, RescuePhase, WsRewindPreview, WsReturnedQueueMessage, AgentId, ContainerFreshness, SessionSecretBlock, IssueRef } from "../../server/shared/types.js";
 import type { AgentGoal } from "../../server/shared/types/agent-types.js";
+import {
+  AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS,
+  latestContextTokens,
+} from "../../server/shared/compaction-threshold.js";
 import { reuseUnchangedRows } from "../utils/session-rows.js";
 import { useUiStore } from "./ui-store.js";
 
@@ -339,6 +343,22 @@ export function compactAfterMergeEnabled(
   sessionId: string,
 ): boolean {
   return state.pendingCompactAfterMerge[sessionId] ?? !state.sessionDetails[sessionId]?.compactAfterMergeOff;
+}
+
+/**
+ * docs/295-compact-context-on-merge req 15 — read with the server's own function: the last turn
+ * that read a size, or a compaction card newer than it. An unknown size is not under.
+ */
+export function contextUnderCompactionMinimum(
+  state: Pick<SessionState, "sessionId" | "turnUsage" | "messages">,
+  sessionId: string,
+): boolean {
+  // The store holds only the transcript of the session on screen.
+  const messages = state.sessionId === sessionId ? state.messages : [];
+  let lastCompaction: ChatMessage["compaction"];
+  for (let i = messages.length - 1; i >= 0 && !lastCompaction; i--) lastCompaction = messages[i].compaction;
+  const context = latestContextTokens(state.turnUsage[sessionId] ?? [], lastCompaction);
+  return context !== undefined && context < AUTOMATIC_COMPACTION_MIN_CONTEXT_TOKENS;
 }
 
 // One session's writes go out one after another, so the saved choice is the last click.
