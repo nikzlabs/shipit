@@ -162,6 +162,7 @@ describe("setupServiceManager — activating a session with a pre-started warm s
       installGateFailed: false,
       reconcile: vi.fn(async () => { /* no compose stack in tests */ }),
       stop: vi.fn(async () => { /* no compose stack in tests */ }),
+      getServices: () => [],
       updateComposeConfig: vi.fn(() => false),
       setSecretsLoader: vi.fn(),
       setInstallRunning: vi.fn(() => true),

@@ -121,8 +121,8 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
     pattern: /^\[compose\] Network mode changed since these services started — stopping them and recreating the session network\.$/,
   },
   {
-    producer: "service-manager-setup: manual services started again",
-    pattern: /^\[compose\] Started \d+ of \d+ manual service\(s\) again that were running before the network mode changed\.$/,
+    producer: "service-manager-setup: manual services started again after adoption",
+    pattern: /^\[compose\] Started \d+ of \d+ manual service\(s\) again that were running before the agent container was replaced\.$/,
   },
   {
     producer: "keep-preview-running: gave up",

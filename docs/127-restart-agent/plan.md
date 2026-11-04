@@ -250,6 +250,12 @@ and the stale-container banner hide **Restart agent container** and offer only
 true — computed by `agentRestartRebuildsServices` (`services/recovery.ts`) from
 the live manager's containment and `SessionContainerManager.replacementEgressContainment`.
 
+The same restore runs when the replacement container's creation rotated the
+dependency overlay (`overlayVolumesRecreated`), which removes the compose
+containers that held the old one. Adoption takes its snapshot of running services
+at the start, before the new container exists, so the removed manual services are
+still known and are started again after the reconcile.
+
 ### State: agent was mid-turn when restart fires
 
 The `running` flag is captured at turn start (post-095) so the

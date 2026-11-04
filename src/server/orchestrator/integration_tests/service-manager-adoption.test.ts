@@ -294,7 +294,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       ]);
       expect(logged).toEqual([
         CONTAINMENT_CHANGE_STOP_LINE,
-        "[compose] Started 1 of 1 manual service(s) again that were running before the network mode changed.",
+        "[compose] Started 1 of 1 manual service(s) again that were running before the agent container was replaced.",
       ]);
       for (const line of logged) expect(isOpsSafeLine(line)).toBe(true);
     });
@@ -585,6 +585,84 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       runner.dispose({ force: true });
       return { reconciles, applied };
     }
+
+    describe("an overlay rotation that removed the services", () => {
+      async function adoptWithRotation(opts: { recreated: boolean; setChanged?: boolean }) {
+        const runner = makeRunner("s1");
+        const calls: string[] = [];
+        const logged: string[] = [];
+        const services = [
+          { name: "web", status: "running", preview: "auto" },
+          { name: "unwritten", status: "running", preview: "manual" },
+          { name: "db", status: "stopped", preview: "manual" },
+        ];
+        const mgr = makeStubServiceManager() as StubServiceManager & {
+          setOverlayDepDirs: (v: unknown[]) => boolean;
+          reconcile: () => Promise<void>;
+          startService: (name: string) => Promise<void>;
+          getService: (name: string) => (typeof services)[number] | undefined;
+          userStopCount: () => number;
+        };
+        mgr.getServices = () => services.map((s) => ({ ...s }));
+        mgr.getService = (name) => services.find((s) => s.name === name);
+        mgr.userStopCount = () => 0;
+        mgr.setOverlayDepDirs = () => opts.setChanged ?? false;
+        // Like reconcile() after a failed listing: every manual service reads as stopped.
+        mgr.reconcile = async () => {
+          calls.push("reconcile");
+          for (const s of services) s.status = s.preview === "auto" ? "running" : "stopped";
+        };
+        mgr.startService = async (name) => {
+          calls.push(`start ${name}`);
+          services.find((s) => s.name === name)!.status = "running";
+        };
+        const cm = {
+          ...(buildOverlayContainerManager() as unknown as Record<string, unknown>),
+          consumeOverlayVolumesRecreated: () => opts.recreated,
+        } as unknown as SessionContainerManager;
+
+        adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
+          serviceManagers: new Map([["s1", mgr as unknown as ServiceManager]]),
+          composeStopPromises: new Map(),
+          containerManager: cm,
+          broadcastLog: (_sid, _source, text) => logged.push(text),
+          installPromise: null,
+          session: SESSION as never,
+          workspaceDir: "/ws/s1",
+        });
+        // The replacement container is created after adoption; its rotation removes the holders.
+        if (opts.recreated) for (const s of services) s.status = "stopped";
+        runner.setWorkerUrl("http://10.0.0.42:4000");
+        for (let i = 0; i < 50; i++) await Promise.resolve();
+        await new Promise((resolve) => setImmediate(resolve));
+        runner.preserveComposeOnDispose = true;
+        runner.dispose({ force: true });
+        return { calls, logged };
+      }
+
+      it("starts again the manual service that was running, and says so", async () => {
+        const { calls, logged } = await adoptWithRotation({ recreated: true });
+
+        expect(calls).toEqual(["reconcile", "start unwritten"]);
+        expect(logged.some((line) => line.includes("manual services that were running are started again."))).toBe(true);
+        expect(logged).toContain(
+          "[compose] Started 1 of 1 manual service(s) again that were running before the agent container was replaced.",
+        );
+      });
+
+      it("starts nothing when the overlay did not change", async () => {
+        const { calls, logged } = await adoptWithRotation({ recreated: false });
+
+        expect(calls).toEqual([]);
+        expect(logged).toEqual([]);
+      });
+
+      it("starts nothing when the mount set changed but no container was removed", async () => {
+        const { calls } = await adoptWithRotation({ recreated: false, setChanged: true });
+
+        expect(calls).toEqual(["reconcile"]);
+      });
+    });
 
     it("reconciles when the new container's overlay set differs", async () => {
       const { reconciles, applied } = await driveAdoption(true);
