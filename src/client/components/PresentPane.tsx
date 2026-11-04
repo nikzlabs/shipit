@@ -24,6 +24,7 @@ import { SourceToggle, type ViewMode } from "./FileContentView/SourceToggle.js";
 import { useFileReviewControls } from "../hooks/use-file-review-controls.js";
 import { kindFromMimeType, supportsSourceToggle } from "../utils/file-content-kind.js";
 import { Button } from "./ui/button.js";
+import { Spinner } from "./Spinner.js";
 import type { SendCommentsPayload } from "./FilePreviewModal.js";
 import { handleAgentInterfaceRequest } from "../agent-interface-sdk/handle-request.js";
 import type { AgentInterfaceProvenance } from "../../server/shared/agent-interface-sdk/protocol.js";
@@ -348,7 +349,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
           aria-label="Refresh presentation from disk"
           title="Reload the file from disk"
         >
-          <ArrowClockwiseIcon size={ICON_SIZE.XS} className={refreshing ? "animate-spin" : undefined} />
+          {refreshing ? <Spinner size={ICON_SIZE.XS} /> : <ArrowClockwiseIcon size={ICON_SIZE.XS} />}
           Refresh
         </Button>
         <Button
