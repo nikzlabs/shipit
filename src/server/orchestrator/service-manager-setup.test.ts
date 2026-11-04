@@ -162,6 +162,7 @@ describe("setupServiceManager — activating a session with a pre-started warm s
       installGateFailed: false,
       reconcile: vi.fn(async () => { /* no compose stack in tests */ }),
       stop: vi.fn(async () => { /* no compose stack in tests */ }),
+      getServices: () => [],
       updateComposeConfig: vi.fn(() => false),
       setSecretsLoader: vi.fn(),
       setInstallRunning: vi.fn(() => true),
@@ -277,6 +278,7 @@ describe("applyShipitConfigChange", () => {
       dockerSocket: false,
       reconcile: vi.fn(async () => { /* no compose stack in tests */ }),
       stop: vi.fn(async () => { /* no compose stack in tests */ }),
+      getServices: () => [],
       startError: null as string | null,
       updateComposeConfig: vi.fn(function (this: { composeFile: string; dockerSocket: boolean }, next: { file: string; dockerSocket: boolean }) {
         const changed = next.file !== this.composeFile || next.dockerSocket !== this.dockerSocket;

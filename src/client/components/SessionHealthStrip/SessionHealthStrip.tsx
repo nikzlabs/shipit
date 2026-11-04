@@ -4,6 +4,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useContainerHealthPoll } from "./hooks/useContainerHealthPoll.js";
+import { useSessionNetworkMode } from "../../hooks/useSessionNetworkMode.js";
 import { PHASE_LABEL, RESTART_OVERLAY_TIMEOUT_MS } from "./utils/healthState.js";
 import { HealthSummary } from "./HealthSummary.js";
 import { HealthDetails } from "./HealthDetails.js";
@@ -39,6 +40,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
     sessionId,
     isRestarting,
   );
+  const { agentRestartRebuildsServices } = useSessionNetworkMode(sessionId ?? null);
 
   // eslint-disable-next-line no-restricted-syntax -- transient toast auto-dismiss
   useEffect(() => {
@@ -116,6 +118,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
           sessionId={sessionId}
           isRestarting={isRestarting}
           canKillAgent={canKillAgent}
+          agentRestartRebuildsServices={agentRestartRebuildsServices}
           poll={poll}
           onReconnectWs={onReconnectWs}
           showDetails={showDetails}

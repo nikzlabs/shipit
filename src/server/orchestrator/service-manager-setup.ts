@@ -64,6 +64,7 @@ export async function applyOverlayDepDirs(
     session?: SessionInfo;
     workspaceDir: string;
     broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
+    onHoldersRemoved?: () => void;
   },
 ): Promise<boolean> {
   const { containerManager, session, workspaceDir, broadcastLog } = deps;
@@ -76,6 +77,7 @@ export async function applyOverlayDepDirs(
   return applyOverlayDepDirsForSession(runner.sessionId, mgr, {
     containerManager, session, workspaceDir,
     ...(broadcastLog ? { broadcastLog } : {}),
+    ...(deps.onHoldersRemoved ? { onHoldersRemoved: deps.onHoldersRemoved } : {}),
   });
 }
 
@@ -87,6 +89,8 @@ export async function applyOverlayDepDirsForSession(
     session: SessionInfo;
     workspaceDir: string;
     broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
+    /** Set by a caller that starts again the manual services the rotation removed (adoption). */
+    onHoldersRemoved?: () => void;
   },
 ): Promise<boolean> {
   const { containerManager, session, workspaceDir, broadcastLog } = deps;
@@ -143,11 +147,14 @@ export async function applyOverlayDepDirsForSession(
     // Rotating a volume can remove service containers without changing volume names.
     const recreated = containerManager.consumeOverlayVolumesRecreated(sessionId);
     if (recreated) {
+      deps.onHoldersRemoved?.();
+      const manualServices = deps.onHoldersRemoved
+        ? "manual services that were running are started again"
+        : "a manually-started service needs starting again";
       warn(
         `the dependency overlay was recreated (its base advanced or its mount options ` +
         `changed), so the compose services holding the previous one were removed. ` +
-        `Services set to start automatically ` +
-        `come back on their own; a manually-started service needs starting again.`,
+        `Services set to start automatically come back on their own; ${manualServices}.`,
       );
     }
     return changed || recreated;
@@ -181,6 +188,49 @@ function ownsStack(
   if (serviceManagers.get(sessionId) === mgr) return true;
   console.log(`[compose:${sessionId}] its manager no longer has the session — not starting the stack`);
   return false;
+}
+
+export const CONTAINMENT_CHANGE_STOP_LINE =
+  "[compose] Network mode changed since these services started — stopping them and recreating the session network.";
+
+interface RunningService {
+  name: string;
+  userStops: number;
+}
+
+/**
+ * Automatic services come back with the reconcile; a manual one that was running needs its own
+ * start, unless the user stopped it since adoption.
+ */
+async function restartServicesStoppedByTransition(
+  runner: SessionRunnerInterface,
+  mgr: ServiceManager,
+  wereRunning: readonly RunningService[],
+  broadcastLog: ((sessionId: string, source: LogSource, text: string) => void) | undefined,
+): Promise<void> {
+  const stillWanted = ({ name, userStops }: RunningService): boolean => {
+    const svc = mgr.getService(name);
+    return svc?.preview === "manual" && svc.status === "stopped" && mgr.userStopCount(name) === userStops;
+  };
+  const manual = wereRunning.filter(stillWanted);
+  let started = 0;
+  for (const svc of manual) {
+    // Each start awaits Docker, so a Stop can arrive while an earlier one runs.
+    if (!stillWanted(svc)) continue;
+    const { name } = svc;
+    try {
+      await mgr.startService(name);
+      started++;
+    } catch (err) {
+      // startService records the failure on the service, where the panel shows it.
+      console.warn(`[compose:${runner.sessionId}] could not start ${name} again after the network change:`, getErrorMessage(err));
+    }
+  }
+  if (manual.length === 0) return;
+  appendAgentLog(
+    broadcastLog, runner.sessionId, runner, "server",
+    `[compose] Started ${started} of ${manual.length} manual service(s) again that were running before the agent container was replaced.`,
+  );
 }
 
 export function adoptExistingServiceManager(
@@ -239,6 +289,31 @@ export function adoptExistingServiceManager(
         deps.firewallPolicy,
       )
     : false;
+  // Read before the policy stop, or the new container's overlay rotation, removes services.
+  const runningAtAdoption = mgr.getServices()
+    .filter((s) => s.status === "running" || s.status === "starting")
+    .map((s) => ({ name: s.name, userStops: mgr.userStopCount(s.name) }));
+  if (containmentChanged) {
+    console.log(
+      `[compose:${runner.sessionId}] egress containment changed since the services started — ` +
+      `stopping them (running: ${runningAtAdoption.map((s) => s.name).join(", ") || "none"}) ` +
+      "and resetting the session network",
+    );
+    if (runningAtAdoption.length > 0) {
+      appendAgentLog(broadcastLog, runner.sessionId, runner, "server", CONTAINMENT_CHANGE_STOP_LINE);
+    }
+  }
+  const reconcileStack = async (restoreManual: boolean): Promise<void> => {
+    await serializeStackOp(runner.sessionId, async () => {
+      if (!ownsStack(serviceManagers, runner.sessionId, mgr)) return;
+      try {
+        await mgr.reconcile();
+      } finally {
+        // A failed automatic service must not keep the manual ones down.
+        if (restoreManual) await restartServicesStoppedByTransition(runner, mgr, runningAtAdoption, broadcastLog);
+      }
+    });
+  };
   // Stop old-policy services before waiting for the worker, then reset their network.
   const policyTransition = containmentChanged
     ? mgr.stop().catch((error: unknown) => {
@@ -256,12 +331,14 @@ export function adoptExistingServiceManager(
       .then(async () => {
         // Refresh mounts before reconcile writes the override.
         let overlayChanged = false;
+        let overlayRemovedServices = false;
         if (deps.workspaceDir !== undefined) {
           overlayChanged = await applyOverlayDepDirs(runner, mgr, {
             containerManager,
             session: deps.session,
             workspaceDir: deps.workspaceDir,
             broadcastLog,
+            onHoldersRemoved: () => { overlayRemovedServices = true; },
           });
           if (overlayChanged) {
             console.log(
@@ -276,9 +353,7 @@ export function adoptExistingServiceManager(
           if (serviceManagers.get(runner.sessionId) === mgr) await deps.resetSessionNetwork?.();
         }
         if (containmentChanged || overlayChanged || wasPreStartedWarm) {
-          await serializeStackOp(runner.sessionId, async () => {
-            if (ownsStack(serviceManagers, runner.sessionId, mgr)) await mgr.reconcile();
-          });
+          await reconcileStack(containmentChanged || overlayRemovedServices);
         }
         try {
           await containerManager.connectToNetwork(runner.sessionId, networkName);
@@ -303,9 +378,7 @@ export function adoptExistingServiceManager(
     void (async () => {
       await policyTransition;
       if (serviceManagers.get(runner.sessionId) === mgr) await deps.resetSessionNetwork?.();
-      await serializeStackOp(runner.sessionId, async () => {
-        if (ownsStack(serviceManagers, runner.sessionId, mgr)) await mgr.reconcile();
-      });
+      await reconcileStack(containmentChanged);
     })().catch((error: unknown) => {
       mgr.emit("stack_error", error instanceof Error ? error : new Error(getErrorMessage(error)));
     });

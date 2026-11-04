@@ -1756,7 +1756,12 @@ export default function App() {
                 }
               />
             )}
-            {wsSessionId && <StaleContainerBanner sessionId={wsSessionId} />}
+            {wsSessionId && (
+              <StaleContainerBanner
+                sessionId={wsSessionId}
+                agentRestartRebuildsServices={composerNetworkState.agentRestartRebuildsServices}
+              />
+            )}
           </div>
         </div>
       )}

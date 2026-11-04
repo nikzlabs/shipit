@@ -694,6 +694,9 @@ export function useServerEvents(): void {
       // The allowlist and the containment toggle are not in that payload; the
       // egress store reads them, and only when something is looking at them.
       if (!data.keys?.some((key) => key.startsWith("network."))) return;
+      // A session that inherits the workspace default resolves differently now.
+      const activeSession = useSessionStore.getState().sessionId;
+      if (activeSession) notifySessionNetworkModeChanged(activeSession);
       const egress = useEgressStore.getState();
       if (!egress.loaded) return;
       void egress.refresh().catch(() => {});
@@ -842,6 +845,8 @@ export function useServerEvents(): void {
       });
       // The allowlist and the containment toggle are not in that payload, and a
       // viewer that was away missed their broadcast too.
+      const activeSession = useSessionStore.getState().sessionId;
+      if (activeSession) notifySessionNetworkModeChanged(activeSession);
       const egress = useEgressStore.getState();
       if (egress.loaded) void egress.refresh().catch(() => {});
     };

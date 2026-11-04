@@ -1,10 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { killAgent, restartAgent, restartContainer } from "./recovery.js";
+import { agentRestartRebuildsServices, killAgent, restartAgent, restartContainer } from "./recovery.js";
 import { createOomCircuitBreaker } from "../oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "../loop-detector.js";
 import type { SessionManager } from "../sessions.js";
-import type { SessionContainerManager } from "../session-container.js";
+import { SessionContainerManager } from "../session-container.js";
 import { SessionRunnerRegistry, type SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { PostInterruptCommitDeps } from "./post-interrupt-commit.js";
@@ -788,5 +788,48 @@ describe("killAgent — Stop, and a turn that started while it waited (docs/324-
     const { runner, deps } = setupKill((r) => { beginTurnSetup(r); r.running = true; });
     await killAgent(deps, "rescue-1");
     expect(runner.running).toBe(true);
+  });
+});
+
+describe("agentRestartRebuildsServices", () => {
+  const STARTED_CONTAINED = { isolated: true, dns: true, proxy: true, policy: "contained" as const };
+  let savedEnv: NodeJS.ProcessEnv;
+  beforeEach(() => {
+    savedEnv = { ...process.env };
+    process.env.SESSION_EGRESS_ENFORCE = "1";
+    delete process.env.SESSION_EGRESS_DNS;
+    delete process.env.SESSION_EGRESS_PROXY;
+  });
+  afterEach(() => {
+    process.env = savedEnv;
+  });
+
+  function containerManager(contained: boolean): SessionContainerManager {
+    return new SessionContainerManager({
+      docker: {} as never,
+      imageName: "shipit-session-worker:test",
+      networkName: "shipit-test",
+      skipHealthCheck: true,
+      stackName: "shipit-test",
+      resolveEgressConfig: () => ({ contained, extraHosts: [] }),
+    });
+  }
+  const mgr = { egressContainment: () => STARTED_CONTAINED };
+
+  it("is true when services started contained and the session is open now", () => {
+    expect(agentRestartRebuildsServices(mgr, containerManager(false), "s1")).toBe(true);
+  });
+
+  it("is false when the replacement starts under the same containment", () => {
+    expect(agentRestartRebuildsServices(mgr, containerManager(true), "s1")).toBe(false);
+  });
+
+  it("is true when only the DNS and proxy containment would differ", () => {
+    process.env.SESSION_EGRESS_DNS = "0";
+    expect(agentRestartRebuildsServices(mgr, containerManager(true), "s1")).toBe(true);
+  });
+
+  it("is false when the session has no compose stack", () => {
+    expect(agentRestartRebuildsServices(undefined, containerManager(false), "s1")).toBe(false);
   });
 });

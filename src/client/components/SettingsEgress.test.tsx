@@ -46,6 +46,7 @@ function stubFetch(
           enforcementStatus,
           startedContained: null,
           pendingRestart: false,
+          agentRestartRebuildsServices: false,
         }
       : null,
     defaultsCustomized,

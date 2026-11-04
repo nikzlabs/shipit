@@ -138,7 +138,7 @@ for a wedged session is on it, in increasing order of violence:
 | **details** | Expands the health detail in place |
 | **Diagnostics** | Opens the full diagnostics panel: services, runner state, recent logs — and a copy button that yields the whole payload as JSON, which is what a bug report wants |
 | **Kill agent** | SIGKILL on the agent process. For when an interrupt did not take |
-| **Restart agent container** | Destroys and recreates **just** the agent container, leaving the Compose stack up. The right one when the agent is wedged but the preview is fine |
+| **Restart agent container** | Destroys and recreates **just** the agent container, leaving the Compose stack up. The right one when the agent is wedged but the preview is fine. Hidden when the session's network mode changed since its services started: the new container would have to stop the stack anyway, so only **Restart all** is offered |
 | **Restart all** | Stops the Compose stack, destroys the agent container, rebuilds it and starts the `auto` services again. `manual` services stay stopped until started |
 
 The agent restarts its own agent container: when a change applies only from the

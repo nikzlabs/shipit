@@ -4,6 +4,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
 import { SessionHealthStrip } from "./SessionHealthStrip.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { notifySessionNetworkModeChanged } from "../../hooks/useSessionNetworkMode.js";
 
 const fetchMock = vi.fn();
 
@@ -272,6 +273,41 @@ describe("SessionHealthStrip", () => {
         expect(rs?.startedAt).toBeTypeOf("number");
         expect(rs!.startedAt!).toBeGreaterThan(0);
       });
+    });
+  });
+
+  describe("when an agent-only restart would stop the compose stack", () => {
+    function routeFetch(agentRestartRebuildsServices: boolean) {
+      fetchMock.mockImplementation(async (url: string) => {
+        const body = url.startsWith("/api/egress/session/")
+          ? { sessionId: "sess-1", override: false, pendingRestart: true, agentRestartRebuildsServices }
+          : healthRunning;
+        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+      });
+    }
+
+    it("offers only Restart all", async () => {
+      routeFetch(true);
+      render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Restart all" }).title).toContain("network mode changed");
+      });
+      expect(screen.queryByRole("button", { name: "Restart agent container" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Restart all" })).toBeEnabled();
+    });
+
+    it("offers the agent-only restart again once the stack would survive it", async () => {
+      routeFetch(true);
+      render(<SessionHealthStrip sessionId="sess-1" onReconnectWs={() => {}} />);
+      await waitFor(() => {
+        expect(screen.queryByRole("button", { name: "Restart agent container" })).not.toBeInTheDocument();
+      });
+
+      routeFetch(false);
+      act(() => notifySessionNetworkModeChanged("sess-1"));
+
+      expect(await screen.findByRole("button", { name: "Restart agent container" })).toBeInTheDocument();
     });
   });
 });

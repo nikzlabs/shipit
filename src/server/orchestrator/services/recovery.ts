@@ -2,7 +2,7 @@ import type { AgentId, RescuePhase } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionContainerManager } from "../session-container.js";
 import type { QueuedMessage, SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
-import type { ServiceManager } from "../service-manager.js";
+import { egressContainmentDiffers, type ServiceManager } from "../service-manager.js";
 import type { SessionOomCircuitBreaker } from "../oom-circuit-breaker.js";
 import type { SessionLoopDetector } from "../loop-detector.js";
 import { ServiceError } from "./types.js";
@@ -286,6 +286,19 @@ export function takeQueueHold(
       hold.release();
     },
   };
+}
+
+/**
+ * Whether an agent-only restart would stop the compose stack and reset its network, because the
+ * replacement container starts under a different egress containment than the services did.
+ */
+export function agentRestartRebuildsServices(
+  mgr: Pick<ServiceManager, "egressContainment"> | undefined,
+  containerManager: Pick<SessionContainerManager, "replacementEgressContainment"> | null | undefined,
+  sessionId: string,
+): boolean {
+  if (!mgr || !containerManager) return false;
+  return egressContainmentDiffers(mgr.egressContainment(), containerManager.replacementEgressContainment(sessionId));
 }
 
 export interface RestartAgentOpts {

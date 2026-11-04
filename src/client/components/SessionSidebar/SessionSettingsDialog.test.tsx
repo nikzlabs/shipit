@@ -40,6 +40,7 @@ function stubFetch(opts: {
     enforcementStatus,
     startedContained,
     pendingRestart: pending(),
+    agentRestartRebuildsServices: false,
   });
   const view = (): EgressAllowlistView => ({
     entries: [],

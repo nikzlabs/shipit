@@ -19,6 +19,7 @@ function settings(over: Partial<EgressSessionSettings> = {}): EgressSessionSetti
     enforcementStatus: "active",
     startedContained: null,
     pendingRestart: false,
+    agentRestartRebuildsServices: false,
     ...over,
   };
 }

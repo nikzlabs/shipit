@@ -3,6 +3,13 @@ import { renderHook, cleanup, act } from "@testing-library/react";
 import { useServerEvents } from "./useServerEvents.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useSessionStore } from "../stores/session-store.js";
+
+const { notifySessionNetworkModeChanged } = vi.hoisted(() => ({ notifySessionNetworkModeChanged: vi.fn() }));
+vi.mock("./useSessionNetworkMode.js", async (importActual) => ({
+  ...(await importActual<Record<string, unknown>>()),
+  notifySessionNetworkModeChanged,
+}));
 
 /**
  * A setting changed somewhere else, and this viewer finds out
@@ -116,6 +123,23 @@ describe("useServerEvents — settings changed elsewhere", () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 
+  it("has the active session re-read its network mode when a network key moved", () => {
+    useSessionStore.getState().setSessionId("s1");
+    notifySessionNetworkModeChanged.mockClear();
+    renderHook(() => useServerEvents());
+
+    act(() => {
+      FakeEventSource.last!.emit("settings_changed", { keys: ["enableSubAgents"] });
+    });
+    expect(notifySessionNetworkModeChanged).not.toHaveBeenCalled();
+
+    act(() => {
+      FakeEventSource.last!.emit("settings_changed", { keys: ["network.egressContained"] });
+    });
+    expect(notifySessionNetworkModeChanged).toHaveBeenCalledWith("s1");
+    useSessionStore.getState().setSessionId(undefined);
+  });
+
   it("re-reads them again when the global connection recovers, for a viewer that was away", async () => {
     renderHook(() => useServerEvents());
     // The first open is the bootstrap's own read, not a recovery.
@@ -130,5 +154,19 @@ describe("useServerEvents — settings changed elsewhere", () => {
       expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/bootstrap"))).toBe(true);
       expect(useSettingsStore.getState().enableSubAgents).toBe(false);
     });
+  });
+
+  it("has the active session re-read its network mode when the global connection recovers", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    renderHook(() => useServerEvents());
+    act(() => { FakeEventSource.last!.open(); });
+    notifySessionNetworkModeChanged.mockClear();
+
+    act(() => { FakeEventSource.last!.failConnection(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+    act(() => { FakeEventSource.last!.open(); });
+
+    expect(notifySessionNetworkModeChanged).toHaveBeenCalledWith("s1");
+    useSessionStore.getState().setSessionId(undefined);
   });
 });

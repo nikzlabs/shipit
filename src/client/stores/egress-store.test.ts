@@ -23,6 +23,7 @@ function stubFetch(initial: { entries: EgressAllowlistEntry[]; globalEnabled?: b
       enforcementStatus: "active",
       startedContained: null,
       pendingRestart: false,
+      agentRestartRebuildsServices: false,
     },
     defaultsCustomized: false,
   });

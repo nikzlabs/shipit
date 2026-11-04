@@ -235,6 +235,27 @@ Surfaces via `lastCreateError` on the health endpoint, just like
 restartContainer. The strip flips the rescue overlay to `failed` and
 the user can retry or escalate to full Rescue session.
 
+### State: network mode changed since the services started
+
+A preserved stack can still be stopped by its adoption: when the replacement
+container's egress containment differs from what the services started under
+(`egressContainmentDiffers` in `service-manager.ts` — contained vs open, or the
+DNS / proxy tiers), adoption `stop()`s the stack, resets the session network,
+and reconciles. The reconcile brings the automatic services back; adoption then
+starts again each manual service that was running before the stop
+(`restartServicesStoppedByTransition` in `service-manager-setup.ts`), and logs
+both steps to the Logs tab. Because the stack does not survive, the health strip
+and the stale-container banner hide **Restart agent container** and offer only
+**Restart all** while `EgressSessionSettings.agentRestartRebuildsServices` is
+true — computed by `agentRestartRebuildsServices` (`services/recovery.ts`) from
+the live manager's containment and `SessionContainerManager.replacementEgressContainment`.
+
+The same restore runs when the replacement container's creation rotated the
+dependency overlay (`overlayVolumesRecreated`), which removes the compose
+containers that held the old one. Adoption takes its snapshot of running services
+at the start, before the new container exists, so the removed manual services are
+still known and are started again after the reconcile.
+
 ### State: agent was mid-turn when restart fires
 
 The `running` flag is captured at turn start (post-095) so the

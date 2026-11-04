@@ -117,6 +117,9 @@ export interface SessionNetworkModeState {
 
   pendingRestart: boolean;
 
+  /** An agent-only restart would stop the compose stack, so only "Restart all" is honest. */
+  agentRestartRebuildsServices: boolean;
+
   loaded: boolean;
 
   saving: boolean;
@@ -128,6 +131,7 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
   const [globalEnabled, setGlobalEnabled] = useState(true);
   const [enforcementStatus, setEnforcementStatus] = useState<EgressEnforcementStatus>("active");
   const [pendingRestart, setPendingRestart] = useState(false);
+  const [agentRestartRebuildsServices, setAgentRestartRebuildsServices] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const sharedWrites = useSyncExternalStore(
@@ -158,6 +162,7 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
     setGlobalEnabled(settings.globalEnabled);
     setEnforcementStatus(settings.enforcementStatus ?? (settings.enforcementActive ? "active" : "no-sidecar"));
     setPendingRestart(settings.pendingRestart);
+    setAgentRestartRebuildsServices(settings.agentRestartRebuildsServices);
     setLoaded(true);
   }, []);
 
@@ -192,6 +197,7 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
     setModeState("inherit");
     setGlobalEnabled(true);
     setPendingRestart(false);
+    setAgentRestartRebuildsServices(false);
     setLoaded(false);
     setSaving(false);
     if (!sessionId) return;
@@ -276,6 +282,7 @@ export function useSessionNetworkMode(sessionId: string | null): SessionNetworkM
     globalEnabled,
     enforcementStatus,
     pendingRestart,
+    agentRestartRebuildsServices,
     loaded,
     saving: saving || sharedWrites > 0,
     setMode,

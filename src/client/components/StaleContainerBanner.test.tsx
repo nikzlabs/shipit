@@ -52,6 +52,29 @@ describe("StaleContainerBanner", () => {
     expect(screen.getByTestId("stale-container-banner")).toBeInTheDocument();
   });
 
+  it("offers only a full restart when an agent-only restart would stop the compose stack", async () => {
+    post.mockResolvedValue({ ok: true, noContainer: false, newContainerState: "running", error: null });
+    useSessionStore.getState().setContainerFreshness(STALE);
+    render(<StaleContainerBanner sessionId="session one" agentRestartRebuildsServices />);
+
+    expect(screen.queryByRole("button", { name: "Restart agent container" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Restart all" }));
+
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith("/api/sessions/session%20one/container/restart");
+    });
+    expect(useSessionStore.getState().rescueState?.phase).toBe("stopping_stack");
+  });
+
+  it("does not offer to schedule an agent-only restart when it would stop the compose stack", () => {
+    useSessionStore.getState().setContainerFreshness(STALE);
+    useSessionStore.getState().setIsLoading(true);
+    render(<StaleContainerBanner sessionId="s1" agentRestartRebuildsServices />);
+
+    expect(screen.queryByRole("button", { name: "Restart after turn" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restart all" })).toBeDisabled();
+  });
+
   it("schedules the restart during an active turn, without the restart overlay", async () => {
     post.mockResolvedValue({ ok: true, scheduled: true });
     useSessionStore.getState().setSessionId("s1");

@@ -22,6 +22,9 @@ export interface RecoveryActionsProps {
 
   canKillAgent: boolean;
 
+  /** An agent-only restart would stop the compose stack, so only "Restart all" is offered. */
+  agentRestartRebuildsServices?: boolean;
+
   poll: () => Promise<void>;
 
   onReconnectWs: () => void;
@@ -34,6 +37,7 @@ export function RecoveryActions({
   sessionId,
   isRestarting,
   canKillAgent,
+  agentRestartRebuildsServices = false,
   poll,
   onReconnectWs,
   showDetails,
@@ -179,24 +183,28 @@ export function RecoveryActions({
           : <SkullIcon size={ICON_SIZE.XS} />}
         Kill agent
       </Button>
-      <Button
-        variant="ghost"
-        size="md"
-        onClick={() => void onRestartAgent()}
-        disabled={isRestarting}
-        title="Destroy and recreate just the agent container. Leaves the compose stack running — use when the agent is wedged but your preview/dev-server are fine."
-      >
-        {isRestarting
-          ? <Spinner size={ICON_SIZE.XS} />
-          : <CpuIcon size={ICON_SIZE.XS} />}
-        Restart agent container
-      </Button>
+      {!agentRestartRebuildsServices && (
+        <Button
+          variant="ghost"
+          size="md"
+          onClick={() => void onRestartAgent()}
+          disabled={isRestarting}
+          title="Destroy and recreate just the agent container. Leaves the compose stack running — use when the agent is wedged but your preview/dev-server are fine."
+        >
+          {isRestarting
+            ? <Spinner size={ICON_SIZE.XS} />
+            : <CpuIcon size={ICON_SIZE.XS} />}
+          Restart agent container
+        </Button>
+      )}
       <Button
         variant="secondary"
         size="md"
         onClick={() => void onRestart()}
         disabled={isRestarting}
-        title="Stop the compose stack, destroy the agent container, then recreate everything from scratch. Use when the session is wedged."
+        title={agentRestartRebuildsServices
+          ? "Stop the compose stack, destroy the agent container, then recreate everything from scratch. The network mode changed, so an agent-only restart cannot keep the services running."
+          : "Stop the compose stack, destroy the agent container, then recreate everything from scratch. Use when the session is wedged."}
       >
         {isRestarting
           ? <Spinner size={ICON_SIZE.XS} />

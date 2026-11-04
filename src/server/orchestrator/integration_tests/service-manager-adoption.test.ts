@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
 import { adoptExistingServiceManager } from "../app-lifecycle.js";
+import { CONTAINMENT_CHANGE_STOP_LINE } from "../service-manager-setup.js";
+import { isOpsSafeLine } from "../services/host-session-logs.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { ServiceManager } from "../service-manager.js";
 import type { SessionContainerManager } from "../session-container.js";
@@ -221,6 +223,118 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     expect(mgr._stopCalls).toBe(1);
     expect(cm._connectCalls).toHaveLength(0);
     runner.dispose({ force: true });
+  });
+
+  describe("a network-mode change across the restart", () => {
+    interface Svc { name: string; status: string; preview: "auto" | "manual" }
+    async function adoptAcrossModeChange(
+      services: Svc[],
+      opts: { reconcileFails?: boolean; stoppedByUserDuringReconcile?: string[]; stoppedByUserDuringStop?: string[] } = {},
+    ) {
+      const runner = makeRunner("s1");
+      const calls: string[] = [];
+      const mgr = makeStubServiceManager() as StubServiceManager & {
+        updateEgressContainment: () => boolean;
+        reconcile: () => Promise<void>;
+        startService: (name: string) => Promise<void>;
+        getService: (name: string) => Svc | undefined;
+        userStopCount: (name: string) => number;
+      };
+      const userStops = new Map<string, number>();
+      const userStop = (name: string) => userStops.set(name, (userStops.get(name) ?? 0) + 1);
+      mgr.userStopCount = (name) => userStops.get(name) ?? 0;
+      mgr.updateEgressContainment = () => true;
+      mgr.getServices = () => services.map((s) => ({ ...s }));
+      mgr.getService = (name) => services.find((s) => s.name === name);
+      mgr.stop = async () => {
+        calls.push("stop");
+        for (const s of services) s.status = "stopped";
+        for (const name of opts.stoppedByUserDuringStop ?? []) userStop(name);
+      };
+      mgr.reconcile = async () => {
+        calls.push("reconcile");
+        for (const name of opts.stoppedByUserDuringReconcile ?? []) userStop(name);
+        if (opts.reconcileFails) throw new Error("web failed to build");
+        for (const s of services) if (s.preview === "auto") s.status = "running";
+      };
+      mgr.startService = async (name) => {
+        calls.push(`start ${name}`);
+        const svc = services.find((s) => s.name === name);
+        if (svc) svc.status = "running";
+      };
+      const logged: string[] = [];
+      const serviceManagers = new Map([["s1", mgr as unknown as ServiceManager]]);
+
+      adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
+        serviceManagers,
+        composeStopPromises: new Map(),
+        containerManager: buildContainerManager(),
+        broadcastLog: (_sid, _source, text) => logged.push(text),
+        installPromise: null,
+        resetSessionNetwork: async () => { calls.push("reset network"); },
+      });
+      runner.setWorkerUrl("http://10.0.0.42:4000");
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
+      runner.preserveComposeOnDispose = true;
+      runner.dispose({ force: true });
+      return { calls, logged, services };
+    }
+
+    it("says it stops the services, and starts the manual ones that were running again", async () => {
+      const { calls, logged, services } = await adoptAcrossModeChange([
+        { name: "web", status: "running", preview: "auto" },
+        { name: "unwritten", status: "running", preview: "manual" },
+        { name: "db", status: "stopped", preview: "manual" },
+      ]);
+
+      expect(calls).toEqual(["stop", "reset network", "reconcile", "start unwritten"]);
+      expect(services.map((s) => [s.name, s.status])).toEqual([
+        ["web", "running"], ["unwritten", "running"], ["db", "stopped"],
+      ]);
+      expect(logged).toEqual([
+        CONTAINMENT_CHANGE_STOP_LINE,
+        "[compose] Started 1 of 1 manual service(s) again that were running before the agent container was replaced.",
+      ]);
+      for (const line of logged) expect(isOpsSafeLine(line)).toBe(true);
+    });
+
+    it("tells the user nothing when no service was running", async () => {
+      const { calls, logged } = await adoptAcrossModeChange([
+        { name: "db", status: "stopped", preview: "manual" },
+      ]);
+
+      expect(calls).toEqual(["stop", "reset network", "reconcile"]);
+      expect(logged).toEqual([]);
+    });
+
+    it("still starts the manual services when an automatic one fails the reconcile", async () => {
+      const { calls } = await adoptAcrossModeChange([
+        { name: "web", status: "running", preview: "auto" },
+        { name: "unwritten", status: "running", preview: "manual" },
+      ], { reconcileFails: true });
+
+      expect(calls).toEqual(["stop", "reset network", "reconcile", "start unwritten"]);
+    });
+
+    it("leaves stopped a manual service the user stopped while the reconcile ran", async () => {
+      const { calls } = await adoptAcrossModeChange([
+        { name: "unwritten", status: "running", preview: "manual" },
+        { name: "worker", status: "running", preview: "manual" },
+      ], { stoppedByUserDuringReconcile: ["worker"] });
+
+      expect(calls).toEqual(["stop", "reset network", "reconcile", "start unwritten"]);
+    });
+
+    // The reconcile's own start clears ServiceManager's stop markers, so this one must survive it.
+    it("leaves stopped a manual service the user stopped while the old stack went down", async () => {
+      const { calls } = await adoptAcrossModeChange([
+        { name: "unwritten", status: "running", preview: "manual" },
+        { name: "worker", status: "running", preview: "manual" },
+      ], { stoppedByUserDuringStop: ["worker"] });
+
+      expect(calls).toEqual(["stop", "reset network", "reconcile", "start unwritten"]);
+    });
   });
 
   it("disposed handler preserves the manager when preserveComposeOnDispose is true", async () => {
@@ -471,6 +585,84 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       runner.dispose({ force: true });
       return { reconciles, applied };
     }
+
+    describe("an overlay rotation that removed the services", () => {
+      async function adoptWithRotation(opts: { recreated: boolean; setChanged?: boolean }) {
+        const runner = makeRunner("s1");
+        const calls: string[] = [];
+        const logged: string[] = [];
+        const services = [
+          { name: "web", status: "running", preview: "auto" },
+          { name: "unwritten", status: "running", preview: "manual" },
+          { name: "db", status: "stopped", preview: "manual" },
+        ];
+        const mgr = makeStubServiceManager() as StubServiceManager & {
+          setOverlayDepDirs: (v: unknown[]) => boolean;
+          reconcile: () => Promise<void>;
+          startService: (name: string) => Promise<void>;
+          getService: (name: string) => (typeof services)[number] | undefined;
+          userStopCount: () => number;
+        };
+        mgr.getServices = () => services.map((s) => ({ ...s }));
+        mgr.getService = (name) => services.find((s) => s.name === name);
+        mgr.userStopCount = () => 0;
+        mgr.setOverlayDepDirs = () => opts.setChanged ?? false;
+        // Like reconcile() after a failed listing: every manual service reads as stopped.
+        mgr.reconcile = async () => {
+          calls.push("reconcile");
+          for (const s of services) s.status = s.preview === "auto" ? "running" : "stopped";
+        };
+        mgr.startService = async (name) => {
+          calls.push(`start ${name}`);
+          services.find((s) => s.name === name)!.status = "running";
+        };
+        const cm = {
+          ...(buildOverlayContainerManager() as unknown as Record<string, unknown>),
+          consumeOverlayVolumesRecreated: () => opts.recreated,
+        } as unknown as SessionContainerManager;
+
+        adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
+          serviceManagers: new Map([["s1", mgr as unknown as ServiceManager]]),
+          composeStopPromises: new Map(),
+          containerManager: cm,
+          broadcastLog: (_sid, _source, text) => logged.push(text),
+          installPromise: null,
+          session: SESSION as never,
+          workspaceDir: "/ws/s1",
+        });
+        // The replacement container is created after adoption; its rotation removes the holders.
+        if (opts.recreated) for (const s of services) s.status = "stopped";
+        runner.setWorkerUrl("http://10.0.0.42:4000");
+        for (let i = 0; i < 50; i++) await Promise.resolve();
+        await new Promise((resolve) => setImmediate(resolve));
+        runner.preserveComposeOnDispose = true;
+        runner.dispose({ force: true });
+        return { calls, logged };
+      }
+
+      it("starts again the manual service that was running, and says so", async () => {
+        const { calls, logged } = await adoptWithRotation({ recreated: true });
+
+        expect(calls).toEqual(["reconcile", "start unwritten"]);
+        expect(logged.some((line) => line.includes("manual services that were running are started again."))).toBe(true);
+        expect(logged).toContain(
+          "[compose] Started 1 of 1 manual service(s) again that were running before the agent container was replaced.",
+        );
+      });
+
+      it("starts nothing when the overlay did not change", async () => {
+        const { calls, logged } = await adoptWithRotation({ recreated: false });
+
+        expect(calls).toEqual([]);
+        expect(logged).toEqual([]);
+      });
+
+      it("starts nothing when the mount set changed but no container was removed", async () => {
+        const { calls } = await adoptWithRotation({ recreated: false, setChanged: true });
+
+        expect(calls).toEqual(["reconcile"]);
+      });
+    });
 
     it("reconciles when the new container's overlay set differs", async () => {
       const { reconciles, applied } = await driveAdoption(true);

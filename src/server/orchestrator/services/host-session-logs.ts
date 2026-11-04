@@ -117,6 +117,14 @@ export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[
     pattern: /^Dependency cache: \d+ of \d+ dependency directories could not be snapshotted as a shared base\. Later sessions of this repository reinstall instead of reusing it\.$/,
   },
   {
+    producer: "service-manager-setup: containment change stops services",
+    pattern: /^\[compose\] Network mode changed since these services started — stopping them and recreating the session network\.$/,
+  },
+  {
+    producer: "service-manager-setup: manual services started again after adoption",
+    pattern: /^\[compose\] Started \d+ of \d+ manual service\(s\) again that were running before the agent container was replaced\.$/,
+  },
+  {
     producer: "keep-preview-running: gave up",
     pattern: /^Reserved preview runtime could not be restored after bounded retries\. The reservation remains enabled; check session and service logs\.$/,
   },
