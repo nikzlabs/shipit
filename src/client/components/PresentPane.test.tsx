@@ -68,6 +68,21 @@ function mockContentFetch(bytes: Record<string, string>, mimeType = "text/html")
   });
 }
 
+/** Holds every content request open until the test answers it, in the order they were made. */
+function mockDeferredContentFetch(): ((content: string) => void)[] {
+  const replies: ((content: string) => void)[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise<Response>((resolve) => {
+    replies.push((content) => resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({ content, mimeType: "text/html" }),
+    } as unknown as Response));
+  }));
+  return replies;
+}
+
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -122,6 +137,213 @@ describe("PresentPane", () => {
     expect(screen.getByLabelText("Download presentation")).toBeDisabled();
     await screen.findByTitle("Rendered content");
     expect(screen.getByLabelText("Download presentation")).toBeEnabled();
+  });
+
+  it("Refresh reloads the file from disk and renders the new bytes", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    const bytes: Record<string, string> = { pres_one: "<h1>Old</h1>" };
+    const fetchSpy = mockContentFetch(bytes);
+    usePresentStore.getState().hydrate([meta({ presentId: "pres_one", title: "One" })]);
+
+    render(<PresentPane isActiveTab />);
+    const iframe = await screen.findByTitle("Rendered content");
+    expect(iframe.getAttribute("srcdoc")).toContain("<h1>Old</h1>");
+
+    bytes.pres_one = "<h1>New</h1>";
+    fireEvent.click(screen.getByLabelText("Refresh presentation from disk"));
+
+    await vi.waitFor(() => {
+      expect(screen.getByTitle("Rendered content").getAttribute("srcdoc")).toContain("<h1>New</h1>");
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(usePresentStore.getState().presentations[0].content).toBe("<h1>New</h1>");
+  });
+
+  it("Refresh retries a presentation whose first load failed", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    const bytes: Record<string, string> = {};
+    mockContentFetch(bytes);
+    usePresentStore.getState().hydrate([meta({ presentId: "pres_one", title: "One" })]);
+
+    render(<PresentPane isActiveTab />);
+    expect(await screen.findByText(/Presentation not found/)).toBeInTheDocument();
+
+    bytes.pres_one = "<h1>Back</h1>";
+    fireEvent.click(screen.getByLabelText("Refresh presentation from disk"));
+
+    const iframe = await screen.findByTitle("Rendered content");
+    expect(iframe.getAttribute("srcdoc")).toContain("<h1>Back</h1>");
+    expect(screen.queryByText(/Presentation not found/)).toBeNull();
+  });
+
+  it("a failed Refresh keeps the loaded bytes and reports the failure", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    const bytes: Record<string, string> = { pres_one: "<h1>Old</h1>" };
+    mockContentFetch(bytes);
+    usePresentStore.getState().hydrate([meta({ presentId: "pres_one", title: "One" })]);
+
+    render(<PresentPane isActiveTab />);
+    await screen.findByTitle("Rendered content");
+
+    delete bytes.pres_one;
+    fireEvent.click(screen.getByLabelText("Refresh presentation from disk"));
+
+    await vi.waitFor(() => {
+      expect(useUiStore.getState().toast?.message).toMatch(/Could not refresh \/tmp\/pres_one\.html — Presentation not found/);
+    });
+    expect(screen.getByTitle("Rendered content").getAttribute("srcdoc")).toContain("<h1>Old</h1>");
+  });
+
+  it("drops a Refresh response that a re-present overtook", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    const replies = mockDeferredContentFetch();
+    usePresentStore.getState().hydrate([meta({ presentId: "pres_one", title: "One" })]);
+
+    render(<PresentPane isActiveTab />);
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    replies[0]("<h1>Old</h1>");
+    await screen.findByTitle("Rendered content");
+
+    fireEvent.click(screen.getByLabelText("Refresh presentation from disk"));
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+
+    usePresentStore.getState().addOrReplace({ ...meta({ presentId: "pres_one", title: "One" }), createdAt: "2026-06-01T00:00:00.000Z" });
+    await vi.waitFor(() => expect(replies).toHaveLength(3));
+    replies[2]("<h1>New</h1>");
+    await vi.waitFor(() => {
+      expect(screen.getByTitle("Rendered content").getAttribute("srcdoc")).toContain("<h1>New</h1>");
+    });
+
+    replies[1]("<h1>Stale</h1>");
+    await flush();
+    expect(usePresentStore.getState().presentations[0].content).toBe("<h1>New</h1>");
+  });
+
+  it("a re-present during the first load fetches the new revision", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    const replies = mockDeferredContentFetch();
+    usePresentStore.getState().hydrate([meta({ presentId: "pres_one", title: "One" })]);
+
+    render(<PresentPane isActiveTab />);
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+
+    usePresentStore.getState().addOrReplace({ ...meta({ presentId: "pres_one", title: "One" }), createdAt: "2026-06-01T00:00:00.000Z" });
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    replies[0]("<h1>Stale</h1>");
+    replies[1]("<h1>New</h1>");
+
+    await vi.waitFor(() => {
+      expect(screen.getByTitle("Rendered content").getAttribute("srcdoc")).toContain("<h1>New</h1>");
+    });
+    expect(usePresentStore.getState().presentations[0].content).toBe("<h1>New</h1>");
+  });
+
+  it("an older Refresh of the same entry cannot overwrite a newer one", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    const replies = mockDeferredContentFetch();
+    seedPresentations();
+
+    render(<PresentPane isActiveTab />);
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    replies[0]("<h1>One v1</h1>");
+    await screen.findByTitle("Rendered content");
+
+    fireEvent.click(screen.getByLabelText("Refresh presentation from disk"));
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+
+    fireEvent.click(screen.getByLabelText("Next presentation"));
+    await vi.waitFor(() => expect(replies).toHaveLength(3));
+    replies[2]("<h1>Two</h1>");
+    await screen.findByTitle("Rendered content");
+    fireEvent.click(screen.getByLabelText("Refresh presentation from disk"));
+    await vi.waitFor(() => expect(replies).toHaveLength(4));
+    fireEvent.click(screen.getByLabelText("Previous presentation"));
+
+    fireEvent.click(screen.getByLabelText("Refresh presentation from disk"));
+    await vi.waitFor(() => expect(replies).toHaveLength(5));
+    replies[4]("<h1>One v3</h1>");
+    await vi.waitFor(() => {
+      expect(usePresentStore.getState().presentations[0].content).toBe("<h1>One v3</h1>");
+    });
+
+    replies[1]("<h1>One v2</h1>");
+    await flush();
+    expect(usePresentStore.getState().presentations[0].content).toBe("<h1>One v3</h1>");
+  });
+
+  it("a first load that answers after a Refresh cannot replace the refreshed bytes", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    const replies = mockDeferredContentFetch();
+    usePresentStore.getState().hydrate([meta({ presentId: "pres_one", title: "One" })]);
+
+    render(<PresentPane isActiveTab />);
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    fireEvent.click(screen.getByLabelText("Refresh presentation from disk"));
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+
+    // Same tick, so the stale answer lands before React can run the effect cleanup.
+    replies[1]("<h1>Current</h1>");
+    replies[0]("<h1>Stale</h1>");
+    await flush();
+    expect(usePresentStore.getState().presentations[0].content).toBe("<h1>Current</h1>");
+  });
+
+  it("a re-present during a slow Refresh leaves Refresh usable for the new revision", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    const replies = mockDeferredContentFetch();
+    usePresentStore.getState().hydrate([meta({ presentId: "pres_one", title: "One" })]);
+
+    render(<PresentPane isActiveTab />);
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    replies[0]("<h1>Old</h1>");
+    await screen.findByTitle("Rendered content");
+
+    fireEvent.click(screen.getByLabelText("Refresh presentation from disk"));
+    expect(screen.getByLabelText("Refresh presentation from disk")).toBeDisabled();
+
+    usePresentStore.getState().addOrReplace({ ...meta({ presentId: "pres_one", title: "One" }), createdAt: "2026-06-01T00:00:00.000Z" });
+    await vi.waitFor(() => expect(replies).toHaveLength(3));
+    replies[2]("<h1>New</h1>");
+    await screen.findByTitle("Rendered content");
+    expect(screen.getByLabelText("Refresh presentation from disk")).toBeEnabled();
+  });
+
+  it("returning to an entry whose load is still pending shows it when the load answers", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    const replies = mockDeferredContentFetch();
+    seedPresentations();
+
+    render(<PresentPane isActiveTab />);
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    fireEvent.click(screen.getByLabelText("Next presentation"));
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    fireEvent.click(screen.getByLabelText("Previous presentation"));
+
+    replies[0]("<h1>One</h1>");
+    const iframe = await screen.findByTitle("Rendered content");
+    expect(iframe.getAttribute("srcdoc")).toContain("<h1>One</h1>");
+  });
+
+  it("a Refresh still pending when the tab is left cannot overwrite one made after returning", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    const replies = mockDeferredContentFetch();
+    usePresentStore.getState().hydrate([meta({ presentId: "pres_one", title: "One" })]);
+
+    const first = render(<PresentPane isActiveTab />);
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    replies[0]("<h1>v1</h1>");
+    await screen.findByTitle("Rendered content");
+    fireEvent.click(screen.getByLabelText("Refresh presentation from disk"));
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    first.unmount();
+
+    render(<PresentPane isActiveTab />);
+    fireEvent.click(screen.getByLabelText("Refresh presentation from disk"));
+    await vi.waitFor(() => expect(replies).toHaveLength(3));
+    replies[2]("<h1>v3</h1>");
+    replies[1]("<h1>v2</h1>");
+    await flush();
+    expect(usePresentStore.getState().presentations[0].content).toBe("<h1>v3</h1>");
   });
 
   it("shows the full file path beneath the title in the header", () => {

@@ -178,7 +178,9 @@ has to:
    refreshes and keeps its slot (no id to pass back, no version flag).
    The user sees each revision land in the Present tab as you iterate.
    **Re-presenting is also how you reload** — there is no live file watcher;
-   call `present` again after editing the file.
+   call `present` again after editing the file. (The user also has a
+   **Refresh** button in the Present tab header that re-reads the file from
+   disk, but only `present` tells them a revision landed.)
 5. Re-navigate to the same `viewUrl` and screenshot again to confirm the fix.
    (`viewUrl` is stable across re-presents of the same path, so it stays valid.)
 

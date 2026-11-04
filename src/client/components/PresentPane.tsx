@@ -1,9 +1,10 @@
 
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: unseen badge, keyboard nav, lazy content fetch, view-mode reset, draft cleanup
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useEventListener } from "../hooks/useEventListener.js";
 import {
+  ArrowClockwiseIcon,
   CaretLeftIcon,
   CaretRightIcon,
   DownloadSimpleIcon,
@@ -23,9 +24,13 @@ import { SourceToggle, type ViewMode } from "./FileContentView/SourceToggle.js";
 import { useFileReviewControls } from "../hooks/use-file-review-controls.js";
 import { kindFromMimeType, supportsSourceToggle } from "../utils/file-content-kind.js";
 import { Button } from "./ui/button.js";
+import { Spinner } from "./Spinner.js";
 import type { SendCommentsPayload } from "./FilePreviewModal.js";
 import { handleAgentInterfaceRequest } from "../agent-interface-sdk/handle-request.js";
 import type { AgentInterfaceProvenance } from "../../server/shared/agent-interface-sdk/protocol.js";
+
+// Module scope so a request still in flight when the pane unmounts (a tab switch) is overtaken by one made after.
+const loadSeq = new Map<string, number>();
 
 interface PresentPaneProps {
 
@@ -49,6 +54,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
   // and never deliver it.
   const [fetchError, setFetchError] = useState<{ presentId: string; message: string } | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("rendered");
+  const [refreshingRevision, setRefreshingRevision] = useState<string | null>(null);
 
   const fetching = useRef<Set<string>>(new Set());
   const agentInterfaceFrameRef = useRef<HTMLIFrameElement | null>(null);
@@ -64,6 +70,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
   const active = hasEntries ? presentations[safeIndex] : undefined;
   const activePresentId = active?.presentId;
   const activeContent = active?.content;
+  const activeCreatedAt = active?.createdAt;
 
   const activeError = fetchError && fetchError.presentId === activePresentId ? fetchError.message : null;
 
@@ -215,30 +222,40 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
     }
   });
 
+  // The server reads the file on every request. Only the newest request for an entry may write, and only while the
+  // entry is the revision it asked for: a later Refresh or a re-present (new createdAt) overtakes it.
+  const loadContent = useCallback(async (sid: string, p: Presentation): Promise<void> => {
+    const { presentId: id, createdAt } = p;
+    const seq = (loadSeq.get(id) ?? 0) + 1;
+    loadSeq.set(id, seq);
+    const current = () => usePresentStore.getState().presentations.find((q) => q.presentId === id);
+    const stillNewest = () => loadSeq.get(id) === seq && current()?.createdAt === createdAt;
+    try {
+      const content = await fetchPresentContent(sid, id);
+      if (!stillNewest()) return;
+      usePresentStore.getState().setContent(id, content);
+      setFetchError((prev) => (prev?.presentId === id ? null : prev));
+    } catch (err) {
+      if (!stillNewest()) return;
+      const message = err instanceof Error ? err.message : String(err);
+      if (current()?.content === undefined) {
+        setFetchError({ presentId: id, message });
+      } else {
+        useUiStore.getState().setToast({ message: `Could not refresh ${p.filePath} — ${message}`, variant: "error" });
+      }
+    }
+  }, []);
+
   // eslint-disable-next-line no-restricted-syntax -- lazy content fetch keyed on the active entry
   useEffect(() => {
     setFetchError(null);
-    if (!activePresentId || activeContent !== undefined || !sessionId) return;
-    if (fetching.current.has(activePresentId)) return;
-    const id = activePresentId;
-    fetching.current.add(id);
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/sessions/${sessionId}/present/${id}/content`);
-        const body = (await res.json().catch(() => ({}))) as { content?: string; error?: string };
-        if (!res.ok || typeof body.content !== "string") {
-          throw new Error(body.error ?? `Could not load presentation (HTTP ${res.status})`);
-        }
-        if (!cancelled) usePresentStore.getState().setContent(id, body.content);
-      } catch (err) {
-        if (!cancelled) setFetchError({ presentId: id, message: err instanceof Error ? err.message : String(err) });
-      } finally {
-        fetching.current.delete(id);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [activePresentId, activeContent, sessionId]);
+    if (!active || activeContent !== undefined || !sessionId) return;
+    const key = `${active.presentId}@${active.createdAt}`;
+    if (fetching.current.has(key)) return;
+    fetching.current.add(key);
+    void loadContent(sessionId, active).finally(() => fetching.current.delete(key));
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `active` is identified by its id and revision; its other fields do not change what is fetched
+  }, [activePresentId, activeContent, activeCreatedAt, sessionId, loadContent]);
 
   if (!active) {
     return (
@@ -253,6 +270,16 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
 
   const onPrev = () => setActiveIndex(safeIndex - 1);
   const onNext = () => setActiveIndex(safeIndex + 1);
+
+  const activeRevision = `${active.presentId}@${active.createdAt}`;
+  const onRefresh = async () => {
+    if (!sessionId) return;
+    const revision = activeRevision;
+    setRefreshingRevision(revision);
+    await loadContent(sessionId, active);
+    setRefreshingRevision((prev) => (prev === revision ? null : prev));
+  };
+  const refreshing = refreshingRevision === activeRevision;
 
   const showToggle = supportsSourceToggle(kind) && active.content !== undefined;
   const showFooter =
@@ -313,6 +340,18 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
           </div>
         </div>
         {showToggle && <SourceToggle value={viewMode} onChange={setViewMode} />}
+        <Button
+          variant="ghost"
+          size="md"
+          onClick={() => { void onRefresh(); }}
+          disabled={!sessionId || refreshing}
+          className="shrink-0"
+          aria-label="Refresh presentation from disk"
+          title="Reload the file from disk"
+        >
+          {refreshing ? <Spinner size={ICON_SIZE.XS} /> : <ArrowClockwiseIcon size={ICON_SIZE.XS} />}
+          Refresh
+        </Button>
         <Button
           variant="ghost"
           size="md"
@@ -387,6 +426,15 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
       )}
     </div>
   );
+}
+
+async function fetchPresentContent(sessionId: string, presentId: string): Promise<string> {
+  const res = await fetch(`/api/sessions/${sessionId}/present/${presentId}/content`);
+  const body = (await res.json().catch(() => ({}))) as { content?: string; error?: string };
+  if (!res.ok || typeof body.content !== "string") {
+    throw new Error(body.error ?? `Could not load presentation (HTTP ${res.status})`);
+  }
+  return body.content;
 }
 
 function downloadPresentation(p: Presentation): void {

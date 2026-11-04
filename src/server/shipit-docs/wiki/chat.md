@@ -413,7 +413,10 @@ catches people out: if the first artifact of the session was `inline: true`, no
 later one will ever open the tab by itself, so say where it is rather than
 assuming they are looking at it. The file path is the identity — re-presenting
 the same path updates that entry in place — and a second artifact gives the tab
-its previous/next arrows and gallery, which a single one has no need of. Passing
+its previous/next arrows and gallery, which a single one has no need of. The
+header's **Refresh** button re-reads the shown file from disk, so a user who
+edited it (or whose first load failed) can see the current bytes without
+asking you to present it again. Passing
 `inline: true` also puts the artifact in the conversation as a card, where it
 stays.
 
