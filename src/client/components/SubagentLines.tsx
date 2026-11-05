@@ -15,10 +15,12 @@ import { WithTooltip } from "./ui/tooltip.js";
 export function SubagentLines() {
   const messages = useSessionStore((s) => s.messages);
   const agentBusy = useSessionStore((s) => s.isLoading);
+  // "A turn is in flight" — `isLoading` is also true for background work alone.
+  const turnRunning = useSessionStore((s) => !!s.sessionId && s.activeRunnerSessions.has(s.sessionId));
   const spawns = useSessionStore((s) => s.subAgentSpawns);
   const runs = useMemo(
-    () => deriveSubagentRuns(messages, { agentBusy, spawns: Object.values(spawns) }),
-    [messages, agentBusy, spawns],
+    () => deriveSubagentRuns(messages, { turnRunning, spawns: Object.values(spawns) }),
+    [messages, turnRunning, spawns],
   );
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [doneOpen, setDoneOpen] = useState(false);
@@ -50,7 +52,7 @@ export function SubagentLines() {
             data-testid="subagent-done-toggle"
             aria-expanded={doneOpen}
             onClick={() => setDoneOpen((v) => !v)}
-            className="flex h-[22px] items-center gap-[7px] rounded-md px-2 text-xs text-(--color-text-tertiary) transition-[color,background-color] duration-(--duration-fast) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)"
+            className="flex h-[22px] shrink-0 items-center gap-[7px] rounded-md px-2 text-xs text-(--color-text-tertiary) transition-[color,background-color] duration-(--duration-fast) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)"
           >
             {doneOpen ? <CaretDownIcon size={ICON_SIZE.XS} /> : <CaretRightIcon size={ICON_SIZE.XS} />}
             <span>Done · {finished.length}</span>
@@ -92,7 +94,7 @@ function RunLine({ run, clock, onOpen }: { run: SubagentRun; clock: string | nul
         data-testid="subagent-line"
         data-status={run.status}
         onClick={onOpen}
-        className="flex h-[22px] min-w-0 items-center gap-[7px] rounded-md px-2 text-left text-xs transition-[background-color] duration-(--duration-fast) hover:bg-(--color-bg-hover)"
+        className="flex h-[22px] min-w-0 shrink-0 items-center gap-[7px] rounded-md px-2 text-left text-xs transition-[background-color] duration-(--duration-fast) hover:bg-(--color-bg-hover)"
       >
         <span className={`flex shrink-0 ${run.kind === "native" ? "text-(--color-success)" : "text-(--color-pr)"}`}>
           {run.kind === "native" ? <RobotIcon size={ICON_SIZE.XS} /> : <ChatCircleDotsIcon size={ICON_SIZE.XS} />}

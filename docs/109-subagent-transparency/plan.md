@@ -9,7 +9,9 @@ description: Render a subagent's prompt, work timeline, and final report inline 
 > **The in-chat card is gone** (docs/339-subagent-lines-above-input). Sub-agents
 > are now lines above the input, and a click opens `SubagentRunDialog` with the
 > work, prompt and the whole report (`SubagentFullReport`). `SubagentCall` and the
-> inline clamp are deleted; the report slice and the lazy fetches below still apply.
+> inline clamp are deleted, and `sliceSubagentReport` now ships the report text
+> empty (footer kept) — the "clamped head" below is history. The lazy fetches
+> still apply.
 
 ## Summary
 

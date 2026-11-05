@@ -4,7 +4,7 @@ import {
   isBackgroundLaunchAck,
   sliceSubagentReport,
   parseSubagentReport,
-  REPORT_SLICE_LINES,
+  STOPPED_TEXT,
   REPORT_STRIP_FLOOR_BYTES,
 } from "./subagent-report.js";
 
@@ -63,47 +63,38 @@ describe("isBackgroundLaunchAck", () => {
   });
 });
 
-describe("sliceSubagentReport", () => {
+describe("sliceSubagentReport (docs/339: the transcript draws no report)", () => {
+  const ACK = [
+    "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)",
+    "agentId: a90130de265682eb8 (internal ID - do not mention to user.)",
+    "output_file: /tmp/claude-1000/-workspace/637e/tasks/a90130de265682eb8.output",
+  ].join("\n");
+
   it("leaves a report that already fits alone, markers and all", () => {
     expect(sliceSubagentReport("All three checks passed.")).toBeNull();
     expect(sliceSubagentReport("x".repeat(REPORT_STRIP_FLOOR_BYTES))).toBeNull();
   });
 
-  it("clamps a plain-string report to a prefix, keeping its shape", () => {
+  it("ships a plain-string report's text empty, recording what it held", () => {
     const sliced = sliceSubagentReport(longText);
-
-    expect(sliced).not.toBeNull();
-    expect(sliced!.content.split("\n")).toHaveLength(REPORT_SLICE_LINES);
-    expect(longText.startsWith(sliced!.content)).toBe(true);
-    expect(sliced!.totalLines).toBe(120);
+    expect(sliced).toEqual({ content: "", totalLines: 120, totalBytes: longText.length });
   });
 
-  it("clamps the text inside a block array and leaves valid JSON", () => {
+  it("empties the text inside a block array, keeps the footer and leaves valid JSON", () => {
     const content = JSON.stringify([
       { type: "text", text: longText },
       { type: "text", text: "agentId: a1\nsubagent_tokens: 900\ntool_uses: 2" },
     ]);
 
-    const sliced = sliceSubagentReport(content);
-
-    expect(sliced).not.toBeNull();
-    const reparsed = parseSubagentReport(sliced!.content);
-    expect(reparsed.text.split("\n")).toHaveLength(REPORT_SLICE_LINES);
-    expect(longText.startsWith(reparsed.text)).toBe(true);
+    const reparsed = parseSubagentReport(sliceSubagentReport(content)!.content);
+    expect(reparsed.text).toBe("");
     expect(reparsed.meta).toContain("subagent_tokens: 900");
   });
 
   it("bounds a report that is one enormous line", () => {
     const sliced = sliceSubagentReport("x".repeat(200_000));
-
-    expect(sliced).not.toBeNull();
-    expect(sliced!.content.length).toBeLessThan(200_000);
+    expect(sliced!.content).toBe("");
     expect(sliced!.totalBytes).toBe(200_000);
-  });
-
-  it("never splits a UTF-8 codepoint", () => {
-    const sliced = sliceSubagentReport("🙂".repeat(50_000));
-    expect(sliced!.content).not.toContain("�");
   });
 
   it("keeps non-text blocks — a report can carry a screenshot", () => {
@@ -113,10 +104,18 @@ describe("sliceSubagentReport", () => {
       { type: "text", text: "tool_uses: 4" },
     ]);
 
-    const sliced = sliceSubagentReport(content);
-
-    const blocks = JSON.parse(sliced!.content) as { type: string }[];
+    const blocks = JSON.parse(sliceSubagentReport(content)!.content) as { type: string }[];
     expect(blocks.map((b) => b.type)).toEqual(["text", "image", "text"]);
-    expect(parseSubagentReport(sliced!.content).meta).toBe("tool_uses: 4");
+    expect(parseSubagentReport(sliceSubagentReport(content)!.content).meta).toBe("tool_uses: 4");
+  });
+
+  it("keeps whole the two texts a sub-agent's line reads its status from", () => {
+    expect(sliceSubagentReport(ACK)).toBeNull();
+    const stopped = JSON.stringify([
+      { type: "text", text: STOPPED_TEXT },
+      { type: "text", text: "tool_uses: 4\nduration_ms: 9000" },
+    ]);
+    expect(STOPPED_TEXT.length).toBeLessThanOrEqual(REPORT_STRIP_FLOOR_BYTES);
+    expect(sliceSubagentReport(stopped)).toBeNull();
   });
 });

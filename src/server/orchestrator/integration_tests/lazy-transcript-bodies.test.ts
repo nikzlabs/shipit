@@ -128,7 +128,7 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
     expect(body).not.toContain("body line 799");
     expect(body).not.toContain("instruction 399");
     expect(body).not.toContain("finding 4999");
-    expect(body).toContain("finding 0");
+    expect(body).not.toContain("finding 0");
   });
 
   it("ships no body at all for a modal-only result, keeping only its metadata", async () => {
@@ -139,15 +139,14 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
     expect(bash.totalLines).toBe(40_000);
   });
 
-  it("serves the clamped head of the subagent final report, not the whole thing", async () => {
+  // docs/339 — the transcript draws no report; the dialog fetches it on open.
+  it("serves the subagent final report's text empty, marked for the fetch", async () => {
     const { messages } = await loadHistory();
     const task = messages[1]!.toolResults!.find((r) => r.toolUseId === "task-1")!;
 
     expect(task.truncated).toBe(true);
     expect(task.totalLines).toBe(5_000);
-    expect(task.content).not.toBe("");
-    expect(SUBAGENT_REPORT.startsWith(task.content)).toBe(true);
-    expect(task.content.length).toBeLessThan(SUBAGENT_REPORT.length / 100);
+    expect(parseSubagentReport(task.content).text).toBe("");
   });
 
   it("serves the whole report from the fetch endpoint the modal opens", async () => {
@@ -437,7 +436,7 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
     expect(card.outputTruncated).toBe(true);
     expect(card.outputMarkdown!.length).toBeLessThan(200);
     expect(res.rawPayload.toString("utf8")).not.toContain("review note 4999");
-    expect(res.rawPayload.toString("utf8")).toContain("finding 0");
+    expect(res.rawPayload.toString("utf8")).toContain("review note 0");
     expect(res.rawPayload.toString("utf8")).not.toContain("review note 0\nreview note 1");
     expect(card.status).toBe("success");
     expect(card.durationMs).toBe(900_000);

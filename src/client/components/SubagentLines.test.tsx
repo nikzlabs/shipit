@@ -41,8 +41,15 @@ function card(over: Partial<SubAgentConsultCard> = {}): SubAgentConsultCard {
   };
 }
 
+/** `agentBusy` puts every row in the turn that is still running, as the live stream marks them. */
 function show(messages: ChatMessage[], { agentBusy = false } = {}) {
-  useSessionStore.setState({ sessionId: "session-1", messages: [{ role: "user", text: "go" }, ...messages], isLoading: agentBusy });
+  const rows = agentBusy ? messages.map((m) => ({ ...m, streaming: true })) : messages;
+  useSessionStore.setState({
+    sessionId: "session-1",
+    messages: [{ role: "user", text: "go" }, ...rows],
+    isLoading: agentBusy,
+    activeRunnerSessions: new Set(agentBusy ? ["session-1"] : []),
+  });
   return render(<SubagentLines />);
 }
 
@@ -80,6 +87,19 @@ describe("SubagentLines — the lines (docs/339 reqs 4–7)", () => {
     expect(lines.every((l) => l.dataset.status === "running")).toBe(true);
     expect(screen.getByTestId("subagent-lines").textContent).not.toMatch(/Agents/);
     expect(screen.queryByTestId("subagent-done-toggle")).toBeNull();
+  });
+
+  it("counts a launch whose turn ended as stopped while only background work keeps the session busy", () => {
+    useSessionStore.setState({
+      sessionId: "session-1",
+      messages: [{ role: "user", text: "go" }, launch(task())],
+      isLoading: true,
+      activeRunnerSessions: new Set(),
+      backgroundTaskSessions: new Map([["session-1", ["npm test"]]]),
+    });
+    render(<SubagentLines />);
+    expect(screen.queryAllByTestId("subagent-line")).toHaveLength(0);
+    expect(screen.getByTestId("subagent-done-toggle")).toHaveTextContent("· 1 failed");
   });
 
   it("folds finished ones into Done · N, with the failures counted, and opens it in place", () => {

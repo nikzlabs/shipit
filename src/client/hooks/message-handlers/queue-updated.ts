@@ -17,8 +17,9 @@ export const handleQueueUpdated: Handler<WsQueueUpdated> = (ctx, data) => {
     const stashed = ctx.queuedMessageStash.get(dequeued.id);
     ctx.queuedMessageStash.delete(dequeued.id);
     // A viewer that did not send it gets the text now; the turn's echo adds the attachments.
+    // A dequeued message starts a turn, so a steer the agent declined loses its marks (docs/339).
     const restoredMsg: ChatMessage = stashed
-      ? { ...stashed, queued: false, queuePosition: undefined, clientRequestId: dequeued.id }
+      ? { ...asTurnStart(stashed), queued: false, queuePosition: undefined, clientRequestId: dequeued.id }
       : { role: "user" as const, text: dequeued.text, clientRequestId: dequeued.id };
     // A reconnect replays this event over a transcript that can already hold the bubble.
     session.setMessages((prev) =>
@@ -34,3 +35,9 @@ export const handleQueueUpdated: Handler<WsQueueUpdated> = (ctx, data) => {
     }
   }
 };
+
+function asTurnStart(bubble: ChatMessage): ChatMessage {
+  if (!bubble.steered && !bubble.inProgress) return bubble;
+  const { steered: _steered, inProgress: _inProgress, ...rest } = bubble;
+  return rest;
+}

@@ -5,6 +5,7 @@ import { SUBAGENT_REPORT_TOOL_NAMES } from "../../server/shared/transcript-slice
 import { getHarness, getModel } from "../../server/shared/catalogue/index.js";
 import { billingModeLabel, serviceLabel } from "./service-label.js";
 import { isBackgroundLaunchAck, parseReportMeta, parseSubagentReport } from "./group-events-by-parent.js";
+import { STOPPED_TEXT } from "../../server/shared/subagent-report.js";
 
 export type SubagentRunStatus = "running" | "done" | "failed";
 
@@ -25,7 +26,7 @@ export interface NativeSubagentRun extends SubagentRunBase {
   events: SubagentEvent[];
   result?: ToolResultBlock;
   backgrounded: boolean;
-  /** The launching turn ended without a result. */
+  /** The launching turn ended without a result, or a background run was stopped. */
   stopped: boolean;
   subagentType?: string;
   toolCalls: number;
@@ -108,7 +109,8 @@ function nativeRun(
   const report = result ? parsedReport(result) : null;
   const backgrounded = !!report && !result?.isError && isBackgroundLaunchAck(report.text);
   const meta = report && !backgrounded ? parseReportMeta(report.meta) : null;
-  const stopped = !result && !turnLive;
+  const stopped = (!result && !turnLive)
+    || (!!report && !result?.isError && report.text.trim() === STOPPED_TEXT);
 
   const status: SubagentRunStatus =
     backgrounded || (!result && turnLive) ? "running"
@@ -172,22 +174,27 @@ function consultRun(card: SubAgentConsultCard): ConsultSubagentRun {
  * background-completion rewrite of docs/109 reqs 10–11, consult card updates).
  *
  * A launch with no result is running only while the turn that launched it is
- * still live: the agent is busy and no user message has started a newer turn.
- * Otherwise that turn ended without one, and the sub-agent is "stopped".
+ * still in flight: a turn is running and no turn-starting user row follows it.
+ * A user row starts a turn unless it is queued, steered into the running turn
+ * (`steered`, live) or one of the running turn's own rows (`inProgress`, after a
+ * reload or snapshot — the server marks a steer that way, never the message
+ * that started the turn). Otherwise the turn ended without a result: "stopped".
  */
 export function deriveSubagentRuns(
   messages: ChatMessage[],
-  { agentBusy, spawns = [] }: { agentBusy: boolean; spawns?: SubAgentSpawnChip[] },
+  { turnRunning, spawns = [] }: { turnRunning: boolean; spawns?: SubAgentSpawnChip[] },
 ): SubagentRun[] {
   let lastUserIndex = -1;
-  messages.forEach((m, i) => { if (m.role === "user" && !m.queued) lastUserIndex = i; });
+  messages.forEach((m, i) => {
+    if (m.role === "user" && !m.queued && !m.steered && !m.inProgress) lastUserIndex = i;
+  });
 
   const runs: SubagentRun[] = [];
   const cardSpawnIds = new Set<string>();
   messages.forEach((msg, i) => {
     for (const tool of msg.toolUse ?? []) {
       if (SUBAGENT_REPORT_TOOL_NAMES.has(tool.name)) {
-        runs.push(nativeRun(tool, msg, agentBusy && i > lastUserIndex));
+        runs.push(nativeRun(tool, msg, turnRunning && i > lastUserIndex));
       }
     }
     if (msg.subAgentConsult) {

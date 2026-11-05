@@ -91,6 +91,8 @@ export interface ChatMessage {
   messageOrigin?: SessionMessageOrigin;
   /** docs/337-waiting-card-stays-last req 1 — this user row starts a turn that ran while a question waits. */
   whileAnswerWaits?: boolean;
+  /** Live only — this user row was sent or steered into the running turn, so it does not start a turn (docs/339). */
+  steered?: true;
 
   clientRequestId?: string;
   toolUse?: ToolUseBlock[];

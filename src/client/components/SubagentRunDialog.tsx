@@ -17,7 +17,7 @@ import type { ToolResultBlock } from "./MessageList.js";
 /** docs/339 req 9 — everything a sub-agent did, in a full dialog opened from its line. */
 export function SubagentRunDialog({ run, clock, onClose }: { run: SubagentRun; clock: string | null; onClose: () => void }) {
   const subtitle = run.kind === "native"
-    ? ["Claude sub-agent", run.detail].join(" · ")
+    ? ["Sub-agent", run.detail].join(" · ")
     : run.attribution ?? run.detail;
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>

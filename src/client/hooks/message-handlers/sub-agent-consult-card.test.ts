@@ -62,7 +62,7 @@ const consultCardEvent: WsSubAgentConsultCard = { type: "sub_agent_consult_card"
 // docs/339 — the card is drawn as a sub-agent line above the input, read from the transcript.
 const cardVisible = (): boolean => {
   const { messages } = useSessionStore.getState();
-  return deriveSubagentRuns(messages, { agentBusy: false }).filter((r) => r.key === "consult:card-1").length === 1;
+  return deriveSubagentRuns(messages, { turnRunning: false }).filter((r) => r.key === "consult:card-1").length === 1;
 };
 
 beforeEach(() => {

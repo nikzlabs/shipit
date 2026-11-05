@@ -153,6 +153,35 @@ describe("every viewer shows the same bubble, with attachments (point 2)", () =>
   });
 });
 
+describe("a message sent as the turn ended (docs/339)", () => {
+  it("loses the steered mark it was sent with when the server starts it as a turn", () => {
+    const messages = onViewer([{ role: "user", text: "look", clientRequestId: "r1", steered: true }], [
+      { type: "system_user_message", sessionId: "A", clientRequestId: "r1", text: "look" },
+    ]);
+    expect(messages.map((m) => m.steered)).toEqual([undefined]);
+  });
+});
+
+describe("a steer the agent declined (docs/339)", () => {
+  it("loses the in-progress mark a reconnect restored when the queue starts it as a turn", () => {
+    const messages = onViewer([{ role: "user", text: "look", clientRequestId: "r1", inProgress: true }], [
+      { type: "message_queued", sessionId: "A", id: "r1", text: "look", position: 1 },
+      { type: "queue_updated", sessionId: "A", queue: [], dequeued: { id: "r1", text: "look" } },
+      { type: "system_user_message", sessionId: "A", clientRequestId: "r1", text: "look" },
+    ]);
+    expect(messages.filter((m) => m.role === "user").map((m) => m.inProgress)).toEqual([undefined]);
+  });
+
+  it("loses its steered mark when the queue later starts it as a turn", () => {
+    const messages = onViewer([], [
+      { type: "message_steered", sessionId: "A", clientRequestId: "r1", text: "look" },
+      { type: "message_queued", sessionId: "A", id: "r1", text: "look", position: 1 },
+      { type: "queue_updated", sessionId: "A", queue: [], dequeued: { id: "r1", text: "look" } },
+    ]);
+    expect(messages.filter((m) => m.role === "user").map((m) => m.steered)).toEqual([undefined]);
+  });
+});
+
 describe("two messages with the same text stay two bubbles (point 2)", () => {
   it("on a viewer that did not send the second one", () => {
     const earlier: ChatMessage[] = [{ role: "user", text: "continue", clientRequestId: "r0" }];

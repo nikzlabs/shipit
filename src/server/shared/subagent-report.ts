@@ -76,10 +76,11 @@ export function isBackgroundLaunchAck(text: string): boolean {
   return /^agentId:/m.test(head) || /^output_file:/m.test(head);
 }
 
-export const REPORT_SLICE_LINES = 12;
-export const REPORT_SLICE_BYTES = 8 * 1024;
 // For short reports, slice markers and a fetch cost more than the saved text.
 export const REPORT_STRIP_FLOOR_BYTES = 200;
+
+/** What a retired background subagent's result says when it was stopped (docs/109 reqs 10–11). */
+export const STOPPED_TEXT = "_The subagent was stopped before it finished, so there is no report._";
 
 export interface SlicedReport {
   content: string;
@@ -87,20 +88,25 @@ export interface SlicedReport {
   totalBytes: number;
 }
 
-// Slice parsed text; slicing raw JSON can break the block array.
+/**
+ * docs/339 — the transcript draws no report, only a sub-agent's line, so the
+ * report text ships empty and the dialog fetches it on open. Kept on the wire:
+ * the footer (the line's time and tool count), non-text blocks, and the two
+ * short texts that decide the line's status — a background-launch
+ * acknowledgement, and the stopped note, which is under the floor. Text is cut from the parsed blocks,
+ * never the raw JSON, so the array stays parseable.
+ */
 export function sliceSubagentReport(content: string): SlicedReport | null {
   const { text, meta } = parseSubagentReport(content);
   const totalBytes = utf8Length(content);
   if (utf8Length(text) <= REPORT_STRIP_FLOOR_BYTES) return null;
-
-  const head = clampLines(text, REPORT_SLICE_LINES, REPORT_SLICE_BYTES);
-  if (head === null) return null;
+  if (isBackgroundLaunchAck(text)) return null;
 
   const totalLines = countLines(text);
   if (meta === null && !content.startsWith("[")) {
-    return { content: head, totalLines, totalBytes };
+    return { content: "", totalLines, totalBytes };
   }
-  return { content: rebuildBlocks(content, head, meta), totalLines, totalBytes };
+  return { content: rebuildBlocks(content, "", meta), totalLines, totalBytes };
 }
 
 function rebuildBlocks(content: string, head: string, meta: string | null): string {
@@ -156,29 +162,4 @@ function countLines(text: string): number {
   let lines = 1;
   for (const ch of text) if (ch === "\n") lines++;
   return lines;
-}
-
-function clampLines(text: string, lineLimit: number, byteLimit: number): string | null {
-  const encoder = new TextEncoder();
-  const bytes = encoder.encode(text);
-  if (countLines(text) <= lineLimit && bytes.length <= byteLimit) return null;
-
-  let head = text;
-  let seen = 0;
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] !== "\n") continue;
-    if (++seen === lineLimit) {
-      head = text.slice(0, i);
-      break;
-    }
-  }
-
-  const headBytes = encoder.encode(head);
-  if (headBytes.length > byteLimit) {
-    // End at a UTF-8 character boundary.
-    let end = byteLimit;
-    while (end > 0 && ((headBytes[end] ?? 0) & 0xc0) === 0x80) end--;
-    head = new TextDecoder("utf-8").decode(headBytes.subarray(0, end));
-  }
-  return head;
 }

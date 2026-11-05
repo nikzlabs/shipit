@@ -101,7 +101,8 @@ describe("projectToolResult", () => {
     }
   });
 
-  it("keeps a block-array report parseable after clamping", () => {
+  // docs/339 — the transcript draws no report, so its text ships empty.
+  it("keeps a block-array report parseable, its text empty and its footer whole", () => {
     const content = JSON.stringify([
       { type: "text", text: Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n") },
       { type: "text", text: "agentId: a1\nsubagent_tokens: 4210\ntool_uses: 7" },
@@ -111,8 +112,7 @@ describe("projectToolResult", () => {
 
     expect(projected.truncated).toBe(true);
     const blocks = JSON.parse(projected.content) as { type: string; text: string }[];
-    expect(blocks[0]!.text.split("\n").length).toBeLessThan(200);
-    expect(blocks[0]!.text.startsWith("line 0")).toBe(true);
+    expect(blocks[0]!.text).toBe("");
     expect(blocks[1]!.text).toContain("subagent_tokens: 4210");
   });
 
@@ -348,7 +348,7 @@ describe("projectMessagesForWire", () => {
     expect(projectMessagesForWire("s1", msgs)[0]).toBe(msgs[0]);
   });
 
-  it("clamps a Task result and empties an ordinary one in the same message", () => {
+  it("strips a Task result's text and empties an ordinary one in the same message", () => {
     const msgs: PersistedMessage[] = [
       {
         role: "assistant",
@@ -365,7 +365,7 @@ describe("projectMessagesForWire", () => {
     ];
     const [projected] = projectMessagesForWire("s1", msgs);
     expect(projected!.toolResults![0]!.truncated).toBe(true);
-    expect(projected!.toolResults![0]!.content).not.toBe("");
+    expect(projected!.toolResults![0]!.totalLines).toBeGreaterThan(1);
     expect(projected!.toolResults![1]!.truncated).toBe(true);
     expect(projected!.toolResults![1]!.content).toBe("");
   });

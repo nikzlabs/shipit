@@ -12,6 +12,7 @@ beforeEach(() => {
   useSessionStore.setState({ messages: [], queuedMessages: [] });
 });
 
+// Every steered bubble carries `steered: true`: it does not start a turn (docs/339).
 describe("handleMessageSteered (planning#691: matched by id)", () => {
   it("appends the steered message for a viewer with no bubble of it", () => {
     handleMessageSteered(ctx(), {
@@ -21,7 +22,7 @@ describe("handleMessageSteered (planning#691: matched by id)", () => {
       clientRequestId: "r1",
     });
     expect(useSessionStore.getState().messages).toEqual([
-      { role: "user", text: "steer mid-turn", clientRequestId: "r1" },
+      { role: "user", text: "steer mid-turn", clientRequestId: "r1", steered: true },
     ]);
   });
 
@@ -81,6 +82,7 @@ describe("handleMessageSteered (planning#691: matched by id)", () => {
       images,
       files,
       uploadPaths: ["/uploads/a.png"],
+      steered: true,
     }]);
   });
 
@@ -91,7 +93,7 @@ describe("handleMessageSteered (planning#691: matched by id)", () => {
       type: "message_steered", text: "look", sessionId: "s1", clientRequestId: "r1", images,
     });
     expect(useSessionStore.getState().messages).toEqual([
-      { role: "user", text: "look", clientRequestId: "r1", images },
+      { role: "user", text: "look", clientRequestId: "r1", images, steered: true },
     ]);
   });
 
@@ -125,6 +127,7 @@ describe("handleMessageSteered (planning#691: matched by id)", () => {
       text: "same text",
       clientRequestId: "r1",
       messageOrigin: { sessionId: "parent", sessionTitle: "Parent", relation: "parent" },
+      steered: true,
     }]);
   });
 

@@ -95,23 +95,17 @@ describe("the constraint consumers still resolve from a projected result (req 4)
   });
 
   /**
-   * docs/109 req 7/8 — this used to assert the report shipped whole, because
-   * `SubagentCall` rendered it in full with no expand affordance. It now clamps
-   * inline behind a *Show the full report* modal, so what has to survive the
-   * projection is the clamped head the card draws — a real prefix, in a shape
-   * the client parser still understands, with the markers that point the modal
-   * at the fetch.
+   * docs/339 — the transcript draws no report, only the sub-agent's line, so the
+   * text ships empty and marked, and the dialog fetches it on open (docs/109
+   * req 8: nothing is lost by not sending it).
    */
-  it("clamps an enormous subagent final report into a renderable head", () => {
+  it("ships an enormous subagent final report empty, with the markers that point the dialog at the fetch", () => {
     const report = Array.from({ length: 5_000 }, (_, i) => `finding ${i}`).join("\n");
     for (const parent of ["Task", "Agent"]) {
       const projected = projectToolResult("s1", { toolUseId: "t1", content: report }, parent);
       expect(projected.truncated).toBe(true);
       expect(projected.totalLines).toBe(5_000);
-      // What the card renders inline must be the real head of the report, not
-
-      expect(parseSubagentReport(projected.content).text.startsWith("finding 0")).toBe(true);
-      expect(report.startsWith(parseSubagentReport(projected.content).text)).toBe(true);
+      expect(parseSubagentReport(projected.content).text).toBe("");
     }
   });
 });
