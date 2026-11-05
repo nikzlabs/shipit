@@ -1,0 +1,246 @@
+<!doctype html>
+<html class="light">
+<head>
+<meta charset="utf-8">
+<title>Sub-agents — one line per agent</title>
+<style>
+.light{--bg1:#ffffff;--bg2:#f9fafb;--bg3:#f3f4f6;--bgE:#ffffff;--hover:rgba(0,0,0,.04);--t1:#111827;--t2:#4b5563;--t3:#9ca3af;--b1:#dfe1e6;--b2:#d1d5db;--accent:#2563eb;--accentSub:rgba(37,99,235,.1);--ok:#16a34a;--err:#dc2626;--errSub:rgba(220,38,38,.1);--pr:#7c3aed;--shadow:0 8px 24px rgba(0,0,0,.12)}
+.dark{--bg1:#030712;--bg2:#111827;--bg3:#1f2937;--bgE:#1f2937;--hover:rgba(255,255,255,.05);--t1:#f3f4f6;--t2:#9ca3af;--t3:#6b7280;--b1:#212c3b;--b2:#374151;--accent:#3b82f6;--accentSub:rgba(59,130,246,.15);--ok:#22c55e;--err:#ef4444;--errSub:rgba(239,68,68,.15);--pr:#a78bfa;--shadow:0 8px 24px rgba(0,0,0,.5)}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg2);color:var(--t1)}
+.page{max-width:1180px;margin:0 auto;padding:28px 24px 60px}
+h1{font-size:20px;margin:0 0 4px}
+h2{font-size:16px;margin:34px 0 6px}
+h3{font-size:13px;margin:0 0 8px;color:var(--t2);font-weight:600}
+p,li{color:var(--t2)}
+.lede{margin:0 0 14px;max-width:840px}
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.toggle{border:1px solid var(--b2);background:var(--bg1);color:var(--t1);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
+.cap{font-size:12px;color:var(--t3);margin:8px 2px 0}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--accentSub);color:var(--accent);margin-left:6px;vertical-align:2px}
+svg.i{width:12px;height:12px;flex:none;fill:currentColor}
+svg.i16{width:16px;height:16px}
+
+.panel{background:var(--bg1);border:1px solid var(--b1);border-radius:12px;display:flex;flex-direction:column;position:relative}
+.transcript{padding:14px 16px 6px;display:flex;flex-direction:column;gap:10px;height:150px;overflow:hidden;justify-content:flex-end;mask-image:linear-gradient(to bottom,transparent 0,#000 40px)}
+.panel.short .transcript{height:90px}
+.bubble{align-self:flex-end;max-width:80%;background:var(--bg3);border-radius:12px;padding:8px 12px;font-size:13px}
+.atext{font-size:13px;color:var(--t1)}
+.panel.tall .transcript{height:330px}
+.sheet{position:absolute;left:16px;right:16px;bottom:calc(100% + 4px);background:var(--bgE);border:1px solid var(--b2);border-radius:10px;box-shadow:var(--shadow);display:flex;flex-direction:column;max-height:330px;z-index:6}
+.dlg .hd{display:flex;align-items:center;gap:8px;padding:10px 12px 6px;font-size:13px}
+.dlg .hd .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dlg .hd .tm{margin-left:auto;color:var(--t3);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.dlg .hd .x{color:var(--t3);display:flex;cursor:pointer}
+.dlg .att{font-size:11px;color:var(--t3);padding:0 12px 8px 32px}
+.tabs{display:flex;gap:2px;padding:0 10px;border-bottom:1px solid var(--b1)}
+.tabs span{font-size:12px;color:var(--t3);padding:5px 8px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs span.on{color:var(--t1);border-bottom-color:var(--accent)}
+.tabbody{overflow:auto;padding:10px 14px 12px;font-size:12.5px;color:var(--t1)}
+.tabbody p{margin:0 0 6px;color:var(--t1)}
+.tabbody ul{margin:0 0 6px;padding-left:18px}
+.tabbody li{color:var(--t1);margin:2px 0}
+.tabbody code{font-size:11.5px;background:var(--bg3);padding:0 4px;border-radius:4px}
+.tabbody .step{display:flex;gap:8px;align-items:center;color:var(--t2);font-size:12px;padding:2px 0}
+.tabbody .step .k{color:var(--t3);display:flex}
+.tabbody pre{white-space:pre-wrap;font:11.5px/1.5 ui-monospace,monospace;color:var(--t2);margin:0}
+.pane{display:none}.pane.on{display:block}
+.scene{position:relative;height:680px;border:1px solid var(--b1);border-radius:12px;overflow:hidden;background:var(--bg2);padding:18px}
+.scene .panel{max-width:620px;margin:0 auto}
+.scene .ov{position:absolute;inset:0;background:rgba(0,0,0,.45)}
+.dark .scene .ov{background:rgba(0,0,0,.65)}
+.dlg{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(860px,92%);height:600px;background:var(--bgE);border:1px solid var(--b2);border-radius:12px;box-shadow:var(--shadow);display:flex;flex-direction:column;z-index:7}
+.dlg .hd{padding:16px 20px 4px;font-size:16px}
+.dlg .att{padding:0 20px 12px 46px;font-size:12px}
+.dlg .tabs{padding:0 16px}
+.dlg .tabs span{font-size:13px;padding:7px 10px}
+.dlg .tabbody{flex:1;padding:16px 22px;font-size:14px}
+.dlg .tabbody .step{font-size:13px;padding:4px 0}
+.dlg .tabbody pre{font-size:13px}
+.dlg .tabbody code{font-size:12.5px}
+.dlg .foot{padding:10px 20px;font-size:12px}
+.foot{border-top:1px solid var(--b1);padding:6px 12px;font-size:11px;color:var(--t3);display:flex;gap:10px}
+.stack{display:flex;flex-direction:column;gap:6px;padding-bottom:8px;position:relative}
+.working{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--t3);padding:0 32px;height:20px}
+
+.input{margin:0 16px 14px;border:1px solid var(--b2);background:var(--bg2);border-radius:12px}
+.input .ta{padding:10px 12px 4px;font-size:13px;color:var(--t3);min-height:38px}
+.input .bar{display:flex;align-items:center;justify-content:space-between;padding:4px 8px 8px;color:var(--t3);font-size:12px}
+.input .bar .l{display:flex;gap:10px;align-items:center}
+.pill{border:1px solid var(--b1);border-radius:6px;padding:1px 7px;color:var(--t2)}
+.send{width:28px;height:28px;border-radius:8px;background:var(--accent);color:#fff;display:grid;place-items:center}
+.send.stop{background:var(--bg3);color:var(--t1);border:1px solid var(--b2)}
+
+.spin{width:12px;height:12px;border-radius:50%;border:1.6px solid var(--b2);border-top-color:var(--t2);animation:sp .9s linear infinite;flex:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none;border-top-color:var(--t3)}}
+
+/* ---- agent lines (shared) ---- */
+.lines{display:flex;flex-direction:column;margin:0 16px}
+.ln{display:flex;align-items:center;gap:7px;height:22px;padding:0 8px;border-radius:6px;font-size:12px;cursor:pointer;min-width:0}
+.ln:hover,.ln.hov{background:var(--hover)}
+.ln .k{display:flex;flex:none}
+.ln .k.native{color:var(--ok)} .ln .k.consult{color:var(--pr)}
+.ln .nm{color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:40px}
+.ln .dt{color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 0;min-width:0}
+.ln .tm{color:var(--t3);font-variant-numeric:tabular-nums;font-size:11px;flex:none}
+.ln .st{display:flex;flex:none;width:12px}
+.ln.done .nm{color:var(--t2)} .ln.done .st{color:var(--ok)}
+.ln.failed .nm{color:var(--err)} .ln.failed .st{color:var(--err)}
+.ln.failed .dt{color:color-mix(in srgb,var(--err) 70%,var(--t3))}
+
+.ln.donehd .nm{color:var(--t3)}
+.ln.donehd .k{color:var(--t3)}
+.ln .fail{color:var(--err);white-space:nowrap;flex:none}
+.donebody{display:none}
+.donewrap.open .donebody{display:block}
+.donewrap.open .cr{display:none}
+.donewrap:not(.open) .cd{display:none}
+.donebody .ln{padding-left:27px}
+/* style 1: plain rows, aligned with Working line */
+.s-plain .lines{margin:0 24px}
+/* style 2: quiet box (like the queue indicator) */
+.s-box .lines{border:1px solid var(--b1);background:color-mix(in srgb,var(--bg2) 60%,transparent);border-radius:10px;padding:3px}
+/* style 3: guide line hanging from the Working line */
+.s-tree .lines{margin:0 16px 0 37px;border-left:1.5px solid var(--b2);padding-left:6px}
+.s-tree .stack.idle .lines{margin-left:24px;border-left:none;padding-left:0}
+
+.tip{position:absolute;background:var(--bgE);border:1px solid var(--b2);box-shadow:var(--shadow);border-radius:8px;padding:7px 10px;font-size:12px;color:var(--t1);white-space:nowrap;z-index:5}
+.tip .sub2{font-size:11px;color:var(--t3);margin-top:2px}
+
+table{border-collapse:collapse;width:100%;font-size:13px;background:var(--bg1);border:1px solid var(--b1);border-radius:10px;overflow:hidden}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--b1);vertical-align:top;color:var(--t2)}
+th{color:var(--t1);font-weight:600;background:var(--bg3)}
+td b{color:var(--t1)}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <div>
+      <h1>Option A, one line per agent</h1>
+      <p class="lede">Each <b>running</b> sub-agent gets its own short line just above the input: kind icon, name, a grey detail, time, spinner. Finished ones fold into one <b>Done</b> line under them, which you can open. There is no "Agents" label: the coloured icon at the start of each line says what it is. The sub-agent cards in the chat are gone: <b>these lines are the only place sub-agents show</b>. Hover a line for the full detail; click it to open its prompt, work and report. <b>Every "Done" line in this page opens and closes when you click it.</b></p>
+    </div>
+    <button class="toggle" onclick="document.documentElement.classList.toggle('dark');document.documentElement.classList.toggle('light')">Light / dark</button>
+  </div>
+
+  <h2>Three ways to draw the lines</h2>
+  <p class="lede">Same moment in all three: the main agent is working, three sub-agents run, two have finished.</p>
+  <div class="grid3">
+    <div class="s-plain"><div class="panel" id="s1"></div><p class="cap"><b>1 · Plain lines.</b> No frame; lines line up with "Working…". Lightest, but the lines can blur into the activity line.</p></div>
+    <div class="s-box"><div class="panel" id="s2"></div><p class="cap"><b>2 · Quiet box.</b> Lines sit in a faint frame, like the queued-messages box. Clearly one group; costs ~8 px of frame.</p></div>
+    <div class="s-tree"><div class="panel" id="s3"></div><p class="cap"><b>3 · Guide line</b> <span class="tag">Recommended</span> A thin line hangs the sub-agents under "Working…", so you read them as the main agent's helpers. No frame.</p></div>
+  </div>
+
+  <h2>The guide-line style in every state</h2>
+  <div class="grid2 s-tree">
+    <div><div class="panel" id="t1"></div><p class="cap">a · Mid-turn: two running, one already done (folded). Hover shows the full "run on" line that the old card showed.</p></div>
+    <div><div class="panel" id="t2"></div><p class="cap">b · Same moment with <b>Done</b> opened: finished ones, newest first, ✓ green or ✗ red. With no cards in the chat, Done keeps <b>every</b> sub-agent of the session — it is the only record. A long list scrolls.</p></div>
+    <div><div class="panel short" id="t3"></div><p class="cap">c · Turn ended, nothing running: the whole area is one line. A failure is shown in red on it, so it is not hidden by the fold.</p></div>
+    <div><div class="panel short" id="t4"></div><p class="cap">d · Main agent idle, a background sub-agent still runs. Its line stays above Done until it finishes.</p></div>
+    <div><div class="panel" id="t5" style="max-width:360px"></div><p class="cap">e · Phone width. The grey detail is cut first, the name second; time and status always stay.</p></div>
+    <div><div class="panel short" id="t6"></div><p class="cap">f · No sub-agents in this session yet: nothing is drawn, no empty space.</p></div>
+  </div>
+
+  <h2>Clicking a line</h2>
+  <p class="lede">A click opens a <b>full-size dialog</b> over the whole app, the same kind ShipIt already uses for a ShipIt sub-agent's report. It holds everything the old card had, with room to read it. Esc, ✕ or a click on the dark backdrop closes it. The tabs in both dialogs work.</p>
+  <div class="scene s-tree" id="g1"></div>
+  <p class="cap">g · A Claude sub-agent, still running: <b>Work</b> shows every step live, <b>Prompt</b> what it was asked, <b>Report</b> fills in when it finishes.</p>
+  <div class="scene s-tree" id="g2" style="margin-top:20px"></div>
+  <p class="cap">h · A finished ShipIt sub-agent, opened from the Done list: the report, who ran it, time and cost.</p>
+
+  <h2>What each line shows</h2>
+  <table>
+    <tr><th>Kind</th><th>Icon</th><th>Name</th><th>Grey detail</th></tr>
+    <tr><td><b>Claude sub-agent</b> (Agent tool)</td><td>green robot</td><td>its task description</td><td>type · tool calls, plus "background" if it is one</td></tr>
+    <tr><td><b>ShipIt sub-agent</b> (<code>shipit agent run</code>)</td><td>purple chat</td><td>the model, e.g. GPT-6.1 Sol</td><td>role · harness · reasoning</td></tr>
+    <tr><td><b>Done line</b></td><td>caret</td><td>"Done · N"</td><td>"· N failed" in red when any failed</td></tr>
+  </table>
+  <p class="cap">Child sessions are not shown here (your answer).</p>
+
+  <h2>Height</h2>
+  <table>
+    <tr><th></th><th>Height</th><th>Names readable without a click</th></tr>
+    <tr><td><b>One line per running agent + Done</b> (this page)</td><td>22 px per running sub-agent, +22 px for Done. Idle: 22 px.</td><td>every running one, with detail</td></tr>
+    <tr><td><b>Chip strip</b> (first mockup)</td><td>24 px, any count</td><td>~2, the rest under +N</td></tr>
+  </table>
+</div>
+
+<script>
+const ICONS = {"Robot":["M200,48H136V16a8,8,0,0,0-16,0V48H56A32,32,0,0,0,24,80V192a32,32,0,0,0,32,32H200a32,32,0,0,0,32-32V80A32,32,0,0,0,200,48Zm16,144a16,16,0,0,1-16,16H56a16,16,0,0,1-16-16V80A16,16,0,0,1,56,64H200a16,16,0,0,1,16,16Zm-52-56H92a28,28,0,0,0,0,56h72a28,28,0,0,0,0-56Zm-24,16v24H116V152ZM80,164a12,12,0,0,1,12-12h8v24H92A12,12,0,0,1,80,164Zm84,12h-8V152h8a12,12,0,0,1,0,24ZM72,108a12,12,0,1,1,12,12A12,12,0,0,1,72,108Zm88,0a12,12,0,1,1,12,12A12,12,0,0,1,160,108Z"],"ChatCircleDots":["M140,128a12,12,0,1,1-12-12A12,12,0,0,1,140,128ZM84,116a12,12,0,1,0,12,12A12,12,0,0,0,84,116Zm88,0a12,12,0,1,0,12,12A12,12,0,0,0,172,116Zm60,12A104,104,0,0,1,79.12,219.82L45.07,231.17a16,16,0,0,1-20.24-20.24l11.35-34.05A104,104,0,1,1,232,128Zm-16,0A88,88,0,1,0,51.81,172.06a8,8,0,0,1,.66,6.54L40,216,77.4,203.53a7.85,7.85,0,0,1,2.53-.42,8,8,0,0,1,4,1.08A88,88,0,0,0,216,128Z"],"CheckCircle":["M173.66,98.34a8,8,0,0,1,0,11.32l-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35A8,8,0,0,1,173.66,98.34ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z"],"XCircle":["M165.66,101.66,139.31,128l26.35,26.34a8,8,0,0,1-11.32,11.32L128,139.31l-26.34,26.35a8,8,0,0,1-11.32-11.32L116.69,128,90.34,101.66a8,8,0,0,1,11.32-11.32L128,116.69l26.34-26.35a8,8,0,0,1,11.32,11.32ZM232,128A104,104,0,1,1,128,24,104.11,104.11,0,0,1,232,128Zm-16,0a88,88,0,1,0-88,88A88.1,88.1,0,0,0,216,128Z"],"CaretUp":["M213.66,165.66a8,8,0,0,1-11.32,0L128,91.31,53.66,165.66a8,8,0,0,1-11.32-11.32l80-80a8,8,0,0,1,11.32,0l80,80A8,8,0,0,1,213.66,165.66Z"],"CaretDown":["M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"],"CaretRight":["M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"],"X":["M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"],"Stop":["M200,40H56A16,16,0,0,0,40,56V200a16,16,0,0,0,16,16H200a16,16,0,0,0,16-16V56A16,16,0,0,0,200,40Zm0,160H56V56H200V200Z"],"PaperPlaneRight":["M231.87,114l-168-95.89A16,16,0,0,0,40.92,37.34L71.55,128,40.92,218.67A16,16,0,0,0,56,240a16.15,16.15,0,0,0,7.93-2.1l167.92-96.05a16,16,0,0,0,.05-27.89ZM56,224a.56.56,0,0,0,0-.12L85.74,136H144a8,8,0,0,0,0-16H85.74L56.06,32.16A.46.46,0,0,0,56,32l168,95.83Z"],"Paperclip":["M209.66,122.34a8,8,0,0,1,0,11.32l-82.05,82a56,56,0,0,1-79.2-79.21L147.67,35.73a40,40,0,1,1,56.61,56.55L105,193A24,24,0,1,1,71,159L154.3,74.38A8,8,0,1,1,165.7,85.6L82.39,170.31a8,8,0,1,0,11.27,11.36L192.93,81A24,24,0,1,0,159,47L59.76,147.68a40,40,0,1,0,56.53,56.62l82.06-82A8,8,0,0,1,209.66,122.34Z"],"Microphone":["M128,176a48.05,48.05,0,0,0,48-48V64a48,48,0,0,0-96,0v64A48.05,48.05,0,0,0,128,176ZM96,64a32,32,0,0,1,64,0v64a32,32,0,0,1-64,0Zm40,143.6V240a8,8,0,0,1-16,0V207.6A80.11,80.11,0,0,1,48,128a8,8,0,0,1,16,0,64,64,0,0,0,128,0,8,8,0,0,1,16,0A80.11,80.11,0,0,1,136,207.6Z"],"MagnifyingGlass":["M229.66,218.34l-50.07-50.06a88.11,88.11,0,1,0-11.31,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z"],"FileText":["M213.66,82.34l-56-56A8,8,0,0,0,152,24H56A16,16,0,0,0,40,40V216a16,16,0,0,0,16,16H200a16,16,0,0,0,16-16V88A8,8,0,0,0,213.66,82.34ZM160,51.31,188.69,80H160ZM200,216H56V40h88V88a8,8,0,0,0,8,8h48V216Zm-32-80a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,136Zm0,32a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,168Z"]};
+const ic = (n, cls = "i") => `<svg class="${cls}" viewBox="0 0 256 256">${ICONS[n].map((d) => `<path d="${d}"/>`).join("")}</svg>`;
+const KIND = { native: "Robot", consult: "ChatCircleDots" };
+const st = (s) => s === "running" ? `<span class="spin"></span>` : s === "done" ? ic("CheckCircle") : ic("XCircle");
+const line = (a, hov = false) => `<div class="ln ${a.s === "running" ? "" : a.s} ${hov ? "hov" : ""}"><span class="k ${a.k}">${ic(KIND[a.k])}</span><span class="nm">${a.name}</span><span class="dt">${a.dt}</span><span class="tm">${a.t}</span><span class="st">${st(a.s)}</span></div>`;
+const done = (list, open = false) => {
+  if (!list.length) return "";
+  const failed = list.filter((a) => a.s === "failed").length;
+  return `<div class="donewrap ${open ? "open" : ""}"><div class="ln donehd" onclick="this.parentNode.classList.toggle('open')"><span class="k"><span class="cr">${ic("CaretRight")}</span><span class="cd">${ic("CaretDown")}</span></span><span class="nm">Done · ${list.length}</span>${failed ? `<span class="fail">· ${failed} failed</span>` : ""}<span class="dt"></span></div><div class="donebody">${list.map((a) => line(a)).join("")}</div></div>`;
+};
+const lines = (run, fin = [], { hov = -1, open = false } = {}) => (run.length || fin.length) ? `<div class="lines">${run.map((a, i) => line(a, i === hov)).join("")}${done(fin, open)}</div>` : "";
+const inputBox = (busy) => `<div class="input"><div class="ta">Message the agent…</div><div class="bar"><div class="l">${ic("Paperclip", "i i16")}<span class="pill">Claude · Opus 5.5</span><span class="pill">Auto</span></div><div class="l">${ic("Microphone", "i i16")}<span class="send ${busy ? "stop" : ""}">${busy ? ic("Stop") : ic("PaperPlaneRight")}</span></div></div></div>`;
+const working = (txt) => `<div class="working"><span class="spin"></span>${txt}</div>`;
+
+const A = {
+  review: { k: "consult", name: "GPT-6.1 Sol", dt: "reviewer · Codex · Extra high", s: "running", t: "4:05" },
+  explore: { k: "native", name: "Find auth call sites", dt: "Explore · 14 tool calls", s: "running", t: "1:12" },
+  plan: { k: "native", name: "Draft migration plan", dt: "Plan · 3 tool calls", s: "running", t: "0:31" },
+  research: { k: "native", name: "Read docs/109 and SubagentCall", dt: "general · report ready", s: "done", t: "2:18" },
+  deep: { k: "consult", name: "Opus 5.5", dt: "deep-dive · quota exhausted", s: "failed", t: "0:44" },
+};
+const transcript = () => `<div class="transcript"><div class="bubble">Refactor the auth helper and get it reviewed.</div><div class="atext">I'll map every caller first, then ask the reviewer for a second opinion.</div><div class="atext">Starting with the call sites.</div></div>`;
+const R = (id, html) => { document.getElementById(id).innerHTML = html; };
+const busy = (body, txt = "Reading src/server/auth.ts", extra = "") => transcript() + `<div class="stack">${working(txt)}${body}${extra}</div>${inputBox(true)}`;
+const idle = (msg, body) => `<div class="transcript"><div class="atext">${msg}</div></div><div class="stack idle">${body}</div>${inputBox(false)}`;
+
+const three = [A.review, A.explore, A.plan];
+R("s1", busy(lines(three, [A.deep, A.research])));
+R("s2", busy(lines(three, [A.deep, A.research])));
+R("s3", busy(lines(three, [A.deep, A.research])));
+
+R("t1", busy(lines([A.review, A.explore], [A.research], { hov: 0 }), "Reading src/server/auth.ts",
+  `<div class="tip" style="left:60px;bottom:96px"><b>Asking GPT-6.1 Sol</b> · 4:05<div class="sub2">as reviewer · OpenAI · Subscription · Codex · Extra high reasoning</div><div class="sub2">Click to open</div></div>`));
+const tabs = (id, names, on) => `<div class="tabs">${names.map((n, i) => `<span class="${i === on ? "on" : ""}" onclick="showTab('${id}',${i})">${n}</span>`).join("")}</div>`;
+window.showTab = (id, i) => { document.querySelectorAll(`#${id} .tabs span`).forEach((e, j) => e.classList.toggle("on", i === j)); document.querySelectorAll(`#${id} .pane`).forEach((e, j) => e.classList.toggle("on", i === j)); };
+const sheet = (id, a, att, tabNames, panes, on, foot) => `<div class="dlg"><div class="hd"><span class="k ${a.k}" style="display:flex;color:var(${a.k === "native" ? "--ok" : "--pr"})">${ic(KIND[a.k], "i i16")}</span><span class="nm">${a.name}</span><span class="tm">${a.t}</span><span class="st" style="display:flex;color:var(${a.s === "done" ? "--ok" : "--t3"})">${st(a.s)}</span><span class="x">${ic("X", "i i16")}</span></div><div class="att">${att}</div>${tabs(id, tabNames, on)}<div class="tabbody">${panes.map((p, i) => `<div class="pane ${i === on ? "on" : ""}">${p}</div>`).join("")}</div>${foot ? `<div class="foot">${foot}</div>` : ""}</div>`;
+const step = (icon, t) => `<div class="step"><span class="k">${ic(icon)}</span>${t}</div>`;
+
+const scene = (chat, dialog) => `<div class="panel tall">${chat}</div><div class="ov"></div>${dialog}`;
+R("g1", scene(busy(lines([A.review, A.explore], [A.research], { hov: 1 }), "Reading src/server/auth.ts"),
+  sheet("g1", A.explore, "Claude sub-agent · Explore · 14 tool calls", ["Work · 14", "Prompt", "Report"], [
+    step("MagnifyingGlass", "Grep <code>resolveLegacyAuth</code> in src/ — 9 matches")
+    + step("FileText", "Read <code>src/server/auth.ts</code>")
+    + step("FileText", "Read <code>src/server/routes/session.ts</code>")
+    + step("MagnifyingGlass", "Grep <code>legacyAuth(</code> in integration_tests/ — 3 matches")
+    + step("FileText", "Read <code>src/server/services/github.ts</code>")
+    + step("FileText", "Read <code>src/server/services/github.test.ts</code>")
+    + step("MagnifyingGlass", "Grep <code>auth: null</code> in src/server/ws/ — 4 matches")
+    + step("FileText", "Read <code>src/server/ws/connection.ts</code>")
+    + step("FileText", "Read <code>docs/412-auth-helper/plan.md</code>")
+    + step("MagnifyingGlass", "Glob <code>src/server/**/*auth*.ts</code> — 6 files")
+    + step("FileText", "Read <code>src/server/shared/auth-token.ts</code>")
+    + step("FileText", "Read <code>src/server/shared/auth-token.test.ts</code>")
+    + step("FileText", "Read <code>src/server/routes/github-callback.ts</code>")
+    + `<div class="step"><span class="spin"></span>Reading <code>src/server/ws/handlers.ts</code></div>`,
+    "<pre>Find every call site of resolveLegacyAuth and say, per site, whether it depends on the return being nullable. Search the repo yourself; read CLAUDE.md and any surrounding files you need. Report as a bulleted list with file:line references.</pre>",
+    "<p style='color:var(--t3)'>No report yet — it appears here when the sub-agent finishes.</p>",
+  ], 0, "")));
+
+R("g2", scene(busy(lines([A.explore], [{ ...A.review, s: "done", t: "7:51" }, A.research], { open: true }), "Applying the review"),
+  sheet("g2", { ...A.review, s: "done", t: "7:51" }, "as reviewer · OpenAI · Subscription · Codex · Extra high reasoning", ["Report", "Prompt"], [
+    "<p><b>Two findings, one minor.</b></p><ul><li><b>Bug:</b> <code>session.ts:212</code> still treats a null return as \"signed in\" — the new helper returns <code>null</code> for an expired token.</li><li><b>Minor:</b> <code>github.ts:88</code> re-reads the token on every call; cache it per request.</li></ul><p>Everything else matches the requirements. Tests cover the expired-token path except the WebSocket handler.</p>",
+    "<pre>Review only, do not edit. Compare git diff main...HEAD against docs/412-auth-helper/requirements.md …</pre>",
+  ], 0, "<span>7:51</span><span>$0.42</span><span>finished 2 min ago</span>")));
+
+R("t2", busy(lines([A.review, A.explore], [A.research], { open: true })));
+R("t3", idle("Done — the reviewer found two issues, both fixed. The deep-dive consult hit its quota.",
+  lines([], [{ ...A.review, s: "done", t: "7:51" }, A.deep, { ...A.explore, s: "done", t: "2:02", dt: "Explore · 22 tool calls" }])));
+R("t4", idle("I started a background sub-agent for the slow audit; I'll fold its report in when it's back.",
+  lines([{ k: "native", name: "Audit every caller", dt: "background · general · 41 tool calls", s: "running", t: "12:30" }], [A.research, { ...A.review, s: "done", t: "7:51" }])));
+R("t5", busy(lines(three, [A.research]), "Reading auth.ts"));
+R("t6", idle("Here's the summary of the auth helper. Nothing was delegated.", ""));
+</script>
+</body>
+</html>

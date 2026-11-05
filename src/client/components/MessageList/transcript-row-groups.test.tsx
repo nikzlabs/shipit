@@ -141,7 +141,7 @@ describe("MessageList — content-visibility sits on row groups", () => {
     const agent = (n: number): ChatMessage => ({
       role: "assistant",
       text: "",
-      toolUse: [{ type: "tool_use", id: `agent-${n}`, name: "Task", input: { description: `t${n}` } }],
+      toolUse: [{ type: "tool_use", id: `agent-${n}`, name: "Skill", input: { skill: `t${n}` } }],
     });
 
     const base = [...transcript(40)];

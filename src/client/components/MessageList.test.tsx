@@ -1473,225 +1473,56 @@ describe("MessageList", () => {
 
   describe("Task/Agent/Skill subagent rendering", () => {
     /**
-     * docs/109 regression — the Claude CLI emits the subagent tool as `Agent`,
-     * never `Task` (verified against CLI 2.1.219: `tool_use` name `Agent`,
-     * input `{description, prompt, subagent_type}`, nested events carrying
-     * `parent_tool_use_id`). The renderer gated the transparency view on
-     * `name === "Task"`, so every real subagent call fell through to a strip
-     * that ignored `subagentEvents` entirely — the user saw a subagent get
-     * called, then nothing. These cases use the name the CLI actually sends.
+     * docs/339 req 8 — a sub-agent is drawn above the input, not in the
+     * transcript: no card for the Agent tool (the name the Claude CLI sends),
+     * the legacy Task name, or a `shipit agent run` consult.
      */
-    it("renders the full transparency view for the CLI's Agent tool", () => {
+    it.each(["Agent", "Task"])("draws no transcript card for a %s call, done or running", (name) => {
       const messages: ChatMessage[] = [
         {
           role: "assistant",
           text: "",
-          toolUse: [
-            {
-              type: "tool_use",
-              id: "toolu_agent1",
-              name: "Agent",
-              input: {
-                description: "List first 5 docs entries",
-                prompt: "Run exactly this bash command: `ls /workspace/docs | head -5`",
-                subagent_type: "general-purpose",
-              },
-            },
-          ],
-          toolResults: [{ toolUseId: "toolu_agent1", content: "## Output\n\n001-foo" }],
-          subagentEvents: [
-            {
-              kind: "assistant",
-              parentToolUseId: "toolu_agent1",
-              text: "Running the command.",
-              toolUse: [
-                { type: "tool_use", id: "sub-b1", name: "Bash", input: { command: "ls /workspace/docs | head -5" } },
-              ],
-            },
-            {
-              kind: "tool_result",
-              parentToolUseId: "toolu_agent1",
-              toolResults: [{ toolUseId: "sub-b1", content: "001-foo" }],
-            },
-          ],
+          toolUse: [{ type: "tool_use", id: "a1", name, input: { description: "Audit the review surface", prompt: "audit" } }],
+          toolResults: [{ toolUseId: "a1", content: "## Findings\n\nAll good." }],
         },
-      ];
-      render(<MessageList messages={messages} isLoading={false} />);
-      expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
-
-      expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
-      fireEvent.click(screen.getByTestId("subagent-work-toggle"));
-      expect(screen.getByTestId("subagent-work")).toBeInTheDocument();
-      expect(screen.getByText(/Running the command/)).toBeInTheDocument();
-
-      expect(screen.getByTestId("subagent-final-report")).toBeInTheDocument();
-      expect(screen.getByText(/Output/)).toBeInTheDocument();
-      expect(screen.getByTestId("subagent-done")).toBeInTheDocument();
-    });
-
-    it("keeps the description, subagent type and prompt an Agent call carried before", () => {
-
-      const tools: ToolUseBlock[] = [
-        {
-          type: "tool_use",
-          id: "toolu_agent2",
-          name: "Agent",
-          input: {
-            description: "Audit the review surface",
-            prompt: "Walk the review surface and report findings.",
-            subagent_type: "general-purpose",
-          },
-        },
-      ];
-      render(<MessageList messages={[msg("assistant", "", { toolUse: tools })]} isLoading={false} />);
-      expect(screen.getByText("Subagent (general-purpose):")).toBeInTheDocument();
-      expect(screen.getByText("Audit the review surface")).toBeInTheDocument();
-      fireEvent.click(screen.getByTestId("subagent-prompt-toggle"));
-      expect(screen.getByTestId("subagent-prompt").textContent).toContain("Walk the review surface");
-    });
-
-    it("shows a running indicator for an in-flight Agent call", () => {
-      const messages: ChatMessage[] = [
         {
           role: "assistant",
           text: "",
           streaming: true,
-          toolUse: [
-            { type: "tool_use", id: "toolu_agent3", name: "Agent", input: { description: "Long task", prompt: "work" } },
-          ],
+          toolUse: [{ type: "tool_use", id: "a2", name, input: { description: "Long task", prompt: "work" } }],
         },
       ];
       render(<MessageList messages={messages} isLoading={true} />);
-      expect(screen.getByTestId("subagent-running")).toBeInTheDocument();
+      expect(screen.queryByText("Audit the review surface")).toBeNull();
+      expect(screen.queryByText(/Findings/)).toBeNull();
+      expect(screen.queryByText("Long task")).toBeNull();
     });
 
-    it("Agent tool is not grouped with other tools", () => {
+    it("keeps the agent's own text beside a sub-agent call", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "a1", name: "Agent", input: { description: "Audit", prompt: "audit" } },
+      ];
+      render(<MessageList messages={[msg("assistant", "Mapping the callers first.", { toolUse: tools })]} isLoading={false} />);
+      expect(screen.getByText("Mapping the callers first.")).toBeInTheDocument();
+      expect(screen.queryByText("Audit")).toBeNull();
+    });
+
+    it("draws no transcript card for a shipit agent run consult", () => {
       const messages: ChatMessage[] = [
-        { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] },
-        { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t2", name: "Agent", input: { subagent_type: "Explore", description: "explore", prompt: "..." } }] },
-        { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t3", name: "Read", input: { file_path: "a.ts" } }] },
-      ];
-      render(<MessageList messages={messages} isLoading={false} />);
-      expect(screen.getAllByTestId("tool-call-group")).toHaveLength(2);
-      expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
-    });
-
-    it("renders Task tool with description (prompt collapsed by default)", () => {
-      const tools: ToolUseBlock[] = [
-        {
-          type: "tool_use",
-          id: "t1",
-          name: "Task",
-          input: {
-            subagent_type: "Plan",
-            description: "Plan UI beautification approach",
-            prompt: "I need to plan how to render\nthe Task tool use differently\nfrom other tools in the list",
-          },
-        },
-      ];
-      render(
-        <MessageList messages={[msg("assistant", "", { toolUse: tools })]} isLoading={false} />
-      );
-      expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
-      expect(screen.getByText("Plan UI beautification approach")).toBeInTheDocument();
-
-      expect(screen.getByTestId("subagent-prompt-toggle")).toBeInTheDocument();
-      expect(screen.queryByTestId("subagent-prompt")).not.toBeInTheDocument();
-    });
-
-    it("expands the prompt when the disclosure is clicked", () => {
-      const tools: ToolUseBlock[] = [
-        {
-          type: "tool_use",
-          id: "t1",
-          name: "Task",
-          input: {
-            description: "Audit the review feature",
-            prompt: "Walk through the review surface and report findings.",
-          },
-        },
-      ];
-      render(
-        <MessageList messages={[msg("assistant", "", { toolUse: tools })]} isLoading={false} />
-      );
-      fireEvent.click(screen.getByTestId("subagent-prompt-toggle"));
-      const prompt = screen.getByTestId("subagent-prompt");
-      expect(prompt).toBeInTheDocument();
-      expect(prompt.textContent).toContain("Walk through the review surface");
-    });
-
-    it("renders Task tool with fallback when description is missing", () => {
-      const tools: ToolUseBlock[] = [
-        { type: "tool_use", id: "t1", name: "Task", input: { prompt: "do something" } },
-      ];
-      render(
-        <MessageList messages={[msg("assistant", "", { toolUse: tools })]} isLoading={false} />
-      );
-      expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
-      expect(screen.getByText("Running task...")).toBeInTheDocument();
-    });
-
-    it("renders nested subagent work and the final report", () => {
-      const messages: ChatMessage[] = [
+        msg("assistant", "Asking the reviewer."),
         {
           role: "assistant",
           text: "",
-          toolUse: [
-            {
-              type: "tool_use",
-              id: "task-1",
-              name: "Task",
-              input: { description: "Audit", prompt: "audit the codebase" },
-            },
-          ],
-          toolResults: [
-            { toolUseId: "task-1", content: "## Findings\n\nAll good." },
-          ],
-          subagentEvents: [
-            {
-              kind: "assistant",
-              parentToolUseId: "task-1",
-              text: "Reading file...",
-              toolUse: [
-                { type: "tool_use", id: "sub-r1", name: "Read", input: { file_path: "/a.ts" } },
-              ],
-            },
-            {
-              kind: "tool_result",
-              parentToolUseId: "task-1",
-              toolResults: [{ toolUseId: "sub-r1", content: "file contents" }],
-            },
-          ],
+          subAgentConsult: {
+            cardId: "sac-1", spawnId: "spawn-1", subAgentId: "codex", status: "success",
+            outputMarkdown: "Two findings.", createdAt: "2026-11-05T10:00:00.000Z",
+          },
         },
       ];
       render(<MessageList messages={messages} isLoading={false} />);
-      expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
-
-      expect(screen.getByTestId("subagent-final-report")).toBeInTheDocument();
-      expect(screen.getByText(/Findings/)).toBeInTheDocument();
-
-      expect(screen.getByTestId("subagent-done")).toBeInTheDocument();
-
-      expect(screen.queryByTestId("subagent-work")).not.toBeInTheDocument();
-      expect(screen.getByTestId("subagent-work-toggle")).toHaveTextContent("2 actions");
-      fireEvent.click(screen.getByTestId("subagent-work-toggle"));
-      expect(screen.getByTestId("subagent-work")).toBeInTheDocument();
-      expect(screen.getByText(/Reading file/)).toBeInTheDocument();
-    });
-
-    it("shows running indicator while subagent is still working", () => {
-      const messages: ChatMessage[] = [
-        {
-          role: "assistant",
-          text: "",
-          streaming: true,
-          toolUse: [
-            { type: "tool_use", id: "task-1", name: "Task", input: { description: "Long task", prompt: "do work" } },
-          ],
-        },
-      ];
-      render(<MessageList messages={messages} isLoading={true} />);
-      expect(screen.getByTestId("subagent-running")).toBeInTheDocument();
+      expect(screen.getByText("Asking the reviewer.")).toBeInTheDocument();
+      expect(screen.queryByText(/Two findings/)).toBeNull();
+      expect(screen.queryByText(/Consulted/)).toBeNull();
     });
 
     it("renders Skill tool with skill name", () => {
@@ -1729,18 +1560,6 @@ describe("MessageList", () => {
       expect(screen.queryByText("unknown")).not.toBeInTheDocument();
     });
 
-    it("Task tool is not grouped with other tools", () => {
-      const messages: ChatMessage[] = [
-        { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] },
-        { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t2", name: "Task", input: { subagent_type: "Plan", description: "plan", prompt: "..." } }] },
-        { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t3", name: "Read", input: { file_path: "a.ts" } }] },
-      ];
-      render(<MessageList messages={messages} isLoading={false} />);
-
-      const groups = screen.getAllByTestId("tool-call-group");
-      expect(groups).toHaveLength(2);
-      expect(screen.getByTestId("subagent-call")).toBeInTheDocument();
-    });
   });
 
   describe("single active indicator", () => {

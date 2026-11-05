@@ -247,8 +247,9 @@ whose fix needs a decision or authority you don't have; ask about *that* finding
 and act on the rest.
 
 You also do **not** need to paste the output back for the user to see it: ShipIt
-surfaces the sub-agent's verbatim output inline, in the persisted consult card,
-attributed to the agent that ran it (docs/220). So treat stdout as input for
+shows the sub-agent's verbatim output in the persisted consult record, attributed
+to the agent that ran it (docs/220): a line above the chat input that opens the
+full output in a dialog (docs/339). So treat stdout as input for
 *acting*, not as something to re-type into chat — re-pasting it just duplicates
 what the card already shows.
 
@@ -289,9 +290,9 @@ lost result, or to double-check that what you acted on is what was rendered.
 
 A run that is **still in flight** has a card too — `shipit agent result` reports
 it with status `pending` rather than pretending it doesn't exist. The user sees
-the same thing: the consult card appears in the transcript the moment the run
-starts, shows an in-progress row for the duration, and turns into the finished
-record when the run ends. So a backgrounded consult is visible to the user the
+the same thing: the consult gets its own line above the chat input the moment
+the run starts, with a spinner and a clock for the duration, and folds into the
+**Done** list when the run ends. So a backgrounded consult is visible to the user the
 whole time, and neither of you has to guess whether it is still going.
 
 **If your turn ends before the consult does, ShipIt brings you back.** When a

@@ -25,7 +25,6 @@ import { extractTurnProse, hasSpeakableProse } from "../../voice/extract-turn-pr
 import type { ChatMessage } from "./types.js";
 import { useMessageScroll } from "./hooks/useMessageScroll.js";
 import type { AnswerQuestionFn } from "../AskUserQuestion.js";
-import { SubAgentSpawnChipRow } from "./cards/SubAgentCards.js";
 import { TranscriptRow, CodeRollbackNotice } from "./TranscriptRow.js";
 import { RowHandlersProvider, type RowHandlers } from "./row-context.js";
 import type { TrackerId } from "../../../server/shared/types.js";
@@ -224,8 +223,6 @@ export function MessageList({
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
 
   const activeSessionId = liveSessionId;
-
-  const subAgentSpawns = useSessionStore((s) => s.subAgentSpawns);
 
   const turnProseByLastIndex = useMemo(() => {
     const map = new Map<number, string>();
@@ -597,17 +594,6 @@ export function MessageList({
     group.children.push(row.node);
   });
   flushGroup();
-
-  /*
-    planning#280 — the durable pending consult card (inline, at the call site) is
-    now the primary in-flight surface. The transient chip is only shown for a
-    spawn that has no card in the transcript yet, so the two can never render
-    two spinners for the same consult.
-  */
-  for (const chip of Object.values(subAgentSpawns)) {
-    if (messages.some((m) => m.subAgentConsult?.spawnId === chip.spawnId)) continue;
-    flow.push(<SubAgentSpawnChipRow key={chip.spawnId} chip={chip} />);
-  }
 
   if (!isLoading && messages.length > 0) {
     // A keyed fragment, so the rewind point keeps its place in this list without

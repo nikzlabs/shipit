@@ -370,12 +370,12 @@ describe("collapsed turns", () => {
 
   it("counts a split-out subagent call once, not twice (req 8)", () => {
     compactOn();
-    // A subagent call always splits into its own element, while the standalone
+    // A Skill call always splits into its own element, while the standalone
     // question stays attached to the prose row: the row must count only its own.
     const data = [user("Task"), {
       ...bot("Handing the search off."),
       toolUse: [
-        { type: "tool_use" as const, id: "t", name: "Task", input: { description: "search" } },
+        { type: "tool_use" as const, id: "t", name: "Skill", input: { skill: "search" } },
         { type: "tool_use" as const, id: "q", name: "AskUserQuestion", input: { questions: [] } },
       ],
       toolResults: [{ toolUseId: "t", content: "done" }, { toolUseId: "q", content: "answered" }],

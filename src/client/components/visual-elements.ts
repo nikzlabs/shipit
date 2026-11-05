@@ -15,7 +15,7 @@ export const STANDALONE_TOOLS = new Set([
 // exempts from slicing — those two must not drift, which is why they read the
 
 export { SUBAGENT_TOOL_NAMES as SUBAGENT_TOOLS } from "../../server/shared/transcript-slice-tools.js";
-import { SUBAGENT_TOOL_NAMES as SUBAGENT_TOOLS } from "../../server/shared/transcript-slice-tools.js";
+import { SUBAGENT_TOOL_NAMES as SUBAGENT_TOOLS, SUBAGENT_REPORT_TOOL_NAMES } from "../../server/shared/transcript-slice-tools.js";
 
 /**
  * A tool that must NOT be folded into the clipped `ToolCallGroup` container
@@ -115,6 +115,17 @@ export function hasCardContent(msg: ChatMessage): boolean {
   return CARD_MESSAGE_FIELDS.some((f) => msg[f] !== undefined);
 }
 
+/**
+ * docs/339 req 8 — card fields drawn above the input instead of in the
+ * transcript. They stay in `CARD_MESSAGE_FIELDS`, which also drives
+ * persistence and the terminal-entry merge guard; they only render no row.
+ */
+const OFF_TRANSCRIPT_CARD_FIELDS = new Set<keyof ChatMessage>(["subAgentConsult"]);
+
+function hasTranscriptCard(msg: ChatMessage): boolean {
+  return CARD_MESSAGE_FIELDS.some((f) => msg[f] !== undefined && !OFF_TRANSCRIPT_CARD_FIELDS.has(f));
+}
+
 export type VisualElement =
   | { kind: "message"; index: number; hideTools: boolean }
   | { kind: "tool-group"; items: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean }[]; streaming: boolean; messageIndices: number[] }
@@ -204,7 +215,7 @@ export function buildVisualElements(messages: ChatMessage[], previous?: VisualEl
 
     // card never renders (the recurring "card vanishes" bug, docs/188). Driven
 
-    const carriesCard = hasCardContent(msg);
+    const carriesCard = hasTranscriptCard(msg);
 
     if (canGroupTools) {
 
@@ -257,7 +268,9 @@ export function buildVisualElements(messages: ChatMessage[], previous?: VisualEl
       flushTools();
     }
 
+    // docs/339 req 8 — a sub-agent is drawn above the input, not here.
     for (const tool of subagentTools) {
+      if (SUBAGENT_REPORT_TOOL_NAMES.has(tool.name)) continue;
       elements.push({ kind: "subagent", tool, streaming: !!msg.streaming, messageIndex: i });
     }
 

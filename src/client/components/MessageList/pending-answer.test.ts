@@ -117,14 +117,14 @@ describe("pendingAnswerElementIndex", () => {
     expect(pendingAnswerElementIndex(elements, messages)).toBe(1);
   });
 
-  it("finds a question the agent asked while spawning a sub-agent", () => {
-    // A sub-agent chip is emitted after the element for the message it came
+  it("finds a question the agent asked while running a skill", () => {
+    // A Skill element is emitted after the element for the message it came
     // from, so it lands below the question the same message asked.
     const messages = [
       { role: "user", text: "decide" } as ChatMessage,
       ask({
         toolUse: [
-          { type: "tool_use", id: "task-1", name: "Task", input: { prompt: "look into it" } },
+          { type: "tool_use", id: "task-1", name: "Skill", input: { skill: "look-into-it" } },
           { type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: ASK_INPUT },
         ],
       }),

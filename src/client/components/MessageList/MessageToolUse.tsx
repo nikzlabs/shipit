@@ -1,21 +1,16 @@
 import { ToolCallGroup, ToolUseItem } from "../message-tools.js";
-import { SubagentCall } from "../SubagentCall.js";
-import { SUBAGENT_REPORT_TOOL_NAMES } from "../../../server/shared/transcript-slice-tools.js";
 import { pluginSkillLabel } from "../../../server/shared/plugin-skill-marker.js";
 import type { VisualElement } from "../visual-elements.js";
 import type { AnswerQuestionFn } from "../AskUserQuestion.js";
-import type { ChatMessage } from "./types.js";
 
 export function MessageToolElement({
   el,
-  messages,
   findPlanContent,
   onAnswerQuestion,
   onSendFollowUp,
   askedAgain,
 }: {
   el: Extract<VisualElement, { kind: "tool-group" | "subagent" | "standalone-tool" }>;
-  messages: ChatMessage[];
   findPlanContent: (exitPlanMsgIndex: number) => string | undefined;
 
   onAnswerQuestion?: AnswerQuestionFn;
@@ -32,24 +27,9 @@ export function MessageToolElement({
     );
   }
 
+  // Only a Skill reaches here: sub-agents are drawn above the input (docs/339).
   if (el.kind === "subagent") {
     const tool = el.tool;
-    const parentMsg = messages[el.messageIndex];
-
-    // the floor, which is why subagent work never appeared in the transcript.
-    // `Task` stays in the set because chat history persists tool names
-
-    if (SUBAGENT_REPORT_TOOL_NAMES.has(tool.name)) {
-      return (
-        <SubagentCall
-          tool={tool}
-          subagentEvents={parentMsg?.subagentEvents}
-          parentToolResults={parentMsg?.toolResults}
-          isStreaming={el.streaming}
-        />
-      );
-    }
-
     const rawSkillName =
       (tool.input.skill as string) ?? (tool.input.name as string) ?? "unknown";
     const skillName = pluginSkillLabel(rawSkillName) ?? rawSkillName;

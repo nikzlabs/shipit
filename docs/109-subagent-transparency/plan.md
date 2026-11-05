@@ -6,6 +6,11 @@ description: Render a subagent's prompt, work timeline, and final report inline 
 
 # 109 — Subagent / Task Tool Transparency
 
+> **The in-chat card is gone** (docs/339-subagent-lines-above-input). Sub-agents
+> are now lines above the input, and a click opens `SubagentRunDialog` with the
+> work, prompt and the whole report (`SubagentFullReport`). `SubagentCall` and the
+> inline clamp are deleted; the report slice and the lazy fetches below still apply.
+
 ## Summary
 
 When the agent invokes the `Task` tool to spawn a subagent, render the subagent's prompt and its returned report inline in the chat as a collapsible nested message group. Today these calls show up as opaque "Task: <description>" tool invocations whose internals are invisible. Conductor v0.23.0 / v0.34.1 fixed this with subagent prompt visibility and "agent swarm" rendering.

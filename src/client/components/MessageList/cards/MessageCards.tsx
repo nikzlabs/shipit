@@ -29,7 +29,6 @@ import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
 import type { ChatMessage } from "../types.js";
 import type { AgentInterfaceProvenance } from "../../../../server/shared/agent-interface-sdk/protocol.js";
 import type { ReleaseMechanism } from "../../../../server/shared/types.js";
-import { SubAgentConsultCardRow } from "./SubAgentCards.js";
 import type { TrackerId } from "../../../../server/shared/types.js";
 
 export interface MessageCardCallbacks {
@@ -216,14 +215,6 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
         <div className="max-w-2xl w-full">
           <CompactionCard card={msg.compaction} />
         </div>
-      </div>
-    );
-  }
-
-  if (msg.subAgentConsult) {
-    return (
-      <div className="flex justify-start">
-        <SubAgentConsultCardRow card={msg.subAgentConsult} />
       </div>
     );
   }
