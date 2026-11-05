@@ -151,7 +151,7 @@ describe("useMessageHandler", () => {
     await waitFor(() => {
       expect(useSessionStore.getState().messages).toEqual([
         { role: "user", text: "earlier turn" },
-        { role: "user", text: "look", clientRequestId: "r1", images },
+        { role: "user", text: "look", clientRequestId: "r1", images, steered: true },
       ]);
     });
   });

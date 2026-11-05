@@ -25,11 +25,11 @@ export const handleMessageSteered: Handler<WsMessageSteered> = (ctx, data) => {
   useSessionStore.getState().setMessages((prev) => {
     const index = prev.findIndex((m) => m.role === "user" && m.clientRequestId === id);
     if (index === -1) {
-      const bubble: ChatMessage = fillUserBubble({ role: "user", text: data.text, clientRequestId: id }, fields);
+      const bubble: ChatMessage = fillUserBubble({ role: "user", text: data.text, clientRequestId: id, steered: true }, fields);
       return [...prev, bubble];
     }
     const next = prev.slice();
-    next[index] = fillUserBubble(prev[index], fields);
+    next[index] = { ...fillUserBubble(prev[index], fields), steered: true };
     return next;
   });
 };

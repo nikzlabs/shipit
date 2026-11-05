@@ -3,7 +3,7 @@ import { useSessionStore } from "../../stores/session-store.js";
 import { handleAgentEvent } from "./agent-event.js";
 import { handleSubAgentConsultCard } from "./sub-agent-consult-card.js";
 import { handleSubAgentSpawn } from "./sub-agent-spawn.js";
-import { buildVisualElements } from "../../components/visual-elements.js";
+import { deriveSubagentRuns } from "../../utils/subagent-runs.js";
 import type { HandlerContext } from "./types.js";
 import type { WsAgentEvent, WsSubAgentConsultCard, WsSubAgentSpawn } from "../../../server/shared/types.js";
 
@@ -59,11 +59,10 @@ const card = (over: Record<string, unknown> = {}) => ({
 const spawnEvent: WsSubAgentSpawn = { type: "sub_agent_spawn", sessionId: "s1", spawnId: "sp-1", subAgentId: "codex" } as unknown as WsSubAgentSpawn;
 const consultCardEvent: WsSubAgentConsultCard = { type: "sub_agent_consult_card", sessionId: "s1", card: card() } as unknown as WsSubAgentConsultCard;
 
+// docs/339 — the card is drawn as a sub-agent line above the input, read from the transcript.
 const cardVisible = (): boolean => {
   const { messages } = useSessionStore.getState();
-  return buildVisualElements(messages).some(
-    (el) => el.kind === "message" && messages[el.index].subAgentConsult?.cardId === "card-1",
-  );
+  return deriveSubagentRuns(messages, { turnRunning: false }).filter((r) => r.key === "consult:card-1").length === 1;
 };
 
 beforeEach(() => {

@@ -101,7 +101,14 @@ describe("buildVisualElements", () => {
 
     // CARD_MESSAGE_FIELDS source of truth must keep its empty-text carrier
 
-    it.each([...CARD_MESSAGE_FIELDS])("emits a message element for an empty-text %s card (CARD_MESSAGE_FIELDS guard)", (field) => {
+    // docs/339 req 8 — a consult card is drawn above the input instead; it stays
+    // in CARD_MESSAGE_FIELDS for persistence and the terminal-entry guard.
+    it("emits no element for an empty-text subAgentConsult card", () => {
+      const msg = { role: "assistant", text: "", subAgentConsult: {} } as unknown as ChatMessage;
+      expect(buildVisualElements([msg])).toEqual([]);
+    });
+
+    it.each(CARD_MESSAGE_FIELDS.filter((f) => f !== "subAgentConsult"))("emits a message element for an empty-text %s card (CARD_MESSAGE_FIELDS guard)", (field) => {
 
       const msg = { role: "assistant", text: "", [field]: {} } as unknown as ChatMessage;
       const elements = buildVisualElements([msg]);
@@ -272,7 +279,7 @@ describe("buildVisualElements", () => {
         ]),
       ]);
       expect(elements[0]).toMatchObject({ kind: "message", index: 0, hideTools: true });
-      expect(elements.map((el) => el.kind)).toEqual(["message", "subagent", "task-panel"]);
+      expect(elements.map((el) => el.kind)).toEqual(["message", "task-panel"]);
     });
 
     it("emits no panel when the list is empty", () => {
@@ -284,20 +291,18 @@ describe("buildVisualElements", () => {
       expect(SUBAGENT_TOOLS).toEqual(new Set(["Task", "Skill", "Agent"]));
     });
 
-    it("extracts Task tool into its own subagent element", () => {
+    // docs/339 req 8 — a sub-agent (Task / Agent) is drawn above the input, so
+    // it emits no transcript element; only Skill keeps the subagent element.
+    it.each(["Task", "Agent"])("emits no element for a %s call, and never folds it into a tool group", (name) => {
       const elements = buildVisualElements([
         toolMsg([tool("t1", "Bash")]),
-        toolMsg([tool("t2", "Task", { subagent_type: "Plan", description: "Plan approach", prompt: "..." })]),
+        toolMsg([tool("t2", name, { subagent_type: "Plan", description: "Plan approach", prompt: "..." })]),
         toolMsg([tool("t3", "Grep")]),
       ]);
-      expect(elements).toHaveLength(3);
-      expect(elements[0].kind).toBe("tool-group");
-      expect(elements[1]).toMatchObject({ kind: "subagent" });
-      if (elements[1].kind === "subagent") {
-        expect(elements[1].tool.name).toBe("Task");
-        expect(elements[1].tool.input.description).toBe("Plan approach");
+      expect(elements.some((el) => el.kind === "subagent")).toBe(false);
+      for (const el of elements) {
+        if (el.kind === "tool-group") expect(el.items.map((i) => i.tool.name)).not.toContain(name);
       }
-      expect(elements[2].kind).toBe("tool-group");
     });
 
     it("extracts Skill tool into its own subagent element", () => {
@@ -315,46 +320,15 @@ describe("buildVisualElements", () => {
       expect(elements[2].kind).toBe("tool-group");
     });
 
-    it("extracts Agent tool into its own subagent element", () => {
-      const elements = buildVisualElements([
-        toolMsg([tool("t1", "Bash")]),
-        toolMsg([tool("t2", "Agent", { subagent_type: "Explore", description: "Explore codebase", prompt: "Explore this codebase..." })]),
-        toolMsg([tool("t3", "Grep")]),
-      ]);
-      expect(elements).toHaveLength(3);
-      expect(elements[0].kind).toBe("tool-group");
-      expect(elements[1]).toMatchObject({ kind: "subagent" });
-      if (elements[1].kind === "subagent") {
-        expect(elements[1].tool.name).toBe("Agent");
-        expect(elements[1].tool.input.description).toBe("Explore codebase");
-      }
-      expect(elements[2].kind).toBe("tool-group");
+    it("emits nothing for a message with only a sub-agent call", () => {
+      expect(buildVisualElements([toolMsg([tool("t1", "Agent", { description: "explore" })])])).toEqual([]);
     });
 
-    it("does not emit a message bubble for a message with only Agent tool", () => {
-      const elements = buildVisualElements([
-        toolMsg([tool("t1", "Agent", { description: "explore" })]),
-      ]);
-      expect(elements).toHaveLength(1);
-      expect(elements[0].kind).toBe("subagent");
-    });
-
-    it("does not emit a message bubble for a message with only subagent tools", () => {
-      const elements = buildVisualElements([
-        toolMsg([tool("t1", "Task", { description: "plan" })]),
-      ]);
-      expect(elements).toHaveLength(1);
-      expect(elements[0].kind).toBe("subagent");
-    });
-
-    it("emits both message bubble and subagent when message has text and Task tool", () => {
+    it("keeps the text of a message that also launched a sub-agent, without its tools", () => {
       const elements = buildVisualElements([
         toolMsg([tool("t1", "Task", { description: "plan" })], { text: "Let me plan this." }),
       ]);
-
-      expect(elements).toHaveLength(2);
-      expect(elements[0]).toMatchObject({ kind: "message", index: 0, hideTools: true });
-      expect(elements[1]).toMatchObject({ kind: "subagent" });
+      expect(elements).toEqual([{ kind: "message", index: 0, hideTools: true }]);
     });
 
     it("groups groupable tools even when standalone tools are present in the same message", () => {
@@ -716,7 +690,7 @@ describe("buildVisualElements", () => {
 
     it("subagent streaming is also de-duped", () => {
       const elements = buildVisualElements([
-        toolMsg([tool("t1", "Task", { description: "plan" })], { streaming: true }),
+        toolMsg([tool("t1", "Skill", { skill: "plan" })], { streaming: true }),
         toolMsg([tool("t2", "Bash")], { streaming: true }),
       ]);
       const subagent = elements.find((e) => e.kind === "subagent");

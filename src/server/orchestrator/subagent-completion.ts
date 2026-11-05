@@ -1,6 +1,8 @@
 // Background tasks send one launch result; completion replaces it in live and persisted history.
-import { isBackgroundLaunchAck, parseSubagentReport } from "../shared/subagent-report.js";
+import { STOPPED_TEXT, isBackgroundLaunchAck, parseSubagentReport } from "../shared/subagent-report.js";
 import { SUBAGENT_REPORT_TOOL_NAMES } from "../shared/transcript-slice-tools.js";
+
+export { STOPPED_TEXT };
 
 export interface SubagentResultSlot {
   toolUseId: string;
@@ -34,7 +36,6 @@ export function toTerminalStatus(status: string | undefined): SubagentTerminalSt
 }
 
 export const NO_REPORT_TEXT = "_The subagent finished without returning a report._";
-export const STOPPED_TEXT = "_The subagent was stopped before it finished, so there is no report._";
 export const FAILED_FALLBACK_TEXT = "The subagent failed without reporting a reason.";
 
 export function buildRetiredSubagentResult(

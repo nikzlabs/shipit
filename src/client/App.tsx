@@ -132,6 +132,7 @@ import { GoalChip } from "./components/GoalChip.js";
 import { SecretBlockBanner } from "./components/SecretBlockBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
+import { SubagentLines } from "./components/SubagentLines.js";
 import { StaleContainerBanner } from "./components/StaleContainerBanner.js";
 import type { AgentOption, EligibleModelOption, ModelChoice } from "./agent-types.js";
 import type {
@@ -1743,6 +1744,7 @@ export default function App() {
           />
           <div className="flex flex-col gap-2">
             {isLoading && <AgentStatusBar activity={activity} />}
+            <SubagentLines key={wsSessionId ?? "none"} />
             {wsSessionId && <RebaseBanner sessionId={wsSessionId} />}
             {wsSessionId && agentGoal
               && agentList.find((a) => a.id === activeAgentId)?.supportsGoals

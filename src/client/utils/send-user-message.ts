@@ -70,7 +70,9 @@ export function sendUserMessage(
 
   const priorIsLoading = session.isLoading;
   const priorActivity = session.activity;
-  const pending = { ...bubble, clientRequestId: requestId };
+  // docs/339 — sent into a turn in flight, it is steered or queued, and starts no turn until dequeued.
+  const intoRunningTurn = !!session.sessionId && session.activeRunnerSessions.has(session.sessionId);
+  const pending = { ...bubble, clientRequestId: requestId, ...(intoRunningTurn ? { steered: true as const } : {}) };
   if (queuedAs !== undefined) {
     addPredictedQueueEntry(requestId, queuedAs, pending);
   } else {

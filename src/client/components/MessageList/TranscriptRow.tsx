@@ -158,7 +158,6 @@ function TranscriptRowInner({
     return (
       <MessageToolElement
         el={el}
-        messages={handlers.messages}
         findPlanContent={handlers.findPlanContent}
         onAnswerQuestion={handlers.onAnswerQuestion}
         onSendFollowUp={handlers.onSendFollowUp}

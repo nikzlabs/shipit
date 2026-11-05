@@ -46,7 +46,7 @@ const MIN_CONTRAST = 1.25;
  *
  * This guards a *collision*, not the original ramp. Four components render a
  * `border-primary` edge that becomes `border-secondary` on hover — PresentGallery,
- * ServiceList, PreviewPath, SubAgentCards — and when the two values converge the
+ * ServiceList, PreviewPath, SubagentReport — and when the two values converge the
  * hover still fires and produces no visible change. An earlier 1.40 attempt drove
  * that separation to 1.0028 in the light theme, which is the failure this pins.
  *
@@ -121,7 +121,7 @@ describe("theme border contrast", () => {
   /**
    * Raising the divider token pushed it into the input-border token's range and
    * silently flattened a distinction four components rely on: PresentGallery,
-   * ServiceList, PreviewPath and SubAgentCards all render a `border-primary`
+   * ServiceList, PreviewPath and SubagentReport all render a `border-primary`
    * edge that becomes `border-secondary` on hover. When the two values converge,
    * that hover state still fires and produces no visible change.
    *

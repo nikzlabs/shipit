@@ -45,6 +45,9 @@ export const handleSystemUserMessage: Handler<WsSystemUserMessage> = (_ctx, data
       if (m.clientRequestId !== echoedRequestId) return m;
       const filled = fillUserBubble(m, data);
       delete filled.pendingDispatch;
+      // This row starts the turn, whatever the sender predicted or a replay restored (docs/339).
+      delete filled.steered;
+      delete filled.inProgress;
       return filled;
     }));
     session.setIsLoading(true);
@@ -75,6 +78,8 @@ export const handleSystemUserMessage: Handler<WsSystemUserMessage> = (_ctx, data
 
       const replaced = { ...tail };
       delete replaced.pendingDispatch;
+      delete replaced.steered;
+      delete replaced.inProgress;
       if (data.agentInterface) replaced.agentInterface = data.agentInterface;
       if (data.messageOrigin) replaced.messageOrigin = data.messageOrigin;
       if (data.whileAnswerWaits) replaced.whileAnswerWaits = true;

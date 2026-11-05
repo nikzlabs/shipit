@@ -65,6 +65,22 @@ describe("sendUserMessage — optimistic active-runner marking", () => {
  * caller must learn about it so it can't render a "Submitted" ack (the
  * action-checklist card bug).
  */
+describe("sendUserMessage — a message sent into a running turn (docs/339)", () => {
+  beforeEach(() => {
+    useSessionStore.getState().reset();
+  });
+
+  it("marks the bubble as not starting a turn, and leaves a turn-starting one unmarked", () => {
+    useSessionStore.setState({ sessionId: "sess-1", activeRunnerSessions: new Set(["sess-1"]) });
+    sendUserMessage({ bubble: { role: "user", text: "steer" }, activity: "Thinking...", dispatch: () => true });
+    expect(useSessionStore.getState().messages.at(-1)?.steered).toBe(true);
+
+    useSessionStore.setState({ messages: [], activeRunnerSessions: new Set() });
+    sendUserMessage({ bubble: { role: "user", text: "new turn" }, activity: "Thinking...", dispatch: () => true });
+    expect(useSessionStore.getState().messages.at(-1)?.steered).toBeUndefined();
+  });
+});
+
 describe("sendUserMessage — undelivered send rolls back", () => {
   const bubble: ChatMessage = { role: "user", text: "hello" };
 

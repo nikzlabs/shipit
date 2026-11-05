@@ -270,6 +270,97 @@ export const SAMPLE_TURNS: readonly SampleTurn[] = [
     ],
   },
   {
+    covers: "sub-agents — drawn above the input, none in the transcript (docs/339)",
+    user: "Map every caller of the auth helper and get it reviewed.",
+    assistant: [
+      say("Mapping the callers first, then asking the reviewer for a second opinion."),
+      {
+        role: "assistant",
+        text: "",
+        toolUse: [{
+          type: "tool_use",
+          id: "toolu_seed_agent_done",
+          name: "Agent",
+          input: {
+            description: "Find auth call sites",
+            subagent_type: "Explore",
+            prompt: "Find every call site of resolveLegacyAuth and say, per site, whether it depends on the return being nullable.",
+          },
+          startedAt: "2026-09-14T11:02:00.000Z",
+        }],
+        toolResults: [{
+          toolUseId: "toolu_seed_agent_done",
+          content: JSON.stringify([
+            { type: "text", text: "## Six call sites\n\n- `session.ts:212` treats `null` as signed in.\n- The other five check for `null` first." },
+            { type: "text", text: "agentId: a1b2c3d4e5f6\nsubagent_tokens: 41200\ntool_uses: 14\nduration_ms: 72000" },
+          ]),
+        }],
+        subagentEvents: [
+          {
+            kind: "assistant",
+            parentToolUseId: "toolu_seed_agent_done",
+            text: "Searching for the helper.",
+            toolUse: [{ type: "tool_use", id: "toolu_seed_sub_grep", name: "Grep", input: { pattern: "resolveLegacyAuth" } }],
+          },
+          {
+            kind: "tool_result",
+            parentToolUseId: "toolu_seed_agent_done",
+            toolResults: [{ toolUseId: "toolu_seed_sub_grep", content: "src/server/routes/session.ts:212" }],
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        text: "",
+        toolUse: [{
+          type: "tool_use",
+          id: "toolu_seed_agent_bg",
+          name: "Agent",
+          input: { description: "Audit every caller", subagent_type: "general-purpose", prompt: "Audit every caller.", run_in_background: true },
+          startedAt: "2026-09-14T11:03:00.000Z",
+        }],
+        toolResults: [{
+          toolUseId: "toolu_seed_agent_bg",
+          content: [
+            "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)",
+            "agentId: f00dfeed1234 (internal ID - do not mention to user.)",
+            "output_file: /tmp/claude-1000/tasks/f00dfeed1234.output",
+          ].join("\n"),
+        }],
+      },
+      {
+        role: "assistant",
+        text: "",
+        subAgentConsult: {
+          cardId: "seed-consult-review",
+          spawnId: "seed-spawn-review",
+          subAgentId: "codex",
+          roleName: "reviewer",
+          status: "success",
+          durationMs: 471000,
+          costUsd: 0.42,
+          outputMarkdown: "**Two findings, one minor.**\n\n- **Bug:** `session.ts:212` still treats a null return as signed in.\n- **Minor:** `github.ts:88` re-reads the token on every call.",
+          createdAt: "2026-09-14T11:04:00.000Z",
+        },
+      },
+      {
+        role: "assistant",
+        text: "",
+        subAgentConsult: {
+          cardId: "seed-consult-deep",
+          spawnId: "seed-spawn-deep",
+          subAgentId: "claude",
+          roleName: "deep-dive",
+          status: "error",
+          statusDetail: "The deep-dive role's credential has no quota left.",
+          durationMs: 44000,
+          createdAt: "2026-09-14T11:05:00.000Z",
+        },
+      },
+      say("The reviewer found the `null` bug the call-site map pointed at; fixed it. The deep-dive consult could not run."),
+    ],
+  },
+  {
     covers: "a reply with no text — a file is the answer",
     user: "Which file should I read to follow this?",
     assistant: [

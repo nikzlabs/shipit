@@ -202,8 +202,19 @@ first, ShipIt starts no turn for it: the transcript normally gets a notice, and
 that notice is the answer when the user asks why a session stopped with a build
 half done. `/shipit-docs/environment.md` has the rule to follow.
 
-While you work, a line under the transcript names what you are doing. When the
-turn ends, ShipIt commits, and pushes if the session has a remote and GitHub is
+While you work, a line under the transcript names what you are doing.
+
+**Sub-agents are shown above the input, not in the transcript** (docs/339). Each
+running sub-agent — one you start with your own Agent tool, or a `shipit agent
+run` consult — has a line of its own there: its name, a short detail, a clock and
+a spinner. Finished ones fold into one **Done · N** line, with failures counted
+in red, which the user opens in place; it keeps every sub-agent of the session.
+Clicking a line opens a dialog with that sub-agent's work, prompt and report, or
+a consult's output. Child sessions are not listed there; they are in the sidebar.
+So when a user asks what a sub-agent found, point them at its line rather than
+pasting the report.
+
+When the turn ends, ShipIt commits, and pushes if the session has a remote and GitHub is
 connected; that flow is in `/shipit-docs/github.md`. **Ops and sandbox sessions
 are exempt from the automatic commit entirely** — work there is committed only
 when something asks for it, so say so rather than promising a commit that will
