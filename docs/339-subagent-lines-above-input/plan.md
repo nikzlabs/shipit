@@ -1,13 +1,14 @@
 ---
 issue: planning#717
 title: Sub-agent lines above the input
-description: Running sub-agents get one line each above the chat input; finished ones fold into a Done block; a click opens the full dialog. Replaces the in-chat sub-agent cards.
+description: Running sub-agents get one line each above the chat input; finished ones fold into a "Finished subagents" block; a click opens the full dialog. Replaces the in-chat sub-agent cards.
 ---
 
 # Sub-agent lines above the input
 
 Implements [`requirements.md`](./requirements.md). Visual reference:
-[`mockup.html`](./mockup.html), guide-line style.
+[`mockup.html`](./mockup.html), "Quiet box" style (req 10). The mockup's
+state drawings use the guide-line style and the older "Done" label.
 
 ## Shape
 
@@ -18,12 +19,12 @@ session has run at least one sub-agent.
 - **One line per running sub-agent** (req 5): kind icon (green robot for an
   Agent-tool sub-agent, purple chat for a `shipit agent run` sub-agent — req 2),
   name, grey detail, time, spinner. No label (req 4).
-- **Done · N** (req 6) folds every finished sub-agent of the session, newest
+- **Finished subagents · N** (req 6) folds every finished sub-agent of the session, newest
   first, and adds "· N failed" in red, so the running lines plus the count
   answer "which are active, how many ran" without a click (req 7). It opens in
   place; a long list scrolls.
-- While the main agent works, a thin guide line hangs the lines under its
-  "Working…" spinner; when it is idle the lines stand alone.
+- The lines sit in a quiet box (req 10): the queued-messages box's faint
+  border and tint, so they read as one group.
 - **A click opens `SubagentRunDialog`** (req 9), the shared `Dialog`:
   - Agent-tool sub-agent: **Work** (every step, live), **Prompt** (fetched on
     demand when the transcript projection left it out, docs/244), **Report**
@@ -83,7 +84,7 @@ A consult already ships only its one-line preview.
 | File | Role |
 |---|---|
 | `src/client/utils/subagent-runs.ts` | `deriveSubagentRuns` — the session's sub-agents, status, name, detail, time |
-| `src/client/components/SubagentLines.tsx` | The lines and the Done block |
+| `src/client/components/SubagentLines.tsx` | The lines and the "Finished subagents" block |
 | `src/client/components/SubagentRunDialog.tsx` | The full dialog: Work / Prompt / Report, or the consult report |
 | `src/client/components/SubagentReport.tsx` | `SubagentFullReport` — the whole report, fetched when truncated |
 | `src/client/components/MessageList/cards/SubAgentCards.tsx` | `describeRun` (run-on attribution) and the consult output fetch |

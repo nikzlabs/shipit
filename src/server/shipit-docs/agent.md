@@ -292,7 +292,7 @@ A run that is **still in flight** has a card too — `shipit agent result` repor
 it with status `pending` rather than pretending it doesn't exist. The user sees
 the same thing: the consult gets its own line above the chat input the moment
 the run starts, with a spinner and a clock for the duration, and folds into the
-**Done** list when the run ends. So a backgrounded consult is visible to the user the
+**Finished subagents** list when the run ends. So a backgrounded consult is visible to the user the
 whole time, and neither of you has to guess whether it is still going.
 
 **If your turn ends before the consult does, ShipIt brings you back.** When a

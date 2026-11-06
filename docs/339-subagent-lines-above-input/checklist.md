@@ -8,3 +8,4 @@
 - [x] Tests ported from the card tests; transcript tests updated
 - [x] Sample transcript turn with sub-agents in every state; checked in the dogfood UI (desktop, phone)
 - [x] Agent docs and wiki updated
+- [x] Quiet-box frame instead of the guide line; "Done" renamed "Finished subagents" (reqs 6, 10)
