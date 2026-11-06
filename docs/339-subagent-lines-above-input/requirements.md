@@ -1,7 +1,7 @@
 # Sub-agent lines above the input
 
 Design: [`plan.md`](./plan.md). Visual reference: [`mockup.html`](./mockup.html)
-(the guide-line style, states a–h).
+(the "Quiet box" style, req 10).
 
 ## Requirements
 

@@ -7,8 +7,7 @@ description: Running sub-agents get one line each above the chat input; finished
 # Sub-agent lines above the input
 
 Implements [`requirements.md`](./requirements.md). Visual reference:
-[`mockup.html`](./mockup.html), "Quiet box" style (req 10). The mockup's
-state drawings use the guide-line style and the older "Done" label.
+[`mockup.html`](./mockup.html), "Quiet box" style (req 10).
 
 ## Shape
 

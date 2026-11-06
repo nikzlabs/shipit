@@ -121,7 +121,7 @@ td b{color:var(--t1)}
   <div class="top">
     <div>
       <h1>Option A, one line per agent</h1>
-      <p class="lede">Each <b>running</b> sub-agent gets its own short line just above the input: kind icon, name, a grey detail, time, spinner. Finished ones fold into one <b>Done</b> line under them, which you can open. There is no "Agents" label: the coloured icon at the start of each line says what it is. The sub-agent cards in the chat are gone: <b>these lines are the only place sub-agents show</b>. Hover a line for the full detail; click it to open its prompt, work and report. <b>Every "Done" line in this page opens and closes when you click it.</b></p>
+      <p class="lede">Each <b>running</b> sub-agent gets its own short line just above the input: kind icon, name, a grey detail, time, spinner. Finished ones fold into one <b>Finished subagents</b> line under them, which you can open. There is no "Agents" label: the coloured icon at the start of each line says what it is. The sub-agent cards in the chat are gone: <b>these lines are the only place sub-agents show</b>. Hover a line for the full detail; click it to open its prompt, work and report. <b>Every "Finished subagents" line in this page opens and closes when you click it.</b></p>
     </div>
     <button class="toggle" onclick="document.documentElement.classList.toggle('dark');document.documentElement.classList.toggle('light')">Light / dark</button>
   </div>
@@ -130,40 +130,40 @@ td b{color:var(--t1)}
   <p class="lede">Same moment in all three: the main agent is working, three sub-agents run, two have finished.</p>
   <div class="grid3">
     <div class="s-plain"><div class="panel" id="s1"></div><p class="cap"><b>1 · Plain lines.</b> No frame; lines line up with "Working…". Lightest, but the lines can blur into the activity line.</p></div>
-    <div class="s-box"><div class="panel" id="s2"></div><p class="cap"><b>2 · Quiet box.</b> Lines sit in a faint frame, like the queued-messages box. Clearly one group; costs ~8 px of frame.</p></div>
-    <div class="s-tree"><div class="panel" id="s3"></div><p class="cap"><b>3 · Guide line</b> <span class="tag">Recommended</span> A thin line hangs the sub-agents under "Working…", so you read them as the main agent's helpers. No frame.</p></div>
+    <div class="s-box"><div class="panel" id="s2"></div><p class="cap"><b>2 · Quiet box</b> <span class="tag">Chosen</span> Lines sit in a faint frame, like the queued-messages box. Clearly one group; costs ~8 px of frame.</p></div>
+    <div class="s-tree"><div class="panel" id="s3"></div><p class="cap"><b>3 · Guide line</b> A thin line hangs the sub-agents under "Working…", so you read them as the main agent's helpers. No frame.</p></div>
   </div>
 
-  <h2>The guide-line style in every state</h2>
-  <div class="grid2 s-tree">
+  <h2>The quiet-box style in every state</h2>
+  <div class="grid2 s-box">
     <div><div class="panel" id="t1"></div><p class="cap">a · Mid-turn: two running, one already done (folded). Hover shows the full "run on" line that the old card showed.</p></div>
-    <div><div class="panel" id="t2"></div><p class="cap">b · Same moment with <b>Done</b> opened: finished ones, newest first, ✓ green or ✗ red. With no cards in the chat, Done keeps <b>every</b> sub-agent of the session — it is the only record. A long list scrolls.</p></div>
+    <div><div class="panel" id="t2"></div><p class="cap">b · Same moment with <b>Finished subagents</b> opened: finished ones, newest first, ✓ green or ✗ red. With no cards in the chat, the block keeps <b>every</b> sub-agent of the session — it is the only record. A long list scrolls.</p></div>
     <div><div class="panel short" id="t3"></div><p class="cap">c · Turn ended, nothing running: the whole area is one line. A failure is shown in red on it, so it is not hidden by the fold.</p></div>
-    <div><div class="panel short" id="t4"></div><p class="cap">d · Main agent idle, a background sub-agent still runs. Its line stays above Done until it finishes.</p></div>
+    <div><div class="panel short" id="t4"></div><p class="cap">d · Main agent idle, a background sub-agent still runs. Its line stays above Finished subagents until it finishes.</p></div>
     <div><div class="panel" id="t5" style="max-width:360px"></div><p class="cap">e · Phone width. The grey detail is cut first, the name second; time and status always stay.</p></div>
     <div><div class="panel short" id="t6"></div><p class="cap">f · No sub-agents in this session yet: nothing is drawn, no empty space.</p></div>
   </div>
 
   <h2>Clicking a line</h2>
   <p class="lede">A click opens a <b>full-size dialog</b> over the whole app, the same kind ShipIt already uses for a ShipIt sub-agent's report. It holds everything the old card had, with room to read it. Esc, ✕ or a click on the dark backdrop closes it. The tabs in both dialogs work.</p>
-  <div class="scene s-tree" id="g1"></div>
+  <div class="scene s-box" id="g1"></div>
   <p class="cap">g · A Claude sub-agent, still running: <b>Work</b> shows every step live, <b>Prompt</b> what it was asked, <b>Report</b> fills in when it finishes.</p>
-  <div class="scene s-tree" id="g2" style="margin-top:20px"></div>
-  <p class="cap">h · A finished ShipIt sub-agent, opened from the Done list: the report, who ran it, time and cost.</p>
+  <div class="scene s-box" id="g2" style="margin-top:20px"></div>
+  <p class="cap">h · A finished ShipIt sub-agent, opened from the Finished subagents list: the report, who ran it, time and cost.</p>
 
   <h2>What each line shows</h2>
   <table>
     <tr><th>Kind</th><th>Icon</th><th>Name</th><th>Grey detail</th></tr>
     <tr><td><b>Claude sub-agent</b> (Agent tool)</td><td>green robot</td><td>its task description</td><td>type · tool calls, plus "background" if it is one</td></tr>
     <tr><td><b>ShipIt sub-agent</b> (<code>shipit agent run</code>)</td><td>purple chat</td><td>the model, e.g. GPT-6.1 Sol</td><td>role · harness · reasoning</td></tr>
-    <tr><td><b>Done line</b></td><td>caret</td><td>"Done · N"</td><td>"· N failed" in red when any failed</td></tr>
+    <tr><td><b>Finished subagents line</b></td><td>caret</td><td>"Finished subagents · N"</td><td>"· N failed" in red when any failed</td></tr>
   </table>
   <p class="cap">Child sessions are not shown here (your answer).</p>
 
   <h2>Height</h2>
   <table>
     <tr><th></th><th>Height</th><th>Names readable without a click</th></tr>
-    <tr><td><b>One line per running agent + Done</b> (this page)</td><td>22 px per running sub-agent, +22 px for Done. Idle: 22 px.</td><td>every running one, with detail</td></tr>
+    <tr><td><b>One line per running agent + Finished subagents</b> (this page)</td><td>22 px per running sub-agent, +22 px for the finished line. Idle: 22 px.</td><td>every running one, with detail</td></tr>
     <tr><td><b>Chip strip</b> (first mockup)</td><td>24 px, any count</td><td>~2, the rest under +N</td></tr>
   </table>
 </div>
@@ -177,7 +177,7 @@ const line = (a, hov = false) => `<div class="ln ${a.s === "running" ? "" : a.s}
 const done = (list, open = false) => {
   if (!list.length) return "";
   const failed = list.filter((a) => a.s === "failed").length;
-  return `<div class="donewrap ${open ? "open" : ""}"><div class="ln donehd" onclick="this.parentNode.classList.toggle('open')"><span class="k"><span class="cr">${ic("CaretRight")}</span><span class="cd">${ic("CaretDown")}</span></span><span class="nm">Done · ${list.length}</span>${failed ? `<span class="fail">· ${failed} failed</span>` : ""}<span class="dt"></span></div><div class="donebody">${list.map((a) => line(a)).join("")}</div></div>`;
+  return `<div class="donewrap ${open ? "open" : ""}"><div class="ln donehd" onclick="this.parentNode.classList.toggle('open')"><span class="k"><span class="cr">${ic("CaretRight")}</span><span class="cd">${ic("CaretDown")}</span></span><span class="nm">Finished subagents · ${list.length}</span>${failed ? `<span class="fail">· ${failed} failed</span>` : ""}<span class="dt"></span></div><div class="donebody">${list.map((a) => line(a)).join("")}</div></div>`;
 };
 const lines = (run, fin = [], { hov = -1, open = false } = {}) => (run.length || fin.length) ? `<div class="lines">${run.map((a, i) => line(a, i === hov)).join("")}${done(fin, open)}</div>` : "";
 const inputBox = (busy) => `<div class="input"><div class="ta">Message the agent…</div><div class="bar"><div class="l">${ic("Paperclip", "i i16")}<span class="pill">Claude · Opus 5.5</span><span class="pill">Auto</span></div><div class="l">${ic("Microphone", "i i16")}<span class="send ${busy ? "stop" : ""}">${busy ? ic("Stop") : ic("PaperPlaneRight")}</span></div></div></div>`;

@@ -2,7 +2,7 @@
 
 - [x] `requirements.md` from the human's words, with receipts
 - [x] `deriveSubagentRuns` — both kinds, status, detail, clock, from persisted history
-- [x] `SubagentLines` above the composer: one line per running sub-agent, Done · N with failures, no label
+- [x] `SubagentLines` above the composer: one line per running sub-agent, a folded block with failures, no label
 - [x] `SubagentRunDialog`: Work / Prompt / Report, consult output with run-on line, time and cost
 - [x] In-chat sub-agent cards removed (`visual-elements`, `MessageCards`, `MessageList`, `SubagentCall` deleted)
 - [x] Tests ported from the card tests; transcript tests updated
