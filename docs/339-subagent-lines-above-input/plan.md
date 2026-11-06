@@ -18,9 +18,10 @@ session has run at least one sub-agent.
 - **One line per running sub-agent** (req 5): kind icon (green robot for an
   Agent-tool sub-agent, purple chat for a `shipit agent run` sub-agent — req 2),
   name, grey detail, time, spinner. No label (req 4).
-- **Finished subagents · N** (req 6) folds every finished sub-agent of the session, newest
-  first, and adds "· N failed" in red, so the running lines plus the count
-  answer "which are active, how many ran" without a click (req 7). It opens in
+- **Finished subagents · N** (req 6) folds every finished sub-agent of the
+  session, newest first, so the running lines plus the count answer "which are
+  active, how many ran" without a click (req 7). It counts no failures
+  (req 11): a failed one shows its red ✗ only in the opened list. It opens in
   place; a long list scrolls.
 - The lines sit in a quiet box (req 10): the queued-messages box's faint
   border and tint, so they read as one group.

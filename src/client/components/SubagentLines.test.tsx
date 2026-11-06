@@ -99,10 +99,10 @@ describe("SubagentLines — the lines (docs/339 reqs 4–7)", () => {
     });
     render(<SubagentLines />);
     expect(screen.queryAllByTestId("subagent-line")).toHaveLength(0);
-    expect(screen.getByTestId("subagent-done-toggle")).toHaveTextContent("· 1 failed");
+    expect(screen.getByTestId("subagent-done-toggle")).toHaveTextContent("Finished subagents · 1");
   });
 
-  it("folds finished ones into Finished subagents · N, with the failures counted, and opens it in place", () => {
+  it("folds finished ones into Finished subagents · N, counting no failures, and opens it in place (req 11)", () => {
     show([
       launch(task(), [{ toolUseId: TASK_ID, content: "Report." }]),
       { role: "assistant", text: "", subAgentConsult: card({ status: "error" }) },
@@ -112,7 +112,7 @@ describe("SubagentLines — the lines (docs/339 reqs 4–7)", () => {
     expect(screen.getAllByTestId("subagent-line")).toHaveLength(1);
     const toggle = screen.getByTestId("subagent-done-toggle");
     expect(toggle).toHaveTextContent("Finished subagents · 2");
-    expect(toggle).toHaveTextContent("· 1 failed");
+    expect(toggle).toHaveTextContent(/^Finished subagents · 2$/);
     expect(screen.queryByTestId("subagent-done-list")).toBeNull();
 
     fireEvent.click(toggle);
@@ -214,7 +214,7 @@ describe("SubagentLines — Agent-tool dialog (req 9)", () => {
 
   it("says when the turn ended before a report came back", () => {
     show([launch(task())]);
-    expect(screen.getByTestId("subagent-done-toggle")).toHaveTextContent("· 1 failed");
+    expect(screen.getByTestId("subagent-done-toggle")).toHaveTextContent("Finished subagents · 1");
     const dialog = openLine("Count words");
     fireEvent.mouseDown(within(dialog).getByTestId("subagent-tab-report"));
     expect(dialog).toHaveTextContent("The turn ended before this sub-agent returned a report.");

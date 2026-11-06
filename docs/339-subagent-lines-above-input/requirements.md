@@ -22,6 +22,8 @@ Design: [`plan.md`](./plan.md). Visual reference: [`mockup.html`](./mockup.html)
    sub-agent's whole work, not a small panel.
 10. The lines sit in a quiet box: a faint frame around them, the mockup's
     "Quiet box" style.
+11. The "Finished subagents" line does not count failures. A failed sub-agent
+    is marked only inside the opened list.
 
 ## Open questions
 
@@ -53,3 +55,7 @@ None.
   option. "Done" should be "Finished subagents", otherwise it is not clear what
   this panel is about." This replaces the guide-line style (req 10) and the
   "Done" label (req 6).
+- 2026-11-06 — Nik noticed the red failure count builds up over a long session
+  ("Finished subagents · 16 · 1 failed"). Offered a count for the latest turn
+  only, a count until seen, or no count, Nik chose no count: "This is not
+  actionable anyway, it is more for rare debugging cases" (req 11).

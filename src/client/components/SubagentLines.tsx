@@ -27,7 +27,6 @@ export function SubagentLines() {
 
   const running = runs.filter((r) => r.status === "running");
   const finished = runs.filter((r) => r.status !== "running").reverse();
-  const failed = finished.filter((r) => r.status === "failed").length;
   const now = useNow(running.some((r) => r.startedAt));
 
   if (runs.length === 0) return null;
@@ -52,7 +51,6 @@ export function SubagentLines() {
           >
             {doneOpen ? <CaretDownIcon size={ICON_SIZE.XS} /> : <CaretRightIcon size={ICON_SIZE.XS} />}
             <span>Finished subagents · {finished.length}</span>
-            {failed > 0 && <span className="text-(--color-error)">· {failed} failed</span>}
           </button>
           {doneOpen && (
             <div data-testid="subagent-done-list" className="flex max-h-[154px] flex-col overflow-y-auto pl-5">
