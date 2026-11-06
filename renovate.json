@@ -1,7 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
-  "mode": "auto",
+  "mode": "full",
   "includePaths": [
     "docker/agent-cli/**",
     "docker/Dockerfile.session-worker.prod",
