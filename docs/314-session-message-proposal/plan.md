@@ -20,7 +20,8 @@ container-accessible — is the user's click.
 agent → propose_session_message (MCP)
       → POST /agent-ops/propose-session-message          (worker relay)
       → POST /api/sessions/:id/propose-session-message   (containerAccessible)
-          ├─ refuses now: unknown target, self, a direct child, archived   (req 8, 9)
+          ├─ refuses now: unknown target, self, an unresolved direct child,
+          │  archived                                                     (req 8, 9)
           └─ emitChatCard → persisted SessionMessageProposalCard           (req 12)
 
 user click (browser only, NOT containerAccessible)                         (req 7)
@@ -56,9 +57,10 @@ the message in the target's inbox, which tells the target's agent. A message the
 user approved is not automatic work, so its notice does not wait behind a
 question that the target's agent asked.
 
-The grouping check stays in `sendChildMessage` alone: `isResolvedForGrouping`
-asks whether a *child* is finished for sidebar-grouping purposes, which is not a
-question about an arbitrary session.
+The resolved-child check (`isChildResolved`) applies to a *child* only: it is
+what `sendChildMessage` refuses on, what `shipit session view` reports as
+`resolved`, and what lets the propose route accept the caller's own child. It is
+not a question about an arbitrary session, so no other target is tested with it.
 
 ## Refusing at call time (req 8, 9)
 

@@ -199,6 +199,22 @@ describe("Integration: session-message proposal delivery", () => {
     expect((await inboxOf(childId)).map((m) => m.text)).toEqual([expect.stringContaining("Start the second PR.")]);
   });
 
+  // The parent could message the child directly by now, so the user's approval must not fail.
+  it("delivers to an own child that became active between the card and the click", async () => {
+    const childId = (await createTestSession(sessionManager, tmpDir, "Merged child")).sessionId;
+    sessionManager.setParentSession(childId, sessionId);
+    sessionManager.markMerged(childId);
+    const cardId = await propose("Start the second PR.", childId);
+
+    await new Promise((r) => setTimeout(r, 5));
+    sessionManager.track(childId);
+    expect((await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/children/${childId}` }))
+      .json().child.resolved).toBeUndefined();
+
+    expect((await deliver(cardId)).statusCode).toBe(200);
+    expect((await inboxOf(childId)).map((m) => m.text)).toEqual([expect.stringContaining("Start the second PR.")]);
+  });
+
   /**
    * The card's "queued" line is read off how the target was TOLD, not guessed
    * from whether it was running: a running target that takes the notice at once

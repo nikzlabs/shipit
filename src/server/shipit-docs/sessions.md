@@ -107,8 +107,9 @@ Six things to know:
   coordinating children of its own. `shipit session view` shows it as
   `resolved: yes`, and `shipit session message` refuses it. When a resolved child
   still has work — a multi-PR child after its first merge — propose the message
-  here: the user's click delivers it and starts a turn there, which makes the
-  child active again, and from then on `shipit session message` reaches it.
+  here: the user's click puts it in the child's inbox and ShipIt wakes the
+  child to read it. Once a turn has started there the child is active again,
+  and `shipit session message` reaches it.
 - **The message must stand alone.** The session that receives it has none of
   this conversation and a different workspace. Say what it is answering and
   which session it is from.

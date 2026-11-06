@@ -44,7 +44,8 @@ export class ResolvedChildMessageError extends ServiceError {
       409,
       `${child.title} is resolved; no message, card, or wake turn was sent. `
         + "Its pull request merged or closed after its last turn. To give it more work, propose the "
-        + "message with the `propose_session_message` tool: the user's click delivers it and starts a turn there.",
+        + "message with the `propose_session_message` tool: the user's click puts it in the child's inbox "
+        + "and ShipIt wakes the child to read it.",
     );
   }
 }
