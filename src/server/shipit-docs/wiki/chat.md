@@ -207,8 +207,9 @@ While you work, a line under the transcript names what you are doing.
 **Sub-agents are shown in a small framed box above the input, not in the transcript** (docs/339). Each
 running sub-agent — one you start with your own Agent tool, or a `shipit agent
 run` consult — has a line of its own there: its name, a short detail, a clock and
-a spinner. Finished ones fold into one **Finished subagents · N** line, with failures counted
-in red, which the user opens in place; it keeps every sub-agent of the session.
+a spinner. Finished ones fold into one **Finished subagents · N** line, which the
+user opens in place; it keeps every sub-agent of the session, and a failed one is
+marked with a red ✗ only in that opened list.
 Clicking a line opens a dialog with that sub-agent's work, prompt and report, or
 a consult's output. Child sessions are not listed there; they are in the sidebar.
 So when a user asks what a sub-agent found, point them at its line rather than

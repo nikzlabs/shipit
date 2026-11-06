@@ -138,7 +138,7 @@ td b{color:var(--t1)}
   <div class="grid2 s-box">
     <div><div class="panel" id="t1"></div><p class="cap">a · Mid-turn: two running, one already done (folded). Hover shows the full "run on" line that the old card showed.</p></div>
     <div><div class="panel" id="t2"></div><p class="cap">b · Same moment with <b>Finished subagents</b> opened: finished ones, newest first, ✓ green or ✗ red. With no cards in the chat, the block keeps <b>every</b> sub-agent of the session — it is the only record. A long list scrolls.</p></div>
-    <div><div class="panel short" id="t3"></div><p class="cap">c · Turn ended, nothing running: the whole area is one line. A failure is shown in red on it, so it is not hidden by the fold.</p></div>
+    <div><div class="panel short" id="t3"></div><p class="cap">c · Turn ended, nothing running: the whole area is one line. It counts no failures (req 11); a failed one shows its red ✗ only in the opened list.</p></div>
     <div><div class="panel short" id="t4"></div><p class="cap">d · Main agent idle, a background sub-agent still runs. Its line stays above Finished subagents until it finishes.</p></div>
     <div><div class="panel" id="t5" style="max-width:360px"></div><p class="cap">e · Phone width. The grey detail is cut first, the name second; time and status always stay.</p></div>
     <div><div class="panel short" id="t6"></div><p class="cap">f · No sub-agents in this session yet: nothing is drawn, no empty space.</p></div>
@@ -156,7 +156,7 @@ td b{color:var(--t1)}
     <tr><th>Kind</th><th>Icon</th><th>Name</th><th>Grey detail</th></tr>
     <tr><td><b>Claude sub-agent</b> (Agent tool)</td><td>green robot</td><td>its task description</td><td>type · tool calls, plus "background" if it is one</td></tr>
     <tr><td><b>ShipIt sub-agent</b> (<code>shipit agent run</code>)</td><td>purple chat</td><td>the model, e.g. GPT-6.1 Sol</td><td>role · harness · reasoning</td></tr>
-    <tr><td><b>Finished subagents line</b></td><td>caret</td><td>"Finished subagents · N"</td><td>"· N failed" in red when any failed</td></tr>
+    <tr><td><b>Finished subagents line</b></td><td>caret</td><td>"Finished subagents · N"</td><td>none — failures show only in the opened list</td></tr>
   </table>
   <p class="cap">Child sessions are not shown here (your answer).</p>
 
@@ -176,8 +176,7 @@ const st = (s) => s === "running" ? `<span class="spin"></span>` : s === "done" 
 const line = (a, hov = false) => `<div class="ln ${a.s === "running" ? "" : a.s} ${hov ? "hov" : ""}"><span class="k ${a.k}">${ic(KIND[a.k])}</span><span class="nm">${a.name}</span><span class="dt">${a.dt}</span><span class="tm">${a.t}</span><span class="st">${st(a.s)}</span></div>`;
 const done = (list, open = false) => {
   if (!list.length) return "";
-  const failed = list.filter((a) => a.s === "failed").length;
-  return `<div class="donewrap ${open ? "open" : ""}"><div class="ln donehd" onclick="this.parentNode.classList.toggle('open')"><span class="k"><span class="cr">${ic("CaretRight")}</span><span class="cd">${ic("CaretDown")}</span></span><span class="nm">Finished subagents · ${list.length}</span>${failed ? `<span class="fail">· ${failed} failed</span>` : ""}<span class="dt"></span></div><div class="donebody">${list.map((a) => line(a)).join("")}</div></div>`;
+  return `<div class="donewrap ${open ? "open" : ""}"><div class="ln donehd" onclick="this.parentNode.classList.toggle('open')"><span class="k"><span class="cr">${ic("CaretRight")}</span><span class="cd">${ic("CaretDown")}</span></span><span class="nm">Finished subagents · ${list.length}</span><span class="dt"></span></div><div class="donebody">${list.map((a) => line(a)).join("")}</div></div>`;
 };
 const lines = (run, fin = [], { hov = -1, open = false } = {}) => (run.length || fin.length) ? `<div class="lines">${run.map((a, i) => line(a, i === hov)).join("")}${done(fin, open)}</div>` : "";
 const inputBox = (busy) => `<div class="input"><div class="ta">Message the agent…</div><div class="bar"><div class="l">${ic("Paperclip", "i i16")}<span class="pill">Claude · Opus 5.5</span><span class="pill">Auto</span></div><div class="l">${ic("Microphone", "i i16")}<span class="send ${busy ? "stop" : ""}">${busy ? ic("Stop") : ic("PaperPlaneRight")}</span></div></div></div>`;
