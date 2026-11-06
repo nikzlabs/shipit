@@ -171,6 +171,50 @@ describe("Integration: session-message proposal delivery", () => {
     expect((await inboxOf(siblingId)).map((m) => m.text)).toEqual([expect.stringContaining("Parser slice done.")]);
   });
 
+  // nikzlabs/shipit#3316 — the parent's way to give a resolved multi-PR child more work.
+  it("reaches the proposer's own child after its pull request merged", async () => {
+    const childId = (await createTestSession(sessionManager, tmpDir, "Merged child")).sessionId;
+    sessionManager.setParentSession(childId, sessionId);
+    sessionManager.markMerged(childId);
+
+    const direct = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/children/${childId}/message`,
+      payload: { text: "Start the second PR." },
+    });
+    expect(direct.statusCode).toBe(409);
+    expect(direct.json().error).toContain("propose_session_message");
+
+    const view = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/children/${childId}` });
+    expect(view.json().child).toMatchObject({ resolved: true });
+
+    const cardId = await propose("Start the second PR.", childId);
+    const childClient = await TestClient.connect(port, childId);
+    await childClient.receive();
+
+    expect((await deliver(cardId)).statusCode).toBe(200);
+
+    await childClient.receiveType("system_user_message");
+    childClient.close();
+    expect((await inboxOf(childId)).map((m) => m.text)).toEqual([expect.stringContaining("Start the second PR.")]);
+  });
+
+  // The parent could message the child directly by now, so the user's approval must not fail.
+  it("delivers to an own child that became active between the card and the click", async () => {
+    const childId = (await createTestSession(sessionManager, tmpDir, "Merged child")).sessionId;
+    sessionManager.setParentSession(childId, sessionId);
+    sessionManager.markMerged(childId);
+    const cardId = await propose("Start the second PR.", childId);
+
+    await new Promise((r) => setTimeout(r, 5));
+    sessionManager.track(childId);
+    expect((await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/children/${childId}` }))
+      .json().child.resolved).toBeUndefined();
+
+    expect((await deliver(cardId)).statusCode).toBe(200);
+    expect((await inboxOf(childId)).map((m) => m.text)).toEqual([expect.stringContaining("Start the second PR.")]);
+  });
+
   /**
    * The card's "queued" line is read off how the target was TOLD, not guessed
    * from whether it was running: a running target that takes the notice at once

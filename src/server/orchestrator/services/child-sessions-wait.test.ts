@@ -10,6 +10,7 @@ class StubRunner extends EventEmitter {
   running = false;
   queueLength = 0;
   lastTurnErrored = false;
+  backgroundWorkDescriptions: string[] = [];
   disposed = false;
   verifyCalls = 0;
   verifyEffect?: () => void;

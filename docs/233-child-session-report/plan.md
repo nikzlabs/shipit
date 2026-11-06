@@ -74,7 +74,10 @@ report is stored all the same, and the inbox tries again.
 `assertChildOfParent` and rejects unrelated or sibling ids. The shared
 resolved-session classifier also blocks messages to a resolved child before a
 runner, card, or inbox message is created. A later started turn can reactivate the
-child and make it eligible again.
+child and make it eligible again. The refusal names the way to bring that turn about: a
+`propose_session_message` card, which accepts a resolved own child and which only
+the user's click delivers to the child's inbox (docs/314-session-message-proposal). `shipit session
+view` marks such a child `resolved`.
 
 `src/server/shared/session-resolution.ts` remains the sole implementation of
 the resolved-session rules used by server and client consumers. It combines PR

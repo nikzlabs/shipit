@@ -586,6 +586,9 @@ export async function handleSessionView(args: string[], deps: RunDeps): Promise<
     `queue:      ${asString(child.queueLength) || "0"}`,
     `spawned-at: ${asString(child.spawnedAt)}`,
   ];
+  if (child.resolved === true) {
+    lines.push("resolved:   yes — `shipit session message` refuses it; reach it with `propose_session_message`");
+  }
   if (child.agent) {
     lines.push(`agent:      ${asString(child.agent)}`);
   }

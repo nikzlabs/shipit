@@ -20,7 +20,8 @@ container-accessible — is the user's click.
 agent → propose_session_message (MCP)
       → POST /agent-ops/propose-session-message          (worker relay)
       → POST /api/sessions/:id/propose-session-message   (containerAccessible)
-          ├─ refuses now: unknown target, self, a direct child, archived   (req 8, 9)
+          ├─ refuses now: unknown target, self, an unresolved direct child,
+          │  archived                                                     (req 8, 9)
           └─ emitChatCard → persisted SessionMessageProposalCard           (req 12)
 
 user click (browser only, NOT containerAccessible)                         (req 7)
@@ -56,9 +57,10 @@ the message in the target's inbox, which tells the target's agent. A message the
 user approved is not automatic work, so its notice does not wait behind a
 question that the target's agent asked.
 
-The grouping check stays in `sendChildMessage` alone: `isResolvedForGrouping`
-asks whether a *child* is finished for sidebar-grouping purposes, which is not a
-question about an arbitrary session.
+The resolved-child check (`isChildResolved`) applies to a *child* only: it is
+what `sendChildMessage` refuses on, what `shipit session view` reports as
+`resolved`, and what lets the propose route accept the caller's own child. It is
+not a question about an arbitrary session, so no other target is tested with it.
 
 ## Refusing at call time (req 8, 9)
 
@@ -69,7 +71,7 @@ names the fix:
 |---|---|---|
 | Target id unknown | 404 | The agent can correct the id this turn. |
 | Target is the proposing session | 400 | A session messaging itself is a queued turn, not a proposal. |
-| `target.parentSessionId === proposingId` | 400 | `shipit session message` already reaches it (req 9). |
+| `target.parentSessionId === proposingId`, and the child is not resolved | 400 | `shipit session message` already reaches it (req 9). A resolved child is refused there (docs/233-child-session-report req 1), so the card is the parent's way to reach it (nikzlabs/shipit#3316). |
 | Target is the proposer's own parent | 400 | `shipit session report` already wakes it, with no card (req 9). |
 | Target is a warm-pool session | 400 | A pooled empty session is not work the user is following; a turn would claim it. |
 | Target archived / `userArchived` | 400 | It cannot take a turn; the user would click into a failure. |
@@ -79,7 +81,9 @@ names the fix:
 
 The target is re-resolved at **deliver** time too — a session can be archived
 between the card and the click — and a failure there sets `state: "failed"` with
-the reason on the card, which is the docs/303 behaviour.
+the reason on the card, which is the docs/303 behaviour. The own-child rule is
+skipped there: a resolved child that became active after the card was written is
+one the proposer may message anyway, so the user's click still delivers.
 
 ## Once, and only once (req 5)
 

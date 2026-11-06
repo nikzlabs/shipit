@@ -428,7 +428,10 @@ Four things users ask about children:
 Those commands reach a session's **own children**, and reporting reaches its
 **own parent** — nothing else, which is what stops one session from starting a
 turn in an unrelated one. So a sibling cannot be reached at all, and neither can
-a session that handed an agent a prompt without spawning it.
+a session that handed an agent a prompt without spawning it. A session's own
+child is unreachable as well once it is resolved — its pull request merged or
+closed after its last turn — so a child with more work after its first merge is
+reached the same way as below.
 
 For that case the agent posts a **"Message for another session"** card naming
 the target session and showing the whole message. The user reads it and sends
