@@ -131,6 +131,21 @@ in navigation-API mode) changes the current entry without touching the History
 methods we wrapped, so both the path display and `canGoBack` would otherwise
 freeze at their load-time values.
 
+**A preview page's own `focus()` call does not take the user's typing.** A page
+that focuses a field after it loads (a search box, a login form) used to pull
+focus out of the chat input mid-sentence. The parent cannot tell that from a
+click into the frame — it sees the same `focusout` and window `blur`, and gets no
+pointer events or `:hover` for a cross-origin frame — so the injected script
+decides: when the frame's window gains focus with no pointer, mouse, touch or key
+event in the frame in the last 500 ms, it posts `focus_taken`. `PreviewFrame`
+then refocuses the element that lost focus, if that happened in the same 500 ms
+and the user did not just press Tab. Limits: it reaches only pages the proxy
+instrumented (a non-proxied local preview falls back to the composer's older
+guard in `MessageInput.tsx`, which covers only the 500 ms after an iframe
+`load`), and focus taken by a frame nested inside the preview fires no `focus`
+in the preview's window, so it is not caught. The message is page-forgeable,
+but all it can do is move focus back to where it just was.
+
 **Refresh reloads the page the preview is currently on, not the slot's entry
 URL.** Re-assigning the iframe's `src` — the obvious implementation, and what
 this used to do — navigates back to the URL the pool slot was created with, so a

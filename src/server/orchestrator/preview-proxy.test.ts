@@ -562,6 +562,38 @@ describe("injected preview script — the previewed page's own traversal", () =>
   });
 });
 
+describe("injected preview script — focus taken by page script", () => {
+  const fire = (listeners: Map<string, ((e?: unknown) => void)[]>, type: string) => {
+    for (const fn of listeners.get(type) ?? []) fn({ type });
+  };
+  const focusTaken = (posted: PostedMessage[]) =>
+    posted.filter((m) => (m as { type?: string }).type === "focus_taken");
+
+  it("tells the parent when the frame gains focus with no gesture in it", () => {
+    const { posted, listeners } = runInjectedScript();
+    fire(listeners, "focus");
+    expect(focusTaken(posted)).toEqual([{ source: "shipit-preview", type: "focus_taken" }]);
+  });
+
+  it.each(["pointerdown", "mousedown", "touchstart", "touchend", "keydown"])(
+    "stays quiet when focus follows a %s in the frame",
+    (gesture) => {
+      const { posted, listeners } = runInjectedScript();
+      fire(listeners, gesture);
+      fire(listeners, "focus");
+      expect(focusTaken(posted)).toEqual([]);
+    },
+  );
+
+  it("forgets the gesture once the frame loses focus", () => {
+    const { posted, listeners } = runInjectedScript();
+    fire(listeners, "pointerdown");
+    fire(listeners, "blur");
+    fire(listeners, "focus");
+    expect(focusTaken(posted)).toHaveLength(1);
+  });
+});
+
 describe("injected preview script — pointer navigation", () => {
   const AT = { pathname: "/requirements", search: "?focus=3", hash: "#req-3" };
 

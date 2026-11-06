@@ -140,7 +140,15 @@ const HMR_WS_PATCH = `<script>(function(){` +
     `window.addEventListener("popstate",rp);` +
     `window.addEventListener("hashchange",rp);` +
     // Direct Navigation API calls bypass the History wrappers.
-    `if(nav)nav.addEventListener("currententrychange",rp)` +
+    `if(nav)nav.addEventListener("currententrychange",rp);` +
+    // Focus arriving with no gesture in this frame was taken by page script;
+    // the parent hands it back so the user's typing stays in ShipIt.
+    `var g=0;var mark=function(){g=Date.now()};` +
+    `["pointerdown","pointerup","mousedown","touchstart","touchend","keydown"].forEach(function(t){` +
+      `window.addEventListener(t,mark,true)});` +
+    `window.addEventListener("blur",function(){g=0});` +
+    `window.addEventListener("focus",function(){if(Date.now()-g<500)return;` +
+      `try{window.parent.postMessage({source:"shipit-preview",type:"focus_taken"},"*")}catch(e7){}})` +
   `}` +
   `})()</script>`;
 

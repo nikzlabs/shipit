@@ -41,6 +41,7 @@ export interface PreviewStatus {
 
 const READY_BUFFER_LIMIT = 8;
 const READY_BUFFER_TTL_MS = 2_000;
+const FOCUS_STEAL_WINDOW_MS = 500;
 
 function previewOrigin(url: string): string | null {
   try {
@@ -312,9 +313,29 @@ export function PreviewFrame({
     });
   };
 
+  // Where focus was before a preview page's own script took it, so `focus_taken`
+  // can hand it back. A Tab into the frame is the user's move, not a steal.
+  const lastFocusOutRef = useRef<{ el: HTMLElement; at: number } | null>(null);
+  const lastTabAtRef = useRef(0);
+  useEventListener(document, "focusout", (e) => {
+    if (e.target instanceof HTMLElement) lastFocusOutRef.current = { el: e.target, at: Date.now() };
+  }, true);
+  useEventListener(document, "keydown", (e) => {
+    if (e.key === "Tab") lastTabAtRef.current = Date.now();
+  }, true);
+
   useEventListener(window, "message", (event) => {
     const data = event.data as { source?: string; type?: string } | undefined;
     if (data?.source !== "shipit-preview") return;
+    if (data.type === "focus_taken" && event.source) {
+      const key = slotKeyForWindow(event.source);
+      const prev = lastFocusOutRef.current;
+      const now = Date.now();
+      if (!key || !prev || document.activeElement !== iframeRefs.current.get(key)) return;
+      if (now - prev.at > FOCUS_STEAL_WINDOW_MS || now - lastTabAtRef.current < FOCUS_STEAL_WINDOW_MS) return;
+      if (prev.el.isConnected) prev.el.focus({ preventScroll: true });
+      return;
+    }
     if (data.type === "agent_message" && onAgentInterfaceMessage && activeSlotKeyRef.current) {
       const iframe = iframeRefs.current.get(activeSlotKeyRef.current);
       const slot = slots.get(activeSlotKeyRef.current);
