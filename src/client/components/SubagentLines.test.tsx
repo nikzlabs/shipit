@@ -102,7 +102,7 @@ describe("SubagentLines — the lines (docs/339 reqs 4–7)", () => {
     expect(screen.getByTestId("subagent-done-toggle")).toHaveTextContent("· 1 failed");
   });
 
-  it("folds finished ones into Done · N, with the failures counted, and opens it in place", () => {
+  it("folds finished ones into Finished subagents · N, with the failures counted, and opens it in place", () => {
     show([
       launch(task(), [{ toolUseId: TASK_ID, content: "Report." }]),
       { role: "assistant", text: "", subAgentConsult: card({ status: "error" }) },
@@ -111,7 +111,7 @@ describe("SubagentLines — the lines (docs/339 reqs 4–7)", () => {
 
     expect(screen.getAllByTestId("subagent-line")).toHaveLength(1);
     const toggle = screen.getByTestId("subagent-done-toggle");
-    expect(toggle).toHaveTextContent("Done · 2");
+    expect(toggle).toHaveTextContent("Finished subagents · 2");
     expect(toggle).toHaveTextContent("· 1 failed");
     expect(screen.queryByTestId("subagent-done-list")).toBeNull();
 

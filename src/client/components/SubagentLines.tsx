@@ -9,12 +9,12 @@ import { WithTooltip } from "./ui/tooltip.js";
 
 /**
  * docs/339 — the session's sub-agents, above the input: one line per running
- * sub-agent (req 5), the finished ones folded into "Done · N" (req 6), and a
- * click opening the full dialog (req 9). Draws nothing until one has run.
+ * sub-agent (req 5), the finished ones folded into "Finished subagents · N"
+ * (req 6), in a quiet box (req 10), and a click opening the full dialog
+ * (req 9). Draws nothing until one has run.
  */
 export function SubagentLines() {
   const messages = useSessionStore((s) => s.messages);
-  const agentBusy = useSessionStore((s) => s.isLoading);
   // "A turn is in flight" — `isLoading` is also true for background work alone.
   const turnRunning = useSessionStore((s) => !!s.sessionId && s.activeRunnerSessions.has(s.sessionId));
   const spawns = useSessionStore((s) => s.subAgentSpawns);
@@ -36,11 +36,7 @@ export function SubagentLines() {
   return (
     <div
       data-testid="subagent-lines"
-      // While the main agent works, a guide line hangs these under its
-      // "Working…" spinner (AgentStatusBar: mx-4 px-4, 12px spinner).
-      className={`last:mb-2 flex flex-col ${
-        agentBusy ? "ml-[37px] mr-4 border-l-[1.5px] border-(--color-border-secondary) pl-1.5" : "mx-6"
-      }`}
+      className="mx-4 last:mb-2 flex flex-col rounded-xl border border-(--color-border-primary) bg-(--color-bg-secondary)/20 p-1"
     >
       {running.map((run) => (
         <RunLine key={run.key} run={run} clock={runClock(run, now)} onOpen={() => setOpenKey(run.key)} />
@@ -55,7 +51,7 @@ export function SubagentLines() {
             className="flex h-[22px] shrink-0 items-center gap-[7px] rounded-md px-2 text-xs text-(--color-text-tertiary) transition-[color,background-color] duration-(--duration-fast) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)"
           >
             {doneOpen ? <CaretDownIcon size={ICON_SIZE.XS} /> : <CaretRightIcon size={ICON_SIZE.XS} />}
-            <span>Done · {finished.length}</span>
+            <span>Finished subagents · {finished.length}</span>
             {failed > 0 && <span className="text-(--color-error)">· {failed} failed</span>}
           </button>
           {doneOpen && (

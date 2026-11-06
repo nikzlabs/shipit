@@ -1,7 +1,7 @@
 # Sub-agent lines above the input
 
 Design: [`plan.md`](./plan.md). Visual reference: [`mockup.html`](./mockup.html)
-(the guide-line style, states a–h).
+(the "Quiet box" style, req 10).
 
 ## Requirements
 
@@ -12,13 +12,16 @@ Design: [`plan.md`](./plan.md). Visual reference: [`mockup.html`](./mockup.html)
 3. Child sessions (`shipit session create`) are not shown there.
 4. There is no "Agents" label.
 5. Each running sub-agent has a line of its own.
-6. Finished sub-agents are collapsed into one expandable "Done" block.
+6. Finished sub-agents are collapsed into one expandable block labelled
+   "Finished subagents".
 7. At a glance, the user can tell which sub-agents are active and how many
    were run.
 8. The sub-agent cards in the chat are removed. The chat does not show where
    a sub-agent ran.
 9. Clicking a sub-agent's line opens a full dialog window with that
    sub-agent's whole work, not a small panel.
+10. The lines sit in a quiet box: a faint frame around them, the mockup's
+    "Quiet box" style.
 
 ## Open questions
 
@@ -43,6 +46,10 @@ None.
   small panel" (req 9).
 - 2026-11-05 — Nik approved building it from the mockup (guide-line style,
   states a–h). The mockup's details — what a line shows, the red failure count
-  on the Done line, Done keeping the whole session's sub-agents, newest first —
+  on that line, the block keeping the whole session's sub-agents, newest first —
   are the agent's design, approved as a whole by that selection rather than
   stated one by one.
+- 2026-11-06 — After the first version merged, Nik: "I want the "Quiet box" UI
+  option. "Done" should be "Finished subagents", otherwise it is not clear what
+  this panel is about." This replaces the guide-line style (req 10) and the
+  "Done" label (req 6).
