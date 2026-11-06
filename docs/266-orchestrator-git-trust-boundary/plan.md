@@ -9,9 +9,12 @@ description: Five options for closing the .git route, their costs, the recommend
 Implements [requirements.md](./requirements.md). Requirements are cited as
 `(req N)`.
 
-**Status: E1 + E2 + E3 + E4 + E5-detect shipped; the per-session-uid follow-up
-is planning#405 (shipped separately as docs/270).** All four open questions were answered on
-2026-08-16 (`requirements.md` → Resolved questions). See
+**Status: E1 + E2 + E3 + E4 + E5-detect + E6 shipped; the per-session-uid
+follow-up is planning#405 (shipped separately as docs/270).** E6 (planning#668,
+2026-10-10) closes the loopback surface the earlier phases left recorded as
+unaudited — see the "Loopback surface" residual in §2. All four original open
+questions were answered on 2026-08-16 (`requirements.md` → Resolved questions),
+and Q6 (the loopback fix) on 2026-10-10. See
 [checklist.md](./checklist.md) for exactly what landed and why each remaining
 piece was split out — planning#403 (E2), planning#405 (per-session uids).
 
@@ -902,9 +905,61 @@ path, its owner, and the service that most likely wrote it, not a bare errno.
   session-to-session is not. Q3 asks whether to fix this now with per-session
   uids or file it. **This is the honest limit of the recommendation and must not
   be described as "closed".**
-- **Loopback surface.** The dropped-uid process shares a network namespace with
-  the orchestrator's HTTP API. Any orchestrator endpoint that trusts "reached me
-  over loopback" is reachable by the payload. Not audited here — see §4.
+- **Loopback surface — audited and closed (E6, planning#668, 2026-10-10).** The
+  dropped-uid process shares a network namespace with the orchestrator's HTTP
+  API, so it can reach the API over the orchestrator's own loopback — and
+  `api-container-guard.ts` trusted *any* source that was not a known container
+  IP, loopback included, as the user. Reproduced here (git 2.39.5): a
+  `pre-commit` hook, a `core.fsmonitor` **and** a `filter.*.clean` each wrote a
+  secret through `PUT /api/secrets` during the auto-commit — the filter and
+  fsmonitor fire even with `core.hooksPath=/dev/null`, so this was never only a
+  hooks problem. The Docker API proxy was **not** affected: it already fails
+  closed on an unknown source IP (`docker-proxy.ts`, `forbidden("Unknown source
+  IP")`).
+
+  **The fix is E6 (req 16): the guard no longer treats the orchestrator's own
+  container as the user.** A request whose peer is the orchestrator's loopback or
+  one of the addresses on its own interfaces is refused the whole API, exactly as
+  an unknown container is. A legitimate caller never sources from the
+  orchestrator itself — the browser arrives through the published port
+  (translated to a host or gateway address) and a session worker from its own
+  container IP. The one place ShipIt's own UI dials the API over the
+  orchestrator's loopback is the single-container dev stack (in-container Vite
+  proxy) and local mode; those are exempted by `SHIPIT_TRUST_OWN_LOOPBACK` /
+  `runtime === "local"` / test mode, which is the developer's-own-machine trust
+  the security model already grants.
+
+  **The own-address set is read FRESH from `os.networkInterfaces()` on each
+  request, never cached — this was a review finding.** The orchestrator joins
+  session networks at runtime (`service-manager-setup.ts` connects it so the
+  preview proxy can reach a service), so a set snapshotted at startup misses the
+  addresses it later gains, and the review reproduced a **403 for the initial
+  address, 200 for one added afterward**. `os.networkInterfaces()` is the
+  orchestrator's own netns — exactly the addresses the git child (same netns)
+  could aim at — and reading it live costs a syscall, removes the Docker-inspect
+  dependency the first draft had (whose failure cached an empty set forever, a
+  second review finding), and has no staleness window. Key files:
+  `api-container-guard.ts` (`isLoopbackAddress`, `orchestratorOwnAddresses`, the
+  per-request `isOrchestratorOwnAddress` check, and the `trustOwnContainerLoopback`
+  exemption), `route-registry.ts` (where the exemption is computed). Regression:
+  `integration_tests/git-payload-api-reach.test.ts` (real git + real listener;
+  each payload must record a 403, so a probe that never ran cannot pass it) and
+  `api-container-guard.test.ts` (loopback / own-address / exemption, and the
+  address-added-after-startup case).
+
+  **The residual E6 does NOT close, surfaced by the review and left as an open
+  question (req 16, Open questions).** The git child shares the orchestrator's
+  netns but is not behind an egress firewall (only session containers are). On a
+  host with a **forwarder** — the VPS Tailscale `socat` forwarder
+  (`deployment/vps/tailscale.sh`) — the child can reach the forwarder's address
+  and be relayed to the published API port, where the guard sees the forwarder's
+  host/gateway peer and cannot tell it from a legitimate browser. This is the
+  docs/319 "a path that leaves the host and comes back" shape, not the direct
+  loopback shape planning#668 names, and no peer-address guard can close it.
+  Closing it needs a network-layer control on the orchestrator's own git child
+  (an egress rule keyed on the dropped uid, or the netns-isolation option
+  declined on cost in Q6). The cross-session workspace residual above is
+  unchanged and separate.
 - **Root writes into `.git` must drop too.** `github-auth.ts:393` writes
   `credential.helper` into the workspace config with `execFileSync` as root. Left
   as-is it creates a root-owned `config` inside a 1000-owned `.git`, breaking the
@@ -1017,9 +1072,16 @@ inherited guarantee at the source").
   cache is therefore not a second instance of this bug. *(One thing that mount
   list does show and this design does not address: `perSessionCredentialsDir` is
   bound `rw` into the session container.)*
-- **Not checked: whether any orchestrator HTTP endpoint authorizes on "came from
-  loopback".** The residual in §2 depends on this. I did not audit
-  `agent-ops-routes.ts` or the credential-broker route's auth.
+- **Audited (2026-10-10, planning#668): the orchestrator HTTP API authorized on
+  "came from loopback".** `api-container-guard.ts` trusted every source that was
+  not a known container IP — loopback and the orchestrator's own addresses
+  included — as the user, so a payload in the orchestrator's netns reached
+  `PUT /api/secrets` (reproduced). E6 refuses the orchestrator's own container at
+  the guard (req 16) on the **direct** path; the one path it cannot close — a
+  host-side forwarder relaying to the published port — is recorded as the open
+  residual in §2's "Loopback surface" and in req 16's Open questions. The
+  separate `/agent-ops/*` surface is a worker-side concern governed by docs/251
+  (loopback-pinned there, the opposite direction) and was not re-audited here.
 - **The simple-git rejection is exercised, not inferred.** The parent session
   flagged its own claim here as an inference from "no try/catch plus documented
   behaviour". It was run: `add("-A")` against a case-D tree rejects with a
@@ -1150,6 +1212,15 @@ Sequence:
    window where a turn commits short, or does not commit at all, with no trace.
 7. File the per-session-uid follow-up (req 13). The route-2 issue is already
    filed as planning#400.
+8. **E6 — refuse the orchestrator's own container at the API guard (req 16,
+   planning#668).** Everything above lets the git child run repo-controlled code
+   at the session's own uid (Q2) — but the child still shares the orchestrator's
+   network namespace, so it could reach `PUT /api/secrets` over loopback, where
+   `api-container-guard.ts` trusted any non-container source as the user. The
+   guard now refuses the orchestrator's own loopback and own addresses, with an
+   exemption for the single-container dev stack and local/test mode. *Shipped
+   2026-10-10. See §2's "Loopback surface" residual for the reproduction, the
+   mechanism and the narrow own-address-enumeration residual.*
 
 The follow-up in step 7 inherits req 12: per-session uids change
 `SHIPIT_SESSION_WORKER_UID` from one global value into an allocated one, so its

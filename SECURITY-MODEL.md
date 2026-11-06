@@ -201,6 +201,23 @@ be hostile.
   control files should be writable at all**, which is a product decision about what
   plugins are for, not an implementation choice. Tracked in planning#384.
 
+  **What a repo-controlled git execution can reach is now bounded (planning#668).**
+  Orchestrator-side git on a session tree runs as that session's own uid, not root
+  (docs/266), so a hook/filter/helper executes at an authority its author already holds
+  — not as root, and not against the credential store. One residual remained: the git
+  child shares the orchestrator's network namespace, and the API's container-origin guard
+  trusted *any* caller that was not a known container — loopback included — as the user,
+  so a payload could `PUT /api/secrets` over the orchestrator's own loopback. The guard
+  now refuses the orchestrator's own container (its loopback and the addresses on its own
+  interfaces, read live) the same way it refuses an unknown container; a legitimate caller
+  never sources from the orchestrator itself. The single-container dev stack and local
+  mode, where ShipIt's own UI proxies the API over that loopback, are the documented
+  exception (`SHIPIT_TRUST_OWN_LOOPBACK`). Two residuals remain, both tracked rather than
+  hidden: a git child could still reach the API by relaying through a **host-side
+  forwarder** (e.g. the VPS Tailscale forwarder), which a peer-address guard cannot
+  distinguish from a real browser (docs/266 req 16 open question); and cross-session
+  workspace access at the shared uid (per-session uids, planning#405).
+
   Git inside the *session* container is deliberately unchanged: the agent is already
   inside the trust boundary, and a project's own hooks running when the agent commits is
   the behaviour a user expects.
