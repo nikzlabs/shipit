@@ -262,6 +262,43 @@ describe("PreviewFrame", () => {
     );
   });
 
+  describe("focus taken by the preview page", () => {
+    async function setup() {
+      const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+      render(<><textarea aria-label="Prompt" /><PreviewFrame preview={preview} {...defaultProps} /></>);
+      const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+      const prompt = screen.getByLabelText("Prompt");
+      prompt.focus();
+      const taken = (source: MessageEventSource | null = iframe.contentWindow) => {
+        iframe.focus();
+        window.dispatchEvent(new MessageEvent("message", {
+          data: { source: "shipit-preview", type: "focus_taken" },
+          source,
+        }));
+      };
+      return { iframe, prompt, taken };
+    }
+
+    it("gives focus back to where the user was typing", async () => {
+      const { prompt, taken } = await setup();
+      taken();
+      expect(document.activeElement).toBe(prompt);
+    });
+
+    it("leaves focus in the frame when the user tabbed into it", async () => {
+      const { iframe, taken } = await setup();
+      fireEvent.keyDown(document.activeElement!, { key: "Tab" });
+      taken();
+      expect(document.activeElement).toBe(iframe);
+    });
+
+    it("ignores the message from a window that is not a preview frame", async () => {
+      const { iframe, taken } = await setup();
+      taken(window);
+      expect(document.activeElement).toBe(iframe);
+    });
+  });
+
   it("falls back to the entry URL when the page reported no path", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} {...defaultProps} />);
