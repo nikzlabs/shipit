@@ -987,6 +987,24 @@ describe("shipit session view", () => {
     expect(out.exitCode).toBe(0);
     expect(out.stdout).not.toContain("agent:");
     expect(out.stdout).not.toContain("model:");
+    expect(out.stdout).not.toContain("resolved:");
+  });
+
+  // nikzlabs/shipit#3316 — the state `shipit session message` refuses on, with its way out.
+  it("marks a resolved child and names the card that reaches it", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "view", "ses_a"],
+      {
+        "GET /agent-ops/session/view/ses_a": {
+          status: 200,
+          body: { child: { id: "ses_a", title: "A", status: "idle", resolved: true } },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("resolved:   yes");
+    expect(out.stdout).toContain("propose_session_message");
   });
 
   it("--json prints just the child object", async () => {

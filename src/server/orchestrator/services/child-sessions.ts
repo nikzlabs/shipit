@@ -40,8 +40,25 @@ import { getErrorMessage } from "../../shared/utils.js";
 
 export class ResolvedChildMessageError extends ServiceError {
   constructor(public readonly child: SessionInfo) {
-    super(409, `${child.title} is resolved; no message, card, or wake turn was sent.`);
+    super(
+      409,
+      `${child.title} is resolved; no message, card, or wake turn was sent. `
+        + "Its pull request merged or closed after its last turn. To give it more work, propose the "
+        + "message with the `propose_session_message` tool: the user's click delivers it and starts a turn there.",
+    );
   }
+}
+
+/** docs/233-child-session-report req 1 — the rule a direct parent message is refused on. */
+export function isChildResolved(
+  sessionManager: SessionManager,
+  runnerRegistry: Pick<SessionRunnerRegistry, "get">,
+  child: SessionInfo,
+): boolean {
+  return isSessionDone(child, {
+    hasUnfinishedDescendant: hasVisibleDirectChildren(sessionManager, child.id),
+    agentWorking: isAgentWorking(runnerRegistry.get(child.id)),
+  });
 }
 
 /** Refused before the claim, so no session, clone or container exists (docs/243). */
@@ -592,6 +609,8 @@ export interface ChildSessionView {
   agent?: AgentId;
   model?: string;
   originRoleName?: string;
+  /** Set when `shipit session message` would refuse the child as resolved. */
+  resolved?: true;
 }
 
 export interface ChildViewProjections {
@@ -607,7 +626,7 @@ export function listSpawnedChildren(
   projections: ChildViewProjections = {},
 ): ChildSessionView[] {
   const children = sessionManager.findChildren(parentSessionId);
-  const views = children.map((c) => buildChildView(c, runnerRegistry, projections));
+  const views = children.map((c) => buildParentChildView(sessionManager, c, runnerRegistry, projections));
   if (currentTurn) {
     return views.sort((a, b) => {
       const aIn = a.spawnedByTurn === currentTurn ? 0 : 1;
@@ -627,7 +646,18 @@ export function getSpawnedChild(
   projections: ChildViewProjections = {},
 ): ChildSessionView {
   const child = assertChildOfParent(sessionManager, parentSessionId, childSessionId);
-  return buildChildView(child, runnerRegistry, projections);
+  return buildParentChildView(sessionManager, child, runnerRegistry, projections);
+}
+
+function buildParentChildView(
+  sessionManager: SessionManager,
+  child: SessionInfo,
+  runnerRegistry: SessionRunnerRegistry,
+  projections: ChildViewProjections,
+): ChildSessionView {
+  const view = buildChildView(child, runnerRegistry, projections);
+  if (isChildResolved(sessionManager, runnerRegistry, child)) view.resolved = true;
+  return view;
 }
 
 // Use the same 404 for missing and foreign children to avoid disclosing their existence.
@@ -711,10 +741,7 @@ export async function sendChildMessage(
     throw new ServiceError(400, "Message text exceeds 50,000 characters");
   }
   const child = assertChildOfParent(sessionManager, parentSessionId, childSessionId);
-  if (isSessionDone(child, {
-    hasUnfinishedDescendant: hasVisibleDirectChildren(sessionManager, child.id),
-    agentWorking: isAgentWorking(runnerRegistry.get(child.id)),
-  })) {
+  if (isChildResolved(sessionManager, runnerRegistry, child)) {
     throw new ResolvedChildMessageError(child);
   }
   if (child.archived) {

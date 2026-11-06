@@ -4,10 +4,10 @@ import type { ApiDeps } from "./api-routes.js";
 import { emitChatCard, persistCardTransition } from "./chat-card-persistence.js";
 import type { SessionInfo, SessionMessageProposalCard } from "../shared/types.js";
 import { validateSessionMessageProposal } from "../shared/session-message-proposal-validation.js";
-import { deliverSessionMessage, ServiceError } from "./services/index.js";
+import { deliverSessionMessage, isChildResolved, ServiceError } from "./services/index.js";
 import { asQuotedData } from "./services/repo-session-outcome-notice.js";
 import { getErrorMessage } from "./validation.js";
-import type { SessionRunnerInterface } from "./session-runner.js";
+import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
 import { runnerForContainerCall } from "./restart-turn-reattach.js";
 
@@ -22,10 +22,17 @@ import { runnerForContainerCall } from "./restart-turn-reattach.js";
  * Nothing in this file relaxes `assertChildOfParent`.
  */
 
+interface TargetChecks {
+  sessionManager: SessionManager;
+  runnerRegistry: Pick<SessionRunnerRegistry, "get">;
+  isRepoTrusted: (remoteUrl: string) => boolean;
+  /** The user's click: a child the proposer could message by now is still theirs to send to. */
+  atDelivery: boolean;
+}
+
 /** Refuse at CALL time, so a bad address fails back to the agent (req 8). */
 function resolveTarget(
-  sessionManager: SessionManager,
-  isRepoTrusted: (remoteUrl: string) => boolean,
+  { sessionManager, runnerRegistry, isRepoTrusted, atDelivery }: TargetChecks,
   proposingSessionId: string,
   targetSessionId: string,
 ): { session: SessionInfo } | { error: string; code: number } {
@@ -47,7 +54,10 @@ function resolveTarget(
         "That is this session. A message to yourself is your own next turn, not a proposal.",
     };
   }
-  if (target.parentSessionId === proposingSessionId) {
+  // A resolved child refuses `shipit session message` (docs/233-child-session-report req 1),
+  // so the card is the parent's only way to reach it (req 9).
+  if (target.parentSessionId === proposingSessionId && !atDelivery
+    && !isChildResolved(sessionManager, runnerRegistry, target)) {
     return {
       code: 400,
       error:
@@ -105,6 +115,15 @@ function resolveTarget(
   return { session: target };
 }
 
+function targetChecks(deps: ApiDeps, atDelivery: boolean): TargetChecks {
+  return {
+    sessionManager: deps.sessionManager,
+    runnerRegistry: deps.runnerRegistry,
+    isRepoTrusted: (url) => deps.repoStore.isTrusted(url),
+    atDelivery,
+  };
+}
+
 export async function registerProposeSessionMessageRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
@@ -130,8 +149,7 @@ export async function registerProposeSessionMessageRoutes(
       }
 
       const resolved = resolveTarget(
-        deps.sessionManager,
-        (url) => deps.repoStore.isTrusted(url),
+        targetChecks(deps, false),
         sessionId,
         validated.sessionId,
       );
@@ -240,8 +258,7 @@ export async function registerProposeSessionMessageRoutes(
 
         // Re-resolved: the target may have been archived since the card was written.
         const resolved = resolveTarget(
-          deps.sessionManager,
-          (url) => deps.repoStore.isTrusted(url),
+          targetChecks(deps, true),
           sessionId,
           card.targetSessionId,
         );

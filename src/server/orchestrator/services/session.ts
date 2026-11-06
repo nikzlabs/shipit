@@ -42,6 +42,7 @@ export {
   getSpawnedChild,
   sendChildMessage,
   deliverSessionMessage,
+  isChildResolved,
   ResolvedChildMessageError,
   waitForChildIdle,
   registerMergeWatch,

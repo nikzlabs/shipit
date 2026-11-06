@@ -19,7 +19,8 @@ const TOOL_DESCRIPTION = [
   "comes back to you — put everything the reader needs in the message. The user",
   "can also decline the card. Either way ShipIt tells you what they did at the",
   "start of your next turn, so do not ask them. Your own children and your",
-  "parent are refused as targets; reach them directly.",
+  "parent are refused as targets; reach them directly. The exception is a child",
+  "that `shipit session message` refuses as resolved: this card reaches it.",
 ].join(" ");
 
 const inputSchema = {

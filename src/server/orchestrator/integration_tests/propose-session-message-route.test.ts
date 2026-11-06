@@ -161,6 +161,17 @@ describe("Integration: propose-session-message route", () => {
     expect(res.json().error).toContain(`shipit session message ${childId}`);
   });
 
+  // nikzlabs/shipit#3316 — `shipit session message` refuses a resolved child, so the card is the way.
+  it("proposes for a direct child whose pull request resolved after its last turn", async () => {
+    const childId = (await createTestSession(sessionManager, tmpDir, "Merged child")).sessionId;
+    sessionManager.setParentSession(childId, sessionId);
+    sessionManager.markMerged(childId);
+
+    const res = await propose({ sessionId: childId, message: "Start the second PR." });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ targetTitle: "Merged child" });
+  });
+
   it("refuses an archived target, rather than letting the user click into a failure", async () => {
     sessionManager.archive(rootId);
     const res = await propose({ sessionId: rootId, message: "hi" });
