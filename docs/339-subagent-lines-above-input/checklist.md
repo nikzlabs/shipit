@@ -10,3 +10,4 @@
 - [x] Agent docs and wiki updated
 - [x] Quiet-box frame instead of the guide line; "Done" renamed "Finished subagents" (reqs 6, 10)
 - [x] No failure count on the "Finished subagents" line (req 11)
+- [x] Consult card stores its prompt at admission; the consult dialog has a Prompt tab, fetched when left out of the transcript (req 12)

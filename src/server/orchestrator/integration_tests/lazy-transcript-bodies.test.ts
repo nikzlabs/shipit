@@ -448,6 +448,31 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
     expect(history.listSubAgentConsultCards(sessionId)[0]!.outputMarkdown).toBe(CONSULT_OUTPUT);
   });
 
+  it("serves a running consult's prompt behind a fetch", async () => {
+    const prompt = "Review the branch diff, do not edit.\n".repeat(40);
+    history.append(sessionId, {
+      role: "assistant",
+      text: "",
+      subAgentConsult: {
+        cardId: "consult-2",
+        spawnId: "spawn-2",
+        subAgentId: "codex",
+        status: "pending",
+        prompt,
+        createdAt: "2026-08-04T00:00:00.000Z",
+      },
+    });
+
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const card = (res.json() as { messages: { subAgentConsult?: { prompt?: string; promptTruncated?: true } }[] })
+      .messages.at(-1)!.subAgentConsult!;
+    expect(card.promptTruncated).toBe(true);
+    expect(card.prompt).toBeUndefined();
+
+    const full = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/sub-agent-consults/consult-2` });
+    expect((full.json() as { prompt: string }).prompt).toBe(prompt);
+  });
+
   it("a read-modify-write updater does not write back a sliced body", async () => {
     // Updating one field rewrites the row; decoded bodies must remain complete.
     await loadHistory();

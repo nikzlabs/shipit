@@ -42,6 +42,10 @@ export interface SubAgentConsultCard {
   outputMarkdown?: string;
   /** Serve-only preview flag; persisted output remains complete. */
   outputTruncated?: true;
+  /** What the sub-agent was sent, role instructions included; absent on cards that predate it. */
+  prompt?: string;
+  /** Serve-only: the wire copy left the prompt out, so the dialog fetches it. */
+  promptTruncated?: true;
   createdAt: string;
   /** Present only if ShipIt attempted a result wake; absence does not mean delivery failed. */
   wakeDelivery?: {

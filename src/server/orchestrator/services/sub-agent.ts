@@ -362,11 +362,12 @@ async function runSubAgentInSlot(
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     },
     status: "pending",
+    prompt,
     createdAt: new Date().toISOString(),
   };
   emitChatCard(
     runner,
-    { type: "sub_agent_consult_card", sessionId, card: pendingCard },
+    { type: "sub_agent_consult_card", sessionId, card: projectConsultCardForWire(pendingCard) },
     { role: "assistant", text: "", subAgentConsult: pendingCard },
     { chatHistoryManager: deps.chatHistoryManager, sessionId },
   );

@@ -111,7 +111,7 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
         reply.code(404).send({ error: "Sub-agent consult not found" });
         return;
       }
-      reply.send({ outputMarkdown: card.outputMarkdown ?? "" });
+      reply.send({ outputMarkdown: card.outputMarkdown ?? "", prompt: card.prompt ?? "" });
     },
   );
 

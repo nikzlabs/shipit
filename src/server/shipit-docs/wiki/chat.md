@@ -211,7 +211,7 @@ a spinner. Finished ones fold into one **Finished subagents · N** line, which t
 user opens in place; it keeps every sub-agent of the session, and a failed one is
 marked with a red ✗ only in that opened list.
 Clicking a line opens a dialog with that sub-agent's work, prompt and report, or
-a consult's output. Child sessions are not listed there; they are in the sidebar.
+a consult's output and the prompt it was sent, which shows while it still runs. Child sessions are not listed there; they are in the sidebar.
 So when a user asks what a sub-agent found, point them at its line rather than
 pasting the report.
 

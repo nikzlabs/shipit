@@ -785,6 +785,25 @@ describe("runSubAgent — happy path", () => {
     expect(persistedCard?.subAgentConsult?.outputTruncated).toBeUndefined();
   });
 
+  it("persists the prompt on the card from admission, and emits a long one only as a flag", async () => {
+    const prompt = "Review this diff.\n".repeat(50);
+    const { deps, emitMessage, replaceInProgress } = makeDeps({});
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt, depth: 0 });
+
+    const emitted = emitMessage.mock.calls
+      .map((c) => c[0] as { type: string; card?: { status: string; prompt?: string; promptTruncated?: true } })
+      .filter((m) => m.type === "sub_agent_consult_card")
+      .map((m) => m.card);
+    expect(emitted[0]?.status).toBe("pending");
+    expect(emitted.every((c) => c?.prompt === undefined && c?.promptTruncated === true)).toBe(true);
+
+    const persisted = replaceInProgress.mock.calls
+      .map((c) => (c[1] as { subAgentConsult?: { status: string; prompt?: string } }[]).find((m) => m.subAgentConsult))
+      .filter((m) => m !== undefined);
+    expect(persisted[0]?.subAgentConsult?.status).toBe("pending");
+    expect(persisted.every((m) => m.subAgentConsult?.prompt === prompt)).toBe(true);
+  });
+
   it("forwards the explicitly named model and effort to the spawn", async () => {
     const { deps, runner } = makeDeps({});
     await runSubAgent(deps, "s1", {
