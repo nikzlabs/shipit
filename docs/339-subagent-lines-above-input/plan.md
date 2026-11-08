@@ -29,9 +29,10 @@ session has run at least one sub-agent.
   - Agent-tool sub-agent: **Work** (every step, live), **Prompt** (fetched on
     demand when the transcript projection left it out, docs/244), **Report**
     (the whole report, fetched on open — see below).
-  - `shipit agent run` sub-agent: the report, with the run-on line, status
-    detail, time and cost. The card carries no prompt, so there is no Prompt
-    tab.
+  - `shipit agent run` sub-agent: **Output** (the report, with status detail)
+    and **Prompt** (req 12), under the run-on line, with time and cost. The
+    card stores the prompt the sub-agent was sent, role instructions included,
+    from the moment it is admitted, so the tab works while the run is pending.
 
 Child sessions are not read at all (req 3).
 
@@ -66,7 +67,11 @@ fetches it from `/tool-results/:toolUseId` on open (docs/109 req 8: nothing is
 lost). It keeps what a line reads: the footer (duration, tool count), non-text
 blocks, and the texts that decide status — a background-launch
 acknowledgement is kept whole, and the stopped note is under the strip floor.
-A consult already ships only its one-line preview.
+A consult already ships only its one-line preview. Its prompt past the strip
+floor is left out too, marked `promptTruncated`; the Prompt tab fetches it from
+`/sub-agent-consults/:cardId?part=prompt` (the bare route returns only the
+output, so each tab moves only its own body). `shipit agent result` strips the
+prompt: the caller wrote it. Cards from before req 12 have no prompt and say so.
 
 ## Removing the cards (req 8)
 

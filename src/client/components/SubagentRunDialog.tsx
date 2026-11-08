@@ -118,12 +118,21 @@ function ConsultBody({ run, clock }: { run: ConsultSubagentRun; clock: string | 
   const cost = card?.costUsd && card.costUsd > 0 ? `$${card.costUsd.toFixed(2)}` : null;
   return (
     <>
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 text-sm" data-testid="sub-agent-consult-output">
-        {card?.statusDetail && (
-          <p className="mb-3 text-xs text-(--color-text-secondary)" data-testid="sub-agent-consult-status-detail">{card.statusDetail}</p>
-        )}
-        {card ? <ConsultOutput card={card} /> : <p className="text-(--color-text-tertiary)">Starting…</p>}
-      </div>
+      <Tabs defaultValue="output" className="flex min-h-0 flex-1 flex-col">
+        <TabsList className="flex-row gap-1 border-b border-(--color-border-secondary) px-3">
+          <TabsTrigger value="output" className={TAB_CLASS} data-testid="subagent-tab-output">Output</TabsTrigger>
+          <TabsTrigger value="prompt" className={TAB_CLASS} data-testid="subagent-tab-prompt">Prompt</TabsTrigger>
+        </TabsList>
+        <TabsContent value="output" className="min-h-0 flex-1 overflow-y-auto px-5 py-4 text-sm" data-testid="sub-agent-consult-output">
+          {card?.statusDetail && (
+            <p className="mb-3 text-xs text-(--color-text-secondary)" data-testid="sub-agent-consult-status-detail">{card.statusDetail}</p>
+          )}
+          {card ? <ConsultOutput card={card} /> : <p className="text-(--color-text-tertiary)">Starting…</p>}
+        </TabsContent>
+        <TabsContent value="prompt" className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {card ? <ConsultPrompt card={card} /> : <p className="text-sm text-(--color-text-tertiary)">Starting…</p>}
+        </TabsContent>
+      </Tabs>
       {(clock || cost) && (
         <div className="flex gap-3 border-t border-(--color-border-secondary) px-5 py-2.5 text-xs text-(--color-text-tertiary)">
           {clock && <span>{clock}</span>}
@@ -134,31 +143,49 @@ function ConsultBody({ run, clock }: { run: ConsultSubagentRun; clock: string | 
   );
 }
 
-/** docs/244, planning#299 — the transcript carries a preview; the open dialog fetches the rest. */
-function ConsultOutput({ card }: { card: NonNullable<ConsultSubagentRun["card"]> }) {
+type ConsultCard = NonNullable<ConsultSubagentRun["card"]>;
+
+/** docs/244, planning#299 — the transcript leaves long bodies out; the open tab fetches just its own. */
+function useStoredConsultBody(cardId: string, part: "output" | "prompt", needed: boolean): { body: string | null; failed: boolean } {
   const sessionId = useSessionStore((s) => s.sessionId);
-  const lazy = card.outputTruncated === true;
-  const [fetched, setFetched] = useState<string | null>(null);
+  const [body, setBody] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
-  // eslint-disable-next-line no-restricted-syntax -- the body is not in the transcript (docs/244); opening the dialog IS the moment it has to be fetched, and the cleanup drops a response that lands after the user closed it.
+  // eslint-disable-next-line no-restricted-syntax -- the body is not in the transcript (docs/244); opening the tab IS the moment it has to be fetched, and the cleanup drops a response that lands after the user closed it.
   useEffect(() => {
-    if (!lazy || !sessionId) return;
+    if (!needed || !sessionId) return;
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch(
-          `/api/sessions/${encodeURIComponent(sessionId)}/sub-agent-consults/${encodeURIComponent(card.cardId)}`,
-        );
+        const url = `/api/sessions/${encodeURIComponent(sessionId)}/sub-agent-consults/${encodeURIComponent(cardId)}`;
+        const res = await fetch(part === "prompt" ? `${url}?part=prompt` : url);
         if (!res.ok) throw new Error(String(res.status));
-        const body = (await res.json()) as { outputMarkdown?: string };
-        if (!cancelled) setFetched(body.outputMarkdown ?? "");
+        const json = (await res.json()) as { outputMarkdown?: string; prompt?: string };
+        if (!cancelled) setBody((part === "prompt" ? json.prompt : json.outputMarkdown) ?? "");
       } catch {
         if (!cancelled) setFailed(true);
       }
     })();
     return () => { cancelled = true; };
-  }, [lazy, sessionId, card.cardId]);
+  }, [needed, sessionId, cardId, part]);
+
+  return { body, failed };
+}
+
+function ConsultPrompt({ card }: { card: ConsultCard }) {
+  const lazy = !card.prompt && card.promptTruncated === true;
+  const { body: fetched, failed } = useStoredConsultBody(card.cardId, "prompt", lazy);
+  const body = card.prompt || fetched || "";
+  return (
+    <div data-testid="subagent-prompt" className="whitespace-pre-wrap font-mono text-[13px] leading-6 text-(--color-text-secondary)">
+      {body || (!lazy ? "No prompt recorded." : failed ? "Couldn't load this prompt." : "Loading prompt…")}
+    </div>
+  );
+}
+
+function ConsultOutput({ card }: { card: ConsultCard }) {
+  const lazy = card.outputTruncated === true;
+  const { body: fetched, failed } = useStoredConsultBody(card.cardId, "output", lazy);
 
   const preview = card.outputMarkdown?.trim() ? card.outputMarkdown : null;
   if (lazy && fetched === null && !failed) {
