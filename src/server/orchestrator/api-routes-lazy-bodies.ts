@@ -94,7 +94,7 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
     },
   );
 
-  app.get<{ Params: { id: string; cardId: string } }>(
+  app.get<{ Params: { id: string; cardId: string }; Querystring: { part?: string } }>(
     "/api/sessions/:id/sub-agent-consults/:cardId",
     async (request, reply) => {
       if (!deps.sessionManager.get(request.params.id)) {
@@ -111,7 +111,9 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
         reply.code(404).send({ error: "Sub-agent consult not found" });
         return;
       }
-      reply.send({ outputMarkdown: card.outputMarkdown ?? "", prompt: card.prompt ?? "" });
+      reply.send(request.query.part === "prompt"
+        ? { prompt: card.prompt ?? "" }
+        : { outputMarkdown: card.outputMarkdown ?? "" });
     },
   );
 

@@ -469,8 +469,22 @@ describe("Integration: lazy transcript bodies (planning#269)", () => {
     expect(card.promptTruncated).toBe(true);
     expect(card.prompt).toBeUndefined();
 
-    const full = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/sub-agent-consults/consult-2` });
-    expect((full.json() as { prompt: string }).prompt).toBe(prompt);
+    const full = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/sub-agent-consults/consult-2?part=prompt` });
+    expect(full.json()).toEqual({ prompt });
+    const output = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/sub-agent-consults/consult-2` });
+    expect(output.json()).toEqual({ outputMarkdown: "" });
+
+    const result = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/agent/result?spawnId=spawn-2` });
+    expect(result.statusCode).toBe(200);
+    expect((result.json() as { spawnId: string }).spawnId).toBe("spawn-2");
+    expect(result.rawPayload.toString("utf8")).not.toContain("Review the branch diff");
+
+    history.updateSubAgentConsultCard(sessionId, "consult-2", { status: "success", outputMarkdown: "Done." });
+    const waited = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/agent/result?spawnId=spawn-2&wait=true&timeout=1` });
+    expect(waited.statusCode).toBe(200);
+    expect(waited.json()).toMatchObject({ spawnId: "spawn-2", status: "success" });
+    expect(waited.json()).not.toHaveProperty("prompt");
+    expect(waited.json()).not.toHaveProperty("promptTruncated");
   });
 
   it("a read-modify-write updater does not write back a sliced body", async () => {

@@ -69,8 +69,9 @@ blocks, and the texts that decide status — a background-launch
 acknowledgement is kept whole, and the stopped note is under the strip floor.
 A consult already ships only its one-line preview. Its prompt past the strip
 floor is left out too, marked `promptTruncated`; the Prompt tab fetches it from
-`/sub-agent-consults/:cardId`, which returns the stored `prompt` beside the
-output. Cards from before req 12 have no prompt and say so.
+`/sub-agent-consults/:cardId?part=prompt` (the bare route returns only the
+output, so each tab moves only its own body). `shipit agent result` strips the
+prompt: the caller wrote it. Cards from before req 12 have no prompt and say so.
 
 ## Removing the cards (req 8)
 

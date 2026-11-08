@@ -267,7 +267,7 @@ describe("SubagentLines — shipit agent run dialog (req 9)", () => {
 
     fireEvent.mouseDown(within(dialog).getByTestId("subagent-tab-prompt"));
     await waitFor(() => expect(within(dialog).getByTestId("subagent-prompt")).toHaveTextContent("Review the whole diff."));
-    expect(fetchMock.mock.calls[0]![0]).toBe("/api/sessions/session-1/sub-agent-consults/sac-1");
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual(["/api/sessions/session-1/sub-agent-consults/sac-1?part=prompt"]);
   });
 
   it("shows a prompt that arrived whole without fetching, and says so for a card that has none", () => {
