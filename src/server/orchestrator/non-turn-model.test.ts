@@ -184,6 +184,39 @@ describe("resolveNonTurnModel", () => {
  * because the two causes ask different things of the user and only one of them
  * is repaired in Settings.
  */
+describe("background work on a Claude subscription (docs/340 req 4)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock("../shared/installed-harnesses.js");
+  });
+
+  const pin = { serviceId: "anthropic", billingMode: "sub" as const, modelId: "claude-opus-5-5" };
+
+  async function harnessFor(installed: readonly string[]): Promise<string | undefined> {
+    vi.doMock("../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: (id: string) => installed.includes(id),
+      readInstalledHarnesses: () => [...installed],
+    }));
+    const { resolveNonTurnModel } = await import("./non-turn-model.js");
+    const result = resolveNonTurnModel({
+      credentialStore: storeWith([accountRoute({ serviceId: "anthropic", billingMode: "sub" })], pin),
+      env: {},
+    });
+    return result.ok && result.target.execution === "harness" ? result.target.harnessId : undefined;
+  }
+
+  it("runs on Claude Code whenever it is installed, though both OpenCodes can carry the login", async () => {
+    expect(await harnessFor(["claude", "codex", "opencode", "opencode2"])).toBe("claude");
+  });
+
+  it("falls back to OpenCode when Claude Code is not offered", async () => {
+    expect(await harnessFor(["opencode", "opencode2"])).toBe("opencode2");
+  });
+});
+
 describe("resolveNonTurnModel — why a pin cannot run background work", () => {
   beforeEach(() => {
     vi.resetModules();

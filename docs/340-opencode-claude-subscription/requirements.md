@@ -23,6 +23,10 @@ OpenCode 2.2.3 added a built-in Claude Agent provider.
 3. **Existing routes unchanged.** API keys and the ChatGPT subscription keep
    working on both OpenCode harnesses, and the Claude Code harness keeps
    working on the Claude subscription as before.
+4. **Automatic harness choice.** When ShipIt picks a harness by itself, the
+   reviewer may run a Claude model on the Claude subscription through either
+   OpenCode harness. Background work prefers Claude Code whenever it is
+   installed.
 
 ## Open questions
 
@@ -30,4 +34,8 @@ None.
 
 ## Resolved questions
 
-None yet.
+- 2026-11-09 — Now that OpenCode can carry the Claude login, the reviewer's
+  "different harness" rule can pick OpenCode for a Claude Code session when a
+  Claude subscription is the only credential. Keep that? The user: "Allow
+  OpenCode, but background work would prefer Claude code if it is installed."
+  Recorded as req 4.

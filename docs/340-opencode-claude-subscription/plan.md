@@ -166,6 +166,15 @@ the SDK to 0.3.312 (its range resolved to a release published that day), and
 `toml` 5.0.1 under `effect` and `zod` 4.6.7 under `@opencode-ai/plugin`, which
 clear the five `high` advisories the plugin's tree brought in.
 
+**Automatic harness choice (req 4).** Nothing new decides it. The reviewer
+puts the implementer's harness last (`harnessesPreferring`), so for a Claude
+Code session whose only credential is a Claude subscription it now lands on an
+OpenCode harness that can carry the login — OpenCode 2 when installed, else
+OpenCode 1 — which req 4 allows. Background work takes the first eligible
+harness in catalogue order with nothing to avoid (`backgroundWorkHarnessFor`),
+and Claude Code is first, so it stays on Claude Code whenever that harness is
+installed; `non-turn-model.test.ts` pins both cases.
+
 ## Verification
 
 Through ShipIt's real adapters (`Opencode2Adapter`, `OpencodeAdapter`) and real
