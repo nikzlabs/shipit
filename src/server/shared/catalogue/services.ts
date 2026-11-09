@@ -586,6 +586,8 @@ export const SERVICES = [
           { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.sonnet5 },
           // 2026-09-01: live model validation rejects 5.1 despite models.dev listing it.
           { id: "claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
+          // Zen's runtime list carries 5.2 at Anthropic's rates (2026-11-09); no keyed turn run.
+          { id: "claude-fable-5-2", label: "Fable 5.2", ...MODEL_IDENTITIES.fable52, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable52, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "claude-haiku-4-5", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
           { id: "kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.kimiK3 },
           { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4flash },

@@ -290,7 +290,9 @@ tokens. The row is added after Fable 5.1, which stays, under both Anthropic
 billing modes. OpenRouter's and Vercel's live model lists carry
 `anthropic/claude-fable-5.2` at the same rates, so both gateways get a row too;
 its styles are carried over from the 5.1 row, not probed. OpenCode Zen's live
-list does not carry it, so Zen gets no row. The user also asked for the latest
+`GET /zen/v1/models` began listing `claude-fable-5-2` the same day, at the same
+rates and efforts, so Zen gets an Anthropic Messages row; no keyed turn has run
+there. The user also asked for the latest
 Claude Code and approved an age exception: 2.1.321 (published 2026-11-09) is
 pinned with a regenerated lockfile and an exception expiring 2026-11-23. Its
 binary names `claude-fable-5-2`. No live model response has been verified.

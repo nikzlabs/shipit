@@ -652,7 +652,7 @@ describe("the harness\u00d7service join", () => {
     expect(MODEL_ID_ALIASES["claude-haiku-5-5"]).toBe("claude-haiku-5.5");
   });
 
-  it("offers Fable 5.2 beside Fable 5.1 at Anthropic and both gateways, but not at Zen", () => {
+  it("offers Fable 5.2 beside Fable 5.1 at Anthropic, both gateways and Zen", () => {
     const price = { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 };
     for (const billingMode of ["sub", "key"] as const) {
       const selection = { serviceId: "anthropic", billingMode, modelId: "claude-fable-5-2" };
@@ -674,7 +674,11 @@ describe("the harness\u00d7service join", () => {
     expect(modesOfferingModel("claude-fable-5-2")).toEqual([
       { serviceId: "anthropic", billingMode: "sub" },
       { serviceId: "anthropic", billingMode: "key" },
+      { serviceId: "opencode", billingMode: "key" },
     ]);
+    expect(resolveModelSelection("claude-fable-5-2")?.serviceId).toBe("anthropic");
+    expect(reasoningOptionsFor("opencode", { serviceId: "opencode", billingMode: "key", modelId: "claude-fable-5-2" })
+      .map((option) => option.value)).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(catalogueModelIdsForHarness("claude")[0]).toBe("claude-opus-5");
     expect(MODEL_ID_ALIASES["claude-fable-5-2"]).toBe("claude-fable-5.2");
   });
