@@ -187,11 +187,10 @@ describe("ServicesPanel", () => {
       renderPanel([claudeAgent, codexAgent, opencodeAgent]);
       await userEvent.click(screen.getByTestId("services-add-empty"));
 
-      // OpenCode reaches Anthropic's key mode but never its subscription
-
+      // OpenCode reaches Z.ai's key mode but never its coding plan, so
       // the cell must say "some" — a flat tick would promise a pairing step 2
-
-      const partial = screen.getByTestId("add-service-support-anthropic-opencode");
+      // cannot deliver.
+      const partial = screen.getByTestId("add-service-support-zai-opencode");
       expect(partial).toHaveAttribute("data-support", "some");
       expect(partial).toHaveAttribute("data-supported", "yes");
 

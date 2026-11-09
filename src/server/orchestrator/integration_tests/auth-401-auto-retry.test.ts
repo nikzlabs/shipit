@@ -277,7 +277,8 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "backup account run");
 
     expect(ensureAgentTokenFresh).toHaveBeenCalledWith("claude", "acct-a", { force: true });
-    expect(onAgentAuthRequired).toHaveBeenCalledWith("claude");
+    // The account picks the refresher; an OpenCode harness can hold a Claude login (docs/340).
+    expect(onAgentAuthRequired).toHaveBeenCalledWith("claude", "acct-a");
     expect(authFailedAccounts).toContain("acct-a");
     expect(prepareAgentEnv.mock.calls[1]?.[2]?.excludeRouteIds).toEqual(["acct-a"]);
     expect(agents[0]!.run.mock.calls[0]?.[0]?.prompt).toBe("do work");
