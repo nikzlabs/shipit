@@ -141,7 +141,6 @@ mkdir -p node_modules/opencode-ai/bin node_modules/opencode-linux-x64
 mkdir -p node_modules/@opencode/cli/bin node_modules/@opencode/cli-linux-x64
 mkdir -p node_modules/@xai-official/grok/bin "node_modules/@xai-official/grok-${PLATFORM}/bin"
 mkdir -p node_modules/@playwright/mcp node_modules/.bin
-mkdir -p node_modules/@openchamber/opencode-claude node_modules/@anthropic-ai/claude-agent-sdk "node_modules/@anthropic-ai/claude-agent-sdk-${PLATFORM}"
 for b in claude codex playwright-mcp; do
   printf '#!/bin/sh\\necho %s\\n' "$b" > "node_modules/.bin/$b"
   chmod 0755 "node_modules/.bin/$b"
@@ -238,28 +237,20 @@ ${opts?.breakBin ? `printf '#!/bin/sh\\nexit 1\\n' > "node_modules/.bin/${opts.b
     expect(exists(path.join(binDir, "playwright-mcp"))).toBe(true);
   });
 
-  it("keeps the Codex and Claude Code auth dependencies for an OpenCode-only install without offering their harnesses", () => {
+  it("keeps the Codex auth dependency for an OpenCode-only install without offering its harness", () => {
     run("opencode");
     expect(declared()).toEqual(["opencode"]);
     expect(exists(path.join(binDir, "opencode"))).toBe(true);
     expect(exists(path.join(binDir, "codex"))).toBe(true);
     expect(exists(path.join(agentCliDir, "node_modules/@openai/codex"))).toBe(true);
-    // docs/340 — OpenCode runs `claude` for a Claude subscription.
+    expect(exists(path.join(binDir, "claude"))).toBe(false);
+  });
+
+  it("keeps the Claude Code dependency for an OpenCode 2-only install without offering its harness (docs/340)", () => {
+    run("opencode2");
+    expect(declared()).toEqual(["opencode2"]);
     expect(exists(path.join(binDir, "claude"))).toBe(true);
     expect(exists(path.join(agentCliDir, "node_modules/@anthropic-ai/claude-code"))).toBe(true);
-  });
-
-  it("keeps OpenCode 1's Claude plugin with OpenCode 1 and drops the SDK's own CLI copy (docs/340)", () => {
-    run("opencode");
-    expect(exists(path.join(agentCliDir, "node_modules/@openchamber/opencode-claude"))).toBe(true);
-    expect(exists(path.join(agentCliDir, "node_modules/@anthropic-ai/claude-agent-sdk"))).toBe(true);
-    expect(exists(path.join(agentCliDir, `node_modules/@anthropic-ai/claude-agent-sdk-${PLATFORM}`))).toBe(false);
-  });
-
-  it("prunes OpenCode 1's Claude plugin when OpenCode 1 is not installed (docs/340)", () => {
-    run("claude,opencode2");
-    expect(exists(path.join(agentCliDir, "node_modules/@openchamber/opencode-claude"))).toBe(false);
-    expect(exists(path.join(agentCliDir, `node_modules/@anthropic-ai/claude-agent-sdk-${PLATFORM}`))).toBe(false);
   });
 
   it("keeps OpenCode 1 on the `opencode` name when both OpenCode harnesses are installed (docs/269 req 2)", () => {

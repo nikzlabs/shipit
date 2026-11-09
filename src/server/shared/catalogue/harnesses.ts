@@ -170,10 +170,9 @@ export const HARNESSES = [
     spawn: {
       credential: {
         string: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY", styles: ["openai-chat-completions", "anthropic-messages", "openai-responses"] },
-        // ChatGPT through a Codex projection; Claude through the session's `claude` CLI (docs/340).
-        account: { kind: "scoped-home", styles: ["openai-responses", "anthropic-messages"] },
+        account: { kind: "scoped-home", styles: ["openai-responses"] },
       },
-      // String routes use shipit/<modelId>; accounts use openai/ (ChatGPT) or claude-code/ (Claude).
+      // String routes use shipit/<modelId>; ChatGPT accounts use openai/<modelId>.
       model: { kind: "flag", flag: "--model" },
       endpoint: { kind: "config-file", path: "opencode.json", pointer: "/provider/shipit/options/baseURL" },
     },

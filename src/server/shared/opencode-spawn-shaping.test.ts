@@ -3,11 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  OPENCODE_CLAUDE_PLUGIN_PATH,
   claudeVariant,
   opencode2ModelArg,
   opencodeAccountConfig,
-  opencodeClaudeConfig,
+  opencode2ClaudeConfig,
   opencodeModelArg,
   opencodeProviderConfig,
   prepareOpenCodeClaudeEnv,
@@ -205,10 +204,15 @@ describe("OpenCode 2 shaping (docs/269)", () => {
   });
 });
 
-describe("OpenCode on a Claude account (docs/340)", () => {
-  it("declares the catalogue model under each harness's Claude provider, with the id `claude` is given", () => {
-    const v2 = opencodeClaudeConfig("claude-opus-5-5", "opencode2") as { plugin?: unknown; enabled_providers?: string[]; small_model?: string; provider: Record<string, { models: Record<string, { id: string; name: string; variants: Record<string, unknown> }> }> };
-    expect(v2.plugin).toBeUndefined();
+interface Config {
+  enabled_providers?: string[];
+  small_model?: string;
+  provider: Record<string, { models: Record<string, { id: string; name: string; variants: Record<string, unknown> }> }>;
+}
+
+describe("OpenCode 2 on a Claude account (docs/340)", () => {
+  it("declares the catalogue model under the claude-agent provider, with the id `claude` is given", () => {
+    const v2 = opencode2ClaudeConfig("claude-opus-5-5") as unknown as Config;
     // A credential another route left behind serves nothing, title generation included.
     expect(v2.enabled_providers).toEqual(["claude-agent"]);
     expect(v2.small_model).toBe("claude-agent/claude-opus-5-5");
@@ -217,11 +221,9 @@ describe("OpenCode on a Claude account (docs/340)", () => {
       name: "claude-opus-5-5",
       variants: { low: { effort: "low" }, medium: { effort: "medium" }, high: { effort: "high" }, xhigh: { effort: "xhigh" }, max: { effort: "max" } },
     });
-    const v1 = opencodeClaudeConfig("haiku", "opencode") as typeof v2;
-    expect(v1.plugin).toEqual([`file://${OPENCODE_CLAUDE_PLUGIN_PATH}`]);
-    expect(v1.enabled_providers).toEqual(["claude-code"]);
     // A row named for a Claude Code alias sends its vendor id, as on Claude Code.
-    expect(v1.provider["claude-code"]?.models.haiku?.id).toBe("claude-haiku-4-5");
+    const haiku = opencode2ClaudeConfig("haiku") as unknown as Config;
+    expect(haiku.provider["claude-agent"]?.models.haiku?.id).toBe("claude-haiku-4-5");
   });
 
   it("drops a reasoning level that is not a Claude effort", () => {

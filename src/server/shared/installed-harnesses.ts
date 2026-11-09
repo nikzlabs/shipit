@@ -60,7 +60,7 @@ export function isHarnessInstalled(id: AgentId, declared = readInstalledHarnesse
 // Mirrors install-agent-clis.sh `required_clis`: CLIs an install carries for another
 // harness's sign-in without offering their harness (docs/340).
 const LOGIN_DEPENDENCIES: Partial<Record<AgentId, readonly AgentId[]>> = {
-  opencode: ["codex", "claude"],
+  opencode: ["codex"],
   opencode2: ["codex", "claude"],
 };
 

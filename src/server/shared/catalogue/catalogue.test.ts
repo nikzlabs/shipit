@@ -832,9 +832,9 @@ describe("support before a credential exists (the add-service table)", () => {
   });
 
   it("is not hiding a per-shape difference behind one mode cell", () => {
-    // docs/340: OpenCode reaches a Claude subscription through the login, never a pasted
+    // docs/340: OpenCode 2 reaches a Claude subscription through the login, never a pasted
     // token, which Anthropic restricts to Claude Code.
-    const splitByDesign = new Set(["anthropic/sub/opencode2", "anthropic/sub/opencode"]);
+    const splitByDesign = new Set(["anthropic/sub/opencode2"]);
     for (const service of allServices()) {
       for (const harness of allHarnesses()) {
         for (const mode of service.modes) {
@@ -869,9 +869,10 @@ describe("support before a credential exists (the add-service table)", () => {
           .toEqual({ service: service.id, harness: harness.id, support: expected });
       }
     }
-    expect(harnessServiceSupport("opencode", "anthropic")).toBe("all");
+    expect(harnessServiceSupport("opencode", "anthropic")).toBe("some");
     expect(harnessServiceSupport("opencode", "openai")).toBe("all");
-    expect(harnessSupportsMode("opencode", "anthropic", "sub")).toBe(true);
+    expect(harnessSupportsMode("opencode", "anthropic", "sub")).toBe(false);
+    expect(harnessSupportsMode("opencode2", "anthropic", "sub")).toBe(true);
     expect(harnessSupportsMode("opencode", "anthropic", "key")).toBe(true);
     expect(harnessSupportsMode("opencode", "zai", "sub")).toBe(false);
     expect(harnessSupportsMode("opencode", "zai", "key")).toBe(true);
@@ -1409,7 +1410,7 @@ describe("credentials", () => {
     });
 
     it("fans a completed sign-in out to every harness that can use the credential", () => {
-      expect(harnessesForLoginIntegration("anthropic-oauth")).toEqual(["claude", "opencode2", "opencode"]);
+      expect(harnessesForLoginIntegration("anthropic-oauth")).toEqual(["claude", "opencode2"]);
       expect(harnessesForLoginIntegration("openai-chatgpt")).toEqual(["codex", "opencode2", "opencode"]);
       expect(harnessesForLoginIntegration("xai-oauth")).toEqual(["grok"]);
     });
@@ -1570,12 +1571,11 @@ it("reaches a Responses-only model on OpenCode without moving a dual-shape one",
       "openai-responses",
     ]);
   }
-  // docs/340: the account target carries the Claude login without re-pointing a ChatGPT model.
-  expect(harnessCanCarry("opencode", { serviceId: "anthropic", billingMode: "sub", via: "account" })).toBe(true);
-  expect(harnessCanCarry("opencode", { serviceId: "anthropic", billingMode: "sub", via: "string" })).toBe(false);
-  for (const harness of ["opencode", "opencode2"] as const) {
-    for (const model of getMode("openai", "sub")!.models) {
-      expect([harness, model.id, resolveStyle(harness, model, "account")]).toEqual([harness, model.id, "openai-responses"]);
-    }
+  expect(harnessCanCarry("opencode", { serviceId: "anthropic", billingMode: "sub", via: "account" })).toBe(false);
+  // docs/340: OpenCode 2's account target carries the Claude login without re-pointing a ChatGPT model.
+  expect(harnessCanCarry("opencode2", { serviceId: "anthropic", billingMode: "sub", via: "account" })).toBe(true);
+  expect(harnessCanCarry("opencode2", { serviceId: "anthropic", billingMode: "sub", via: "string" })).toBe(false);
+  for (const model of getMode("openai", "sub")!.models) {
+    expect([model.id, resolveStyle("opencode2", model, "account")]).toEqual([model.id, "openai-responses"]);
   }
 });

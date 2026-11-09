@@ -30,7 +30,7 @@ import {
   isOpenCodeClaudeRouting,
   opencode2ModelArg,
   opencodeAccountConfig,
-  opencodeClaudeConfig,
+  opencode2ClaudeConfig,
   opencodeProviderConfig,
   prepareOpenCodeClaudeEnv,
   requireClaudeLogin,
@@ -169,7 +169,7 @@ export class Opencode2Adapter
       Object.assign(config, opencodeAccountConfig(params.model, "opencode2"));
       args.push("--model", opencode2ModelArg("openai", params.model, variant));
     } else if (isOpenCodeClaudeRouting(params.serviceRouting) && params.model) {
-      Object.assign(config, opencodeClaudeConfig(params.model, "opencode2"));
+      Object.assign(config, opencode2ClaudeConfig(params.model));
       args.push("--model", opencode2ModelArg(OPENCODE2_CLAUDE_PROVIDER_ID, params.model, claudeVariant(variant)));
     } else if (params.serviceRouting && params.model) {
       const provider = opencodeProviderConfig(params.serviceRouting, params.model, "opencode2");

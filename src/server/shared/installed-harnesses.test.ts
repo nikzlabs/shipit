@@ -104,6 +104,7 @@ describe("isHarnessCliPresent (docs/340)", () => {
   it("counts the CLIs an OpenCode install carries for its sign-ins, and nothing more", () => {
     expect(isHarnessCliPresent("claude", ["opencode2"])).toBe(true);
     expect(isHarnessCliPresent("codex", ["opencode"])).toBe(true);
+    expect(isHarnessCliPresent("claude", ["opencode"])).toBe(false);
     expect(isHarnessCliPresent("grok", ["opencode", "opencode2"])).toBe(false);
     expect(isHarnessCliPresent("claude", ["codex"])).toBe(false);
     expect(isHarnessCliPresent("opencode", ["opencode"])).toBe(true);

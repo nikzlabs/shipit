@@ -1330,9 +1330,10 @@ describe("ProviderAccountManager", () => {
 });
 
 describe("accountCredentialHarness (docs/340)", () => {
-  it("gives OpenCode Claude's files for a Claude account and keeps every other pair as it was", () => {
-    expect(accountCredentialHarness("opencode", "anthropic")).toBe("claude");
+  it("gives OpenCode 2 Claude's files for a Claude account and keeps every other pair as it was", () => {
     expect(accountCredentialHarness("opencode2", "anthropic")).toBe("claude");
+    // OpenCode 1 has no Claude route (req 2).
+    expect(accountCredentialHarness("opencode", "anthropic")).toBe("opencode");
     expect(accountCredentialHarness("opencode2", "openai")).toBe("opencode2");
     expect(accountCredentialHarness("opencode", undefined)).toBe("opencode");
     expect(accountCredentialHarness("claude", "anthropic")).toBe("claude");

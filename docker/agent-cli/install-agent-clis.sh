@@ -86,13 +86,13 @@ if [ -z "$selected" ]; then
   echo "       Valid harnesses: $(echo $KNOWN_HARNESSES | tr ' ' ',')" >&2
   exit 1
 fi
-# OpenCode needs Codex for ChatGPT login/renewal and Claude Code for a Claude
-# subscription (docs/340), without offering either harness.
+# OpenCode needs Codex for ChatGPT login/renewal, and OpenCode 2 needs Claude Code
+# for a Claude subscription (docs/340), without offering either harness.
 required_clis="$selected"
 if { contains opencode $selected || contains opencode2 $selected; } && ! contains codex $selected; then
   required_clis="$required_clis codex"
 fi
-if { contains opencode $selected || contains opencode2 $selected; } && ! contains claude $selected; then
+if contains opencode2 $selected && ! contains claude $selected; then
   required_clis="$required_clis claude"
 fi
 echo "[install-agent-clis] installing harnesses:$selected"
@@ -103,13 +103,6 @@ npm ci --ignore-scripts
 # These postinstall scripts materialize binaries inside node_modules.
 if contains claude $required_clis; then
   npm rebuild @anthropic-ai/claude-code
-fi
-
-# OpenCode 1's Claude plugin runs the SDK on the installed `claude`, so the SDK's own
-# copy of the CLI is dead weight (~330 MB); OpenCode 2 bundles its SDK.
-rm -rf "$AGENT_CLI_DIR"/node_modules/@anthropic-ai/claude-agent-sdk-*
-if ! contains opencode $selected; then
-  rm -rf "$AGENT_CLI_DIR/node_modules/@openchamber/opencode-claude"
 fi
 
 if contains opencode $selected; then

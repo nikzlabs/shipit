@@ -1,7 +1,7 @@
 ---
 issue: planning#718
 title: OpenCode on a Claude subscription — design
-description: Route the Anthropic subscription login to both OpenCode harnesses through OpenCode's own Claude Code bridge.
+description: Route the Anthropic subscription login to the OpenCode 2 harness through its built-in Claude Code bridge.
 ---
 
 # OpenCode on a Claude subscription — design
@@ -10,8 +10,8 @@ Implements [requirements.md](./requirements.md).
 
 ## Upstream facts (probed 2026-11-09)
 
-Neither OpenCode talks to Anthropic with the subscription token itself. Both
-run the user's installed `claude` CLI through Anthropic's Claude Agent SDK, and
+OpenCode 2 does not talk to Anthropic with the subscription token itself. It
+runs the user's installed `claude` CLI through Anthropic's Claude Agent SDK, and
 Claude Code does the model calls. OpenCode keeps its own tools: Claude Code's
 built-in tools are switched off and OpenCode's are bridged in as MCP tools, so
 ShipIt's tool normalizers see the usual OpenCode tool events.
@@ -40,28 +40,18 @@ fingerprints were unchanged afterwards):
 - 2.2.3's two breaking changes (TUI plugin peer versions, managed-policy
   `integration.use`) touch nothing ShipIt uses.
 
-**OpenCode 1 — the community plugin `@openchamber/opencode-claude@0.14.0`**
-(MIT; 0.14.x is the line for OpenCode 1.x, the repository is archived since
-OpenCode 2.2.3 made it unnecessary there). No built-in route exists on 1.x.
-
-- Loaded by absolute `file://` path in `plugin`, it still loads with
-  `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`.
-- The provider id is `claude-code`. Like OpenCode 2, a catalogue id has to be
-  declared under `provider["claude-code"].models`.
-- It runs a loopback OpenAI-compatible proxy in-process and calls the SDK's
-  `query()` with `pathToClaudeCodeExecutable` set to `claude` found on `PATH`,
-  so the SDK's own 327 MB platform binary
-  (`@anthropic-ai/claude-agent-sdk-<platform>`) is never used.
-- Its child environment drops `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and
-  `CLAUDE_CODE_OAUTH_TOKEN` and keeps `HOME`, so the login comes from the
-  `.claude` under `HOME`.
-- Probed with ShipIt's v1 flags: `--format json`, `--variant low`, a
-  declared `claude-opus-5-5`, and the `write` + `shell` tools.
+**OpenCode 1 has no route of its own.** Neither the version ShipIt installs
+(1.19.0), the newest release (1.19.5) nor the nightly build carries the
+provider, the SDK or `OPENCODE_CLAUDE_PATH`. The only way was the archived
+community plugin `@openchamber/opencode-claude@0.14.0`; it worked when probed,
+but reported about 79k input tokens for a one-line turn where OpenCode 2
+reported 6 plus cache reads. On 2026-11-09 the user took OpenCode 1 out of
+scope (req 2), so ShipIt ships no plugin.
 
 ## Terms
 
 ShipIt already runs the unmodified Claude Code CLI on the user's own
-subscription. On this route it still does — OpenCode drives it through the
+subscription. On this route it still does — OpenCode 2 drives it through the
 Agent SDK, and neither OpenCode nor ShipIt sends the token anywhere. Anthropic's
 Agent SDK overview says third-party products need prior approval to offer
 claude.ai login; whether this route needs that is the operator's call, not a
@@ -69,10 +59,11 @@ technical gate. The user asked for the route on 2026-11-09.
 
 ## Design
 
-**Catalogue (reqs 1, 2).** Both OpenCode harnesses list `anthropic-messages`
-in `spawn.credential.account.styles` (`shared/catalogue/harnesses.ts`), so the
-eligibility join admits the Anthropic `sub` mode's `anthropic-oauth` login. Its
-pasted `ANTHROPIC_AUTH_TOKEN` keeps `carriers: ["claude"]`: OpenCode takes the
+**Catalogue (reqs 1, 2).** OpenCode 2 lists `anthropic-messages` in
+`spawn.credential.account.styles` (`shared/catalogue/harnesses.ts`), so the
+eligibility join admits the Anthropic `sub` mode's `anthropic-oauth` login;
+OpenCode 1's account target stays ChatGPT-only. The pasted
+`ANTHROPIC_AUTH_TOKEN` keeps `carriers: ["claude"]`: OpenCode 2 takes the
 login, never a pasted token. That makes Anthropic `sub` the one mode whose
 credentials disagree per harness, so the add-service "one answer per mode
 cell" test names it as the exception.
@@ -80,7 +71,8 @@ cell" test names it as the exception.
 **Routing.** `serviceRoutingForSelection` (`orchestrator/service-routing.ts`)
 returns an `AnthropicAccountRouting` — `credentialTarget: { kind:
 "anthropic-oauth", accountId }` — for an OpenCode harness on Anthropic `sub`
-with an account route. Claude Code still takes no routing for it.
+with an account route whose style resolves, which the catalogue allows for
+OpenCode 2 only. Claude Code still takes no routing for it.
 
 **Credentials: OpenCode borrows Claude's layout.** The `claude` CLI that
 OpenCode runs reads `~/.claude`, so the session must hold exactly what a Claude
@@ -133,19 +125,19 @@ home) — the same thing a local Claude Code turn does through `HOME`.
 A failed Claude login on OpenCode is vendor-owned recovery
 (`credential-failure-policy.ts`), as on the ChatGPT route.
 
-**Adapters.** Both adapters gain a third account branch beside ChatGPT and
-strings (`isOpenCodeClaudeRouting`, `opencodeClaudeConfig`,
-`prepareOpenCodeClaudeEnv` in `shared/opencode-spawn-shaping.ts`):
+**Adapter.** The OpenCode 2 adapter gains a third account branch beside ChatGPT
+and strings (`isOpenCodeClaudeRouting`, `opencode2ClaudeConfig`,
+`prepareOpenCodeClaudeEnv` in `shared/opencode-spawn-shaping.ts`); OpenCode 1's
+adapter is unchanged:
 
 - the config makes the Claude provider the only enabled one
   (`enabled_providers`, `model`, `small_model`), so a credential another route
   left in OpenCode's store serves nothing, title generation included;
-- the config declares the catalogue model under `claude-agent` (OpenCode 2) or
-  `claude-code` (OpenCode 1, plus `plugin: ["file://<plugin>"]`) with `id:
+- the config declares the catalogue model under `claude-agent` with `id:
   claudeModelArg(model)` — the vendor id and `[1m]` Claude Code would be given
   — and one variant per Claude effort; `none`/`minimal` are dropped;
-- the model flag is `claude-agent/<model>#<effort>` or `claude-code/<model>`
-  with `--variant`; compaction uses the same provider id;
+- the model flag is `claude-agent/<model>#<effort>`; compaction uses the same
+  provider id;
 - `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`, `ANTHROPIC_BASE_URL`,
   `OPENCODE_CONFIG_CONTENT` (an inline config loads after ShipIt's file),
   `OPENCODE_CLAUDE_PATH` (it would pick another `claude`) and
@@ -153,38 +145,28 @@ strings (`isOpenCodeClaudeRouting`, `opencodeClaudeConfig`,
   `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`, so `HOME/.claude` is the only
   login `claude` can find;
 - a home with no `.claude/.credentials.json` asks for sign-in before anything
-  is spawned, and a 401 does too; a missing OpenCode 1 plugin is an error, since
-  reconnecting the account cannot fix it.
+  is spawned, and a 401 does too.
 
 **Install.** `install-agent-clis.sh` adds `claude` to the required CLIs
-whenever an OpenCode harness is selected (the same shape as the Codex
-dependency for ChatGPT), deletes the SDK's platform CLI packages
-(`@anthropic-ai/claude-agent-sdk-*`), and deletes the plugin when OpenCode 1 is
-not selected. `docker/agent-cli/package.json` pins `@opencode/cli` 2.2.5 and
-`@openchamber/opencode-claude` 0.14.0, and overrides three transitive packages:
-the SDK to 0.3.312 (its range resolved to a release published that day), and
-`toml` 5.0.1 under `effect` and `zod` 4.6.7 under `@opencode-ai/plugin`, which
-clear the five `high` advisories the plugin's tree brought in.
+whenever OpenCode 2 is selected (the same shape as the Codex dependency for
+ChatGPT). `docker/agent-cli/package.json` pins `@opencode/cli` 2.2.5, which
+bundles its SDK; nothing else is added.
 
 **Automatic harness choice (req 4).** Nothing new decides it. The reviewer
 puts the implementer's harness last (`harnessesPreferring`), so for a Claude
 Code session whose only credential is a Claude subscription it now lands on an
-OpenCode harness that can carry the login — OpenCode 2 when installed, else
-OpenCode 1 — which req 4 allows. Background work takes the first eligible
+OpenCode 2 when it is installed, which req 4 allows. Background work takes the first eligible
 harness in catalogue order with nothing to avoid (`backgroundWorkHarnessFor`),
 and Claude Code is first, so it stays on Claude Code whenever that harness is
 installed; `non-turn-model.test.ts` pins both cases.
 
 ## Verification
 
-Through ShipIt's real adapters (`Opencode2Adapter`, `OpencodeAdapter`) and real
-binaries, on a home holding only `.claude/.credentials.json`: a tool turn
-(`write` + `shell`, normalized to Write and Bash), usage on `agent_result`, and
-a resumed second turn that recalled the first. OpenCode 1's plugin was loaded
-from a scratch install because `/opt/agent-cli` is read-only in the session; the
-test swapped only that path in the written config. Both were re-run after the
-review fixes, with an inherited `OPENCODE_CONFIG_CONTENT` that named another
-model.
+Through ShipIt's real `Opencode2Adapter` and the real 2.2.5 binary, on a home
+holding only `.claude/.credentials.json`: a tool turn (`write` + `shell`,
+normalized to Write and Bash), usage on `agent_result`, and a resumed second
+turn that recalled the first. It was re-run after the review fixes, with an
+inherited `OPENCODE_CONFIG_CONTENT` that named another model.
 
 Req 3 on the 2.2.5 binary: the API-key route against a local mock reached
 `<base>/v1/messages` with the key in `x-api-key` and turned the 401 into an
@@ -196,15 +178,12 @@ ChatGPT login this session does not have.
 Not run: a dogfood turn through the orchestrator, a container built from the new
 lockfile, an expired-token refresh mid-turn, and a real ChatGPT turn.
 
-Reviewed by ShipIt's configured reviewer in four rounds; every finding was
-applied, and the last round found nothing blocking.
+Reviewed by ShipIt's configured reviewer in four rounds while OpenCode 1 was
+still in scope; every finding was applied, and the last round found nothing
+blocking. The OpenCode 1 removal was reviewed separately.
 
 ## Known limits
 
-- OpenCode 1 reported about 79k input tokens for a one-line turn where OpenCode
-  2 reported 6 plus cache reads; the plugin documents that it replays the
-  conversation into Claude Code, so it spends more of the plan per turn.
-- The OpenCode 1 plugin's repository is archived; 0.14.x is its last line for
-  OpenCode 1.x.
-- Idle compaction still skips both (OpenCode 1 assumes a 5-minute cache for a
-  Claude model; OpenCode 2 is unprobed), which is the safe default.
+- OpenCode 1 cannot use a Claude subscription (req 2).
+- Idle compaction still skips OpenCode 2 (its cache across processes is
+  unprobed), which is the safe default.

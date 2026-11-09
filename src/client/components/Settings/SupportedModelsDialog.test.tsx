@@ -75,11 +75,10 @@ describe("SupportedModelsDialog", () => {
       opencode: "yes",
     });
 
-    // OpenCode can carry Z.ai's API key but never its plan key (`carriers`).
-    expect(answers("zai:sub", "glm-5.2[1m]").opencode).toBe("no");
-    expect(answers("zai:key", "glm-5.2").opencode).toBe("yes");
-    // docs/340 — the Claude login reaches OpenCode, though a pasted Claude token does not.
-    expect(answers("anthropic:sub", "claude-opus-5").opencode).toBe("yes");
+    // can carry an API key but never the subscription token (`carriers`). A
+
+    expect(answers("anthropic:sub", "claude-opus-5").opencode).toBe("no");
+    expect(answers("anthropic:key", "claude-opus-5").opencode).toBe("yes");
   });
 
   /**
@@ -222,9 +221,10 @@ describe("SupportedModelsDialog", () => {
     await userEvent.click(screen.getAllByTestId("supported-models-narrow-deepseek:key-opencode")[0]);
     expect(screen.getByTestId("supported-models-narrowed")).toHaveTextContent(/OpenCode/);
     expect(screen.getByTestId("supported-models-mode-deepseek:key")).toBeInTheDocument();
-    // OpenCode cannot carry Z.ai's coding-plan key, so that mode goes
-    expect(screen.queryByTestId("supported-models-mode-zai:sub")).toBeNull();
-    expect(screen.getByTestId("supported-models-mode-zai:key")).toBeInTheDocument();
+    // OpenCode cannot carry Anthropic's subscription token, so that mode goes
+
+    expect(screen.queryByTestId("supported-models-mode-anthropic:sub")).toBeNull();
+    expect(screen.getByTestId("supported-models-mode-anthropic:key")).toBeInTheDocument();
   });
 
   /**

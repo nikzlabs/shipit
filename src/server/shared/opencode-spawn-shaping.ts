@@ -91,24 +91,17 @@ export function isOpenCodeClaudeRouting(routing: ServiceRouting | undefined): ro
   return routing?.credentialTarget.kind === "anthropic-oauth";
 }
 
-/** OpenCode 2's built-in provider; v1's comes from the community plugin below (docs/340). */
+/** OpenCode 2's built-in provider, which runs the session's `claude` CLI (docs/340). */
 export const OPENCODE2_CLAUDE_PROVIDER_ID = "claude-agent";
-export const OPENCODE_CLAUDE_PROVIDER_ID = "claude-code";
-export const OPENCODE_CLAUDE_PLUGIN_PATH = "/opt/agent-cli/node_modules/@openchamber/opencode-claude/opencode-claude.js";
 
-// Both providers read the effort from the variant's name; none/minimal are not Claude efforts.
+// The provider reads the effort from the variant's name; none/minimal are not Claude efforts.
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
-export function opencodeClaudeProviderId(harness: OpenCodeHarnessId): string {
-  return harness === "opencode2" ? OPENCODE2_CLAUDE_PROVIDER_ID : OPENCODE_CLAUDE_PROVIDER_ID;
-}
-
-// Neither provider knows catalogue ids: each must be declared, with the id `claude` is given.
-// The only enabled provider, so a credential another route left behind cannot serve any request.
-export function opencodeClaudeConfig(modelId: string, harness: OpenCodeHarnessId): Record<string, unknown> {
-  const providerId = opencodeClaudeProviderId(harness);
+// The provider does not know catalogue ids, so the model is declared with the id `claude` is
+// given. It is the only enabled provider, so a credential another route left behind serves nothing.
+export function opencode2ClaudeConfig(modelId: string): Record<string, unknown> {
+  const providerId = OPENCODE2_CLAUDE_PROVIDER_ID;
   return {
-    ...(harness === "opencode" ? { plugin: [`file://${OPENCODE_CLAUDE_PLUGIN_PATH}`] } : {}),
     enabled_providers: [providerId],
     model: `${providerId}/${modelId}`,
     small_model: `${providerId}/${modelId}`,
