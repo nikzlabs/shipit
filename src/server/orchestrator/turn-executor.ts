@@ -716,7 +716,7 @@ export async function executeAgentTurn(
         const routeId = capturedCredentialRoute.providerRouteId;
         automaticRecoveryInProgress = true;
         // A missing credential can make ensureFresh return before it records auth_failed.
-        deps.listenerDeps.onAgentAuthRequired?.(agentId);
+        deps.listenerDeps.onAgentAuthRequired?.(agentId, routeId);
         await finalizeAttemptOutput();
         await retryOnNextAccount(
           {

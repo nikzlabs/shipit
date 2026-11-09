@@ -22,7 +22,20 @@ import { ensureOpencodeDataDir } from "../../../shared/opencode-data-dir.js";
 import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
 import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.js";
-import { opencodeModelArg, opencodeProviderConfig, isOpenCodeAccountRouting, opencodeAccountConfig, prepareOpenCodeAccountEnv } from "../../../shared/opencode-spawn-shaping.js";
+import {
+  OPENCODE_CLAUDE_PLUGIN_PATH,
+  OPENCODE_CLAUDE_PROVIDER_ID,
+  claudeVariant,
+  isOpenCodeAccountRouting,
+  isOpenCodeClaudeRouting,
+  opencodeAccountConfig,
+  opencodeClaudeConfig,
+  opencodeModelArg,
+  opencodeProviderConfig,
+  prepareOpenCodeAccountEnv,
+  prepareOpenCodeClaudeEnv,
+  requireClaudeLogin,
+} from "../../../shared/opencode-spawn-shaping.js";
 import { parseOpencodeLine, OpencodeTurnAccumulator, type OpencodeEvent, type OpencodeToolPart } from "../../../shared/opencode-stream.js";
 import { normalizeOpencodeToolCall, normalizeOpencodeToolResult } from "./opencode-tool-normalizer.js";
 import { compactOpencodeSession } from "./compaction.js";
@@ -86,7 +99,7 @@ export class OpencodeAdapter
   private stdinFailure: NodeJS.ErrnoException | null = null;
   private pendingMcpServers: Record<string, unknown> = {};
   private _isStreaming = false;
-  private usingChatGPT = false;
+  private usingAccount = false;
   private subscriptionLimits: OpenCodeSubscriptionLimits | undefined;
 
   constructor(opts?: {
@@ -108,7 +121,8 @@ export class OpencodeAdapter
       return;
     }
     this.accumulator = new OpencodeTurnAccumulator();
-    this.usingChatGPT = isOpenCodeAccountRouting(params.serviceRouting);
+    this.usingAccount = isOpenCodeAccountRouting(params.serviceRouting) || isOpenCodeClaudeRouting(params.serviceRouting);
+    const claudeRoute = isOpenCodeClaudeRouting(params.serviceRouting);
     this.emittedInit = false;
     this.stallReason = null;
     this.resumeSessionId = params.sessionId;
@@ -125,6 +139,9 @@ export class OpencodeAdapter
     if (isOpenCodeAccountRouting(params.serviceRouting) && params.model) {
       Object.assign(config, opencodeAccountConfig(params.model));
       args.push("--model", `openai/${params.model}`);
+    } else if (claudeRoute && params.model) {
+      Object.assign(config, opencodeClaudeConfig(params.model, "opencode"));
+      args.push("--model", `${OPENCODE_CLAUDE_PROVIDER_ID}/${params.model}`);
     } else if (params.serviceRouting && params.model) {
       const provider = opencodeProviderConfig(params.serviceRouting, params.model);
       if (!provider) {
@@ -142,13 +159,20 @@ export class OpencodeAdapter
       args.push("--model", params.model);
     }
 
-    if (params.reasoningEffort) {
+    const variant = claudeRoute ? claudeVariant(params.reasoningEffort) : params.reasoningEffort;
+    if (variant) {
       // The catalogue validates variants; OpenCode silently ignores unknown ones.
-      args.push("--variant", params.reasoningEffort);
+      args.push("--variant", variant);
     }
 
     if (Object.keys(this.pendingMcpServers).length > 0) {
       config.mcp = this.pendingMcpServers;
+    }
+
+    // An install fault, not a sign-in one: reconnecting the account cannot fix it.
+    if (claudeRoute && !fs.existsSync(OPENCODE_CLAUDE_PLUGIN_PATH)) {
+      this.emit("error", new Error(`OpenCode's Claude plugin is not installed at ${OPENCODE_CLAUDE_PLUGIN_PATH}`));
+      return;
     }
 
     const scopedHome = params.homeDir ?? this.resolveHome?.();
@@ -160,8 +184,9 @@ export class OpencodeAdapter
       dataHome = ensureManagedOpenCodeData(home);
       if (isOpenCodeAccountRouting(params.serviceRouting)) readOpenCodeAccount(dataHome, params.serviceRouting.credentialTarget.accountId);
       else removeOpenCodeAccount(dataHome);
+      if (claudeRoute) requireClaudeLogin(home);
     } catch (error) {
-      if (this.usingChatGPT) this.emit("auth_required");
+      if (this.usingAccount) this.emit("auth_required");
       else this.emit("error", error instanceof Error ? error : new Error(String(error)));
       return;
     }
@@ -184,6 +209,9 @@ export class OpencodeAdapter
     if (isOpenCodeAccountRouting(params.serviceRouting)) {
       spawnEnv.OPENCODE_CONFIG_CONTENT = JSON.stringify(opencodeAccountConfig(params.model!));
       prepareOpenCodeAccountEnv(spawnEnv);
+    } else if (isOpenCodeClaudeRouting(params.serviceRouting)) {
+      prepareOpenCodeClaudeEnv(spawnEnv);
+      console.log(`[opencode] service routing: anthropic/sub -> the session's claude CLI (${OPENCODE_CLAUDE_PROVIDER_ID})`);
     } else if (params.serviceRouting) {
       const routing = params.serviceRouting;
       const secret = process.env[routing.credentialSourceEnv];
@@ -444,7 +472,9 @@ export class OpencodeAdapter
         await compactOpencodeSession({
           sessionId,
           modelId: params.model!,
-          providerId: isOpenCodeAccountRouting(params.serviceRouting) ? "openai" : "shipit",
+          providerId: isOpenCodeAccountRouting(params.serviceRouting)
+            ? "openai"
+            : isOpenCodeClaudeRouting(params.serviceRouting) ? OPENCODE_CLAUDE_PROVIDER_ID : "shipit",
           cwd: params.cwd,
           env: spawnEnv,
           spawnFn: this.spawnFn,
@@ -524,7 +554,7 @@ export class OpencodeAdapter
     for (const e of mapped) this.emit("event", e);
 
     if (event.type === "error") {
-      if (this.usingChatGPT && (event.error?.data?.statusCode === 401 || /^Token refresh failed: (400|401|403)$/.test(event.error?.data?.message ?? ""))) {
+      if (this.usingAccount && (event.error?.data?.statusCode === 401 || /^Token refresh failed: (400|401|403)$/.test(event.error?.data?.message ?? ""))) {
         this.emit("auth_required");
       }
       this.emit("log", "server", `OpenCode error: ${this.accumulator.errorMessage ?? "unknown"}`);

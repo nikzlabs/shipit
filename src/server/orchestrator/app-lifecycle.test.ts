@@ -1484,6 +1484,30 @@ describe("markProviderAccountUnauthenticated", () => {
   });
 });
 
+describe("account status on an OpenCode Claude route (docs/340)", () => {
+  it("marks the Claude account, not an OpenAI one, and refreshes every harness on the Claude login", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-provider-oc-claude-"));
+    try {
+      const credentialStore = new CredentialStore(tmp);
+      const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
+      const account = providerAccountManager.create("anthropic", "Work");
+      providerAccountManager.setAccountStatus("anthropic", account.id, "ready");
+      const refreshAuthForLogin = vi.fn();
+      const agentRegistry = { refreshAuth: vi.fn(), refreshAuthForLogin, list: () => [] } as unknown as AgentRegistry;
+      const deps = { providerAccountManager, agentRegistry, sseBroadcast: () => {}, credentialStore };
+
+      markProviderAccountUnauthenticated({ agentId: "opencode2", accountId: account.id, ...deps });
+      expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("auth_failed");
+      expect(refreshAuthForLogin).toHaveBeenLastCalledWith("anthropic-oauth");
+
+      markProviderAccountReauthenticated({ agentId: "opencode2", accountId: account.id, ...deps });
+      expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("ready");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("markProviderAccountReauthenticated", () => {
   function buildRegistry(initialAuth: boolean): { agentRegistry: AgentRegistry; refreshAuth: ReturnType<typeof vi.fn>; refreshAuthForLogin: ReturnType<typeof vi.fn>; getAuth: () => boolean } {
     let hasRunnableModels = initialAuth;

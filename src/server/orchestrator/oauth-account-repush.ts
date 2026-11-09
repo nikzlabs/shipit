@@ -16,8 +16,12 @@ export function createOAuthAccountRepush(
   logPrefix: string,
 ): (agentId: AgentId, accountId: string) => void {
   return (agentId, accountId) => {
+    // docs/340 — another harness's session can hold this account's files under this marker.
     const pinned = deps.listSessions()
-      .filter((session) => session.agentPinned && session.agentId === agentId)
+      .filter((session) => session.agentPinned && (
+        session.agentId === agentId
+        || readSessionAccountMarker(deps.credentialsDir, session.id)[agentId] === accountId
+      ))
       .map((session) => ({ id: session.id, live: deps.hasLiveAgent(session.id) }));
     // A live CLI's next request can fail until it has the new token; an idle one reads it at its
     // next turn. Each push costs a recursive chown, so the live ones go first (docs/153).

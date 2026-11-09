@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { perSessionCredentialsDir } from "./session-credentials-scaffold.js";
 import { restoreOpenCodeAccount } from "./openai-account-delivery.js";
-import { accountOwnerHarness } from "./provider-account-manager.js";
+import { accountCredentialHarness, accountOwnerHarness } from "./provider-account-manager.js";
 import { AgentMergeClaimStore } from "./agent-merge-claims.js";
 import { SettingsProposalStore } from "./settings-proposal-store.js";
 import { reconcileAgentMergeClaims } from "./services/agent-merge-settlement.js";
@@ -393,8 +393,13 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const agentAuthRequiredHooks = new Map<AgentId, () => void>();
   agentAuthRequiredHooks.set("claude", nudgeClaudeOAuthRefresh);
   agentAuthRequiredHooks.set("codex", nudgeCodexOAuthRefresh);
-  const onAgentAuthRequired = (agentId: AgentId): void => {
-    agentAuthRequiredHooks.get(accountOwnerHarness(agentId))?.();
+  // docs/340 — an OpenCode account can be a Claude login, which Claude's refresher owns.
+  const refresherHarnessFor = (agentId: AgentId, accountId?: string): AgentId =>
+    accountOwnerHarness(accountId
+      ? accountCredentialHarness(agentId, credentialStore.getCredentialRoute(accountId)?.serviceId)
+      : agentId);
+  const onAgentAuthRequired = (agentId: AgentId, accountId?: string): void => {
+    agentAuthRequiredHooks.get(refresherHarnessFor(agentId, accountId))?.();
   };
   const ensureTokenFreshHooks = new Map<
     AgentId,
@@ -419,7 +424,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     accountId?: string,
     opts?: { force?: boolean },
   ): Promise<boolean> => {
-    const hook = ensureTokenFreshHooks.get(accountOwnerHarness(agentId));
+    const hook = ensureTokenFreshHooks.get(refresherHarnessFor(agentId, accountId));
     return hook ? hook(accountId, opts) : true;
   };
   const readSystemPromptApp = (scope: SystemPromptScope): Promise<string | undefined> =>

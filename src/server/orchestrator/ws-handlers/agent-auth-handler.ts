@@ -101,7 +101,9 @@ export function wireAuthRequiredHandler(
       persistAuthErrorRow();
       // A vendor's OAuth refresher cannot repair another service's key or subscription.
       if (failingAgentId && !failurePolicy.stopsOnFailure && failurePolicy.vendorOwnedRecovery) {
-        deps.onAgentAuthRequired?.(failingAgentId);
+        const failedAccountId = opts.getCapturedRouteKind?.() === "account" ? failedRouteId : undefined;
+        if (failedAccountId) deps.onAgentAuthRequired?.(failingAgentId, failedAccountId);
+        else deps.onAgentAuthRequired?.(failingAgentId);
       }
       if (runner && turnSessionId) {
         emitToViewers({

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CredentialStore } from "./credential-store.js";
-import { accountServiceForHarness, ProviderAccountManager } from "./provider-account-manager.js";
+import { accountCredentialHarness, accountServiceForHarness, ProviderAccountManager } from "./provider-account-manager.js";
 import type { AgentAuthManager, AgentAuthManagerEvents, AgentAuthStartOptions, AgentAuthScopeOptions } from "./agent-auth-manager.js";
 
 class FakeAuthManager extends EventEmitter<AgentAuthManagerEvents> implements AgentAuthManager {
@@ -1326,5 +1326,16 @@ describe("ProviderAccountManager", () => {
         expect(store.getCredentialRoute(account.id)?.exhaustedUntil).toBe(near);
       });
     });
+  });
+});
+
+describe("accountCredentialHarness (docs/340)", () => {
+  it("gives OpenCode Claude's files for a Claude account and keeps every other pair as it was", () => {
+    expect(accountCredentialHarness("opencode", "anthropic")).toBe("claude");
+    expect(accountCredentialHarness("opencode2", "anthropic")).toBe("claude");
+    expect(accountCredentialHarness("opencode2", "openai")).toBe("opencode2");
+    expect(accountCredentialHarness("opencode", undefined)).toBe("opencode");
+    expect(accountCredentialHarness("claude", "anthropic")).toBe("claude");
+    expect(accountCredentialHarness("codex", "openai")).toBe("codex");
   });
 });

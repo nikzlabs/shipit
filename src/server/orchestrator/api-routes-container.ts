@@ -66,8 +66,10 @@ export async function registerContainerRoutes(
             getLogBuffer: deps.getLogBuffer ?? (() => []),
             getWorkspaceDir: (id) => sessionManager.get(id)?.workspaceDir ?? null,
             getSessionRoute: (id) => sessionManager.get(id),
+            // The id names the account's own service, which can differ from the harness's (docs/340).
             getAccountLabel: (provider, accountId) =>
-              deps.providerAccountManager.get(accountServiceForHarness(provider), accountId)?.label,
+              (deps.providerAccountManager.getByRouteId(accountId)
+                ?? deps.providerAccountManager.get(accountServiceForHarness(provider), accountId))?.label,
             ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
           },
           request.params.id,

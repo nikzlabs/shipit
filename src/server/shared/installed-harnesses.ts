@@ -56,3 +56,16 @@ export function readInstalledHarnesses(path: string = installReportPath()): Agen
 export function isHarnessInstalled(id: AgentId, declared = readInstalledHarnesses()): boolean {
   return declared === null || declared.includes(id);
 }
+
+// Mirrors install-agent-clis.sh `required_clis`: CLIs an install carries for another
+// harness's sign-in without offering their harness (docs/340).
+const LOGIN_DEPENDENCIES: Partial<Record<AgentId, readonly AgentId[]>> = {
+  opencode: ["codex", "claude"],
+  opencode2: ["codex", "claude"],
+};
+
+/** The CLI is on disk: its harness is offered, or a selected harness needs it for a sign-in. */
+export function isHarnessCliPresent(id: AgentId, declared = readInstalledHarnesses()): boolean {
+  if (isHarnessInstalled(id, declared)) return true;
+  return (declared ?? []).some((harness) => LOGIN_DEPENDENCIES[harness]?.includes(id) ?? false);
+}

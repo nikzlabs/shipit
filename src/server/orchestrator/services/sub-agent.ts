@@ -21,7 +21,7 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
 import { GLOBAL_SETTINGS, settingPath } from "../../shared/settings-catalogue/index.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
-import { accountServiceForHarness } from "../provider-account-manager.js";
+import { accountCredentialHarness, accountServiceForHarness } from "../provider-account-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionContainerManager } from "../session-container.js";
 import { runnerForContainerCall } from "../restart-turn-reattach.js";
@@ -330,13 +330,15 @@ async function runSubAgentInSlot(
   const originatingTurnEpoch = runner.turnEpoch ?? 0;
 
   const provisionAttempt = async (): Promise<void> => {
-    if (isOpenCodeHarness(subAgentId) && accountId && deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", accountId)) throw new ServiceError(401, "ChatGPT account renewal failed.");
+    // docs/340 — OpenCode on a Claude account gets Claude's files, copied like a Claude run's.
+    const credentialAgentId = accountId ? accountCredentialHarness(subAgentId, deps.credentialStore.getCredentialRoute(accountId)?.serviceId) : subAgentId;
+    if (credentialAgentId === subAgentId && isOpenCodeHarness(subAgentId) && accountId && deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", accountId)) throw new ServiceError(401, "ChatGPT account renewal failed.");
     if (!provisioned || !credentialsDir) return;
     console.log(
       `[sub-agent] provision-spawn-home session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
       + `account=${accountId ?? "flat"}`,
     );
-    provisionSubAgentSpawnHome(credentialsDir, sessionId, homeId, subAgentId, accountId);
+    provisionSubAgentSpawnHome(credentialsDir, sessionId, homeId, credentialAgentId, accountId);
   };
   const startedAtMs = Date.now();
   runner.emitMessage({ type: "sub_agent_spawn", sessionId, spawnId, subAgentId });

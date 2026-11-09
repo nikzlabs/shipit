@@ -304,6 +304,57 @@ describe("graduateSession", () => {
     });
   });
 
+  it("names an OpenCode Claude-account target on Claude Code, in the private copy, without OpenCode's routing (docs/340)", async () => {
+    vi.doMock("../non-turn-model.js", async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
+      resolveNonTurnModel: () => ({
+        ok: true,
+        target: {
+          execution: "harness", harnessId: "opencode2", source: "pinned", serviceName: "Anthropic",
+          selection: { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5-5" },
+          route: { kind: "account", id: "acct_c" },
+          serviceRouting: {
+            serviceId: "anthropic", serviceName: "Anthropic", billingMode: "sub", style: "anthropic-messages",
+            baseUrl: "https://api.anthropic.com", credentialTarget: { kind: "anthropic-oauth", accountId: "acct_c" },
+          },
+        },
+      }),
+    }));
+    const generateSessionName = vi.fn(async () => ({ name: { slug: "s", title: "T" } }));
+    vi.doMock("../session-namer.js", () => ({ generateSessionName }));
+    const { graduateSession } = await import("./graduate-session.js");
+    const { deps, state } = buildDeps({
+      id: "s1", title: "placeholder", branch: "shipit/abc123", workspaceDir: "/tmp/ws",
+    });
+    const copyRunner = vi.fn(async (_accountId: string, run: (home: string) => Promise<string>) => run("/tmp/private-copy"));
+    const ensureAgentTokenFresh = vi.fn(async () => true);
+
+    graduateSession(
+      {
+        ...deps,
+        ensureAgentTokenFresh,
+        credentialsDir: TEST_CREDENTIALS_DIR,
+        credentialStore: {} as never,
+        providerAccountManager: { claudeCredentialCopyRunner: () => copyRunner } as never,
+      },
+      { sessionId: "s1", userText: "hi", agentId: "opencode2" },
+    );
+
+    await flush(() => state.branchRenamed === true);
+
+    expect(ensureAgentTokenFresh).toHaveBeenCalledWith("claude", "acct_c");
+    expect(generateSessionName).toHaveBeenCalledWith("hi", expect.objectContaining({
+      harnessId: "claude",
+      model: "claude-opus-5-5",
+      credentialRoot: `${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct_c`,
+    }));
+    const namerTarget = (generateSessionName.mock.calls[0] as unknown as [string, { serviceRouting?: unknown; inCredentialCopy?: (run: (home: string) => Promise<string>) => Promise<string> }])[1];
+    expect(namerTarget).not.toHaveProperty("serviceRouting");
+    expect(await namerTarget.inCredentialCopy!(async (home) => home)).toBe("/tmp/private-copy");
+    expect(copyRunner).toHaveBeenCalledWith("acct_c", expect.any(Function));
+    vi.doUnmock("../non-turn-model.js");
+  });
+
   it("names a Claude account route in the refresher's private copy of the account", async () => {
     let inCredentialCopy: ((run: (home: string) => Promise<string>) => Promise<string>) | undefined;
     const generateSessionName = vi.fn(async (_text: string, target: { inCredentialCopy?: typeof inCredentialCopy }) => {

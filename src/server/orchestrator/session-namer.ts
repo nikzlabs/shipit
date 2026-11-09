@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AgentId, ServiceRouting } from "../shared/types.js";
-import { isHarnessInstalled } from "../shared/installed-harnesses.js";
+import { isHarnessCliPresent } from "../shared/installed-harnesses.js";
 import { killProcessTree } from "../shared/kill-child.js";
 import {
   SHIPIT_PROVIDER_ID,
@@ -115,7 +115,8 @@ export async function generateSessionName(
   target: SessionNamingTarget,
 ): Promise<SessionNameResult> {
   const { harnessId } = target;
-  if (!isHarnessInstalled(harnessId)) {
+  // An OpenCode install's Claude-account naming runs `claude`, which it carries for the login.
+  if (!isHarnessCliPresent(harnessId)) {
     console.warn(`[session-namer] ${harnessId} is not installed in this deployment; skipping naming`);
     return { name: null, failure: `${harnessId} is not installed in this deployment.` };
   }

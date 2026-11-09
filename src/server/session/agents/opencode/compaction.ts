@@ -15,7 +15,7 @@ const LISTENING_RE = /listening on\s+(https?:\/\/\S+)/i;
 export interface OpencodeCompactionOptions {
   sessionId: string;
   modelId: string;
-  providerId?: "openai" | "shipit";
+  providerId?: "openai" | "shipit" | "claude-code";
   cwd: string;
   env: Record<string, string>;
   spawnFn: (cmd: string, args: string[], opts: SpawnOptions) => ChildProcess;

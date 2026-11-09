@@ -24,10 +24,16 @@ import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
 import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.js";
 import {
+  OPENCODE2_CLAUDE_PROVIDER_ID,
+  claudeVariant,
   isOpenCodeAccountRouting,
+  isOpenCodeClaudeRouting,
   opencode2ModelArg,
   opencodeAccountConfig,
+  opencodeClaudeConfig,
   opencodeProviderConfig,
+  prepareOpenCodeClaudeEnv,
+  requireClaudeLogin,
 } from "../../../shared/opencode-spawn-shaping.js";
 import { SHIPIT_PROVIDER_ID } from "../../../shared/spawn-routing.js";
 import { parseOpencodeLine, OpencodeTurnAccumulator, type OpencodeEvent, type OpencodeToolPart } from "../../../shared/opencode-stream.js";
@@ -114,7 +120,7 @@ export class Opencode2Adapter
   private logDir: string | null = null;
   private stdinFailure: NodeJS.ErrnoException | null = null;
   private pendingMcpServers: Record<string, unknown> = {};
-  private usingChatGPT = false;
+  private usingAccount = false;
   private subscriptionLimits: OpenCodeSubscriptionLimits | undefined;
   private accountWatcher: fs.FSWatcher | null = null;
   private accountResyncTimer: NodeJS.Timeout | null = null;
@@ -138,7 +144,7 @@ export class Opencode2Adapter
       return;
     }
     this.accumulator = new OpencodeTurnAccumulator();
-    this.usingChatGPT = isOpenCodeAccountRouting(params.serviceRouting);
+    this.usingAccount = isOpenCodeAccountRouting(params.serviceRouting) || isOpenCodeClaudeRouting(params.serviceRouting);
     this.emittedInit = false;
     this.stallReason = null;
     this.stopped = false;
@@ -162,6 +168,9 @@ export class Opencode2Adapter
     if (isOpenCodeAccountRouting(params.serviceRouting) && params.model) {
       Object.assign(config, opencodeAccountConfig(params.model, "opencode2"));
       args.push("--model", opencode2ModelArg("openai", params.model, variant));
+    } else if (isOpenCodeClaudeRouting(params.serviceRouting) && params.model) {
+      Object.assign(config, opencodeClaudeConfig(params.model, "opencode2"));
+      args.push("--model", opencode2ModelArg(OPENCODE2_CLAUDE_PROVIDER_ID, params.model, claudeVariant(variant)));
     } else if (params.serviceRouting && params.model) {
       const provider = opencodeProviderConfig(params.serviceRouting, params.model, "opencode2");
       if (!provider) {
@@ -190,8 +199,9 @@ export class Opencode2Adapter
         account = { accountHome: roots.account, accountId: params.serviceRouting.credentialTarget.accountId };
         readOpenCodeAccount(account.accountHome, account.accountId);
       }
+      if (isOpenCodeClaudeRouting(params.serviceRouting)) requireClaudeLogin(home);
     } catch (error) {
-      if (this.usingChatGPT) this.emit("auth_required");
+      if (this.usingAccount) this.emit("auth_required");
       else this.emit("error", error instanceof Error ? error : new Error(String(error)));
       return null;
     }
@@ -221,6 +231,9 @@ export class Opencode2Adapter
           delete env[name];
         }
       }
+    } else if (isOpenCodeClaudeRouting(params.serviceRouting)) {
+      prepareOpenCodeClaudeEnv(env);
+      console.log(`[opencode2] service routing: anthropic/sub -> the session's claude CLI (${OPENCODE2_CLAUDE_PROVIDER_ID})`);
     } else if (params.serviceRouting) {
       const routing = params.serviceRouting;
       const secret = process.env[routing.credentialSourceEnv];
@@ -392,7 +405,9 @@ export class Opencode2Adapter
     }
     this.emit("event", { type: "agent_compaction_started", trigger: "manual" });
     try {
-      const providerID = isOpenCodeAccountRouting(params.serviceRouting) ? "openai" : SHIPIT_PROVIDER_ID;
+      const providerID = isOpenCodeAccountRouting(params.serviceRouting)
+        ? "openai"
+        : isOpenCodeClaudeRouting(params.serviceRouting) ? OPENCODE2_CLAUDE_PROVIDER_ID : SHIPIT_PROVIDER_ID;
       await compactOpencode2Session(handle, sessionId, { providerID, id: params.model }, this.fetchFn, {
         isCancelled: () => this.stopped,
       });
@@ -579,7 +594,7 @@ export class Opencode2Adapter
     for (const mapped of this.mapEvent(event)) this.emit("event", mapped);
 
     if (event.type === "error") {
-      if (this.usingChatGPT && (event.error?.status === 401 || event.error?.type === "provider.auth")) {
+      if (this.usingAccount && (event.error?.status === 401 || event.error?.type === "provider.auth")) {
         this.emit("auth_required");
       }
       this.emit("log", "server", `OpenCode 2 error: ${this.accumulator.errorMessage ?? "unknown"}`);

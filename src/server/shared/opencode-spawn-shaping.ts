@@ -1,5 +1,7 @@
-import type { ServiceRouting, OpenAIAccountRouting } from "./types/agent-types.js";
-import { SHIPIT_PROVIDER_ID, scrubHarnessEnvCredentials } from "./spawn-routing.js";
+import fs from "node:fs";
+import path from "node:path";
+import type { ServiceRouting, OpenAIAccountRouting, AnthropicAccountRouting } from "./types/agent-types.js";
+import { SHIPIT_PROVIDER_ID, claudeModelArg, scrubHarnessEnvCredentials } from "./spawn-routing.js";
 import { HARNESSES } from "./catalogue/harnesses.js";
 import { apiModelIdFor, visionSupportFor } from "./catalogue/index.js";
 import type { OpenCodeHarnessId } from "./opencode-harness.js";
@@ -83,6 +85,66 @@ export function opencode2ModelArg(providerId: string, modelId: string, variant?:
 
 export function isOpenCodeAccountRouting(routing: ServiceRouting | undefined): routing is OpenAIAccountRouting {
   return routing?.credentialTarget.kind === "openai-chatgpt";
+}
+
+export function isOpenCodeClaudeRouting(routing: ServiceRouting | undefined): routing is AnthropicAccountRouting {
+  return routing?.credentialTarget.kind === "anthropic-oauth";
+}
+
+/** OpenCode 2's built-in provider; v1's comes from the community plugin below (docs/340). */
+export const OPENCODE2_CLAUDE_PROVIDER_ID = "claude-agent";
+export const OPENCODE_CLAUDE_PROVIDER_ID = "claude-code";
+export const OPENCODE_CLAUDE_PLUGIN_PATH = "/opt/agent-cli/node_modules/@openchamber/opencode-claude/opencode-claude.js";
+
+// Both providers read the effort from the variant's name; none/minimal are not Claude efforts.
+const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+export function opencodeClaudeProviderId(harness: OpenCodeHarnessId): string {
+  return harness === "opencode2" ? OPENCODE2_CLAUDE_PROVIDER_ID : OPENCODE_CLAUDE_PROVIDER_ID;
+}
+
+// Neither provider knows catalogue ids: each must be declared, with the id `claude` is given.
+// The only enabled provider, so a credential another route left behind cannot serve any request.
+export function opencodeClaudeConfig(modelId: string, harness: OpenCodeHarnessId): Record<string, unknown> {
+  const providerId = opencodeClaudeProviderId(harness);
+  return {
+    ...(harness === "opencode" ? { plugin: [`file://${OPENCODE_CLAUDE_PLUGIN_PATH}`] } : {}),
+    enabled_providers: [providerId],
+    model: `${providerId}/${modelId}`,
+    small_model: `${providerId}/${modelId}`,
+    provider: {
+      [providerId]: {
+        models: {
+          [modelId]: {
+            id: claudeModelArg(modelId),
+            name: modelId,
+            variants: Object.fromEntries(CLAUDE_EFFORTS.map((level) => [level, { effort: level }])),
+          },
+        },
+      },
+    },
+  };
+}
+
+export function claudeVariant(variant: string | undefined): string | undefined {
+  return variant && (CLAUDE_EFFORTS as readonly string[]).includes(variant) ? variant : undefined;
+}
+
+/** Throws when the `claude` CLI under this home has no login to run on. */
+export function requireClaudeLogin(home: string): void {
+  if (!fs.existsSync(path.join(home, ".claude", ".credentials.json"))) {
+    throw new Error("No Claude login is provisioned for this turn");
+  }
+}
+
+/** A Claude login comes from `~/.claude`; these would replace it or bill elsewhere. */
+export function prepareOpenCodeClaudeEnv(env: Record<string, string>): void {
+  // An inherited inline config loads after ShipIt's file and could re-point the provider;
+  // OPENCODE_CLAUDE_PATH would pick another `claude` than the image's.
+  for (const name of [...Object.keys(env).filter((n) => n.startsWith("SHIPIT_CREDENTIAL_")), "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CLAUDE_PATH"]) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- fixed provider-auth denylist.
+    delete env[name];
+  }
 }
 
 const ACCOUNT_MODE = { serviceId: "openai", billingMode: "sub" } as const satisfies Pick<

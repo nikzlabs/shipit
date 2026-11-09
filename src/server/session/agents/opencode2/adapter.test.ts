@@ -380,3 +380,72 @@ describe("Opencode2Adapter — ChatGPT route", () => {
     expect(state.id).toMatch(/^shipit-[0-9a-f]{24}$/);
   });
 });
+
+describe("Opencode2Adapter — Claude route (docs/340)", () => {
+  const CLAUDE_ROUTING: ServiceRouting = {
+    serviceId: "anthropic",
+    serviceName: "Anthropic",
+    billingMode: "sub",
+    style: "anthropic-messages",
+    baseUrl: "https://api.anthropic.com",
+    credentialTarget: { kind: "anthropic-oauth", accountId: "route-c" },
+  };
+
+  function provisionClaudeLogin(): void {
+    fs.mkdirSync(path.join(testHome, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(testHome, ".claude", ".credentials.json"), "{}");
+  }
+
+  it("asks for sign-in before spawning anything when the session holds no Claude login", () => {
+    const h = makeAdapter();
+    let auth = 0;
+    h.adapter.on("auth_required", () => { auth++; });
+    h.adapter.run({ ...PARAMS, model: "claude-opus-5-5", serviceRouting: CLAUDE_ROUTING });
+    expect(auth).toBe(1);
+    expect(h.spawns).toEqual([]);
+  });
+
+  it("runs the catalogue model on the built-in claude-agent provider, with no ChatGPT credential and no Anthropic override", async () => {
+    provisionClaudeLogin();
+    // A ChatGPT turn in this home left its credential in OpenCode 2's database.
+    const roots = opencode2Roots(testHome);
+    fs.mkdirSync(roots.data, { recursive: true });
+    fs.writeFileSync(path.join(roots.data, ".shipit-chatgpt-credential.json"), JSON.stringify({ id: "shipit-old", stale: [] }));
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "env-token");
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant");
+    const h = start(makeAdapter(), { ...PARAMS, model: "claude-opus-5-5", reasoningEffort: "minimal", serviceRouting: CLAUDE_ROUTING });
+    await announce(h);
+    const run = h.spawns.find((s) => s.args[0] === "run")!;
+    // `minimal` is no Claude effort, so the provider default applies.
+    expect(run.args).toContain("claude-agent/claude-opus-5-5");
+    expect(configs[0]?.provider).toEqual({
+      "claude-agent": { models: { "claude-opus-5-5": expect.objectContaining({ id: "claude-opus-5-5[1m]" }) as unknown } },
+    });
+    expect(configs[0]?.enabled_providers).toEqual(["claude-agent"]);
+    // The leftover ChatGPT credential's logout is requested on the turn's server before the turn.
+    const verbs = h.spawns.map((s) => s.args.slice(0, 4).join(" "));
+    expect(verbs.indexOf("auth logout openai shipit-old")).toBeGreaterThan(-1);
+    expect(verbs.indexOf("auth logout openai shipit-old")).toBeLessThan(verbs.findIndex((v) => v.startsWith("run ")));
+    const env = h.spawns[0].opts.env as Record<string, string>;
+    expect(env.HOME).toBe(testHome);
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    // No ChatGPT import: the turn's server only had any previous credential cleared.
+    expect(h.spawns.some((s) => s.args[0] === "auth" && s.args[1] === "import")).toBe(false);
+    h.client().emit("close", 0, null);
+    await h.done;
+  });
+
+  it("treats a 401 as a sign-in problem", async () => {
+    provisionClaudeLogin();
+    const h = start(makeAdapter(), { ...PARAMS, model: "claude-opus-5-5", reasoningEffort: "high", serviceRouting: CLAUDE_ROUTING });
+    let auth = 0;
+    h.adapter.on("auth_required", () => { auth++; });
+    await announce(h);
+    expect(h.spawns.find((s) => s.args[0] === "run")!.args).toContain("claude-agent/claude-opus-5-5#high");
+    h.client().emitStdout(ERROR_401);
+    h.client().emit("close", 1, null);
+    await h.done;
+    expect(auth).toBe(1);
+  });
+});

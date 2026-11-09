@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { OpencodeAdapter } from "./adapter.js";
+import { OPENCODE_CLAUDE_PLUGIN_PATH } from "../../../shared/opencode-spawn-shaping.js";
 import type { AgentEvent, AgentRunParams } from "../agent-process.js";
 
 vi.mock("../../../shared/kill-child.js", async (importOriginal) => {
@@ -900,5 +901,67 @@ describe("OpencodeAdapter — tools off", () => {
 
   it("leaves an ordinary turn's config without a tools entry", () => {
     expect(configFromSpawn({})).not.toHaveProperty("tools");
+  });
+});
+
+describe("OpenCode Claude account route (docs/340)", () => {
+  const routing = { serviceId: "anthropic", serviceName: "Anthropic", billingMode: "sub", style: "anthropic-messages", baseUrl: "https://api.anthropic.com", credentialTarget: { kind: "anthropic-oauth", accountId: "account-c" } } as const;
+  const realExists = fs.existsSync.bind(fs);
+
+  function claudeHome(): string {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "oc-claude-adapter-"));
+    fs.mkdirSync(path.join(home, ".claude"));
+    fs.writeFileSync(path.join(home, ".claude", ".credentials.json"), "{}");
+    return home;
+  }
+
+  // Loading the plugin itself is a real-binary check (docs/340 plan.md, Verification).
+  it("names the Claude plugin, runs the declared model on its provider, and keeps Anthropic overrides out", () => {
+    const home = claudeHome();
+    vi.spyOn(fs, "existsSync").mockImplementation((p) => p === OPENCODE_CLAUDE_PLUGIN_PATH || realExists(p));
+    const child = new FakeChild();
+    const spawnFn = vi.fn(() => child as unknown as ChildProcess);
+    const adapter = new OpencodeAdapter({ spawnFn });
+    vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "env-token");
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant");
+    vi.stubEnv("OPENCODE_CONFIG_CONTENT", '{"provider":{"claude-code":{"options":{"apiKey":"sk"}}}}');
+    try {
+      adapter.run({ ...RUN_PARAMS, model: "claude-opus-5-5", reasoningEffort: "xhigh", serviceRouting: routing, homeDir: home });
+      expect(spawnFn).toHaveBeenCalledOnce();
+      const call = (spawnFn.mock.calls as unknown as [string, string[], { env: Record<string, string> }][])[0];
+      expect(call[1]).toEqual(expect.arrayContaining(["--model", "claude-code/claude-opus-5-5", "--variant", "xhigh"]));
+      const config = JSON.parse(fs.readFileSync(call[2].env.OPENCODE_CONFIG, "utf8")) as { plugin?: string[]; provider?: Record<string, unknown> };
+      expect(config.plugin).toEqual([`file://${OPENCODE_CLAUDE_PLUGIN_PATH}`]);
+      expect(Object.keys(config.provider ?? {})).toEqual(["claude-code"]);
+      expect(call[2].env.HOME).toBe(home);
+      expect(call[2].env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      expect(call[2].env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(call[2].env.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+      child.close(0);
+    } finally { adapter.kill(); vi.restoreAllMocks(); vi.unstubAllEnvs(); fs.rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it("asks for sign-in when the home holds no Claude login, and reports a missing plugin as an error, not a sign-in", () => {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "oc-claude-adapter-"));
+    const home = claudeHome();
+    const child = new FakeChild();
+    const spawnFn = vi.fn(() => child as unknown as ChildProcess);
+    const adapter = new OpencodeAdapter({ spawnFn });
+    const authRequired = vi.fn(); adapter.on("auth_required", authRequired);
+    const errors: Error[] = []; adapter.on("error", (e: Error) => errors.push(e));
+    try {
+      vi.spyOn(fs, "existsSync").mockImplementation((p) => p === OPENCODE_CLAUDE_PLUGIN_PATH || realExists(p));
+      adapter.run({ ...RUN_PARAMS, model: "claude-opus-5-5", serviceRouting: routing, homeDir: empty });
+      expect(authRequired).toHaveBeenCalledOnce();
+      vi.restoreAllMocks();
+      vi.spyOn(fs, "existsSync").mockImplementation((p) => p !== OPENCODE_CLAUDE_PLUGIN_PATH && realExists(p));
+      adapter.run({ ...RUN_PARAMS, model: "claude-opus-5-5", serviceRouting: routing, homeDir: home });
+      expect(spawnFn).not.toHaveBeenCalled();
+      expect(authRequired).toHaveBeenCalledOnce();
+      expect(errors.map((e) => e.message)).toEqual([expect.stringContaining("Claude plugin is not installed") as unknown]);
+    } finally {
+      adapter.kill(); vi.restoreAllMocks();
+      fs.rmSync(empty, { recursive: true, force: true }); fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });
