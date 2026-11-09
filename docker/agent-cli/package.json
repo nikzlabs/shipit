@@ -4,7 +4,7 @@
   "private": true,
   "description": "Pinned, lockfile-driven install of the agent CLIs baked into ShipIt images. See docs/141-cli-version-strategy. Versions are bumped by the Renovate GitHub App (cooldown via minimumReleaseAge) and gated on the CLI contract test; do not edit by hand without regenerating package-lock.json. playwright-stable is not a CLI: it is the newest stable playwright-core, whose browser builds the images bake for a project's own Playwright (docs/335-project-playwright-browsers).",
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.300",
+    "@anthropic-ai/claude-code": "2.1.321",
     "@openai/codex": "0.162.1",
     "@opencode/cli": "2.1.1",
     "@playwright/mcp": "0.0.84",

@@ -46,6 +46,10 @@ table — a phase is checked off when its PR has merged.
 - [x] Let guarded mode run on Haiku 5.5, apply the Haiku limit to Claude only,
       and normalize a saved model id in its gate
 
+- [x] Add Fable 5.2 beside Fable 5.1 under both Anthropic billing modes,
+      OpenRouter, Vercel and OpenCode Zen, with published metadata
+- [x] Update Claude Code to 2.1.321 with the approved exact-version age exception
+
 ## Phase 2 — Credentials and Settings
 
 - [x] `CredentialRoute` — credential storage keyed by `(service, billing mode)`
