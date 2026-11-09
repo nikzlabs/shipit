@@ -652,6 +652,33 @@ describe("the harness\u00d7service join", () => {
     expect(MODEL_ID_ALIASES["claude-haiku-5-5"]).toBe("claude-haiku-5.5");
   });
 
+  it("offers Fable 5.2 beside Fable 5.1 at Anthropic and both gateways, but not at Zen", () => {
+    const price = { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 };
+    for (const billingMode of ["sub", "key"] as const) {
+      const selection = { serviceId: "anthropic", billingMode, modelId: "claude-fable-5-2" };
+      expect(getModel(selection)).toMatchObject({
+        label: "Fable 5.2", canonicalModelKey: "claude-fable-5.2", family: "claude",
+        contextWindow: { default: 1_000_000 }, price,
+      });
+      expect(resolveSpawnShaping("claude", selection)?.style).toBe("anthropic-messages");
+      expect(visionSupportFor(selection)).toBe("yes");
+      expect(reasoningOptionsFor("claude", selection).map((option) => option.value))
+        .toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(getModel({ serviceId: "anthropic", billingMode, modelId: "claude-fable-5-1" })?.label).toBe("Fable 5.1");
+    }
+    for (const serviceId of ["openrouter", "vercel"]) {
+      expect(getModel({ serviceId, billingMode: "key", modelId: "anthropic/claude-fable-5.2" })).toMatchObject({
+        label: "Fable 5.2", canonicalModelKey: "claude-fable-5.2", price,
+      });
+    }
+    expect(modesOfferingModel("claude-fable-5-2")).toEqual([
+      { serviceId: "anthropic", billingMode: "sub" },
+      { serviceId: "anthropic", billingMode: "key" },
+    ]);
+    expect(catalogueModelIdsForHarness("claude")[0]).toBe("claude-opus-5");
+    expect(MODEL_ID_ALIASES["claude-fable-5-2"]).toBe("claude-fable-5.2");
+  });
+
   it("offers GPT-6 Astra through both OpenAI billing modes without making it the default", () => {
     const selections = (["sub", "key"] as const).map((billingMode) => ({
       billingMode,

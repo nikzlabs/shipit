@@ -28,6 +28,8 @@ const ANTHROPIC_PRICES = {
   fable5: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
   // Pricing page, 2026-09-01: Fable 5.1 uses a 0.025× cache-read multiplier.
   fable51: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
+  // Fable 5.2 model page and pricing, 2026-11-09; the same 0.025× cache-read multiplier.
+  fable52: { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 },
 } as const;
 
 // OpenAI model/pricing docs: 2026-08-09; Astra 2026-09-04.
@@ -188,6 +190,7 @@ export const SERVICES = [
           { id: "haiku", apiId: "claude-haiku-4-5", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
           { id: "claude-haiku-5-5", label: "Haiku 5.5", ...MODEL_IDENTITIES.haiku55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.haiku55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "claude-fable-5-1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
+          { id: "claude-fable-5-2", label: "Fable 5.2", ...MODEL_IDENTITIES.fable52, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable52, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
         ],
       },
       {
@@ -205,6 +208,7 @@ export const SERVICES = [
           { id: "haiku", apiId: "claude-haiku-4-5", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
           { id: "claude-haiku-5-5", label: "Haiku 5.5", ...MODEL_IDENTITIES.haiku55, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.haiku55, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           { id: "claude-fable-5-1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
+          { id: "claude-fable-5-2", label: "Fable 5.2", ...MODEL_IDENTITIES.fable52, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable52, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
         ],
       },
     ],
@@ -468,6 +472,8 @@ export const SERVICES = [
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
           // Styles carried over from the 5.0 probe, not re-measured for 5.1 (2026-09-01).
           { id: "anthropic/claude-fable-5.1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
+          // Listed by the gateway 2026-11-09 at Anthropic's rates; styles carried over from 5.1, not probed.
+          { id: "anthropic/claude-fable-5.2", label: "Fable 5.2", ...MODEL_IDENTITIES.fable52, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable52, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           // ❌ 2026-09-10 — `deepseek/deepseek-v4.1-flash` is absent by
           // measurement, not oversight: OpenRouter lists it, but a live request
           // 404s on "Paid model training violation (account settings)" where the
@@ -524,6 +530,8 @@ export const SERVICES = [
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
           // Styles carried over from 5.0, not re-measured for 5.1 (2026-09-01).
           { id: "anthropic/claude-fable-5.1", label: "Fable 5.1", ...MODEL_IDENTITIES.fable51, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable51 },
+          // Listed by the gateway 2026-11-09 at Anthropic's rates; styles carried over from 5.1, not probed.
+          { id: "anthropic/claude-fable-5.2", label: "Fable 5.2", ...MODEL_IDENTITIES.fable52, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable52, reasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
           // Vercel's changelog lists these two GPT-6 ids; no GPT-6 rate is published there, so OpenAI's list rates stand in.
           { id: "openai/gpt-6-sol", label: "GPT-6 Sol", ...MODEL_IDENTITIES.gpt6sol, styles: [O_RESP, O_CC], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6sol },
           { id: "openai/gpt-6-luna", label: "GPT-6 Luna", ...MODEL_IDENTITIES.gpt6luna, styles: [O_RESP, O_CC], contextWindow: { default: 1_050_000 }, price: OPENAI_PRICES.gpt6luna },
