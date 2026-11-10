@@ -40,7 +40,7 @@ import { parseOpencodeLine, OpencodeTurnAccumulator, type OpencodeEvent, type Op
 import { shipitToolSpec } from "../../mcp-tool-spec.js";
 import { writeOpencodeTurnFiles, type OpencodeTurnFiles } from "../opencode/turn-files.js";
 import { OpenCodeSubscriptionLimits } from "../opencode/subscription-limits.js";
-import { normalizeOpencode2ToolCall, normalizeOpencode2ToolResult } from "./opencode2-tool-normalizer.js";
+import { normalizeOpencode2ToolCall, normalizeOpencode2ToolResult, opencode2ToolResultImages } from "./opencode2-tool-normalizer.js";
 import {
   OPENCODE2_BIN,
   basicAuthorization,
@@ -651,11 +651,13 @@ export class Opencode2Adapter
         const { name, input } = normalizeOpencode2ToolCall(part.tool ?? "unknown", rawInput);
         const isError = part.state?.status === "error";
         const output = normalizeOpencode2ToolResult(part.tool ?? "unknown", part.state?.output ?? "");
+        const images = opencode2ToolResultImages(part.state?.metadata);
+        const content = images.length > 0 ? [{ type: "text", text: output }, ...images] : output;
         return [
           { type: "agent_assistant", content: [{ type: "tool_use", id: callId, name, input }] },
           {
             type: "agent_tool_result",
-            content: [{ type: "tool_result", tool_use_id: callId, content: output, ...(isError ? { is_error: true } : {}) }],
+            content: [{ type: "tool_result", tool_use_id: callId, content, ...(isError ? { is_error: true } : {}) }],
           },
         ];
       }

@@ -160,6 +160,10 @@ Differences from v1, all observed live on 2.1.1:
   normalizer needs the new names. `part.callID` is gone and `part.id` now
   holds the provider's call id, which the adapter's fallback already reads;
   `state` keeps `status`, `input` (an object), `output`, `title`, `time`.
+  A tool's images (a `read` of a PNG, an MCP screenshot) are only in
+  `state.metadata.content`, as `file` parts with a `data:` URI (2.2.5); the
+  adapter passes them on as `image` blocks, Claude's shape, so the tool card
+  shows them.
 - **Reasoning effort** moved into the model string: `--model
   provider/model#high` put `reasoning_effort: "high"` on the wire (title call
   included). There is no `--variant` flag.
