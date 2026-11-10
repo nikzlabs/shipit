@@ -1,10 +1,10 @@
 # Unversioned "-alpine": Docker stops tagging an old "-alpine3.NN" suffix, which left Renovate unable to move Go.
-FROM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS proxy-build
+FROM golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS proxy-build
 WORKDIR /src
 COPY egress-sidecar/sni-proxy/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/sni-proxy .
 
-FROM alpine:3.24@sha256:c6b073f8e9e58d881f6ffba6ebf3b9ebd60b9e7d6e8337018c0e68bb5c356873
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 RUN apk add --no-cache iptables ip6tables ipset bind-tools curl bash dnsmasq
 
