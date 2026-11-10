@@ -615,6 +615,60 @@ describe("Integration: user bug filing", () => {
     client.close();
   });
 
+  it("keeps a card dismissed when a filing in flight fails after the dismissal", async () => {
+    const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+
+    let fail!: () => void;
+    githubAuthManager.createIssue = (options) => {
+      githubAuthManager.createIssueCalls.push({ ...options });
+      return new Promise((resolve) => { fail = () => resolve({ success: false, message: "GitHub is down" }); });
+    };
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await new Promise((r) => setTimeout(r, 100));
+    client.send({ type: "dismiss_bug_report", cardId: card.cardId });
+    await client.receiveType("bug_report_dismissed");
+
+    fail();
+    const answers = await client.drain({ quietMs: 150 });
+
+    expect(answers.map((m) => m.type)).not.toContain("bug_report_failed");
+    expect(histMgr.getBugReportCard(sessionId, card.cardId)?.phase).toBe("dismissed");
+    client.close();
+  });
+
+  it("files one issue when two submits of one card overlap", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const stub = githubAuthManager.createIssue.bind(githubAuthManager);
+    githubAuthManager.createIssue = async (options) => { await gate; return stub(options); };
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await new Promise((r) => setTimeout(r, 100));
+    release();
+    await client.receiveType("bug_report_filed");
+    await client.drain({ quietMs: 150 });
+
+    expect(githubAuthManager.createIssueCalls).toHaveLength(1);
+    client.close();
+  });
+
   it("refuses a dismissal naming an unknown card", async () => {
     const client = await TestClient.connect(port, sessionId);
     await client.receive();

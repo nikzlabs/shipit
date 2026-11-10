@@ -287,8 +287,7 @@ export const TRANSCRIPT_CARD_ARRIVALS: ReadonlySet<WsMessageType> = new Set<WsMe
  * Message types that change a card already in the transcript. They wait for the
  * history load too: the load and the attach snapshot can be read before an
  * update and would revert it. Applied after both in wire order, they leave each
- * card at its newest state, because the server saves every change before it
- * sends it and sends the saved state.
+ * card at the newest state the server sent.
  */
 export const TRANSCRIPT_CARD_UPDATES: ReadonlySet<WsMessageType> = new Set<WsMessageType>([
   "action_checklist_update",
