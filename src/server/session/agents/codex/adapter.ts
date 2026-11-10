@@ -295,6 +295,8 @@ export class CodexAdapter
     const args = [
       ...CODEX_SANDBOX_ARGS,
       ...(params.toolsOff ? CODEX_TOOLS_OFF_ARGS : []),
+      // docs/341-code-mode-setting: the setting wins over Codex's own config either way.
+      ...(params.codeMode !== undefined ? ["-c", `features.code_mode=${String(params.codeMode && !params.toolsOff)}`] : []),
       ...(params.reasoningEffort ? ["-c", `model_reasoning_effort=${params.reasoningEffort}`] : []),
       ...providerArgs,
       "app-server",

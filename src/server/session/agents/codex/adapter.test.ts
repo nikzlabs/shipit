@@ -162,6 +162,28 @@ describe("CodexAdapter", () => {
     });
   });
 
+  describe("Code Mode (docs/341-code-mode-setting)", () => {
+    it("sets Codex's code_mode feature to the setting, over its own config", () => {
+      adapter = new CodexAdapter(() => false);
+      adapter.run({ prompt: "hi", cwd: "/workspace", codeMode: true });
+      expect(lastSpawnArgs).toEqual([...SANDBOX, "-c", "features.code_mode=true", "app-server"]);
+      adapter.kill();
+      adapter = new CodexAdapter(() => false);
+      adapter.run({ prompt: "hi", cwd: "/workspace", codeMode: false });
+      expect(lastSpawnArgs).toEqual([...SANDBOX, "-c", "features.code_mode=false", "app-server"]);
+    });
+
+    it("keeps Code Mode off for tools-off work, and leaves the CLI alone with no setting", () => {
+      adapter = new CodexAdapter(() => false);
+      adapter.run({ prompt: "hi", cwd: "/workspace", codeMode: true, toolsOff: true });
+      expect(lastSpawnArgs).toContain("features.code_mode=false");
+      adapter.kill();
+      adapter = new CodexAdapter(() => false);
+      adapter.run({ prompt: "hi", cwd: "/workspace" });
+      expect(lastSpawnArgs).toEqual([...SANDBOX, "app-server"]);
+    });
+  });
+
   /**
    * docs/299 — Codex has no "no tools" flag; these seven overrides together take
    * its request from 9 tool definitions to 0. Asserted by literal value and at
@@ -1265,6 +1287,23 @@ describe("CodexAdapter", () => {
           input: { raw: "not valid json" },
         },
       ],
+    });
+  });
+
+  it("takes MCP arguments sent as an object, as 0.162.1's Code Mode sends them", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/started", {
+      item: { type: "mcpToolCall", id: "exec-1", server: "probe", tool: "snap", arguments: { label: "cx" } },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.length).toBe(1);
+    });
+    expect(events[0]).toMatchObject({
+      type: "agent_assistant",
+      content: [{ type: "tool_use", id: "exec-1", input: { label: "cx" } }],
     });
   });
 

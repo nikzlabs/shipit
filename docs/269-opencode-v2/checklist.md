@@ -65,7 +65,8 @@ OpenCode 2 specifics are in [plan.md](./plan.md); the requirements are in
       `run --server`, per-step usage from the message list, server-tree
       teardown
 - [x] Run-mode differences: v2 error line, `#variant` model suffix, new tool
-      names, `part.id` call ids, `codemode: false`, PWD pin, live env names
+      names, `part.id` call ids, Code Mode per docs/341-code-mode-setting, PWD pin,
+      live env names
 - [x] Own data, config and state roots (never v1's)
 - [x] ChatGPT token delivery: `auth import` (new id) + `auth switch` +
       `logout`, through the turn's server, re-run when the projection changes

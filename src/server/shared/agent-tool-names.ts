@@ -55,9 +55,11 @@ export const OPENCODE_TOOL_NAMES = [
   "write",
 ] as const;
 
-// `question`, `websearch` and Code Mode's `execute` are configured off for every turn.
+// `question` and `websearch` are configured off for every turn; Code Mode's `execute`
+// follows docs/341-code-mode-setting, on by default.
 export const OPENCODE2_TOOL_NAMES = [
   "edit",
+  "execute",
   "glob",
   "grep",
   "read",

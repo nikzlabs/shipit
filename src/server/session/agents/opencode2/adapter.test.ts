@@ -240,17 +240,44 @@ describe("Opencode2Adapter — per-turn server", () => {
     await h.done;
   });
 
-  it("writes a v2-shaped config: tools that need a person off, Code Mode off for every MCP server", async () => {
+  it("writes a v2-shaped config: tools that need a person off, Code Mode left on", async () => {
     const h = start(makeAdapter({ mcp: true }), PARAMS);
     await announce(h);
     const config = configs[0];
-    expect(config.tools).toEqual({ question: false, websearch: false, execute: false });
+    expect(config.tools).toEqual({ question: false, websearch: false });
     const servers = (config.mcp as { servers: Record<string, { codemode?: boolean; type: string }> }).servers;
     expect(Object.keys(servers)).toEqual(["playwright", "broken"]);
-    for (const server of Object.values(servers)) expect(server.codemode).toBe(false);
+    for (const server of Object.values(servers)) expect(server).not.toHaveProperty("codemode");
     expect(config.provider).toMatchObject({ shipit: { options: { apiKey: "{env:OPENCODE_PROVIDER_API_KEY}" } } });
     h.client().emit("close", 0, null);
     await h.done;
+  });
+
+  it("turns Code Mode off for `execute` and every MCP server when the setting is off", async () => {
+    const h = start(makeAdapter({ mcp: true }), { ...PARAMS, codeMode: false });
+    await announce(h);
+    expect(configs[0].tools).toEqual({ question: false, websearch: false, execute: false });
+    const servers = (configs[0].mcp as { servers: Record<string, { codemode?: boolean }> }).servers;
+    for (const server of Object.values(servers)) expect(server.codemode).toBe(false);
+    h.client().emit("close", 0, null);
+    await h.done;
+  });
+
+  it("shows a Code Mode error as an error, and a failed tool's message", async () => {
+    const h = start(makeAdapter(), PARAMS);
+    await announce(h);
+    // 2.2.5 captures: a throw inside `execute` reports `completed`; a failed tool has `error`, no `output`.
+    h.client().emitStdout([
+      `{"type":"tool_use","sessionID":"${SESSION}","part":{"type":"tool","id":"call_x","tool":"execute","state":{"status":"completed","input":{"code":"throw new Error('boom')"},"output":"Error: boom","metadata":{"metadata":{"toolCalls":[],"error":true,"truncated":false}}}}}`,
+      `{"type":"tool_use","sessionID":"${SESSION}","part":{"type":"tool","id":"call_y","tool":"read","state":{"status":"error","input":{"path":"/nope"},"error":"File not found: /nope"}}}`,
+    ]);
+    h.client().emit("close", 0, null);
+    await h.done;
+    const results = h.events.flatMap((e) => (e.type === "agent_tool_result" ? e.content : []));
+    expect(results).toEqual([
+      { type: "tool_result", tool_use_id: "call_x", content: "Error: boom", is_error: true },
+      { type: "tool_result", tool_use_id: "call_y", content: "File not found: /nope", is_error: true },
+    ]);
   });
 
   it("turns every tool off for a tools-off run, MCP servers included", async () => {

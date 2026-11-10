@@ -10,6 +10,7 @@ import {
 } from "./agent-run-params-prep.js";
 import { serviceRoutingForSelection } from "./service-routing.js";
 import { recordStatusCardSpawn } from "./session-status-spawn-record.js";
+import { codeModeFor } from "./code-mode.js";
 import { recordServiceMcpSpawn, type SessionServiceMcp } from "./service-mcp.js";
 import { boundStoredReplay } from "./services/replay.js";
 
@@ -90,6 +91,7 @@ export async function buildAgentRunParams(
     && deps.credentialStore.getAutoCreatePr()
     && deps.githubAuthManager.authenticated;
   const sessionStatusCard = deps.credentialStore.getSessionStatusCard();
+  const codeMode = codeModeFor(agentId, deps.credentialStore);
   // Only a spawning turn builds run params, so this is the value the process
   // about to start will hold until it is retired.
   recordStatusCardSpawn(sessionId, sessionStatusCard);
@@ -122,6 +124,7 @@ export async function buildAgentRunParams(
     ...(serviceMcpCandidates.length > 0 ? { serviceMcpCandidates } : {}),
     ...(sessionStatusCard ? { sessionStatusCard: true } : {}),
     ...(compact && !compactsNothing ? { compact: true } : {}),
+    ...(codeMode !== undefined ? { codeMode } : {}),
   };
   const prepare = getPrepareRunParams(deps.runParamsPreps, agentId);
   return prepare(baseParams, {

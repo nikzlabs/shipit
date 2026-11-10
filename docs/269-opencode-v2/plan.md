@@ -61,8 +61,9 @@ re-verify anything volatile before acting on it.
 - **Install shape** is unchanged from v1: a postinstall selects the native
   platform binary, so the docs/268 gated `npm rebuild` exception carries over.
 - **Instructions and MCP.** v2 reads `AGENTS.md` only, with no `CLAUDE.md`
-  fallback. MCP `codemode` defaults to true: MCP tools are meant to be reached
-  through one JavaScript `execute` tool — but see "MCP tools miss the first
+  fallback. MCP `codemode` defaults to true: MCP tools are reached through one
+  JavaScript `execute` tool. ShipIt leaves that on by default (see "Tools."
+  below and docs/341-code-mode-setting) — but see "MCP tools miss the first
   step of every turn".
 
 ## How stable the API is
@@ -233,6 +234,13 @@ The proper fix is upstream — wait for each enabled server's `startup` latch,
 bounded by `timeout.startup`, before the first snapshot — but it has not been
 reported there.
 
+**Re-checked on 2.2.5 with Code Mode on** (2026-11-10, through the adapter's
+per-turn server and `run --server`): the first request's system prompt lists
+the MCP server's tool in the Code Mode catalog (`tools.probe.snap`) beside
+`opencode` and `playwright`, and an `execute` on step one calls it and gets
+its text and image back. With Code Mode off, the tool is a direct tool on the
+first request, as before. So the workaround covers both.
+
 ## Keeping OpenCode 1 intact (req 2)
 
 Upstream no longer separates the two, so ShipIt must:
@@ -373,13 +381,15 @@ Decisions made during the build:
   collide with v1's (`node_modules/`). `OPENCODE_CONFIG_DIR` is used instead
   of `XDG_CONFIG_HOME` for the same reason. v2 runs a config migration on its
   global config dir, so that dir must never be v1's.
-- **Tools.** Every turn sets `tools: {question: false, websearch: false,
-  execute: false}`. `run` cancels `question`, and `websearch` asks the user to
-  pick a provider, so both fail in a turn with nobody to answer. Code Mode's
-  `execute` would hide edits from the transcript. So every MCP server, ShipIt's
-  and the user's, sets `codemode: false`. A tools-off run sets
-  `tools: {"*": false}`; measured on 2.1.1, that sends no tool at all, MCP
-  tools included.
+- **Tools.** Every turn sets `tools: {question: false, websearch: false}`.
+  `run` cancels `question`, and `websearch` asks the user to pick a provider,
+  so both fail in a turn with nobody to answer (re-checked on 2.2.5,
+  2026-11-10: both are cancelled, and `run` then exits 1). Code Mode's `execute` follows
+  the `advanced.codeMode.opencode2` setting, on by default
+  ([docs/341-code-mode-setting](../341-code-mode-setting/plan.md)): off adds
+  `execute: false` and sets `codemode: false` on every MCP server. A tools-off
+  run sets `tools: {"*": false}`; measured on 2.1.1, that sends no tool at
+  all, MCP tools included.
 - **Credentials through the turn's server.** Without `--server`, `opencode2
   auth` reaches for a shared background service. The adapter runs `auth
   import`, `switch` and `logout` with `--server <the turn's server>`, after the

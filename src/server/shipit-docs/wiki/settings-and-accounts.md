@@ -68,7 +68,7 @@ not "Services" — that is only its internal id.
 | **Keyboard** | Rebind shortcuts |
 | **Voice** | Dictation and spoken voice notes — providers, keys, language, voice, speed, delivery |
 | **Network** | The workspace default for outbound network access, and the host allowlist |
-| **Advanced** | Updates and release channel, live steering, PR automations — auto-create-PR, auto-fix CI, auto-resolve conflicts, reset after a merge — multi-agent sessions, letting the agent compact its own context, compacting idle sessions before the prompt cache expires, compacted turns, notifications, GPU access, the memory budget, and a full reset |
+| **Advanced** | Updates and release channel, live steering, Code Mode per harness, PR automations — auto-create-PR, auto-fix CI, auto-resolve conflicts, reset after a merge — multi-agent sessions, letting the agent compact its own context, compacting idle sessions before the prompt cache expires, compacted turns, notifications, GPU access, the memory budget, and a full reset |
 
 Several of those are covered in depth elsewhere: Skills and MCP servers in
 `/shipit-docs/skills.md` and `/shipit-docs/plugins.md`, Voice in
@@ -189,6 +189,23 @@ That read-out earns its place because **a credential alone cannot run a turn**.
 A model becomes usable only when an installed harness can carry it — which is
 why a user with a working key can still find nothing to select. The two halves
 sit on one screen for exactly that reason.
+
+### Code Mode
+
+Some harnesses have a **Code Mode**: instead of calling MCP tools — the browser,
+ShipIt's own tools — one at a time, the agent writes a short JavaScript program
+that calls them, which saves model round-trips. **Settings → Advanced → Code
+Mode** has one switch per harness whose Code Mode works in ShipIt: OpenCode 2
+(on by default), Codex and OpenCode 1 (both off by default, because upstream
+marks them unfinished or experimental). Claude Code's own Code Mode runs only in
+its interactive terminal, and Grok Build and Antigravity have none, so they get
+no switch. A change applies from each session's next turn. Read the values with
+`shipit settings list --tab advanced` and propose a change with `shipit settings
+propose`.
+
+In the transcript, OpenCode's Code Mode call is one **Code** line showing the
+program's first line; the dialog behind it has the whole program and its
+result. Codex instead shows each tool the program called as its own line.
 
 ## Choosing what a session runs on
 

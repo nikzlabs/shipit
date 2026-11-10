@@ -179,6 +179,9 @@ export class OpencodeAdapter
       OPENCODE_DISABLE_SHARE: "1",
       OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
     };
+    // docs/341-code-mode-setting: the setting wins over an inherited flag either way.
+    if (params.codeMode === true && !params.toolsOff) spawnEnv.OPENCODE_EXPERIMENTAL_CODE_MODE = "1";
+    else if (params.codeMode !== undefined || params.toolsOff) delete spawnEnv.OPENCODE_EXPERIMENTAL_CODE_MODE;
     // Scrub before delivery: auto-detected provider keys can redirect billing.
     scrubHarnessEnvCredentials(spawnEnv, "opencode");
     if (isOpenCodeAccountRouting(params.serviceRouting)) {
@@ -556,7 +559,7 @@ export class OpencodeAdapter
             : {};
         const { name, input } = normalizeOpencodeToolCall(part.tool ?? "unknown", rawInput);
         const isError = part.state?.status === "error";
-        const output = normalizeOpencodeToolResult(part.tool ?? "unknown", part.state?.output ?? "");
+        const output = normalizeOpencodeToolResult(part.tool ?? "unknown", part.state?.output ?? part.state?.error ?? "");
         return [
           {
             type: "agent_assistant",

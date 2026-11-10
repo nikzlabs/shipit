@@ -96,6 +96,7 @@ describe("Integration: the next turn after a restart takes over the idle residen
   const identity = () => sessionSpawnIdentity(sessionManager.get(SESSION_ID)!, "claude");
 
   beforeEach(async () => {
+    codeModeOn = undefined;
     allAgents = [];
     runners = [];
     commits = [];
@@ -133,6 +134,8 @@ describe("Integration: the next turn after a restart takes over the idle residen
     await new Promise((r) => setTimeout(r, 50));
   });
 
+  let codeModeOn: boolean | undefined;
+
   function makeRunner(): ContainerSessionRunner {
     const runner = new ContainerSessionRunner({
       sessionId: SESSION_ID,
@@ -165,6 +168,7 @@ describe("Integration: the next turn after a restart takes over the idle residen
         return compact;
       },
       statusCardEnabled: () => false,
+      codeModeFor: () => codeModeOn,
       answerHold: sessionManager,
       listenerDeps: {
         sessionManager,
@@ -297,6 +301,17 @@ describe("Integration: the next turn after a restart takes over the idle residen
     expect(resident().killed).toBe(true);
     expect(resident().sentMessages).toEqual([]);
     expect(runner.appliedSpawnIdentity).toBe(identity());
+  });
+
+  it("replaces a process started before its harness's Code Mode was turned on (docs/341-code-mode-setting req 6)", async () => {
+    codeModeOn = true;
+    await turnOfThePreviousOrchestrator();
+    const runner = makeRunner();
+    runner.dispatch(testDispatch({ text: "next task" }));
+
+    await waitFor(() => allAgents.length === 2 && allAgents[1]!.runCalled, 3000, "a new process started");
+    expect(resident().killed).toBe(true);
+    expect(resident().sentMessages).toEqual([]);
   });
 
   it("restores the status-card value the process was started with (req 3)", async () => {

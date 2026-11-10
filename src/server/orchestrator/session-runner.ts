@@ -639,6 +639,8 @@ export interface SystemTurnDeps {
   steerInputs?: () => { liveSteering: boolean; steeringCapable: boolean };
   /** docs/303 req 21 — with the setting off, the freshness mark and the nudge do not run. */
   statusCardEnabled?: () => boolean;
+  /** docs/341-code-mode-setting req 6 — the value a resident must have been spawned with. */
+  codeModeFor?: (agentId: AgentId) => boolean | undefined;
   /**
    * docs/303 req 35 — the stored card, rendered for the turn's prompt, or "" when the
    * setting is off or no card is stored. The gate and the read live in the wiring, so a

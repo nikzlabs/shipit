@@ -1,7 +1,10 @@
+import type { OpencodeToolState } from "../../../shared/opencode-stream.js";
+
 // Transcript names control field retention and inline rendering. OpenCode 2 renamed
 // `bash` to `shell` and `task` to `subagent`, and its file tools take `path`.
 export const OPENCODE2_TRANSCRIPT_TOOL_NAMES: Record<string, string> = {
   edit: "Edit",
+  execute: "execute",
   glob: "Glob",
   grep: "Grep",
   read: "Read",
@@ -60,6 +63,14 @@ export function opencode2ToolResultImages(metadata: Record<string, unknown> | un
     if (match) images.push({ type: "image", source: { type: "base64", media_type: match[1], data: match[2] } });
   }
   return images;
+}
+
+// Code Mode reports a throw or an unknown tool inside the code as `completed`, flagged in metadata.
+export function isOpencode2ToolError(name: string, state: OpencodeToolState | undefined): boolean {
+  if (state?.status === "error") return true;
+  if (name !== "execute") return false;
+  const inner = state?.metadata?.metadata;
+  return typeof inner === "object" && inner !== null && (inner as { error?: unknown }).error === true;
 }
 
 export function normalizeOpencode2ToolCall(

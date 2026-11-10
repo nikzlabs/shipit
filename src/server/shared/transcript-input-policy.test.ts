@@ -22,6 +22,11 @@ describe("inputKeyTreatment", () => {
     expect(inputKeyTreatment("shell", "command", empty)).toBe("head");
   });
 
+  it("shortens Code Mode's `code` on `execute` only", () => {
+    expect(inputKeyTreatment("execute", "code", empty)).toBe("head");
+    expect(inputKeyTreatment("mcp__playwright__browser_run_code", "code", empty)).toBe("drop");
+  });
+
   it("drops everything the tool-call modal alone displays", () => {
     for (const key of ["description", "timeout", "offset", "args", "body"]) {
       expect(inputKeyTreatment("Bash", key, empty)).toBe("drop");

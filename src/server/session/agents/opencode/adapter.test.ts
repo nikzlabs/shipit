@@ -902,3 +902,35 @@ describe("OpencodeAdapter — tools off", () => {
     expect(configFromSpawn({})).not.toHaveProperty("tools");
   });
 });
+
+// docs/341-code-mode-setting — OpenCode 1's Code Mode is an experimental env flag.
+describe("OpencodeAdapter — Code Mode", () => {
+  function envFromSpawn(params: Partial<AgentRunParams>): Record<string, string> {
+    const child = new FakeChild();
+    const spawnFn = vi.fn(() => child as unknown as ChildProcess);
+    const adapter = new OpencodeAdapter({ spawnFn });
+    try {
+      adapter.run({ ...RUN_PARAMS, ...params });
+      return (spawnFn.mock.calls as unknown as [string, string[], { env: Record<string, string> }][])[0][2].env;
+    } finally {
+      adapter.kill();
+    }
+  }
+
+  it("removes an inherited flag when the setting is off", () => {
+    vi.stubEnv("OPENCODE_EXPERIMENTAL_CODE_MODE", "1");
+    try {
+      expect(envFromSpawn({ codeMode: false })).not.toHaveProperty("OPENCODE_EXPERIMENTAL_CODE_MODE");
+      expect(envFromSpawn({ codeMode: true, toolsOff: true })).not.toHaveProperty("OPENCODE_EXPERIMENTAL_CODE_MODE");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("sets the flag only when the setting is on", () => {
+    expect(envFromSpawn({ codeMode: true }).OPENCODE_EXPERIMENTAL_CODE_MODE).toBe("1");
+    expect(envFromSpawn({ codeMode: false })).not.toHaveProperty("OPENCODE_EXPERIMENTAL_CODE_MODE");
+    expect(envFromSpawn({})).not.toHaveProperty("OPENCODE_EXPERIMENTAL_CODE_MODE");
+    expect(envFromSpawn({ codeMode: true, toolsOff: true })).not.toHaveProperty("OPENCODE_EXPERIMENTAL_CODE_MODE");
+  });
+});

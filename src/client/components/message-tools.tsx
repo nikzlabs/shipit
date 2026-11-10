@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMemo } from "react";
 import {
+  CodeIcon,
   DownloadSimpleIcon,
   EyeIcon,
   FilesIcon,
@@ -199,6 +200,9 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
   const urlText = "url" in tool.input && tool.input.url
     ? (tool.input.url as string)
     : null;
+  const codeText = tool.name === "execute" && typeof tool.input.code === "string"
+    ? codeSummary(tool.input.code)
+    : null;
 
   const isCommandTool = tool.name === "Bash" || tool.name === "shell";
 
@@ -233,6 +237,11 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
         {urlText ? (
           <span className="ml-1 text-(--color-text-secondary) truncate">
             {urlText}
+          </span>
+        ) : null}
+        {codeText ? (
+          <span className="ml-1 text-(--color-text-secondary) truncate">
+            {codeText}
           </span>
         ) : null}
         {isInspectable && (
@@ -301,7 +310,14 @@ const TOOL_ICONS: Record<string, { Icon: Icon; label: string }> = {
   WebFetch: { Icon: DownloadSimpleIcon, label: "Fetch" },
   WebSearch: { Icon: GlobeIcon, label: "Search" },
   NotebookEdit: { Icon: NotebookIcon, label: "Notebook" },
+  // OpenCode 2's Code Mode: JavaScript that calls MCP tools.
+  execute: { Icon: CodeIcon, label: "Code" },
 };
+
+function codeSummary(code: string): string | null {
+  const line = code.split("\n").find((l) => l.trim().length > 0);
+  return line ? line.trim().slice(0, COMMAND_SUMMARY_CHARS) : null;
+}
 
 function FormattedToolName({ name, highlight }: { name: string; highlight: boolean }) {
   const parsed = parseMcpToolName(name);

@@ -494,6 +494,8 @@ export interface AgentRunParams {
   compact?: boolean;
   /** One-shot background work with no tool set; see shared/agent-tools-off.ts. */
   toolsOff?: boolean;
+  /** docs/341-code-mode-setting — undefined leaves the CLI's own default. */
+  codeMode?: boolean;
 }
 
 export interface AgentMcpBridge {
