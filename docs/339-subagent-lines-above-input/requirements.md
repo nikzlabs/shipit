@@ -24,6 +24,8 @@ Design: [`plan.md`](./plan.md). Visual reference: [`mockup.html`](./mockup.html)
     "Quiet box" style.
 11. The "Finished subagents" line does not count failures. A failed sub-agent
     is marked only inside the opened list.
+12. The dialog of a ShipIt sub-agent shows the prompt it was sent, also while
+    it is still running.
 
 ## Open questions
 
@@ -59,3 +61,5 @@ None.
   ("Finished subagents · 16 · 1 failed"). Offered a count for the latest turn
   only, a count until seen, or no count, Nik chose no count: "This is not
   actionable anyway, it is more for rare debugging cases" (req 11).
+- 2026-11-08 — Nik: "when calling a shipit subagent, the user should be able to
+  see the prompt in the subagent view, also when it is in progress" (req 12).

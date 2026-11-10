@@ -17,6 +17,8 @@ export const MODEL_VISION: Record<CanonicalModelKey, VisionSupport> = {
   "claude-haiku-5.5": "yes",
   "claude-fable-5": "yes",
   "claude-fable-5.1": "yes",
+  // Anthropic Fable 5.2 model page, 2026-11-09.
+  "claude-fable-5.2": "yes",
 
   // Verified from OpenAI's model page and Codex 0.153.2 metadata, 2026-09-04.
   "gpt-6-astra": "yes",

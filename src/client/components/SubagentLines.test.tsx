@@ -257,4 +257,32 @@ describe("SubagentLines — shipit agent run dialog (req 9)", () => {
     const dialog = openLine("Codex");
     await waitFor(() => expect(within(dialog).getByTestId("sub-agent-consult-output")).toHaveTextContent("Couldn't load this output."));
   });
+
+  it("shows the prompt of a running sub-agent, fetching it when the transcript left it out", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ outputMarkdown: "", prompt: "Review the whole diff." }) });
+    vi.stubGlobal("fetch", fetchMock);
+    show([{ role: "assistant", text: "", subAgentConsult: card({ status: "pending", promptTruncated: true }) }], { agentBusy: true });
+    const dialog = openLine("Codex");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(within(dialog).getByTestId("subagent-tab-prompt"));
+    await waitFor(() => expect(within(dialog).getByTestId("subagent-prompt")).toHaveTextContent("Review the whole diff."));
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual(["/api/sessions/session-1/sub-agent-consults/sac-1?part=prompt"]);
+  });
+
+  it("shows a prompt that arrived whole without fetching, and says so for a card that has none", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    show([{ role: "assistant", text: "", subAgentConsult: card({ prompt: "Short ask." }) }]);
+    let dialog = openLine("Codex");
+    fireEvent.mouseDown(within(dialog).getByTestId("subagent-tab-prompt"));
+    expect(within(dialog).getByTestId("subagent-prompt")).toHaveTextContent("Short ask.");
+    expect(fetchMock).not.toHaveBeenCalled();
+    cleanup();
+
+    show([{ role: "assistant", text: "", subAgentConsult: card() }]);
+    dialog = openLine("Codex");
+    fireEvent.mouseDown(within(dialog).getByTestId("subagent-tab-prompt"));
+    expect(within(dialog).getByTestId("subagent-prompt")).toHaveTextContent("No prompt recorded.");
+  });
 });

@@ -465,6 +465,17 @@ describe("projectConsultCardForWire (planning#299)", () => {
     expect(projectConsultCardForWire(card)).toBe(card);
   });
 
+  it("leaves a long prompt out, flagged for a fetch, and a short one in place", () => {
+    const long = consultCard({ status: "pending", prompt: "Review the diff. ".repeat(40) });
+    const projected = projectConsultCardForWire(long);
+    expect(projected.prompt).toBeUndefined();
+    expect(projected.promptTruncated).toBe(true);
+    expect(long.prompt).toContain("Review the diff.");
+
+    const short = consultCard({ prompt: "Quick look." });
+    expect(projectConsultCardForWire(short)).toBe(short);
+  });
+
   it("leaves an output-less card untouched, same reference", () => {
     const card = consultCard({ status: "error" });
     expect(projectConsultCardForWire(card)).toBe(card);

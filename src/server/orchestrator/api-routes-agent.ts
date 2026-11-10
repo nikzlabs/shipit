@@ -25,6 +25,13 @@ import { getErrorMessage } from "./validation.js";
 import { AgentTurnAdmissionError } from "./session-runner.js";
 import { followReportedTurn } from "./restart-turn-reattach.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
+import type { SubAgentConsultCard } from "../shared/types.js";
+
+// The caller wrote the prompt; echoing up to 200k characters back on every lookup is waste.
+function withoutPrompt(card: SubAgentConsultCard): SubAgentConsultCard {
+  const { prompt: _prompt, promptTruncated: _flag, ...rest } = card;
+  return rest;
+}
 
 export async function registerAgentRoutes(
   app: FastifyInstance,
@@ -268,7 +275,7 @@ export async function registerAgentRoutes(
             request.params.id,
             { ...(spawnId ? { spawnId } : {}), segmentMs },
           );
-          reply.send({ ...result.card, outcome: result.outcome });
+          reply.send({ ...withoutPrompt(result.card), outcome: result.outcome });
           return;
         }
         const card = getSubAgentResult(
@@ -276,7 +283,7 @@ export async function registerAgentRoutes(
           request.params.id,
           spawnId || undefined,
         );
-        reply.send(card);
+        reply.send(withoutPrompt(card));
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

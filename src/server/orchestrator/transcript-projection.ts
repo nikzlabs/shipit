@@ -243,12 +243,17 @@ export function projectToolUse<T extends { name: string; input: Record<string, u
 }
 
 export function projectConsultCardForWire(card: SubAgentConsultCard): SubAgentConsultCard {
+  let projected = card;
+  if (card.prompt && Buffer.byteLength(card.prompt, "utf8") > RESULT_STRIP_FLOOR_BYTES) {
+    const { prompt: _prompt, ...rest } = card;
+    projected = { ...rest, promptTruncated: true };
+  }
   const output = card.outputMarkdown;
-  if (!output) return card;
-  if (Buffer.byteLength(output, "utf8") <= RESULT_STRIP_FLOOR_BYTES) return card;
+  if (!output) return projected;
+  if (Buffer.byteLength(output, "utf8") <= RESULT_STRIP_FLOOR_BYTES) return projected;
   const preview = subAgentPreviewLine(output);
-  if (preview === output) return card;
-  return { ...card, outputMarkdown: preview, outputTruncated: true };
+  if (preview === output) return projected;
+  return { ...projected, outputMarkdown: preview, outputTruncated: true };
 }
 
 // Groups mutate after persistence. Track bodies by ID, with separate input/result commits.
