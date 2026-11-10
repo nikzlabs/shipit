@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildTurnMessages, emitChatCard, recordChatCard, updateRecordedCard, persistCardTransition, persistTurnInProgress, finalizeTurnRows, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { buildTurnMessages, emitChatCard, recordChatCard, recordedCardsFromRows, updateRecordedCard, persistCardTransition, persistTurnInProgress, finalizeTurnRows, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { ChatHistoryManager, type PersistedMessage } from "./chat-history.js";
 import { DatabaseManager } from "../shared/database.js";
@@ -88,6 +88,23 @@ describe("chat-card-persistence", () => {
     expect(cardIds()).toEqual(["row", "set-a", "set-b"]);
     finalizeTurnRows(history, runner, "s1");
     expect(cardIds()).toEqual(["row", "set-a", "set-b"]);
+  });
+
+  it("reads back the cards of saved turn rows at the anchors they were written with", () => {
+    const cards = [
+      { afterGroupIndex: 0, message: { role: "assistant" as const, text: "", voiceNote: { id: "v0", headline: "h", kind: "authored" as const, createdAt: "t" } } },
+      { afterGroupIndex: 1, message: { role: "assistant" as const, text: "failover", notice: true, noticeId: "n1" } },
+      { afterGroupIndex: 1, message: { role: "assistant" as const, text: "Error: boom", isError: true } },
+      { afterGroupIndex: 2, message: { role: "assistant" as const, text: "", voiceNote: { id: "v2", headline: "h", kind: "authored" as const, createdAt: "t" } } },
+    ];
+    const rows = buildTurnMessages(
+      [{ text: "first", toolUse: [] }, { text: "", toolUse: [{ type: "tool_use", id: "b", name: "Bash", input: {} }] }],
+      [{ afterGroupIndex: 1, text: "a steer" }],
+      cards,
+      { inProgress: true },
+    );
+
+    expect(recordedCardsFromRows(rows)).toEqual(cards);
   });
 
   it("emitChatCard emits the WS message, records it, AND persists the turn immediately", () => {

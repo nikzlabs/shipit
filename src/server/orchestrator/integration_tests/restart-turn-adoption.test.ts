@@ -267,6 +267,41 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     expect(history.some((m) => m.inProgress)).toBe(false);
   });
 
+  it("keeps a card the turn posted before the restart, where it was, through the replayed rows", async () => {
+    await startPreRestartTurn();
+    seedPreCrashHistory();
+    earlierProcess.append(SESSION_ID, {
+      role: "assistant",
+      text: "",
+      inProgress: true,
+      settingsProposal: {
+        cardId: "set-before-restart",
+        target: { key: "roles[].harness", item: "AstraOpenCode" },
+        label: "Harness",
+        description: "d",
+        path: "Settings › Roles",
+        from: "claude",
+        to: "opencode2",
+        phase: "pending",
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const runner = makeRunner();
+    await runner.resumeInFlightTurn();
+    await waitFor(() => runner.accumulatedText.includes("MIDTURN_TEXT"), 3000, "replay");
+    lastAgent.emit("event", { type: "agent_assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "ls" } }] });
+    lastAgent.emit("event", { type: "agent_tool_result", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] });
+    lastAgent.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "DONE_TEXT" }] });
+    lastAgent.emit("event", { type: "agent_result", status: "success", sessionId: "cli-session-1" });
+    await waitFor(() => !runner.running, 3000, "turn finished");
+
+    const rows = chatHistoryManager.load(SESSION_ID).map((m) => m.settingsProposal?.cardId ?? m.text);
+    expect(rows.filter((r) => r === "set-before-restart")).toHaveLength(1);
+    expect(rows.indexOf("set-before-restart")).toBeGreaterThan(rows.findIndex((r) => r.includes("MIDTURN_TEXT")));
+    expect(rows.indexOf("set-before-restart")).toBeLessThan(rows.findIndex((r) => r.includes("DONE_TEXT")));
+  });
+
   it("runs the post-turn commit + push flow off the replayed agent_result", async () => {
     await startPreRestartTurn();
     seedPreCrashHistory();

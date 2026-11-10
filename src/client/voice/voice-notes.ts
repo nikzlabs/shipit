@@ -81,7 +81,17 @@ export function autoplayVoiceNote(
   return true;
 }
 
+const announcedIds = new Set<string>();
+
+/** Once per note: a note that arrives during a history load is handled on arrival and again after the load. */
+export function announceVoiceNote(note: { id: string; headline: string }): void {
+  if (announcedIds.has(note.id)) return;
+  announcedIds.add(note.id);
+  autoplayVoiceNote(note);
+}
+
 export function __resetVoiceNotesStateForTest(): void {
+  announcedIds.clear();
   unlocked = false;
   lastNoteAt = 0;
   audioCtx = null;

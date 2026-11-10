@@ -6,9 +6,12 @@ import { useSessionStore } from "../stores/session-store.js";
 import {
   createQueuedMessageStash,
   dispatchMessage,
-  TRANSCRIPT_CARD_MESSAGES,
+  isForeignTranscriptMessage,
+  TRANSCRIPT_CARD_ARRIVALS,
+  TRANSCRIPT_CARD_UPDATES,
   type HandlerContext,
 } from "./message-handlers/index.js";
+import { announceArrivingVoiceNote } from "./message-handlers/voice-note.js";
 
 /** A bubble drawn before the HTTP history load is wiped by it, so these wait for it. */
 const WAITS_FOR_HISTORY: ReadonlySet<WsServerMessage["type"]> = new Set<WsServerMessage["type"]>([
@@ -20,8 +23,22 @@ const WAITS_FOR_HISTORY: ReadonlySet<WsServerMessage["type"]> = new Set<WsServer
   "message_steered",
   "message_queued",
   "queue_updated",
-  ...TRANSCRIPT_CARD_MESSAGES,
+  ...TRANSCRIPT_CARD_ARRIVALS,
+  "fork_breadcrumb",
 ]);
+
+function cardIdOf(data: WsServerMessage): string | undefined {
+  const m = data as { cardId?: unknown; requestId?: unknown; card?: { cardId?: unknown } };
+  const id = m.cardId ?? m.requestId ?? m.card?.cardId;
+  return typeof id === "string" ? id : undefined;
+}
+
+/** An update waits only behind its own card's queued arrival, which holds the row it patches. */
+function waitsForItsCard(data: WsServerMessage, pending: WsServerMessage[]): boolean {
+  if (!TRANSCRIPT_CARD_UPDATES.has(data.type)) return false;
+  const id = cardIdOf(data);
+  return id !== undefined && pending.some((p) => TRANSCRIPT_CARD_ARRIVALS.has(p.type) && cardIdOf(p) === id);
+}
 
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
@@ -75,8 +92,11 @@ export function useMessageHandler(params: {
       } catch {
         continue;
       }
-      if (WAITS_FOR_HISTORY.has(data.type) && !useSessionStore.getState().historyLoaded) {
-        pendingAgentEventsRef.current.push(data);
+      const pending = pendingAgentEventsRef.current;
+      const waits = WAITS_FOR_HISTORY.has(data.type) || waitsForItsCard(data, pending);
+      if (waits && !useSessionStore.getState().historyLoaded) {
+        if (data.type === "voice_note" && !isForeignTranscriptMessage(data)) announceArrivingVoiceNote(data);
+        pending.push(data);
         continue;
       }
       dispatchMessage(ctx, data);
