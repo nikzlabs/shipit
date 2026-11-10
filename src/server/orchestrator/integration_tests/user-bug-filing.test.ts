@@ -595,6 +595,26 @@ describe("Integration: user bug filing", () => {
     client.close();
   });
 
+  it("answers an empty re-submit of a filed card with the filed state, not a failure", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: "", body: "" });
+    const answers = await client.drain({ quietMs: 150 });
+    expect(answers.filter((m) => m.type.startsWith("bug_report_")).map((m) => m.type)).toEqual(["bug_report_filed"]);
+
+    client.close();
+  });
+
   it("refuses a dismissal naming an unknown card", async () => {
     const client = await TestClient.connect(port, sessionId);
     await client.receive();

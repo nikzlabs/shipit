@@ -58,18 +58,7 @@ export async function handleSubmitBugReport(
     return;
   }
 
-  const title = typeof msg.title === "string" ? msg.title.trim() : "";
-  const body = typeof msg.body === "string" ? msg.body : "";
-  if (!title || !body.trim()) {
-    runner.emitMessage({
-      type: "bug_report_failed",
-      sessionId,
-      cardId: msg.cardId,
-      message: "Title and body are required to file the report.",
-    });
-    return;
-  }
-
+  // Before validation: a stale form's empty submit must not send "failed" for a saved filed card.
   const existing = findBugCard(ctx, runner, sessionId, msg.cardId);
   if (existing.terminal) {
     const card = existing.card;
@@ -84,6 +73,18 @@ export async function handleSubmitBugReport(
     } else {
       runner.emitMessage({ type: "bug_report_dismissed", sessionId, cardId: msg.cardId });
     }
+    return;
+  }
+
+  const title = typeof msg.title === "string" ? msg.title.trim() : "";
+  const body = typeof msg.body === "string" ? msg.body : "";
+  if (!title || !body.trim()) {
+    runner.emitMessage({
+      type: "bug_report_failed",
+      sessionId,
+      cardId: msg.cardId,
+      message: "Title and body are required to file the report.",
+    });
     return;
   }
 

@@ -414,42 +414,60 @@ describe("useMessageHandler", () => {
     });
   });
 
-  it("applies an update to a card the transcript already holds at once, during the history load", () => {
-    const card = {
-      cardId: "set-old",
-      target: { key: "roles[].harness", item: "AstraOpenCode" },
-      label: "Harness",
-      description: "d",
-      path: "Settings › Roles",
-      from: "claude",
-      to: "opencode2",
-      phase: "pending" as const,
-      createdAt: "t",
-    };
-    useSessionStore.getState().setMessages([{ role: "assistant", text: "", settingsProposal: card }]);
-    renderDuringHistoryLoad()({ type: "settings_proposal_update", sessionId: "session-1", cardId: "set-old", card: { ...card, phase: "dismissed" } });
+  const proposal = (phase: NonNullable<ChatMessage["settingsProposal"]>["phase"]) => ({
+    cardId: "set-a",
+    target: { key: "roles[].harness", item: "AstraOpenCode" },
+    label: "Harness",
+    description: "d",
+    path: "Settings › Roles",
+    from: "claude",
+    to: "opencode2",
+    phase,
+    createdAt: "t",
+  });
+  const update = (phase: NonNullable<ChatMessage["settingsProposal"]>["phase"]): WsServerMessage => ({
+    type: "settings_proposal_update", sessionId: "session-1", cardId: "set-a", card: proposal(phase),
+  });
+  const phases = () => useSessionStore.getState().messages.map((m) => m.settingsProposal?.phase);
 
-    expect(useSessionStore.getState().messages[0].settingsProposal?.phase).toBe("dismissed");
+  it("keeps an update made during the history load over a history read before it", async () => {
+    useSessionStore.getState().setMessages([{ role: "assistant", text: "", settingsProposal: proposal("pending") }]);
+    renderDuringHistoryLoad()(update("dismissed"));
+
+    act(() => {
+      useSessionStore.getState().setMessages([{ role: "assistant", text: "", settingsProposal: proposal("pending") }]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+
+    await waitFor(() => expect(phases()).toEqual(["dismissed"]));
   });
 
-  it("applies an update for another card at once while a card waits for the history load", () => {
-    const card = (cardId: string) => ({
-      cardId,
-      target: { key: "roles[].harness", item: cardId },
-      label: "Harness",
-      description: "d",
-      path: "Settings › Roles",
-      from: "claude",
-      to: "opencode2",
-      phase: "pending" as const,
-      createdAt: "t",
-    });
-    useSessionStore.getState().setMessages([{ role: "assistant", text: "", settingsProposal: card("set-old") }]);
+  it("keeps an update made during the history load over the older attach snapshot", async () => {
+    const row = (phase: NonNullable<ChatMessage["settingsProposal"]>["phase"]) =>
+      ({ role: "assistant" as const, text: "", settingsProposal: proposal(phase) });
     const deliver = renderDuringHistoryLoad();
-    deliver({ type: "settings_proposal_card", sessionId: "session-1", card: card("set-new") });
-    deliver({ type: "settings_proposal_update", sessionId: "session-1", cardId: "set-old", card: { ...card("set-old"), phase: "dismissed" } });
+    deliver({ type: "turn_snapshot", sessionId: "session-1", messages: [row("pending")] } as WsServerMessage);
+    deliver(update("dismissed"));
 
-    expect(useSessionStore.getState().messages[0].settingsProposal?.phase).toBe("dismissed");
+    act(() => {
+      useSessionStore.getState().setMessages([{ ...row("dismissed"), inProgress: true }]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+
+    await waitFor(() => expect(phases()).toEqual(["dismissed"]));
+  });
+
+  it("ends a replayed run of updates at the newest state the history load holds", async () => {
+    const deliver = renderDuringHistoryLoad();
+    deliver(update("applying"));
+    deliver(update("applied"));
+
+    act(() => {
+      useSessionStore.getState().setMessages([{ role: "assistant", text: "", settingsProposal: proposal("applied") }]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+
+    await waitFor(() => expect(phases()).toEqual(["applied"]));
   });
 
   it("drops a fork breadcrumb for another session", () => {
