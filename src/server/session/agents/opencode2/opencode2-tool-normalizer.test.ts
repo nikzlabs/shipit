@@ -4,6 +4,7 @@ import {
   OPENCODE2_TRANSCRIPT_TOOL_NAMES,
   normalizeOpencode2ToolCall,
   normalizeOpencode2ToolResult,
+  opencode2ToolResultImages,
 } from "./opencode2-tool-normalizer.js";
 
 describe("OpenCode 2 tool normalizer", () => {
@@ -29,6 +30,19 @@ describe("OpenCode 2 tool normalizer", () => {
 
   it("passes an unknown tool through, MCP tools included", () => {
     expect(normalizeOpencode2ToolCall("playwright_browser_click", { path: "x" })).toEqual({ name: "playwright_browser_click", input: { path: "x" } });
+  });
+
+  it("takes only image data URIs from a tool's content parts", () => {
+    expect(opencode2ToolResultImages({
+      content: [
+        { type: "text", text: "PDF read successfully" },
+        { type: "file", uri: "data:application/pdf;base64,JVBER", mime: "application/pdf" },
+        { type: "file", uri: "file:///w/a.png", mime: "image/png" },
+        { type: "file", uri: "data:image/jpeg;base64,/9j/4A==", mime: "image/jpeg" },
+      ],
+    })).toEqual([{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: "/9j/4A==" } }]);
+    expect(opencode2ToolResultImages(undefined)).toEqual([]);
+    expect(opencode2ToolResultImages({ content: "not a list" })).toEqual([]);
   });
 
   it("unwraps a completed subagent report and nothing else", () => {

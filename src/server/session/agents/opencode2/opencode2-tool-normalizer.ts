@@ -37,6 +37,29 @@ export function normalizeOpencode2ToolResult(name: string, output: string): stri
   return match[1].replace(/^\r?\n/, "").replace(/\r?\n$/, "");
 }
 
+const IMAGE_DATA_URI = /^data:(image\/[\w.+-]+);base64,(.+)$/s;
+
+export interface ToolResultImageBlock {
+  type: "image";
+  source: { type: "base64"; media_type: string; data: string };
+}
+
+/**
+ * A tool's images, in the block shape the transcript renders for Claude. The `run` stream
+ * carries them only in `state.metadata.content`, as `file` parts with a data URI (2.2.5).
+ */
+export function opencode2ToolResultImages(metadata: Record<string, unknown> | undefined): ToolResultImageBlock[] {
+  const content = metadata?.content;
+  if (!Array.isArray(content)) return [];
+  const images: ToolResultImageBlock[] = [];
+  for (const part of content as { type?: unknown; uri?: unknown }[]) {
+    if (part.type !== "file" || typeof part.uri !== "string") continue;
+    const match = IMAGE_DATA_URI.exec(part.uri);
+    if (match) images.push({ type: "image", source: { type: "base64", media_type: match[1], data: match[2] } });
+  }
+  return images;
+}
+
 export function normalizeOpencode2ToolCall(
   name: string,
   input: Record<string, unknown>,

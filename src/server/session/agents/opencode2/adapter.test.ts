@@ -197,6 +197,26 @@ describe("Opencode2Adapter — per-turn server", () => {
     expect(h.events[0]).toMatchObject({ type: "agent_init", agentId: "opencode2", sessionId: SESSION });
   });
 
+  it("passes on the image a read returned, as Claude's tool results carry one", async () => {
+    // CLI 2.2.5 capture (2026-11-10, mock provider) of a read of a 4x4 PNG, shortened ids.
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGP4z8AARwzEcQCukw/x0F8jngAAAABJRU5ErkJggg==";
+    const readImage = `{"type":"tool_use","timestamp":1794320149288,"sessionID":"${SESSION}","part":{"partID":"prt_2","sessionID":"${SESSION}","messageID":"msg_1","type":"tool","id":"call_1","tool":"read","state":{"status":"completed","input":{"path":"/w/a.png"},"output":"Image read successfully","title":"read","metadata":{"metadata":{"truncated":false},"content":[{"type":"text","text":"Image read successfully"},{"type":"file","uri":"data:image/png;base64,${png}","mime":"image/png","name":"/w/a.png"}],"providerCall":{"executed":false},"providerResult":{"executed":false},"rawInput":"{\\"path\\":\\"/w/a.png\\"}"},"time":{"start":1794320149254,"end":1794320149288}}}}`;
+    const h = start(makeAdapter(), PARAMS);
+    await announce(h);
+    h.client().emitStdout([TOOL_TURN[0], readImage]);
+    h.client().emit("close", 0, null);
+    await h.done;
+    const toolResult = h.events.flatMap((e) => (e.type === "agent_tool_result" ? e.content : [])).find((b) => (b as { type?: string }).type === "tool_result");
+    expect(toolResult).toEqual({
+      type: "tool_result",
+      tool_use_id: "call_1",
+      content: [
+        { type: "text", text: "Image read successfully" },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
+      ],
+    });
+  });
+
   it("keeps the stream's usage when the server cannot list the messages", async () => {
     const h = start(makeAdapter({ messages: { data: "not a list" } }), PARAMS);
     await announce(h);
