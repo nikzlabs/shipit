@@ -3,5 +3,12 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
 
 export const handleForkBreadcrumb: Handler<WsForkBreadcrumb> = (_ctx, data) => {
-  useSessionStore.getState().setMessages((prev) => [...prev, data.message]);
+  const activeSessionId = useSessionStore.getState().sessionId;
+  if (activeSessionId && data.parentSessionId !== activeSessionId) return;
+  const childSessionId = data.message.forkChild?.childSessionId;
+  useSessionStore.getState().setMessages((prev) =>
+    childSessionId && prev.some((m) => m.forkChild?.childSessionId === childSessionId)
+      ? prev
+      : [...prev, data.message],
+  );
 };

@@ -5,6 +5,9 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { resumeSessionInternal } from "../stores/actions/session-actions.js";
 import type { WsServerMessage } from "../../server/shared/types.js";
+import type { ChatMessage } from "../components/MessageList.js";
+import { usePlaybackStore } from "../voice/playback-store.js";
+import { armAutoplay, __resetVoiceNotesStateForTest } from "../voice/voice-notes.js";
 
 function messageEvent(data: WsServerMessage): MessageEvent {
   return { data: JSON.stringify(data) } as MessageEvent;
@@ -249,6 +252,72 @@ describe("useMessageHandler", () => {
     });
   });
 
+  /**
+   * Two `shipit settings propose` calls in one Bash command, the first landing
+   * while a reconnect's history load is in flight. Applied at once, the first
+   * card was erased by the history install and again by the attach snapshot,
+   * which was taken before it existed; only the second card showed.
+   */
+  it.each([
+    ["read before the card was saved", false],
+    ["already carrying the card as an in-progress row", true],
+  ])("keeps a card that arrives during the history load, beside the next card (history %s)", async (_label, historyHasCard) => {
+    const card = (cardId: string, item: string) => ({
+      type: "settings_proposal_card" as const,
+      sessionId: "session-1",
+      card: {
+        cardId,
+        target: { key: "roles[].harness", item },
+        label: "Harness",
+        description: "The agent CLI the role runs.",
+        path: "Settings › Roles",
+        from: "claude",
+        to: "opencode2",
+        phase: "pending" as const,
+        createdAt: "2026-11-10T09:31:12.502Z",
+      },
+    }) as WsServerMessage;
+    const bash = {
+      role: "assistant" as const,
+      text: "",
+      toolUse: [{ type: "tool_use" as const, id: "bash-1", name: "Bash", input: { command: "shipit settings propose …" } }],
+    };
+    const queued: MessageEvent[] = [];
+    const drainMessages = vi.fn(() => queued.splice(0));
+    const { rerender } = renderHook(
+      ({ last }: { last: MessageEvent | null }) =>
+        useMessageHandler({ lastMessage: last, drainMessages, send: vi.fn(), terminalRef: { current: null } }),
+      { initialProps: { last: null as MessageEvent | null } },
+    );
+    const deliver = (msg: WsServerMessage) => {
+      act(() => {
+        queued.push(messageEvent(msg));
+        rerender({ last: queued[queued.length - 1] });
+      });
+    };
+
+    useSessionStore.getState().setMessages([{ role: "user", text: "switch both roles" }]);
+    deliver({ type: "turn_snapshot", sessionId: "session-1", messages: [bash] } as WsServerMessage);
+    deliver(card("set-a", "AstraOpenCode"));
+
+    act(() => {
+      useSessionStore.getState().setMessages([
+        { role: "user", text: "switch both roles" },
+        { ...bash, inProgress: true },
+        ...(historyHasCard
+          ? [{ role: "assistant" as const, text: "", inProgress: true, settingsProposal: (card("set-a", "AstraOpenCode") as { card: NonNullable<ChatMessage["settingsProposal"]> }).card }]
+          : []),
+      ]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+    deliver(card("set-b", "DeepSeek Flash Max"));
+
+    await waitFor(() => {
+      expect(useSessionStore.getState().messages.map((m) => m.settingsProposal?.target.item ?? m.text))
+        .toEqual(["switch both roles", "", "AstraOpenCode", "DeepSeek Flash Max"]);
+    });
+  });
+
   it("syncs the session permission mode when the agent enters plan mode itself", async () => {
     const event: WsServerMessage = {
       type: "agent_event",
@@ -280,6 +349,130 @@ describe("useMessageHandler", () => {
           streaming: true,
         },
       ]);
+    });
+  });
+
+  /** Delivers each message as the socket would, while the history load is still in flight. */
+  function renderDuringHistoryLoad() {
+    const queued: MessageEvent[] = [];
+    const { rerender } = renderHook(
+      ({ last }: { last: MessageEvent | null }) =>
+        useMessageHandler({ lastMessage: last, drainMessages: () => queued.splice(0), send: vi.fn(), terminalRef: { current: null } }),
+      { initialProps: { last: null as MessageEvent | null } },
+    );
+    return (msg: WsServerMessage) => {
+      act(() => {
+        queued.push(messageEvent(msg));
+        rerender({ last: queued[queued.length - 1] });
+      });
+    };
+  }
+
+  it("plays a voice note that arrives during the history load once, though the load already holds it", async () => {
+    __resetVoiceNotesStateForTest();
+    useSettingsStore.setState({ voiceHandsFree: true });
+    armAutoplay();
+    const play = vi.fn(async () => undefined);
+    usePlaybackStore.setState({ play });
+    const note = { id: "voice-1", headline: "Which harness?", kind: "ask" as const, createdAt: "t" };
+
+    renderDuringHistoryLoad()({ type: "voice_note", sessionId: "session-1", ...note });
+    expect(play).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      useSessionStore.getState().setMessages([{ role: "assistant", text: "", voiceNote: note }]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+
+    await waitFor(() => expect(useSessionStore.getState().messages).toHaveLength(1));
+    expect(play).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies an update that follows its card during the history load, after the card", async () => {
+    const card = {
+      cardId: "set-a",
+      target: { key: "roles[].harness", item: "AstraOpenCode" },
+      label: "Harness",
+      description: "d",
+      path: "Settings › Roles",
+      from: "claude",
+      to: "opencode2",
+      phase: "pending" as const,
+      createdAt: "t",
+    };
+    const deliver = renderDuringHistoryLoad();
+    deliver({ type: "settings_proposal_card", sessionId: "session-1", card });
+    deliver({ type: "settings_proposal_update", sessionId: "session-1", cardId: "set-a", card: { ...card, phase: "dismissed" } });
+
+    act(() => {
+      useSessionStore.getState().setMessages([]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+
+    await waitFor(() => {
+      expect(useSessionStore.getState().messages.map((m) => m.settingsProposal?.phase)).toEqual(["dismissed"]);
+    });
+  });
+
+  it("applies an update to a card the transcript already holds at once, during the history load", () => {
+    const card = {
+      cardId: "set-old",
+      target: { key: "roles[].harness", item: "AstraOpenCode" },
+      label: "Harness",
+      description: "d",
+      path: "Settings › Roles",
+      from: "claude",
+      to: "opencode2",
+      phase: "pending" as const,
+      createdAt: "t",
+    };
+    useSessionStore.getState().setMessages([{ role: "assistant", text: "", settingsProposal: card }]);
+    renderDuringHistoryLoad()({ type: "settings_proposal_update", sessionId: "session-1", cardId: "set-old", card: { ...card, phase: "dismissed" } });
+
+    expect(useSessionStore.getState().messages[0].settingsProposal?.phase).toBe("dismissed");
+  });
+
+  it("applies an update for another card at once while a card waits for the history load", () => {
+    const card = (cardId: string) => ({
+      cardId,
+      target: { key: "roles[].harness", item: cardId },
+      label: "Harness",
+      description: "d",
+      path: "Settings › Roles",
+      from: "claude",
+      to: "opencode2",
+      phase: "pending" as const,
+      createdAt: "t",
+    });
+    useSessionStore.getState().setMessages([{ role: "assistant", text: "", settingsProposal: card("set-old") }]);
+    const deliver = renderDuringHistoryLoad();
+    deliver({ type: "settings_proposal_card", sessionId: "session-1", card: card("set-new") });
+    deliver({ type: "settings_proposal_update", sessionId: "session-1", cardId: "set-old", card: { ...card("set-old"), phase: "dismissed" } });
+
+    expect(useSessionStore.getState().messages[0].settingsProposal?.phase).toBe("dismissed");
+  });
+
+  it("drops a fork breadcrumb for another session", () => {
+    const message = { role: "assistant" as const, text: "", forkChild: { childSessionId: "child-1", title: "Fork", branch: "b" } };
+    useSessionStore.getState().setHistoryLoaded(true);
+    renderDuringHistoryLoad()({ type: "fork_breadcrumb", parentSessionId: "session-other", message });
+
+    expect(useSessionStore.getState().messages).toEqual([]);
+  });
+
+  it("keeps a fork breadcrumb that arrives during the history load, once", async () => {
+    const message = { role: "assistant" as const, text: "", forkChild: { childSessionId: "child-1", title: "Fork", branch: "b" } };
+    const deliver = renderDuringHistoryLoad();
+    deliver({ type: "fork_breadcrumb", parentSessionId: "session-1", message });
+    deliver({ type: "fork_breadcrumb", parentSessionId: "session-1", message });
+
+    act(() => {
+      useSessionStore.getState().setMessages([{ role: "user", text: "fork here" }]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+
+    await waitFor(() => {
+      expect(useSessionStore.getState().messages.map((m) => m.forkChild?.childSessionId ?? m.text)).toEqual(["fork here", "child-1"]);
     });
   });
 });

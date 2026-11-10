@@ -612,6 +612,13 @@ export class ChatHistoryManager {
     return this.stmtHasInProgress.get(sessionId) !== undefined;
   }
 
+  loadInProgress(sessionId: string): PersistedMessage[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM messages WHERE session_id = ? AND in_progress = 1 ORDER BY id",
+    ).all(sessionId) as MessageRow[];
+    return rows.map((r) => this.fromRow(r));
+  }
+
   sessionsWithInProgressRows(): string[] {
     const rows = this.db.prepare("SELECT DISTINCT session_id FROM messages WHERE in_progress = 1").all() as {
       session_id: string;

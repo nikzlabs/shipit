@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildTurnMessages, emitChatCard, recordChatCard, updateRecordedCard, persistCardTransition, persistTurnInProgress, finalizeTurnRows, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { buildTurnMessages, emitChatCard, recordChatCard, recordedCardsFromRows, updateRecordedCard, persistCardTransition, persistTurnInProgress, finalizeTurnRows, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { ChatHistoryManager, type PersistedMessage } from "./chat-history.js";
 import { DatabaseManager } from "../shared/database.js";
@@ -58,6 +58,53 @@ describe("chat-card-persistence", () => {
       ["assistant", "working", undefined],
       ["user", "also this", "r1"],
     ]);
+  });
+
+  it("keeps two cards emitted back to back as two rows, in order, through the database", () => {
+    const { runner } = fakeRunner([{ text: "", toolUse: [{ type: "tool_use", id: "bash-1", name: "Bash", input: {} }] }]);
+    const history = new ChatHistoryManager(new DatabaseManager(":memory:"));
+    const card = (cardId: string, item: string) => ({
+      cardId,
+      target: { key: "roles[].harness", item },
+      label: "Harness",
+      description: "d",
+      path: "Settings › Roles",
+      from: "claude",
+      to: "opencode2",
+      phase: "pending" as const,
+      createdAt: "2026-11-10T09:31:12.502Z",
+    });
+    for (const [cardId, item] of [["set-a", "AstraOpenCode"], ["set-b", "DeepSeek Flash Max"]]) {
+      const c = card(cardId, item);
+      emitChatCard(
+        runner,
+        { type: "settings_proposal_card", sessionId: "s1", card: c },
+        { role: "assistant", text: "", settingsProposal: c },
+        { chatHistoryManager: history, sessionId: "s1" },
+      );
+    }
+    const cardIds = () => history.load("s1").map((m) => m.settingsProposal?.cardId ?? "row");
+
+    expect(cardIds()).toEqual(["row", "set-a", "set-b"]);
+    finalizeTurnRows(history, runner, "s1");
+    expect(cardIds()).toEqual(["row", "set-a", "set-b"]);
+  });
+
+  it("reads back the cards of saved turn rows at the anchors they were written with", () => {
+    const cards = [
+      { afterGroupIndex: 0, message: { role: "assistant" as const, text: "", voiceNote: { id: "v0", headline: "h", kind: "authored" as const, createdAt: "t" } } },
+      { afterGroupIndex: 1, message: { role: "assistant" as const, text: "failover", notice: true, noticeId: "n1" } },
+      { afterGroupIndex: 1, message: { role: "assistant" as const, text: "Error: boom", isError: true } },
+      { afterGroupIndex: 2, message: { role: "assistant" as const, text: "", voiceNote: { id: "v2", headline: "h", kind: "authored" as const, createdAt: "t" } } },
+    ];
+    const rows = buildTurnMessages(
+      [{ text: "first", toolUse: [] }, { text: "", toolUse: [{ type: "tool_use", id: "b", name: "Bash", input: {} }] }],
+      [{ afterGroupIndex: 1, text: "a steer" }],
+      cards,
+      { inProgress: true },
+    );
+
+    expect(recordedCardsFromRows(rows)).toEqual(cards);
   });
 
   it("emitChatCard emits the WS message, records it, AND persists the turn immediately", () => {
