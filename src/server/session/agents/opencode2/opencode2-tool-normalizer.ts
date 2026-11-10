@@ -52,9 +52,11 @@ export function opencode2ToolResultImages(metadata: Record<string, unknown> | un
   const content = metadata?.content;
   if (!Array.isArray(content)) return [];
   const images: ToolResultImageBlock[] = [];
-  for (const part of content as { type?: unknown; uri?: unknown }[]) {
-    if (part.type !== "file" || typeof part.uri !== "string") continue;
-    const match = IMAGE_DATA_URI.exec(part.uri);
+  for (const part of content as unknown[]) {
+    if (typeof part !== "object" || part === null) continue;
+    const { type, uri } = part as { type?: unknown; uri?: unknown };
+    if (type !== "file" || typeof uri !== "string") continue;
+    const match = IMAGE_DATA_URI.exec(uri);
     if (match) images.push({ type: "image", source: { type: "base64", media_type: match[1], data: match[2] } });
   }
   return images;

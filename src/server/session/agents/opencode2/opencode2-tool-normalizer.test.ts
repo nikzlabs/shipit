@@ -35,6 +35,8 @@ describe("OpenCode 2 tool normalizer", () => {
   it("takes only image data URIs from a tool's content parts", () => {
     expect(opencode2ToolResultImages({
       content: [
+        null,
+        "file",
         { type: "text", text: "PDF read successfully" },
         { type: "file", uri: "data:application/pdf;base64,JVBER", mime: "application/pdf" },
         { type: "file", uri: "file:///w/a.png", mime: "image/png" },
