@@ -5,6 +5,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { resumeSessionInternal } from "../stores/actions/session-actions.js";
 import type { WsServerMessage } from "../../server/shared/types.js";
+import type { ChatMessage } from "../components/MessageList.js";
 
 function messageEvent(data: WsServerMessage): MessageEvent {
   return { data: JSON.stringify(data) } as MessageEvent;
@@ -246,6 +247,72 @@ describe("useMessageHandler", () => {
 
     await waitFor(() => {
       expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["live tail"]);
+    });
+  });
+
+  /**
+   * Two `shipit settings propose` calls in one Bash command, the first landing
+   * while a reconnect's history load is in flight. Applied at once, the first
+   * card was erased by the history install and again by the attach snapshot,
+   * which was taken before it existed; only the second card showed.
+   */
+  it.each([
+    ["read before the card was saved", false],
+    ["already carrying the card as an in-progress row", true],
+  ])("keeps a card that arrives during the history load, beside the next card (history %s)", async (_label, historyHasCard) => {
+    const card = (cardId: string, item: string) => ({
+      type: "settings_proposal_card" as const,
+      sessionId: "session-1",
+      card: {
+        cardId,
+        target: { key: "roles[].harness", item },
+        label: "Harness",
+        description: "The agent CLI the role runs.",
+        path: "Settings › Roles",
+        from: "claude",
+        to: "opencode2",
+        phase: "pending" as const,
+        createdAt: "2026-11-10T09:31:12.502Z",
+      },
+    }) as WsServerMessage;
+    const bash = {
+      role: "assistant" as const,
+      text: "",
+      toolUse: [{ type: "tool_use" as const, id: "bash-1", name: "Bash", input: { command: "shipit settings propose …" } }],
+    };
+    const queued: MessageEvent[] = [];
+    const drainMessages = vi.fn(() => queued.splice(0));
+    const { rerender } = renderHook(
+      ({ last }: { last: MessageEvent | null }) =>
+        useMessageHandler({ lastMessage: last, drainMessages, send: vi.fn(), terminalRef: { current: null } }),
+      { initialProps: { last: null as MessageEvent | null } },
+    );
+    const deliver = (msg: WsServerMessage) => {
+      act(() => {
+        queued.push(messageEvent(msg));
+        rerender({ last: queued[queued.length - 1] });
+      });
+    };
+
+    useSessionStore.getState().setMessages([{ role: "user", text: "switch both roles" }]);
+    deliver({ type: "turn_snapshot", sessionId: "session-1", messages: [bash] } as WsServerMessage);
+    deliver(card("set-a", "AstraOpenCode"));
+
+    act(() => {
+      useSessionStore.getState().setMessages([
+        { role: "user", text: "switch both roles" },
+        { ...bash, inProgress: true },
+        ...(historyHasCard
+          ? [{ role: "assistant" as const, text: "", inProgress: true, settingsProposal: (card("set-a", "AstraOpenCode") as { card: NonNullable<ChatMessage["settingsProposal"]> }).card }]
+          : []),
+      ]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+    deliver(card("set-b", "DeepSeek Flash Max"));
+
+    await waitFor(() => {
+      expect(useSessionStore.getState().messages.map((m) => m.settingsProposal?.target.item ?? m.text))
+        .toEqual(["switch both roles", "", "AstraOpenCode", "DeepSeek Flash Max"]);
     });
   });
 

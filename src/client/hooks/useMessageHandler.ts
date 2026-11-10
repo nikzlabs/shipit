@@ -6,6 +6,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import {
   createQueuedMessageStash,
   dispatchMessage,
+  TRANSCRIPT_CARD_MESSAGES,
   type HandlerContext,
 } from "./message-handlers/index.js";
 
@@ -19,6 +20,7 @@ const WAITS_FOR_HISTORY: ReadonlySet<WsServerMessage["type"]> = new Set<WsServer
   "message_steered",
   "message_queued",
   "queue_updated",
+  ...TRANSCRIPT_CARD_MESSAGES,
 ]);
 
 export function useMessageHandler(params: {

@@ -244,28 +244,16 @@ export const messageHandlers: MessageHandlerMap = {
 };
 
 /**
- * Message types whose `sessionId` names the session that OWNS the chat
- * transcript they belong to — cards, notices, and the transient chips that sit
- * beside them. The client keeps exactly one transcript in memory (the active
- * session's `messages` array), so applying one of these for any other session
- * writes it into the wrong scrollback.
+ * Message types that add a card row to the transcript, or change a card's
+ * state. Each handler ignores a card id it already holds, so applying one
+ * twice is safe.
  *
- * That is not hypothetical: the per-session WS is keyed off the *route*
- * (`urlSessionId`) while every handler writes through the *store*
- * (`useSessionStore.sessionId`). Those two agree in the steady state but not
- * across every switch/fork/claim transition, and a card arriving inside that
- * window used to land in whichever session was active — the symptom this set
- * exists to prevent. Cross-session messages that legitimately describe *other*
- * sessions (`session_status` sidebar dots, `pr_lifecycle_update`,
- * `reset_eligible`, `usage_update`, `session_forked`, `rewind_restored`, …) are
- * deliberately absent — they are keyed by their own `sessionId` inside their
- * stores and must keep flowing.
- *
- * Dropping (rather than re-routing) is correct: every one of these is either
- * persisted in the owning session's chat history — so switching to that session
- * rehydrates it — or transient live activity that is meaningless once stale.
+ * `useMessageHandler` holds these until the HTTP history load is installed:
+ * the load replaces the transcript whole, and the `turn_snapshot` queued
+ * behind it replaces every in-progress row, so a card applied in that window
+ * was erased by a snapshot taken before the card existed.
  */
-const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessageType>([
+export const TRANSCRIPT_CARD_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessageType>([
   "action_checklist_card",
   "action_checklist_update",
   "repo_session_proposal_card",
@@ -281,7 +269,6 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "bug_report_dismissed",
   "child_merged_card",
   "compaction_card",
-  "compaction_status",
   "egress_prompt_card",
   "egress_prompt_resolved",
   "issue_ref_card",
@@ -305,12 +292,40 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "non_turn_failure_dismissed",
   "session_spawn_failed",
   "session_spawned",
+  "sub_agent_consult_card",
+  "system_notice",
+  "voice_note",
+]);
+
+/**
+ * Message types whose `sessionId` names the session that OWNS the chat
+ * transcript they belong to — cards, notices, and the transient chips that sit
+ * beside them. The client keeps exactly one transcript in memory (the active
+ * session's `messages` array), so applying one of these for any other session
+ * writes it into the wrong scrollback.
+ *
+ * That is not hypothetical: the per-session WS is keyed off the *route*
+ * (`urlSessionId`) while every handler writes through the *store*
+ * (`useSessionStore.sessionId`). Those two agree in the steady state but not
+ * across every switch/fork/claim transition, and a card arriving inside that
+ * window used to land in whichever session was active — the symptom this set
+ * exists to prevent. Cross-session messages that legitimately describe *other*
+ * sessions (`session_status` sidebar dots, `pr_lifecycle_update`,
+ * `reset_eligible`, `usage_update`, `session_forked`, `rewind_restored`, …) are
+ * deliberately absent — they are keyed by their own `sessionId` inside their
+ * stores and must keep flowing.
+ *
+ * Dropping (rather than re-routing) is correct: every one of these is either
+ * persisted in the owning session's chat history — so switching to that session
+ * rehydrates it — or transient live activity that is meaningless once stale.
+ */
+const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessageType>([
+  ...TRANSCRIPT_CARD_MESSAGES,
+  "compaction_status",
   "session_container_freshness",
   "secret_block_status",
-  "sub_agent_consult_card",
   "sub_agent_spawn",
   "subagent_report_update",
-  "system_notice",
   "system_user_message",
   "message_steered",
   // planning#691 — they change the queue strip, and a bubble of the transcript.
@@ -320,7 +335,6 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   // Streamed rows, plan mode and the activity label all belong to the turn's own session.
   "agent_event",
   "turn_snapshot",
-  "voice_note",
 ]);
 
 /**

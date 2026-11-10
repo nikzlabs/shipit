@@ -60,6 +60,36 @@ describe("chat-card-persistence", () => {
     ]);
   });
 
+  it("keeps two cards emitted back to back as two rows, in order, through the database", () => {
+    const { runner } = fakeRunner([{ text: "", toolUse: [{ type: "tool_use", id: "bash-1", name: "Bash", input: {} }] }]);
+    const history = new ChatHistoryManager(new DatabaseManager(":memory:"));
+    const card = (cardId: string, item: string) => ({
+      cardId,
+      target: { key: "roles[].harness", item },
+      label: "Harness",
+      description: "d",
+      path: "Settings › Roles",
+      from: "claude",
+      to: "opencode2",
+      phase: "pending" as const,
+      createdAt: "2026-11-10T09:31:12.502Z",
+    });
+    for (const [cardId, item] of [["set-a", "AstraOpenCode"], ["set-b", "DeepSeek Flash Max"]]) {
+      const c = card(cardId, item);
+      emitChatCard(
+        runner,
+        { type: "settings_proposal_card", sessionId: "s1", card: c },
+        { role: "assistant", text: "", settingsProposal: c },
+        { chatHistoryManager: history, sessionId: "s1" },
+      );
+    }
+    const cardIds = () => history.load("s1").map((m) => m.settingsProposal?.cardId ?? "row");
+
+    expect(cardIds()).toEqual(["row", "set-a", "set-b"]);
+    finalizeTurnRows(history, runner, "s1");
+    expect(cardIds()).toEqual(["row", "set-a", "set-b"]);
+  });
+
   it("emitChatCard emits the WS message, records it, AND persists the turn immediately", () => {
     const { runner, emitted, persisted, chatHistoryManager } = fakeRunner([{ text: "did a thing", toolUse: [] }]);
 
