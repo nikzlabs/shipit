@@ -43,6 +43,9 @@ export function useConnectionSync(params: {
   const bootstrapFetchedRef = useRef(false);
   const recentlyForegroundedRef = useRef(false);
   const foregroundTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A failed load is tried again: until one lands, `useMessageHandler` holds the turn's events and cards.
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const failedLoadsRef = useRef(0);
 
   function markRecentlyForegrounded() {
     recentlyForegroundedRef.current = true;
@@ -62,6 +65,7 @@ export function useConnectionSync(params: {
   // eslint-disable-next-line no-restricted-syntax -- non-listener cleanup (clear a pending timeout on unmount)
   useEffect(() => () => {
     if (foregroundTimerRef.current) clearTimeout(foregroundTimerRef.current);
+    if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
   }, []);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
@@ -105,6 +109,17 @@ export function useConnectionSync(params: {
 
             if (loaded && !useSessionStore.getState().historyLoaded) {
               setHydrateAttempt((n) => n + 1);
+            }
+            if (loaded) {
+              failedLoadsRef.current = 0;
+            } else {
+              const delayMs = Math.min(30_000, 1000 * 2 ** failedLoadsRef.current);
+              failedLoadsRef.current += 1;
+              if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+              retryTimerRef.current = setTimeout(() => {
+                retryTimerRef.current = null;
+                if (hydrateGenerationRef.current === attempt) setHydrateAttempt((n) => n + 1);
+              }, delayMs);
             }
           }
         }

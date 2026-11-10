@@ -76,6 +76,7 @@ import { releaseQueuedTurn } from "./queue-drain.js";
 import { POST_TURN_HOLD_MAX_MS } from "./post-turn-hold.js";
 import { writeAnswerHold } from "./turn-admission.js";
 import { retireRewindUndo } from "./chat-history.js";
+import type { PersistedMessage } from "./chat-history.js";
 import { forgetHeldTurn, restoreHeldTurns } from "./held-turns.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
@@ -83,7 +84,7 @@ import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
 import { formatCommitHookNotice } from "./services/commit-hook-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
-import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn, finalizeTurnRows } from "./chat-card-persistence.js";
+import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn, finalizeTurnRows, recordedCardsFromRows } from "./chat-card-persistence.js";
 import { denyAbandonedPermissionCards } from "./permission-cards.js";
 import { TURN_COMPLETED, resultIsTheAgentsOwn, turnDropped, turnErrored, turnInterrupted, turnNoResult, turnQuotaRefused, type EmptyTurnReason, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
@@ -180,6 +181,20 @@ export interface TurnInput {
  * under a turn, and a prompt that keeps its first rendering is better than a turn that
  * never reaches the agent — so a failed read leaves the prompt as it was.
  */
+// A hand-made test fake may lack the method, and a failed read must not stop the turn.
+function adoptSavedCards(
+  runner: SessionRunnerInterface,
+  chatHistoryManager: { loadInProgress?(sessionId: string): PersistedMessage[] },
+  sessionId: string,
+): void {
+  try {
+    const rows = chatHistoryManager.loadInProgress?.(sessionId) ?? [];
+    runner.recordedCards = recordedCardsFromRows(rows);
+  } catch (err) {
+    console.error(`[turn] reading the saved cards of the adopted turn in ${sessionId} failed:`, err);
+  }
+}
+
 function readStatusContext(deps: SystemTurnDeps, sessionId: string): string {
   try {
     return deps.sessionStatusContext?.(sessionId) ?? "";
@@ -605,6 +620,7 @@ export async function executeAgentTurn(
     if (useStreaming && input.reuseExistingAgent !== true && input.adopt !== true) runner.clearBackgroundTasks();
     runner.isStreamingActive = useStreaming;
     resetRunnerTurnState(runner);
+    if (input.adopt) adoptSavedCards(runner, deps.listenerDeps.chatHistoryManager, sessionId);
     noteCompactionTurn(runner, input.compact === true);
   }
   // Late predecessor exits must not finalize a successor's accumulator or history rows.

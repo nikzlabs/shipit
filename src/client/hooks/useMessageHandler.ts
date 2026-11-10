@@ -6,8 +6,12 @@ import { useSessionStore } from "../stores/session-store.js";
 import {
   createQueuedMessageStash,
   dispatchMessage,
+  isForeignTranscriptMessage,
+  TRANSCRIPT_CARD_ARRIVALS,
+  TRANSCRIPT_CARD_UPDATES,
   type HandlerContext,
 } from "./message-handlers/index.js";
+import { announceArrivingVoiceNote } from "./message-handlers/voice-note.js";
 
 /** A bubble drawn before the HTTP history load is wiped by it, so these wait for it. */
 const WAITS_FOR_HISTORY: ReadonlySet<WsServerMessage["type"]> = new Set<WsServerMessage["type"]>([
@@ -19,6 +23,9 @@ const WAITS_FOR_HISTORY: ReadonlySet<WsServerMessage["type"]> = new Set<WsServer
   "message_steered",
   "message_queued",
   "queue_updated",
+  ...TRANSCRIPT_CARD_ARRIVALS,
+  ...TRANSCRIPT_CARD_UPDATES,
+  "fork_breadcrumb",
 ]);
 
 export function useMessageHandler(params: {
@@ -74,6 +81,7 @@ export function useMessageHandler(params: {
         continue;
       }
       if (WAITS_FOR_HISTORY.has(data.type) && !useSessionStore.getState().historyLoaded) {
+        if (data.type === "voice_note" && !isForeignTranscriptMessage(data)) announceArrivingVoiceNote(data);
         pendingAgentEventsRef.current.push(data);
         continue;
       }

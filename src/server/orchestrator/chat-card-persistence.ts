@@ -146,6 +146,28 @@ export function persistTurnInProgress(
   if (runner.committedBodyIds) markMessagesCommitted(runner.committedBodyIds, messages);
 }
 
+/**
+ * The cards, notices and error rows among a turn's saved in-progress rows, anchored as
+ * `buildTurnMessages` wrote them. A turn adopted after a restart rebuilds its agent rows
+ * from the worker's replay, which holds none of these, so its next row rebuild would
+ * delete them. Steers are left out: one restored without its delivery ack is re-queued.
+ */
+export function recordedCardsFromRows(rows: PersistedMessage[]): RecordedChatCard[] {
+  const cards: RecordedChatCard[] = [];
+  let groups = 0;
+  for (const row of rows) {
+    if (row.role !== "assistant") continue;
+    const agentRow = !row.notice && !row.isError && (!!row.text || (row.toolUse?.length ?? 0) > 0);
+    if (agentRow) {
+      groups++;
+      continue;
+    }
+    const { inProgress: _inProgress, ...message } = row;
+    cards.push({ afterGroupIndex: groups, message });
+  }
+  return cards;
+}
+
 export function recordChatCard(
   runner: Pick<SessionRunnerInterface, "chatMessageGroups" | "recordedCards">,
   message: PersistedMessage,

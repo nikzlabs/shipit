@@ -7,6 +7,7 @@ vi.mock("../utils/session-data.js", () => ({
 }));
 
 import { useConnectionSync } from "./useConnectionSync.js";
+import { loadSessionHistory } from "../utils/session-data.js";
 import { useSessionStore } from "../stores/session-store.js";
 
 afterEach(() => {
@@ -224,5 +225,30 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
       isError: true,
       text: "Error: Connection lost while the agent was responding. Your message may be incomplete.",
     });
+  });
+});
+
+describe("useConnectionSync — a failed history load", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("is tried again, so the events waiting for it are not held for good", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const load = vi.mocked(loadSessionHistory);
+    load.mockReset();
+    load.mockRejectedValueOnce(new Error("502")).mockImplementation(() => {
+      useSessionStore.setState({ historyLoaded: true });
+      return Promise.resolve();
+    });
+    useSessionStore.setState({ sessionId: "s1", sessions: [], historyLoaded: false });
+
+    renderHook(() => useConnectionSync({ status: "open", send: vi.fn(() => true) }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(load).toHaveBeenCalledTimes(1);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(useSessionStore.getState().historyLoaded).toBe(true);
   });
 });

@@ -244,6 +244,68 @@ export const messageHandlers: MessageHandlerMap = {
 };
 
 /**
+ * Message types that add a card row to the transcript. Each handler ignores a
+ * card id it already holds, so applying one twice is safe.
+ *
+ * `useMessageHandler` holds these until the HTTP history load is installed:
+ * the load replaces the transcript whole, and the `turn_snapshot` queued
+ * behind it replaces every in-progress row, so a card applied in that window
+ * was erased by a snapshot taken before the card existed.
+ */
+export const TRANSCRIPT_CARD_ARRIVALS: ReadonlySet<WsMessageType> = new Set<WsMessageType>([
+  "action_checklist_card",
+  "repo_session_proposal_card",
+  "session_message_proposal_card",
+  "present_inline_card",
+  "branch_auto_reset_card",
+  "branch_synced_card",
+  "bug_report_card",
+  "child_merged_card",
+  "compaction_card",
+  "egress_prompt_card",
+  "issue_ref_card",
+  "issue_write_card",
+  "permission_request_card",
+  "release_card",
+  "self_merge_watch_card",
+  "session_renamed_card",
+  "session_settings_change_card",
+  "ssh_host_key_card",
+  "settings_proposal_card",
+  "schedule_proposal_card",
+  "schedule_notes_access_card",
+  "session_report_card",
+  "non_turn_failure_card",
+  "session_spawn_failed",
+  "session_spawned",
+  "sub_agent_consult_card",
+  "system_notice",
+  "voice_note",
+]);
+
+/**
+ * Message types that change a card already in the transcript. They wait for the
+ * history load too: the load and the attach snapshot can be read before an
+ * update and would revert it. Applied after both in wire order, they leave each
+ * card at the newest state the server sent.
+ */
+export const TRANSCRIPT_CARD_UPDATES: ReadonlySet<WsMessageType> = new Set<WsMessageType>([
+  "action_checklist_update",
+  "repo_session_proposal_update",
+  "session_message_proposal_update",
+  "bug_report_failed",
+  "bug_report_filed",
+  "bug_report_dismissed",
+  "egress_prompt_resolved",
+  "issue_write_update",
+  "permission_resolved",
+  "settings_proposal_update",
+  "schedule_proposal_update",
+  "schedule_notes_access_update",
+  "non_turn_failure_dismissed",
+]);
+
+/**
  * Message types whose `sessionId` names the session that OWNS the chat
  * transcript they belong to — cards, notices, and the transient chips that sit
  * beside them. The client keeps exactly one transcript in memory (the active
@@ -266,51 +328,13 @@ export const messageHandlers: MessageHandlerMap = {
  * rehydrates it — or transient live activity that is meaningless once stale.
  */
 const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessageType>([
-  "action_checklist_card",
-  "action_checklist_update",
-  "repo_session_proposal_card",
-  "repo_session_proposal_update",
-  "session_message_proposal_card",
-  "session_message_proposal_update",
-  "present_inline_card",
-  "branch_auto_reset_card",
-  "branch_synced_card",
-  "bug_report_card",
-  "bug_report_failed",
-  "bug_report_filed",
-  "bug_report_dismissed",
-  "child_merged_card",
-  "compaction_card",
+  ...TRANSCRIPT_CARD_ARRIVALS,
+  ...TRANSCRIPT_CARD_UPDATES,
   "compaction_status",
-  "egress_prompt_card",
-  "egress_prompt_resolved",
-  "issue_ref_card",
-  "issue_write_card",
-  "issue_write_update",
-  "permission_request_card",
-  "permission_resolved",
-  "release_card",
-  "self_merge_watch_card",
-  "session_renamed_card",
-  "session_settings_change_card",
-  "ssh_host_key_card",
-  "settings_proposal_card",
-  "settings_proposal_update",
-  "schedule_proposal_card",
-  "schedule_proposal_update",
-  "schedule_notes_access_card",
-  "schedule_notes_access_update",
-  "session_report_card",
-  "non_turn_failure_card",
-  "non_turn_failure_dismissed",
-  "session_spawn_failed",
-  "session_spawned",
   "session_container_freshness",
   "secret_block_status",
-  "sub_agent_consult_card",
   "sub_agent_spawn",
   "subagent_report_update",
-  "system_notice",
   "system_user_message",
   "message_steered",
   // planning#691 — they change the queue strip, and a bubble of the transcript.
@@ -320,7 +344,6 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   // Streamed rows, plan mode and the activity label all belong to the turn's own session.
   "agent_event",
   "turn_snapshot",
-  "voice_note",
 ]);
 
 /**
@@ -329,7 +352,7 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
  * or a store with no active session, is never dropped — the guard only fires on
  * a positive mismatch.
  */
-function isForeignTranscriptMessage(data: WsServerMessage): boolean {
+export function isForeignTranscriptMessage(data: WsServerMessage): boolean {
   if (!TRANSCRIPT_SCOPED_MESSAGES.has(data.type)) return false;
   const msgSessionId = (data as { sessionId?: string }).sessionId;
   const activeSessionId = useSessionStore.getState().sessionId;
