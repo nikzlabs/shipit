@@ -47,6 +47,21 @@ function findBugCard(
   return { card, terminal: isTerminal(recorded) || isTerminal(stored) };
 }
 
+// Claimed before the GitHub call, so two submits of one card cannot file two issues.
+const filingInFlight = new Set<string>();
+
+// A filed or dismissed card answers a submit with its saved state.
+function answerSettled(ctx: BugReportCtx, runner: SessionRunnerInterface, sessionId: string, cardId: string): boolean {
+  const { card, terminal } = findBugCard(ctx, runner, sessionId, cardId);
+  if (!terminal) return false;
+  if (card?.phase === "filed" && card.issueUrl && typeof card.issueNumber === "number") {
+    runner.emitMessage({ type: "bug_report_filed", sessionId, cardId, number: card.issueNumber, url: card.issueUrl });
+  } else {
+    runner.emitMessage({ type: "bug_report_dismissed", sessionId, cardId });
+  }
+  return true;
+}
+
 export async function handleSubmitBugReport(
   ctx: BugReportCtx,
   msg: WsSubmitBugReport,
@@ -57,6 +72,9 @@ export async function handleSubmitBugReport(
     ctx.send({ type: "error", message: "No active session for bug report" });
     return;
   }
+
+  // Before validation: a stale form's empty submit must not send "failed" for a saved filed card.
+  if (answerSettled(ctx, runner, sessionId, msg.cardId)) return;
 
   const title = typeof msg.title === "string" ? msg.title.trim() : "";
   const body = typeof msg.body === "string" ? msg.body : "";
@@ -70,27 +88,19 @@ export async function handleSubmitBugReport(
     return;
   }
 
-  const existing = findBugCard(ctx, runner, sessionId, msg.cardId);
-  if (existing.terminal) {
-    const card = existing.card;
-    if (card?.phase === "filed" && card.issueUrl && typeof card.issueNumber === "number") {
-      runner.emitMessage({
-        type: "bug_report_filed",
-        sessionId,
-        cardId: msg.cardId,
-        number: card.issueNumber,
-        url: card.issueUrl,
-      });
-    } else {
-      runner.emitMessage({ type: "bug_report_dismissed", sessionId, cardId: msg.cardId });
-    }
-    return;
-  }
-
+  // By session too: a fork copies the card with its id.
+  const claim = `${sessionId}:${msg.cardId}`;
+  if (filingInFlight.has(claim)) return;
   const session = ctx.sessionManager.get(sessionId);
   const producer: BugReportProducer = session?.kind === "ops" ? "ops" : "session";
 
-  const result = await fileBugReport(ctx.githubAuthManager, { title, body, producer });
+  filingInFlight.add(claim);
+  let result: Awaited<ReturnType<typeof fileBugReport>>;
+  try {
+    result = await fileBugReport(ctx.githubAuthManager, { title, body, producer });
+  } finally {
+    filingInFlight.delete(claim);
+  }
 
   if (result.success && result.url && typeof result.number === "number") {
     runner.emitMessage({
@@ -111,6 +121,9 @@ export async function handleSubmitBugReport(
     });
     return;
   }
+
+  // A dismissal can land while the filing waits; its failure must not reopen the card.
+  if (answerSettled(ctx, runner, sessionId, msg.cardId)) return;
 
   const failureMessage = result.message ?? "Failed to file the bug report.";
   runner.emitMessage({

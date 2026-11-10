@@ -24,21 +24,9 @@ const WAITS_FOR_HISTORY: ReadonlySet<WsServerMessage["type"]> = new Set<WsServer
   "message_queued",
   "queue_updated",
   ...TRANSCRIPT_CARD_ARRIVALS,
+  ...TRANSCRIPT_CARD_UPDATES,
   "fork_breadcrumb",
 ]);
-
-function cardIdOf(data: WsServerMessage): string | undefined {
-  const m = data as { cardId?: unknown; requestId?: unknown; card?: { cardId?: unknown } };
-  const id = m.cardId ?? m.requestId ?? m.card?.cardId;
-  return typeof id === "string" ? id : undefined;
-}
-
-/** An update waits only behind its own card's queued arrival, which holds the row it patches. */
-function waitsForItsCard(data: WsServerMessage, pending: WsServerMessage[]): boolean {
-  if (!TRANSCRIPT_CARD_UPDATES.has(data.type)) return false;
-  const id = cardIdOf(data);
-  return id !== undefined && pending.some((p) => TRANSCRIPT_CARD_ARRIVALS.has(p.type) && cardIdOf(p) === id);
-}
 
 export function useMessageHandler(params: {
   lastMessage: MessageEvent | null;
@@ -92,11 +80,9 @@ export function useMessageHandler(params: {
       } catch {
         continue;
       }
-      const pending = pendingAgentEventsRef.current;
-      const waits = WAITS_FOR_HISTORY.has(data.type) || waitsForItsCard(data, pending);
-      if (waits && !useSessionStore.getState().historyLoaded) {
+      if (WAITS_FOR_HISTORY.has(data.type) && !useSessionStore.getState().historyLoaded) {
         if (data.type === "voice_note" && !isForeignTranscriptMessage(data)) announceArrivingVoiceNote(data);
-        pending.push(data);
+        pendingAgentEventsRef.current.push(data);
         continue;
       }
       dispatchMessage(ctx, data);

@@ -284,10 +284,10 @@ export const TRANSCRIPT_CARD_ARRIVALS: ReadonlySet<WsMessageType> = new Set<WsMe
 ]);
 
 /**
- * Message types that change a card already in the transcript. One waits for the
- * history load only behind its own card's queued arrival, whose row it would
- * otherwise find missing; any other one applies at once, because replayed after
- * the load it would overwrite the newer state the load installed.
+ * Message types that change a card already in the transcript. They wait for the
+ * history load too: the load and the attach snapshot can be read before an
+ * update and would revert it. Applied after both in wire order, they leave each
+ * card at the newest state the server sent.
  */
 export const TRANSCRIPT_CARD_UPDATES: ReadonlySet<WsMessageType> = new Set<WsMessageType>([
   "action_checklist_update",
