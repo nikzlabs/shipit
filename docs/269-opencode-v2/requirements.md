@@ -30,6 +30,8 @@ whether the OpenCode 2 API is stable enough to integrate.
    available when someone selects it. Two existing rules still come first: a
    reviewer runs on a different harness from the implementer, and a child
    session keeps its parent's harness.
+6. **Steering.** With live steering on, a message sent while an OpenCode 2
+   turn runs reaches that turn.
 
 ## Open questions
 
@@ -52,3 +54,6 @@ None.
 - **2026-10-27 — Does req 5 override the reviewer's rule of avoiding the
   implementer's harness, or a child session keeping its parent's harness?**
   The user: keep both rules (req 5).
+- **2026-11-10 — Should OpenCode 2 support steering?** The user asked "does
+  opencode support steering?", was told it did not because ShipIt had not
+  wired it (planning#707), and answered "do planning#707 here" (req 6).

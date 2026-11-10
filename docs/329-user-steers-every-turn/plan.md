@@ -648,7 +648,7 @@ files this feature does not change.
   compaction. Now a message or a queued entry can start a turn in that window,
   and the two turns then meet on the process.
 - A compaction that is drained at the moment the process of a harness that
-  ends its process with each turn (Codex) exits goes to that process as a
+  ends its process with each turn (Codex, OpenCode 2) exits goes to that process as a
   message. The process ends with no result, and the existing retry starts the
   compaction on a new process (Part 1, known limits).
 - These differences between a typed turn and a dispatched one stay: with Live
@@ -670,7 +670,7 @@ files this feature does not change.
 - An orchestrator restart while a prompt waits behind a turn the CLI started
   adopts that turn with no delivery id. The merge watch sends its wake again
   when the session is idle.
-- A harness that can steer but ends its process with each turn (Codex) is
+- A harness that can steer but ends its process with each turn (Codex, OpenCode 2) is
   steerable during a work turn and still starts a process per turn. A queued
   turn drained at the exact moment that process ends can lose its first
   attempt; the existing no-result retry starts it again. This is today's

@@ -87,7 +87,7 @@ async function request<T>(
   server: Opencode2Server,
   path: string,
   fetchFn: FetchFn,
-  init: { method?: "GET" | "POST"; body?: string } = {},
+  init: { method?: "GET" | "POST" | "DELETE"; body?: string } = {},
 ): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -149,15 +149,19 @@ export async function waitForMcpServers(
 }
 
 interface MessageListResponse {
-  data?: { type?: string; tokens?: OpencodeTokens; cost?: number }[];
+  data?: { id?: string; type?: string; tokens?: OpencodeTokens; cost?: number }[];
   cursor?: { next?: string | null };
 }
 
-/** Every model call of the newest turn: the steps after its user message, oldest first. */
+/**
+ * Every model call of the newest turn: the steps after its user message, oldest first.
+ * `steerIds` are user messages steered into this turn, which do not start one.
+ */
 export async function readTurnSteps(
   server: Opencode2Server,
   sessionId: string,
   fetchFn: FetchFn,
+  steerIds: ReadonlySet<string> = new Set(),
 ): Promise<{ tokens?: OpencodeTokens; cost?: number }[]> {
   const steps: { tokens?: OpencodeTokens; cost?: number }[] = [];
   const base = `/api/session/${encodeURIComponent(sessionId)}/message`;
@@ -165,7 +169,7 @@ export async function readTurnSteps(
   for (let page = 0; page < MESSAGE_PAGE_MAX; page++) {
     const body = await request<MessageListResponse>(server, path, fetchFn);
     for (const message of body.data ?? []) {
-      if (message.type === "user") return steps.reverse();
+      if (message.type === "user" && !steerIds.has(message.id ?? "")) return steps.reverse();
       if ((message.type === "assistant" || message.type === "compaction") && message.tokens) {
         steps.push({ tokens: message.tokens, ...(typeof message.cost === "number" ? { cost: message.cost } : {}) });
       }
@@ -175,6 +179,52 @@ export async function readTurnSteps(
     path = `${base}?limit=${String(MESSAGE_PAGE_LIMIT)}&cursor=${encodeURIComponent(next)}`;
   }
   return steps.reverse();
+}
+
+interface InboxResponse {
+  data?: { id?: string }[];
+}
+
+/**
+ * Admits a message that the running turn reads at its next step boundary (planning#707).
+ * `resume: false`: on an idle session it stays in the inbox instead of starting a run
+ * that no client follows. Returns the inbox id, which becomes the message id.
+ */
+export async function steerOpencode2Session(
+  server: Opencode2Server,
+  sessionId: string,
+  text: string,
+  fetchFn: FetchFn,
+): Promise<string> {
+  const admitted = await request<{ data?: { id?: string } }>(
+    server,
+    `/api/session/${encodeURIComponent(sessionId)}/prompt`,
+    fetchFn,
+    { method: "POST", body: JSON.stringify({ text, delivery: "steer", resume: false }) },
+  );
+  const id = admitted.data?.id;
+  if (!id) throw new Error("the server admitted no steer");
+  return id;
+}
+
+/** Ids of the session's inbox items that no run has taken yet. */
+export async function readOpencode2Inbox(server: Opencode2Server, sessionId: string, fetchFn: FetchFn): Promise<Set<string>> {
+  const body = await request<InboxResponse | undefined>(server, `/api/session/${encodeURIComponent(sessionId)}/inbox`, fetchFn);
+  // An empty set would read as "every steer was taken", so a malformed body is an error.
+  if (!Array.isArray(body?.data)) throw new Error("the inbox answer has no list");
+  return new Set(body.data.map((item) => item.id ?? "").filter(Boolean));
+}
+
+/** The inbox is durable, so an item left there would reach the session's next turn. */
+export async function cancelOpencode2InboxItem(
+  server: Opencode2Server,
+  sessionId: string,
+  id: string,
+  fetchFn: FetchFn,
+): Promise<void> {
+  await request(server, `/api/session/${encodeURIComponent(sessionId)}/inbox/${encodeURIComponent(id)}`, fetchFn, {
+    method: "DELETE",
+  });
 }
 
 interface CompactionMessage {

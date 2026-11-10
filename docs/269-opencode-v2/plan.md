@@ -131,9 +131,10 @@ on v1, but the adapter starts the server itself instead of using
 5. Kill the server's process tree (docs/289); its MCP children go with it.
 
 This adds about 0.9 s per turn. It touches three server routes — `/api/info`,
-`/api/mcp`, `/api/session/<id>/message` — none under `/api/experimental/`, but
+`/api/mcp`, `/api/session/<id>/message` — plus the three steering uses below
+(`/prompt` and `/inbox`, read and cancel), none under `/api/experimental/`, but
 the whole API is still self-declared experimental; client and server are the
-same pinned binary, so a version bump re-verifies all three. It is not the
+same pinned binary, so a version bump re-verifies all of them. It is not the
 deferred attach-to-server shape (below): the server lives for one turn only.
 
 Differences from v1, all observed live on 2.1.1:
@@ -343,7 +344,8 @@ Harness id `opencode2`, display name "OpenCode 2", binary `opencode2`, opt-in
 | File | What it holds |
 |---|---|
 | `session/agents/opencode2/adapter.ts` | The turn: config and env, the per-turn server, the `run --server` client, the synthesized result, interrupt and teardown |
-| `session/agents/opencode2/server.ts` | `serve --port 0` start-up, the MCP readiness wait, per-step usage from the message list, compaction |
+| `session/agents/opencode2/server.ts` | `serve --port 0` start-up, the MCP readiness wait, per-step usage from the message list, compaction, the steering routes |
+| `session/agents/opencode2/steering.ts` | Live steering: a steer into the turn's inbox, acknowledged or taken back before the result |
 | `session/agents/opencode2/account.ts` | ChatGPT token delivery into the v2 database |
 | `session/agents/opencode2/opencode2-tool-normalizer.ts` | 2.x tool names and arguments onto transcript names |
 | `shared/opencode-harness.ts` | `isOpenCodeHarness()` and v2's roots |
@@ -416,6 +418,71 @@ Not yet verified: the real-account ChatGPT turn, a dogfood turn per auth mode,
 `shipit agent run` in both directions, the depth-0 review probe, and whether a
 new process reads the previous turn's prompt cache. Until that last one is
 probed, idle compaction skips OpenCode 2.
+
+## Live steering (req 6, planning#707)
+
+**Probed on 2.2.5** (2026-11-10), through `serve` + `run --server` as the
+adapter runs them, against a mock OpenAI-compatible provider whose first
+request answers after 6 s:
+
+- `POST /api/session/{id}/prompt` with `{text, delivery: "steer"}` admits the
+  text into the session's inbox (`GET /api/session/{id}/inbox`). The running
+  turn takes it at the next step boundary: the model's next request ends with
+  it as a user message, after the tool result or after a final text step.
+  A final text step does not end the turn while a steer waits; `run --server`
+  runs the extra step, then exits 0. The message list keeps the order: prompt,
+  assistant, steer, assistant, `idle`.
+- With `resume: false`, a steer into a busy turn behaves the same. Into an
+  idle session it stays in the inbox and starts nothing. Without it, it would
+  start a run that no client follows.
+- The inbox is durable: an item is still there for the next server on the
+  same data root, and the session's next turn reads it first, before its own
+  prompt. `DELETE /api/session/{id}/inbox/{inboxId}` cancels it (204, also for
+  an item already gone).
+- The stream has no event for a steered message. The inbox id is the id the
+  message keeps.
+
+**Design** (`opencode2/steering.ts`, wired in `opencode2/adapter.ts`):
+
+- `sendUserMessage` holds a steer until the turn's first stream event, which
+  means `run` has submitted the turn's prompt, then posts it with `delivery:
+  "steer", resume: false`, one at a time in the order sent. A compaction turn
+  refuses a steer at once.
+- At each `step_start` the adapter reads the inbox. A steer that left it was
+  read, so the adapter emits `agent_user_replay`.
+- When `run` exits, before the result, every remaining steer is settled. It is
+  refused with `agent_steer_rejected`, which puts it back in the
+  orchestrator's queue (docs/329-user-steers-every-turn), only when it is known
+  not to be in OpenCode: it was never posted, the server refused it, or it was
+  still in the inbox and the cancel succeeded. Every other steer is
+  acknowledged: one that left the inbox was read, and one whose state cannot
+  be read waits in the durable inbox for the next turn. Re-queuing that one
+  would run it twice. After a failed cancel the inbox is read again: still
+  there, the next turn reads it; gone or unreadable, it is re-queued, since
+  running it twice is better than losing it. A malformed inbox answer counts
+  as unreadable, not as empty. A steer that arrives after the turn's
+  end is refused at once.
+- The usage reader counts back to the turn's own prompt and skips the user
+  messages that are this turn's steers. Before, it stopped at the newest user
+  message, so the steps before a steer would have been lost.
+- **The result goes out right before `done`**, after the server is gone and
+  the subscription-limits reading has finished (up to 2 s on the ChatGPT
+  route). With steering on, the orchestrator ends the turn at its result and
+  drains the queue then, and a turn it drains takes the session's process as
+  resident until `done`. A gap between the two would hand that turn's prompt
+  to a process that is shutting down. Codex has the same window, which
+  docs/329-user-steers-every-turn lists as a known limit; this keeps OpenCode
+  2's as small.
+
+Known limit: a post the server admitted but did not answer within the request
+timeout counts as refused, so that steer can run twice (now and at the next
+turn).
+
+Verified through the real adapter and the 2.2.5 binary on the mock: a steer
+sent 2 s into a tool turn reached the model's second request, was
+acknowledged, and both steps were counted; a steer that arrived as a one-step
+turn ended was refused before the result, and the resumed session's next turn
+did not see it.
 
 ## Attach-to-server: deferred
 

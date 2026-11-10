@@ -149,8 +149,9 @@ export const HARNESSES = [
       // structural on 2.1.1 — `shell` takes a `timeout` (0 disables) and `subagent` starts a
       // fresh context; the depth-0 review probe needs a live model (docs/269 checklist).
       supportsReview: true,
-      // not-wired — the per-turn server takes steering prompts; planning#707.
-      supportsSteering: false,
+      // probed on 2.2.5 — a `delivery: "steer"` prompt on the turn's server is read at the
+      // next step boundary and `run --server` ends normally; planning#707.
+      supportsSteering: true,
       // structural — the server lives for one turn.
       startsOwnTurns: false,
       // probed on 2.1.1 — POST /api/session/{id}/compact on the turn's server.

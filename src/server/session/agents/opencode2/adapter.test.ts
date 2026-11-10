@@ -69,6 +69,7 @@ interface Harness {
   server: () => FakeChild;
   client: () => FakeChild;
   requests: { url: string; method: string; body?: string }[];
+  inbox: Set<string>;
   done: Promise<number>;
 }
 
@@ -78,6 +79,7 @@ let configs: Record<string, unknown>[];
 function makeAdapter(opts: { mcp?: boolean; messages?: unknown; holdCompaction?: Promise<void> } = {}): Omit<Harness, "done"> {
   const spawns: Harness["spawns"] = [];
   const requests: Harness["requests"] = [];
+  const inbox = new Set<string>();
   const spawnFn = (_cmd: string, args: string[], spawnOpts: SpawnOptions): ChildProcess => {
     const child = new FakeChild();
     spawns.push({ args, opts: spawnOpts, child });
@@ -90,6 +92,16 @@ function makeAdapter(opts: { mcp?: boolean; messages?: unknown; holdCompaction?:
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     requests.push({ url, method: init?.method ?? "GET", ...(typeof init?.body === "string" ? { body: init.body } : {}) });
     if (url.includes("/message/msg_c") && opts.holdCompaction) await opts.holdCompaction;
+    if (url.endsWith("/prompt")) {
+      const id = `msg_steer${String(inbox.size + 1)}`;
+      inbox.add(id);
+      return new Response(JSON.stringify({ data: { id } }), { status: 200 });
+    }
+    if (url.endsWith("/inbox")) return new Response(JSON.stringify({ data: [...inbox].map((id) => ({ id })) }), { status: 200 });
+    if (init?.method === "DELETE") {
+      inbox.delete(url.split("/").pop() ?? "");
+      return new Response(null, { status: 204 });
+    }
     const body = url.includes("/api/mcp")
       ? { data: opts.mcp ? [{ name: "playwright", status: { status: "connected" } }, { name: "broken", status: { status: "failed", error: "spawn ENOENT" } }] : [] }
       : url.includes("/message?") ? (opts.messages ?? MESSAGES) : url.endsWith("/compact") ? { data: { id: "msg_c" } } : url.includes("/message/msg_c") ? { data: { status: "completed" } } : undefined;
@@ -110,7 +122,7 @@ function makeAdapter(opts: { mcp?: boolean; messages?: unknown; holdCompaction?:
     if (!found) throw new Error(`no ${verb} spawn yet`);
     return found.child;
   };
-  return { adapter, events, spawns, server: pick("serve"), client: pick("run"), requests };
+  return { adapter, events, spawns, server: pick("serve"), client: pick("run"), requests, inbox };
 }
 
 function start(h: Omit<Harness, "done">, params: AgentRunParams): Harness {
@@ -328,6 +340,90 @@ describe("Opencode2Adapter — per-turn server", () => {
     expect(JSON.parse(posts[0].body!)).toEqual({ model: { providerID: "shipit", id: "deepseek-v4-flash" } });
     expect(h.events.map((e) => e.type)).toEqual(["agent_compaction_started", "agent_compacted", "agent_result"]);
     expect(h.spawns.some((s) => s.args[0] === "run")).toBe(false);
+  });
+});
+
+describe("Opencode2Adapter — live steering (planning#707)", () => {
+  const STEERED_MESSAGES = {
+    data: [
+      { type: "idle", outcome: "succeeded" },
+      { id: "msg_a2", type: "assistant", tokens: { input: 130, output: 9, reasoning: 1, cache: { read: 20, write: 0 } }, cost: 0.002 },
+      { id: "msg_steer1", type: "user" },
+      { id: "msg_a1", type: "assistant", tokens: { input: 100, output: 12, reasoning: 0, cache: { read: 20, write: 0 } }, cost: 0.001 },
+      { id: "msg_u1", type: "user" },
+      { id: "msg_old", type: "assistant", tokens: { input: 999, output: 999, reasoning: 0, cache: { read: 0, write: 0 } }, cost: 9 },
+    ],
+    cursor: {},
+  };
+  const types = (h: Harness) => h.events.map((e) => e.type).filter((t) => t.startsWith("agent_steer") || t === "agent_user_replay" || t === "agent_result");
+
+  it("declares steering", () => {
+    expect(new Opencode2Adapter().capabilities.supportsSteering).toBe(true);
+  });
+
+  it("sends a steer once the turn has its prompt, acknowledges it at a step, and counts the steps on both sides of it", async () => {
+    const h = start(makeAdapter({ messages: STEERED_MESSAGES }), { ...PARAMS, sessionId: SESSION });
+    await announce(h);
+    h.adapter.sendUserMessage("also run the linter");
+    await Promise.resolve();
+    expect(h.requests.some((r) => r.url.endsWith("/prompt"))).toBe(false);
+
+    h.client().emitStdout([TOOL_TURN[0]]);
+    await vi.waitFor(() => expect(h.inbox.size).toBe(1));
+    const steer = h.requests.find((r) => r.url.endsWith("/prompt"))!;
+    expect(steer.url).toBe(`http://127.0.0.1:41234/api/session/${SESSION}/prompt`);
+    expect(JSON.parse(steer.body!)).toEqual({ text: "also run the linter", delivery: "steer", resume: false });
+
+    h.inbox.clear();
+    h.client().emitStdout(TOOL_TURN.slice(1));
+    await vi.waitFor(() => expect(types(h)).toEqual(["agent_user_replay"]));
+    expect(h.events.find((e) => e.type === "agent_user_replay")).toEqual({ type: "agent_user_replay", text: "also run the linter" });
+
+    h.client().emit("close", 0, null);
+    expect(await h.done).toBe(0);
+    expect(types(h)).toEqual(["agent_user_replay", "agent_result"]);
+    expect(h.events.find((e) => e.type === "agent_result")).toMatchObject({
+      status: "success",
+      tokens: { input: 230, output: 22, cacheRead: 40, cacheWrite: 0 },
+    });
+  });
+
+  it("takes back a steer the turn never read, before the result", async () => {
+    const h = start(makeAdapter(), { ...PARAMS, sessionId: SESSION });
+    await announce(h);
+    h.client().emitStdout(TOOL_TURN);
+    h.adapter.sendUserMessage("too late");
+    await vi.waitFor(() => expect(h.inbox.size).toBe(1));
+
+    h.client().emit("close", 0, null);
+    await h.done;
+    expect(types(h)).toEqual(["agent_steer_rejected", "agent_result"]);
+    expect(h.inbox.size).toBe(0);
+    expect(h.requests.some((r) => r.method === "DELETE" && r.url.endsWith(`/inbox/msg_steer1`))).toBe(true);
+  });
+
+  it("emits the result only once the turn's server is gone, right before done", async () => {
+    const h = start(makeAdapter(), { ...PARAMS, sessionId: SESSION });
+    await announce(h);
+    const order: string[] = [];
+    h.adapter.on("event", (e) => {
+      if (e.type !== "agent_result") return;
+      const serverKilled = vi.mocked(killProcessTree).mock.calls.some(([, , opts]) => opts?.label === "opencode2-server");
+      order.push(serverKilled ? "result-after-teardown" : "result-before-teardown");
+    });
+    h.adapter.on("done", () => order.push("done"));
+    h.client().emitStdout(TOOL_TURN);
+    h.client().emit("close", 0, null);
+    await h.done;
+    expect(order).toEqual(["result-after-teardown", "done"]);
+  });
+
+  it("refuses a steer during a compaction at once", async () => {
+    const h = start(makeAdapter(), { ...PARAMS, sessionId: SESSION, compact: true });
+    h.adapter.sendUserMessage("not now");
+    expect(h.events).toEqual([{ type: "agent_steer_rejected", text: "not now" }]);
+    h.server().stdout.emit("data", Buffer.from("server listening on http://127.0.0.1:41234\n"));
+    await h.done;
   });
 });
 

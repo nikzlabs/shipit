@@ -54,6 +54,7 @@ import {
   type Opencode2Server,
 } from "./server.js";
 import { Opencode2Account, type Opencode2AccountTarget } from "./account.js";
+import { Opencode2Steering } from "./steering.js";
 
 const HARNESS = HARNESSES.find((h) => h.id === "opencode2");
 
@@ -93,7 +94,7 @@ export class Opencode2Adapter
     models: [],
     ...(HARNESS?.capabilities.reasoning ? { reasoning: HARNESS.capabilities.reasoning } : {}),
     supportsReview: true,
-    supportsSteering: false,
+    supportsSteering: true,
     supportsCompaction: true,
     skillsDirName: ".opencode",
     skillInvocationPrefix: "/",
@@ -124,6 +125,8 @@ export class Opencode2Adapter
   private subscriptionLimits: OpenCodeSubscriptionLimits | undefined;
   private accountWatcher: fs.FSWatcher | null = null;
   private accountResyncTimer: NodeJS.Timeout | null = null;
+  private readonly steering: Opencode2Steering;
+  private turnResult: AgentEvent | null = null;
 
   constructor(opts?: {
     resolveHome?: AgentHomeResolver;
@@ -134,6 +137,11 @@ export class Opencode2Adapter
     this.resolveHome = opts?.resolveHome;
     this.spawnFn = opts?.spawnFn ?? nodeSpawn;
     this.fetchFn = opts?.fetchFn ?? fetch;
+    this.steering = new Opencode2Steering(
+      (event) => this.emit("event", event),
+      this.fetchFn,
+      (message) => this.emit("log", "server", `OpenCode 2 steering: ${message}`),
+    );
   }
 
   readonly isStreaming = false;
@@ -150,8 +158,13 @@ export class Opencode2Adapter
     this.stopped = false;
     this.stdinFailure = null;
     this.resumeSessionId = params.sessionId;
+    this.turnResult = null;
+    this.steering.begin(!params.compact);
     const plan = this.prepare(params);
-    if (!plan) return;
+    if (!plan) {
+      void this.steering.close();
+      return;
+    }
     this.active = true;
     void this.execute(params, plan);
   }
@@ -325,10 +338,16 @@ export class Opencode2Adapter
       console.warn(`[opencode2] turn failed: ${reason}`);
       if (!this.stopped) this.emitResult({ error: `OpenCode 2 could not run the turn: ${reason}` });
     } finally {
+      await this.steering.close();
       account?.close();
       this.teardown(plan);
       this.finishSubscriptionLimits(() => {
         this.active = false;
+        // With steering on, a turn queued behind this one drains at the result and takes this
+        // process as resident until `done`, so the two go out together (planning#707).
+        const result = this.turnResult;
+        this.turnResult = null;
+        if (result) this.emit("event", result);
         this.emit("done", exitCode);
       });
     }
@@ -377,10 +396,11 @@ export class Opencode2Adapter
   }
 
   private async settleClient(exitCode: number | null, signal: NodeJS.Signals | null, handle: Opencode2Server): Promise<void> {
+    await this.steering.close();
     const sessionId = this.accumulator.sessionId ?? this.resumeSessionId;
     if (sessionId && this.sawAnyEvent()) {
       try {
-        const steps = await readTurnSteps(handle, sessionId, this.fetchFn);
+        const steps = await readTurnSteps(handle, sessionId, this.fetchFn, this.steering.readIds());
         if (steps.length > 0) this.accumulator.replaceSteps(steps);
       } catch (err) {
         console.warn(`[opencode2] could not read the turn's usage: ${err instanceof Error ? err.message : String(err)}`);
@@ -424,12 +444,12 @@ export class Opencode2Adapter
   }
 
   private emitResult(opts: { sessionId?: string; error?: string }): void {
-    this.emit("event", {
+    this.turnResult = {
       type: "agent_result",
       status: opts.error ? "error" : "success",
       sessionId: opts.sessionId ?? this.accumulator.sessionId ?? this.resumeSessionId ?? "",
       ...(opts.error ? { error: opts.error } : {}),
-    });
+    };
   }
 
   private watchAccount(account: Opencode2Account, target: Opencode2AccountTarget): void {
@@ -531,7 +551,7 @@ export class Opencode2Adapter
       acc.input > 0 || acc.output > 0
         ? { input: acc.input, output: acc.output, cacheRead: acc.cacheRead, cacheWrite: acc.cacheWrite }
         : undefined;
-    this.emit("event", {
+    this.turnResult = {
       type: "agent_result",
       status: errored ? "error" : "success",
       sessionId: acc.sessionId ?? this.resumeSessionId ?? "",
@@ -547,7 +567,7 @@ export class Opencode2Adapter
               `OpenCode 2 exited with code ${String(exitCode)}${this.sawAnyEvent() ? "" : " before producing any output"}`,
           }
         : {}),
-    });
+    };
   }
 
   private finishSubscriptionLimits(settle: () => void): void {
@@ -584,6 +604,8 @@ export class Opencode2Adapter
     this.accumulator.observe(event);
     if (!this.emittedInit && typeof event.sessionID === "string") {
       this.emittedInit = true;
+      // The first event means `run` has submitted the turn's prompt.
+      if (this.serverHandle) this.steering.ready(this.serverHandle, event.sessionID);
       this.emit("event", {
         type: "agent_init",
         agentId: "opencode2",
@@ -592,6 +614,7 @@ export class Opencode2Adapter
       });
     }
     for (const mapped of this.mapEvent(event)) this.emit("event", mapped);
+    if (event.type === "step_start") this.steering.noteStep();
 
     if (event.type === "error") {
       if (this.usingAccount && (event.error?.status === 401 || event.error?.type === "provider.auth")) {
@@ -648,10 +671,7 @@ export class Opencode2Adapter
   }
 
   sendUserMessage(text: string): void {
-    console.warn(
-      `[opencode2-adapter] sendUserMessage called on a one-shot adapter — message DROPPED (text=${JSON.stringify(text.slice(0, 80))})`,
-    );
-    this.emit("error", new Error("OpenCode 2 does not support live steering; the message was not delivered."));
+    this.steering.send(text);
   }
 
   writeStdin(data: string): void {
