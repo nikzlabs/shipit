@@ -424,7 +424,77 @@ describe("Opencode2Adapter — tool calls shown as they start", () => {
     const h = start(makeAdapter(), PARAMS);
     await announce(h);
     const stream = h.requests.find((r) => r.url.includes("/api/event?"));
-    expect(stream?.url).toBe("http://127.0.0.1:41234/api/event?types=session.tool.input.started&types=session.tool.called");
+    expect(stream?.url).toBe(
+      "http://127.0.0.1:41234/api/event?types=session.tool.input.started&types=session.tool.called"
+      + "&types=session.text.started&types=session.text.ended",
+    );
+    h.client().emit("close", 0, null);
+    await h.done;
+  });
+
+  it("shows a call below the text written before it, which the server ends after the call starts", async () => {
+    const text = (type: string, extra: Record<string, unknown> = {}, sessionID = SESSION, assistantMessageID = "msg_1") => ({
+      id: "evt_t", type, data: { sessionID, assistantMessageID, ordinal: 0, ...extra },
+    });
+    const h = start(makeAdapter(), PARAMS);
+    await announce(h);
+    h.client().emitStdout([TOOL_TURN[0]]);
+    h.serverEvent(text("session.text.started", {}, "ses_child", "msg_child"));
+    h.serverEvent(text("session.text.started"));
+    h.serverEvent(inputStarted("call_phase0", "shell"));
+    h.serverEvent(called("call_phase0", { command: "ls" }));
+    h.serverEvent(text("session.text.ended", { text: "Let me run it." }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(toolUses(h)).toEqual([]);
+
+    h.client().emitStdout([
+      `{"type":"text","timestamp":2,"sessionID":"${SESSION}","part":{"id":"prt_t","sessionID":"${SESSION}","messageID":"msg_1","type":"text","text":"Let me run it."}}`,
+    ]);
+    const blocks = h.events.flatMap((e) => (e.type === "agent_assistant" ? e.content : []));
+    expect(blocks.map((b) => b.type)).toEqual(["text", "tool_use"]);
+    h.client().emit("close", 0, null);
+    await h.done;
+  });
+
+  it("does not hold a call behind text that stdout printed before the server's start reached it", async () => {
+    const h = start(makeAdapter(), PARAMS);
+    await announce(h);
+    h.client().emitStdout([
+      TOOL_TURN[0],
+      `{"type":"text","timestamp":2,"sessionID":"${SESSION}","part":{"id":"prt_t","sessionID":"${SESSION}","messageID":"msg_1","type":"text","text":"Let me run it."}}`,
+    ]);
+    h.serverEvent({ id: "evt_t", type: "session.text.started", data: { sessionID: SESSION, assistantMessageID: "msg_1", ordinal: 0 } });
+    h.serverEvent(inputStarted("call_phase0", "shell"));
+    h.serverEvent(called("call_phase0", { command: "ls" }));
+    await vi.waitFor(() => expect(toolUses(h)).toHaveLength(1));
+    h.client().emit("close", 0, null);
+    await h.done;
+  });
+
+  it("ignores a text start that arrives after stdout printed its step's end", async () => {
+    const h = start(makeAdapter(), PARAMS);
+    await announce(h);
+    h.client().emitStdout(TOOL_TURN.slice(0, 3));
+    h.serverEvent({ id: "evt_t", type: "session.text.started", data: { sessionID: SESSION, assistantMessageID: "msg_1", ordinal: 0 } });
+    h.serverEvent(inputStarted("call_next", "shell"));
+    h.serverEvent(called("call_next", { command: "ls" }));
+    await vi.waitFor(() => expect(toolUses(h)).toHaveLength(2));
+    h.client().emit("close", 0, null);
+    await h.done;
+  });
+
+  it("does not hold a call behind text that ends empty", async () => {
+    const text = (type: string, extra: Record<string, unknown> = {}) => ({
+      id: "evt_t", type, data: { sessionID: SESSION, assistantMessageID: "msg_1", ordinal: 0, ...extra },
+    });
+    const h = start(makeAdapter(), PARAMS);
+    await announce(h);
+    h.client().emitStdout([TOOL_TURN[0]]);
+    h.serverEvent(text("session.text.started"));
+    h.serverEvent(inputStarted("call_phase0", "shell"));
+    h.serverEvent(called("call_phase0", { command: "ls" }));
+    h.serverEvent(text("session.text.ended", { text: "" }));
+    await vi.waitFor(() => expect(toolUses(h)).toHaveLength(1));
     h.client().emit("close", 0, null);
     await h.done;
   });

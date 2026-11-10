@@ -156,7 +156,8 @@ can be set because nothing routes through the fetched registry.
   `OPENCODE_CONFIG` pointing at the per-turn file.
 - Event mapping (`mapEvent` switch): first event → `agent_init` (sessionID);
   `text` → `agent_assistant`; `tool_use` → assistant tool_use +
-  `agent_tool_result` (preserving the message-group boundary contract);
+  `agent_tool_result` (preserving the message-group boundary contract), with
+  the tool_use sent earlier when the server reported the start (below);
   `step_finish` → accumulate tokens/cost into the pending result.
 - **Terminal synthesis (req 4):** `agent_result` is emitted from **process
   exit**, never from a stream event: exit 0 → success with accumulated
@@ -173,6 +174,32 @@ can be set because nothing routes through the fetched registry.
   system-prompt file (byte-stable content and path; see below).
 - No steering, no compaction trigger, no permission broker (`--auto` inside
   the container sandbox — same trust envelope as Claude's bypass mode).
+
+### Tool calls show when they start
+
+`run --format json` prints a tool call only once it has finished, so a long
+`bash` call showed nothing until it was done. Verified on CLI 1.19.5: an
+`opencode serve` server's `GET /event` stream sends `message.part.updated`
+for a tool part as `pending` (empty input) → `running` (full input, repeated)
+→ `completed`, about 4 s before stdout's `tool_use` in a `sleep 4` probe. Plain
+`run` opens no server, so each turn starts `opencode serve --port 0 --hostname
+127.0.0.1` and then `run --attach <url>` (`runWithServer` in `adapter.ts`). The
+password is random per turn and travels only in `OPENCODE_SERVER_PASSWORD`;
+an inherited one is removed, since it would also lock compaction's server.
+
+- `tool-starts.ts` reports each call once, on its first `running`, keyed by
+  `callID ?? id` like stdout's `tool_use`; that finished `tool_use` then posts
+  only the result. Starts wait until stdout names the session (so `agent_init`
+  goes first), and drop other sessions' calls.
+- Text written before a call is still open when the call starts, and `run`
+  prints text only once it is closed. So a start also waits until stdout has
+  printed every open text part of the session; text that closes empty, or that
+  a printed `step_finish` shows was skipped, stops holding.
+- The server is stopped only after the client exits: killing it under the
+  client makes the client print an `ECONNRESET` error, and after a client
+  SIGINT the server would finish the tool and run the next step.
+- If the server does not start, or exits before the client starts, the turn
+  runs as a plain `run`, and each call shows with its result, as before.
 
 ### Stable instruction paths (planning#701)
 

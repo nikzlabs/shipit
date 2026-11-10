@@ -411,7 +411,13 @@ Decisions made during the build:
   are held until `run`'s first line names the session, so `agent_init` goes
   first and a subagent's calls are dropped. A call with no start seen (the
   stream failed, or the start lost a race with the completion) still gets
-  both halves at completion, as before.
+  both halves at completion, as before. Text written before a call ends only
+  after the call starts (`session.text.ended` follows `session.tool.called`),
+  and `run` prints text once it has ended, so the stream also takes
+  `session.text.started`/`ended` and a start waits until stdout has printed
+  the session's open text (counted per `assistantMessageID`, which is stdout's
+  `part.messageID`). Text that ends empty, or a printed `step_finish`, stops
+  the wait.
 - **Compaction.** The run that compacts starts the server, then `POST
   /api/session/{id}/model` (compaction otherwise runs on the session's last
   model, which this run's config may not declare), then `POST /compact`, then

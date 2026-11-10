@@ -25,8 +25,10 @@ import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.j
 import { opencodeModelArg, opencodeProviderConfig, isOpenCodeAccountRouting, opencodeAccountConfig, prepareOpenCodeAccountEnv } from "../../../shared/opencode-spawn-shaping.js";
 import { parseOpencodeLine, OpencodeTurnAccumulator, type OpencodeEvent, type OpencodeToolPart } from "../../../shared/opencode-stream.js";
 import { normalizeOpencodeToolCall, normalizeOpencodeToolResult } from "./opencode-tool-normalizer.js";
-import { compactOpencodeSession } from "./compaction.js";
+import { compactOpencodeSession, waitForServer } from "./compaction.js";
 import { writeOpencodeTurnFiles, type OpencodeTurnFiles } from "./turn-files.js";
+import { OpencodeToolStarts, type OpencodeToolStart } from "./tool-starts.js";
+import { basicAuthorization, newServerPassword, type FetchFn } from "../opencode2/server.js";
 
 import { ensureManagedOpenCodeData, readOpenCodeAccount, removeOpenCodeAccount } from "../../../shared/opencode-account.js";
 import { OpenCodeSubscriptionLimits } from "./subscription-limits.js";
@@ -88,14 +90,33 @@ export class OpencodeAdapter
   private _isStreaming = false;
   private usingChatGPT = false;
   private subscriptionLimits: OpenCodeSubscriptionLimits | undefined;
+  // The turn's `opencode serve`, which `run --attach` drives; it reports tool starts.
+  private server: ChildProcess | null = null;
+  // Set until the server path hands over to a client or ends the turn, so a turn stopped
+  // while its server starts still blocks the next run() and cannot reach the next server.
+  private serverStarting = false;
+  private readonly liveToolStarts: boolean;
+  private readonly toolStarts: OpencodeToolStarts;
+  private startedCalls = new Set<string>();
+  private finishedCalls = new Set<string>();
+  private turnStopped = false;
 
   constructor(opts?: {
     resolveHome?: AgentHomeResolver;
     spawnFn?: (cmd: string, args: string[], opts: SpawnOptions) => ChildProcess;
+    fetchFn?: FetchFn;
+    /** false runs the turn as a plain `run`, whose tool calls show only when they finish. */
+    liveToolStarts?: boolean;
   }) {
     super();
     this.resolveHome = opts?.resolveHome;
     this.spawnFn = opts?.spawnFn ?? nodeSpawn;
+    this.liveToolStarts = opts?.liveToolStarts ?? true;
+    this.toolStarts = new OpencodeToolStarts(
+      (start) => this.onToolStart(start),
+      opts?.fetchFn ?? fetch,
+      (message) => this.emit("log", "server", `OpenCode: ${message}`),
+    );
   }
 
   get isStreaming(): boolean {
@@ -103,11 +124,14 @@ export class OpencodeAdapter
   }
 
   run(params: AgentRunParams): void {
-    if (this.proc || this.compactionProc || this.subscriptionLimits) {
+    if (this.proc || this.serverStarting || this.server || this.compactionProc || this.subscriptionLimits) {
       this.emit("error", new Error("OpenCode adapter: run() called while a turn is in flight"));
       return;
     }
     this.accumulator = new OpencodeTurnAccumulator();
+    this.startedCalls = new Set();
+    this.finishedCalls = new Set();
+    this.turnStopped = false;
     this.usingChatGPT = isOpenCodeAccountRouting(params.serviceRouting);
     this.emittedInit = false;
     this.stallReason = null;
@@ -182,6 +206,8 @@ export class OpencodeAdapter
     // docs/341-code-mode-setting: the setting wins over an inherited flag either way.
     if (params.codeMode === true && !params.toolsOff) spawnEnv.OPENCODE_EXPERIMENTAL_CODE_MODE = "1";
     else if (params.codeMode !== undefined || params.toolsOff) delete spawnEnv.OPENCODE_EXPERIMENTAL_CODE_MODE;
+    // An inherited one would lock the compaction server and the plain run's own server.
+    delete spawnEnv.OPENCODE_SERVER_PASSWORD;
     // Scrub before delivery: auto-detected provider keys can redirect billing.
     scrubHarnessEnvCredentials(spawnEnv, "opencode");
     if (isOpenCodeAccountRouting(params.serviceRouting)) {
@@ -230,6 +256,104 @@ export class OpencodeAdapter
       return;
     }
 
+    if (this.liveToolStarts) void this.runWithServer(params, args, spawnEnv, files);
+    else this.runClient(params, args, spawnEnv, files);
+  }
+
+  // Errors before the client starts fall back to a plain `run`; only the early tool cards are lost.
+  private async runWithServer(
+    params: AgentRunParams,
+    args: string[],
+    spawnEnv: Record<string, string>,
+    files: OpencodeTurnFiles,
+  ): Promise<void> {
+    this.serverStarting = true;
+    // The client reads the same variable, so the password never reaches an argument list.
+    const password = newServerPassword();
+    const env = { ...spawnEnv, OPENCODE_SERVER_PASSWORD: password };
+    const redact = (text: string): string => text.split(password).join("***");
+    let server: ChildProcess;
+    try {
+      server = this.spawnFn("opencode", ["serve", "--port", "0", "--hostname", "127.0.0.1"], {
+        cwd: params.cwd,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      this.serverStarting = false;
+      this.fallBackToPlainRun(params, args, spawnEnv, files, err);
+      return;
+    }
+    this.server = server;
+    server.on("error", () => { /* surfaced by waitForServer */ });
+    let exited = false;
+    server.once("exit", () => { exited = true; });
+    let url: string;
+    try {
+      url = await waitForServer(server, "OpenCode turn server");
+      if (this.turnStopped) throw new Error("the turn was stopped");
+      this.forwardServerOutput(server, redact);
+      await this.toolStarts.open({ url, authorization: basicAuthorization(password) });
+      if (this.turnStopped) throw new Error("the turn was stopped");
+      if (exited) throw new Error("the OpenCode turn server exited after it was ready");
+    } catch (err) {
+      this.toolStarts.close();
+      this.stopServer();
+      this.serverStarting = false;
+      if (this.turnStopped) {
+        files.cleanup();
+        this.finishSubscriptionLimits(() => this.emit("done", 1));
+      } else {
+        this.fallBackToPlainRun(params, args, spawnEnv, files, new Error(redact(err instanceof Error ? err.message : String(err))));
+      }
+      return;
+    }
+    this.serverStarting = false;
+    this.runClient(params, [...args, "--attach", url], env, files);
+  }
+
+  private fallBackToPlainRun(
+    params: AgentRunParams,
+    args: string[],
+    spawnEnv: Record<string, string>,
+    files: OpencodeTurnFiles,
+    err: unknown,
+  ): void {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(`[opencode] no turn server (${reason}); tool calls show when they finish`);
+    this.runClient(params, args, spawnEnv, files);
+  }
+
+  private forwardServerOutput(server: ChildProcess, redact: (text: string) => string): void {
+    let pending = "";
+    const onData = (chunk: Buffer): void => {
+      pending += chunk.toString("utf-8");
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = redact(line.trim());
+        if (!trimmed) continue;
+        console.warn("[opencode] server:", trimmed.slice(0, 200));
+        this.emit("log", "stderr", trimmed);
+      }
+    };
+    server.stdout?.on("data", onData);
+    server.stderr?.on("data", onData);
+  }
+
+  // Only after the client has exited: a server killed under it makes it report ECONNRESET.
+  private stopServer(): void {
+    const server = this.server;
+    this.server = null;
+    if (server) killProcessTree(server, "SIGTERM", { label: "opencode-server" });
+  }
+
+  private runClient(
+    params: AgentRunParams,
+    args: string[],
+    spawnEnv: Record<string, string>,
+    files: OpencodeTurnFiles,
+  ): void {
     console.log(
       "[opencode] spawning:", "opencode", args.join(" ").slice(0, 200),
       `| promptBytes=${Buffer.byteLength(params.prompt)} | cwd:`, params.cwd,
@@ -242,6 +366,8 @@ export class OpencodeAdapter
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
+      this.toolStarts.close();
+      this.stopServer();
       this.subscriptionLimits?.stop();
       this.subscriptionLimits = undefined;
       files.cleanup();
@@ -281,6 +407,9 @@ export class OpencodeAdapter
       this.clearErrorKillTimer();
       this.drainLines(true);
       this.drainStderrLines(true);
+      // The server would otherwise carry the turn on after an interrupt; MCP children go with its tree.
+      this.toolStarts.close();
+      this.stopServer();
       files.cleanup();
       this.finishSubscriptionLimits(() => {
         try {
@@ -522,10 +651,15 @@ export class OpencodeAdapter
         sessionId: event.sessionID,
         tools: [...OPENCODE_TOOL_NAMES],
       });
+      this.toolStarts.setSession(event.sessionID);
     }
 
     const mapped = this.mapEvent(event);
     for (const e of mapped) this.emit("event", e);
+    // After the text is posted, so a call held behind it shows below it.
+    const part = event.part as { id?: unknown; messageID?: unknown } | undefined;
+    if (event.type === "text" && typeof part?.id === "string") this.toolStarts.textPrinted(part.id);
+    if (event.type === "step_finish" && typeof part?.messageID === "string") this.toolStarts.stepPrinted(part.messageID);
 
     if (event.type === "error") {
       if (this.usingChatGPT && (event.error?.data?.statusCode === 401 || /^Token refresh failed: (400|401|403)$/.test(event.error?.data?.message ?? ""))) {
@@ -550,37 +684,41 @@ export class OpencodeAdapter
         return [{ type: "agent_assistant", content: [block] }];
       }
       case "tool_use": {
-        // This wire has no start event; emit both halves to preserve message groups.
+        // A finished call. Its `tool_use` went out at the start when the server reported one;
+        // otherwise both halves go out together, which keeps message groups intact.
         const part = event.part as OpencodeToolPart & { id?: string };
         const callId = part.callID ?? part.id ?? `opencode-call-${Date.now()}`;
+        const started = this.startedCalls.has(callId);
+        this.finishedCalls.add(callId);
+        const isError = part.state?.status === "error";
+        const output = normalizeOpencodeToolResult(part.tool ?? "unknown", part.state?.output ?? part.state?.error ?? "");
+        const result: AgentEvent = {
+          type: "agent_tool_result",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: callId,
+              content: output,
+              ...(isError ? { is_error: true } : {}),
+            },
+          ],
+        };
+        if (started) return [result];
         const rawInput =
           typeof part.state?.input === "object" && part.state.input !== null
             ? (part.state.input as Record<string, unknown>)
             : {};
-        const { name, input } = normalizeOpencodeToolCall(part.tool ?? "unknown", rawInput);
-        const isError = part.state?.status === "error";
-        const output = normalizeOpencodeToolResult(part.tool ?? "unknown", part.state?.output ?? part.state?.error ?? "");
-        return [
-          {
-            type: "agent_assistant",
-            content: [{ type: "tool_use", id: callId, name, input }],
-          },
-          {
-            type: "agent_tool_result",
-            content: [
-              {
-                type: "tool_result",
-                tool_use_id: callId,
-                content: output,
-                ...(isError ? { is_error: true } : {}),
-              },
-            ],
-          },
-        ];
+        return [toolUseEvent(callId, part.tool ?? "unknown", rawInput), result];
       }
       default:
         return [];
     }
+  }
+
+  private onToolStart(start: OpencodeToolStart): void {
+    if (!this.proc || this.turnStopped || this.startedCalls.has(start.id) || this.finishedCalls.has(start.id)) return;
+    this.startedCalls.add(start.id);
+    this.emit("event", toolUseEvent(start.id, start.tool, start.input));
   }
 
   // Mid-turn compaction would race message writes. Use a separate compaction run.
@@ -613,8 +751,13 @@ export class OpencodeAdapter
     const compacting = this.compactionProc;
     if (compacting) killProcessTree(compacting, "SIGTERM", { label: "opencode-compaction" });
 
+    this.turnStopped = true;
     const proc = this.proc;
-    if (!proc) return;
+    if (!proc) {
+      // Still starting the server: no client exists to stop yet.
+      this.stopServer();
+      return;
+    }
     // Disarm first so the user's interrupt cannot become an adapter stall failure.
     if (this.watchdog) {
       clearTimeout(this.watchdog);
@@ -632,7 +775,10 @@ export class OpencodeAdapter
   kill(): void {
     this.subscriptionLimits?.stop();
     this.clearErrorKillTimer();
+    this.turnStopped = true;
     if (this.proc) killProcessTree(this.proc, "SIGTERM", { label: "opencode" });
+    // With a client running, its close handler stops the server.
+    else this.stopServer();
     if (this.compactionProc) killProcessTree(this.compactionProc, "SIGTERM", { label: "opencode-compaction" });
   }
 
@@ -704,4 +850,9 @@ export class OpencodeAdapter
       },
     };
   }
+}
+
+function toolUseEvent(callId: string, tool: string, rawInput: Record<string, unknown>): AgentEvent {
+  const { name, input } = normalizeOpencodeToolCall(tool, rawInput);
+  return { type: "agent_assistant", content: [{ type: "tool_use", id: callId, name, input }] };
 }

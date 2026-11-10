@@ -638,6 +638,10 @@ export class Opencode2Adapter
       this.toolStarts.setSession(event.sessionID);
     }
     for (const mapped of this.mapEvent(event)) this.emit("event", mapped);
+    // After the text is posted, so a call held behind it shows below it.
+    const messageId = (event.part as { messageID?: unknown } | undefined)?.messageID;
+    if (event.type === "text" && typeof messageId === "string") this.toolStarts.textPrinted(messageId);
+    if (event.type === "step_finish" && typeof messageId === "string") this.toolStarts.stepPrinted(messageId);
     if (event.type === "step_start") this.steering.noteStep();
 
     if (event.type === "error") {
