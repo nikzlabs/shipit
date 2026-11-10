@@ -38,6 +38,7 @@ function start(overrides: Partial<AgentRunParams> = {}) {
   let configPath = "";
   let config: { instructions?: string[]; provider?: unknown } = {};
   const adapter = new OpencodeAdapter({
+      liveToolStarts: false,
     spawnFn: (_cmd, _args, opts) => {
       configPath = opts.env!.OPENCODE_CONFIG!;
       config = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -133,6 +134,7 @@ describe("OpenCode turn files and instruction cache identity", () => {
     let configPath = "";
     let instructionPath = "";
     const adapter = new OpencodeAdapter({
+      liveToolStarts: false,
       spawnFn: (_cmd: string, _args: string[], opts: SpawnOptions) => {
         configPath = opts.env!.OPENCODE_CONFIG!;
         instructionPath = JSON.parse(fs.readFileSync(configPath, "utf8")).instructions[0];
@@ -158,7 +160,7 @@ describe("OpenCode turn files and instruction cache identity", () => {
       write(file, data, options);
     });
     const spawnFn = vi.fn();
-    const adapter = new OpencodeAdapter({ spawnFn });
+    const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn });
     const error = vi.fn();
     adapter.on("error", error);
     adapter.run({ prompt: "OK", systemPrompt: "Instructions", cwd: home });
@@ -189,7 +191,7 @@ describe("OpenCode turn files and instruction cache identity", () => {
     const write = vi.spyOn(fs, "writeFileSync");
     const spawnFn = vi.fn();
     const authRequired = vi.fn();
-    const adapter = new OpencodeAdapter({ spawnFn });
+    const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn });
     adapter.on("auth_required", authRequired);
     const common = { serviceId: "openai", serviceName: "OpenAI", style: "openai-responses", baseUrl: "https://api.openai.com/v1" } as const;
     adapter.run({ prompt: "OK", systemPrompt: "Instructions", cwd: home, model: "test-model",
@@ -211,7 +213,7 @@ describe("OpenCode turn files and instruction cache identity", () => {
       }
       write(file, data, options);
     });
-    const adapter = new OpencodeAdapter({ spawnFn: () => { throw new Error("spawn failed"); } });
+    const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn: () => { throw new Error("spawn failed"); } });
     const done = vi.fn();
     adapter.on("done", done);
     adapter.run({ prompt: "/compact", systemPrompt: "Instructions", cwd: home, compact: true,

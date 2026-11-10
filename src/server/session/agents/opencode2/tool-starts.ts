@@ -10,21 +10,34 @@ export interface Opencode2ToolStart {
 }
 
 // Verified on 2.2.5: `input.started` names the tool, `called` carries the parsed input.
-const EVENT_TYPES = ["session.tool.input.started", "session.tool.called"] as const;
+const EVENT_TYPES = [
+  "session.tool.input.started",
+  "session.tool.called",
+  "session.text.started",
+  "session.text.ended",
+] as const;
 const CONNECT_TIMEOUT_MS = 2_000;
 const MAX_HELD = 100;
 
 interface StreamEvent {
   type?: string;
-  data?: { sessionID?: string; id?: string; name?: string; input?: unknown };
+  data?: { sessionID?: string; id?: string; name?: string; input?: unknown; assistantMessageID?: string; text?: string };
 }
 
 export class Opencode2ToolStarts {
   private controller: AbortController | null = null;
   private sessionId: string | undefined;
   private names = new Map<string, string>();
-  // Starts that arrive before `run`'s first line names the session, so `agent_init` goes first.
+  // Held until `run`'s first line names the session, so `agent_init` goes first, and while
+  // text written before the call is not yet on stdout: 2.2.5 ends that text just after the
+  // call starts, and `run` prints text only once it has ended.
   private held: { sessionId: string; start: Opencode2ToolStart }[] = [];
+  // Per assistant message: text parts started and not yet printed.
+  private unprintedText = new Map<string, { sessionId: string; count: number }>();
+  // Prints that beat their `session.text.started` here, so that start holds nothing.
+  private printedAhead = new Map<string, number>();
+  // Messages whose step end is printed: a text start for one arriving later holds nothing.
+  private finishedMessages = new Set<string>();
 
   constructor(
     private readonly onStart: (start: Opencode2ToolStart) => void,
@@ -38,6 +51,9 @@ export class Opencode2ToolStarts {
     this.sessionId = undefined;
     this.names = new Map();
     this.held = [];
+    this.unprintedText = new Map();
+    this.printedAhead = new Map();
+    this.finishedMessages = new Set();
     const controller = new AbortController();
     this.controller = controller;
     const query = EVENT_TYPES.map((type) => `types=${encodeURIComponent(type)}`).join("&");
@@ -55,9 +71,35 @@ export class Opencode2ToolStarts {
   setSession(sessionId: string): void {
     if (this.sessionId) return;
     this.sessionId = sessionId;
+    this.release();
+  }
+
+  /** `run` printed a text part of this assistant message on stdout. */
+  textPrinted(messageId: string): void {
+    if (this.lessText(messageId)) this.release();
+    else this.printedAhead.set(messageId, (this.printedAhead.get(messageId) ?? 0) + 1);
+  }
+
+  /** `run` printed the end of this message's step, so it printed all of its text it will print. */
+  stepPrinted(messageId: string): void {
+    this.finishedMessages.add(messageId);
+    this.printedAhead.delete(messageId);
+    if (this.unprintedText.delete(messageId)) this.release();
+  }
+
+  private lessText(messageId: string): boolean {
+    const entry = this.unprintedText.get(messageId);
+    if (!entry) return false;
+    if (--entry.count <= 0) this.unprintedText.delete(messageId);
+    return true;
+  }
+
+  private release(): void {
+    if (this.sessionId === undefined) return;
+    for (const entry of this.unprintedText.values()) if (entry.sessionId === this.sessionId) return;
     const held = this.held;
     this.held = [];
-    for (const item of held) if (item.sessionId === sessionId) this.onStart(item.start);
+    for (const item of held) if (item.sessionId === this.sessionId) this.onStart(item.start);
   }
 
   close(): void {
@@ -109,8 +151,26 @@ export class Opencode2ToolStarts {
       return;
     }
     const data = event.data;
-    const id = data?.id;
     const sessionId = data?.sessionID;
+    const messageId = data?.assistantMessageID;
+    if (event.type === "session.text.started" && sessionId && messageId) {
+      if (this.finishedMessages.has(messageId)) return;
+      const ahead = this.printedAhead.get(messageId) ?? 0;
+      if (ahead > 0) {
+        this.printedAhead.set(messageId, ahead - 1);
+        return;
+      }
+      const entry = this.unprintedText.get(messageId);
+      if (entry) entry.count++;
+      else this.unprintedText.set(messageId, { sessionId, count: 1 });
+      return;
+    }
+    // Empty text is never printed, so nothing waits for it.
+    if (event.type === "session.text.ended") {
+      if (messageId && !data?.text?.trim() && this.lessText(messageId)) this.release();
+      return;
+    }
+    const id = data?.id;
     if (!id || !sessionId) return;
     const key = `${sessionId}\0${id}`;
     if (event.type === "session.tool.input.started") {
@@ -123,10 +183,7 @@ export class Opencode2ToolStarts {
     if (!tool) return;
     const input = typeof data.input === "object" && data.input !== null ? (data.input as Record<string, unknown>) : {};
     const start = { id, tool, input };
-    if (this.sessionId === undefined) {
-      if (this.held.length < MAX_HELD) this.held.push({ sessionId, start });
-    } else if (sessionId === this.sessionId) {
-      this.onStart(start);
-    }
+    if (this.held.length < MAX_HELD) this.held.push({ sessionId, start });
+    this.release();
   }
 }

@@ -61,47 +61,48 @@ export async function compactOpencodeSession(opts: OpencodeCompactionOptions): P
   }
 }
 
-function waitForServer(proc: ChildProcess): Promise<string> {
+/** Resolves with the announced URL; the listeners go once it settles, so a turn server's output does not pile up. */
+export function waitForServer(proc: ChildProcess, name = "compaction server"): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     let stdout = "";
     let stderr = "";
     let settled = false;
 
+    const onStdout = (chunk: Buffer | string): void => {
+      stdout += String(chunk);
+      const m = LISTENING_RE.exec(stdout);
+      if (m) finish(null, m[1].replace(/\/$/, ""));
+    };
+    const onStderr = (chunk: Buffer | string): void => {
+      stderr += String(chunk);
+    };
+    const onError = (err: Error): void => {
+      finish(new Error(`could not start the ${name}: ${err.message}`));
+    };
+    const onExit = (code: number | null): void => {
+      const detail = stderr.trim() ? `: ${stderr.trim().slice(0, 300)}` : "";
+      finish(new Error(`the ${name} exited (code ${String(code)}) before it was ready${detail}`));
+    };
+
     const finish = (err: Error | null, url?: string): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      proc.stdout?.off("data", onStdout);
+      proc.stderr?.off("data", onStderr);
       if (err) reject(err);
       else resolve(url!);
     };
 
     const timer = setTimeout(() => {
       const detail = stderr.trim() ? ` (stderr: ${stderr.trim().slice(0, 300)})` : "";
-      finish(
-        new Error(
-          `the compaction server did not start within ${String(SERVER_READY_TIMEOUT_MS / 1000)}s${detail}`,
-        ),
-      );
+      finish(new Error(`the ${name} did not start within ${String(SERVER_READY_TIMEOUT_MS / 1000)}s${detail}`));
     }, SERVER_READY_TIMEOUT_MS);
 
-    proc.stdout?.on("data", (chunk: Buffer | string) => {
-      stdout += String(chunk);
-      const m = LISTENING_RE.exec(stdout);
-      if (m) finish(null, m[1].replace(/\/$/, ""));
-    });
-    proc.stderr?.on("data", (chunk: Buffer | string) => {
-      stderr += String(chunk);
-    });
-
-    proc.on("error", (err: Error) => {
-      finish(new Error(`could not start the compaction server: ${err.message}`));
-    });
-    proc.on("exit", (code) => {
-      const detail = stderr.trim() ? `: ${stderr.trim().slice(0, 300)}` : "";
-      finish(
-        new Error(`the compaction server exited (code ${String(code)}) before it was ready${detail}`),
-      );
-    });
+    proc.stdout?.on("data", onStdout);
+    proc.stderr?.on("data", onStderr);
+    proc.on("error", onError);
+    proc.on("exit", onExit);
   });
 }
 

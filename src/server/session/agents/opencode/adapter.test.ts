@@ -61,7 +61,7 @@ const ERROR_EVENT = `{"type":"error","timestamp":1786886419607,"sessionID":"${SE
 
 function makeAdapter(): { adapter: OpencodeAdapter; child: FakeChild; events: AgentEvent[] } {
   const child = new FakeChild();
-  const adapter = new OpencodeAdapter({ spawnFn: () => child as unknown as ChildProcess });
+  const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn: () => child as unknown as ChildProcess });
   const events: AgentEvent[] = [];
   adapter.on("event", (e) => events.push(e));
   return { adapter, child, events };
@@ -299,7 +299,7 @@ describe("OpencodeAdapter", () => {
     const child1 = new FakeChild();
     const child2 = new FakeChild();
     const children = [child1, child2];
-    const adapter = new OpencodeAdapter({ spawnFn: () => children.shift() as unknown as ChildProcess });
+    const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn: () => children.shift() as unknown as ChildProcess });
     adapter.run(RUN_PARAMS);
     adapter.interrupt();
     child1.close(null, "SIGINT");
@@ -343,6 +343,7 @@ describe("OpencodeAdapter", () => {
     let spawnEnv: Record<string, string> = {};
     const child = new FakeChild();
     const adapter = new OpencodeAdapter({
+      liveToolStarts: false,
       spawnFn: (_cmd, _args, opts) => {
         spawnEnv = (opts?.env ?? {}) as Record<string, string>;
         return child as unknown as ChildProcess;
@@ -372,6 +373,7 @@ describe("OpencodeAdapter", () => {
       let spawnEnv: Record<string, string> = {};
       const child = new FakeChild();
       const adapter = new OpencodeAdapter({
+      liveToolStarts: false,
         resolveHome: () => "/credentials/provider-accounts/opencode/acct-a",
         spawnFn: (_cmd, _args, opts) => {
           spawnEnv = (opts?.env ?? {}) as Record<string, string>;
@@ -414,6 +416,7 @@ describe("OpencodeAdapter", () => {
     let spawnEnv: Record<string, string> = {};
     const child = new FakeChild();
     const adapter = new OpencodeAdapter({
+      liveToolStarts: false,
       spawnFn: (_cmd, _args, opts) => {
         spawnEnv = (opts?.env ?? {}) as Record<string, string>;
         return child as unknown as ChildProcess;
@@ -464,6 +467,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     const child = new FakeChild();
     const spawned: string[][] = [];
     const adapter = new OpencodeAdapter({
+      liveToolStarts: false,
       spawnFn: (_cmd, args) => {
         spawned.push(args);
         return child as unknown as ChildProcess;
@@ -515,7 +519,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     );
     const child = new FakeChild();
     const { adapter, events } = {
-      adapter: new OpencodeAdapter({ spawnFn: () => child as unknown as ChildProcess }),
+      adapter: new OpencodeAdapter({ liveToolStarts: false, spawnFn: () => child as unknown as ChildProcess }),
       events: [] as AgentEvent[],
     };
     adapter.on("event", (e) => events.push(e));
@@ -542,7 +546,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     );
     const child = new FakeChild();
     const events: AgentEvent[] = [];
-    const adapter = new OpencodeAdapter({ spawnFn: () => child as unknown as ChildProcess });
+    const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn: () => child as unknown as ChildProcess });
     adapter.on("event", (e) => events.push(e));
     const order = recordTerminals(adapter);
     adapter.run(COMPACT_PARAMS);
@@ -562,7 +566,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise((_res, rej) => { rejectFetch = rej; })));
     const child = new FakeChild();
     const events: AgentEvent[] = [];
-    const adapter = new OpencodeAdapter({ spawnFn: () => child as unknown as ChildProcess });
+    const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn: () => child as unknown as ChildProcess });
     adapter.on("event", (e) => events.push(e));
     const order = recordTerminals(adapter);
     adapter.run(COMPACT_PARAMS);
@@ -583,7 +587,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     vi.useRealTimers();
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => { /* never settles */ })));
     const child = new FakeChild();
-    const adapter = new OpencodeAdapter({ spawnFn: () => child as unknown as ChildProcess });
+    const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn: () => child as unknown as ChildProcess });
     adapter.run(COMPACT_PARAMS);
     child.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:4096\n"));
     await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
@@ -667,6 +671,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
       const children = [new FakeChild(), new FakeChild()];
       let spawned = 0;
       const adapter = new OpencodeAdapter({
+      liveToolStarts: false,
         spawnFn: () => children[spawned++] as unknown as ChildProcess,
       });
       const events: AgentEvent[] = [];
@@ -694,7 +699,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
   it("no-ops a mid-turn compact() instead of throwing", () => {
     const child = new FakeChild();
     const errors: Error[] = [];
-    const adapter = new OpencodeAdapter({ spawnFn: () => child as unknown as ChildProcess });
+    const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn: () => child as unknown as ChildProcess });
     adapter.on("error", (e) => errors.push(e));
     expect(() => adapter.compact()).not.toThrow();
     expect(errors).toHaveLength(0);
@@ -794,7 +799,7 @@ describe("OpenCode ChatGPT account route", () => {
     const spawnFn = vi.fn()
       .mockReturnValueOnce(children[0] as unknown as ChildProcess)
       .mockReturnValueOnce(children[1] as unknown as ChildProcess);
-    const adapter = new OpencodeAdapter({ spawnFn });
+    const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn });
     const errors = vi.fn();
     adapter.on("error", errors);
     const brokenListener = (event: AgentEvent) => {
@@ -837,7 +842,7 @@ describe("OpenCode ChatGPT account route", () => {
     const data = provision(home);
     const child = new FakeChild();
     const spawnFn = vi.fn(() => child as unknown as ChildProcess);
-    const adapter = new OpencodeAdapter({ spawnFn });
+    const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn });
     vi.stubEnv("OPENAI_API_KEY", "wrong-key");
     vi.stubEnv("ANTHROPIC_API_KEY", "wrong-provider");
     vi.stubEnv("GIT_CONFIG_GLOBAL", "/credentials/.gitconfig");
@@ -865,7 +870,7 @@ describe("OpenCode ChatGPT account route", () => {
     const data = provision(home);
     const child = new FakeChild();
     const spawnFn = vi.fn(() => child as unknown as ChildProcess);
-    const adapter = new OpencodeAdapter({ spawnFn });
+    const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn });
     const authRequired = vi.fn(); adapter.on("auth_required", authRequired);
     try {
       fs.writeFileSync(path.join(data, OPENCODE_ACCOUNT_MARKER), JSON.stringify({ accountId: "account-b" }));
@@ -884,7 +889,7 @@ describe("OpencodeAdapter — tools off", () => {
   function configFromSpawn(params: Partial<AgentRunParams>): Record<string, unknown> {
     const child = new FakeChild();
     const spawnFn = vi.fn(() => child as unknown as ChildProcess);
-    const adapter = new OpencodeAdapter({ spawnFn });
+    const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn });
     try {
       adapter.run({ ...RUN_PARAMS, ...params });
       const call = (spawnFn.mock.calls as unknown as [string, string[], { env: Record<string, string> }][])[0];
@@ -908,7 +913,7 @@ describe("OpencodeAdapter — Code Mode", () => {
   function envFromSpawn(params: Partial<AgentRunParams>): Record<string, string> {
     const child = new FakeChild();
     const spawnFn = vi.fn(() => child as unknown as ChildProcess);
-    const adapter = new OpencodeAdapter({ spawnFn });
+    const adapter = new OpencodeAdapter({ liveToolStarts: false, spawnFn });
     try {
       adapter.run({ ...RUN_PARAMS, ...params });
       return (spawnFn.mock.calls as unknown as [string, string[], { env: Record<string, string> }][])[0][2].env;
@@ -932,5 +937,350 @@ describe("OpencodeAdapter — Code Mode", () => {
     expect(envFromSpawn({ codeMode: false })).not.toHaveProperty("OPENCODE_EXPERIMENTAL_CODE_MODE");
     expect(envFromSpawn({})).not.toHaveProperty("OPENCODE_EXPERIMENTAL_CODE_MODE");
     expect(envFromSpawn({ codeMode: true, toolsOff: true })).not.toHaveProperty("OPENCODE_EXPERIMENTAL_CODE_MODE");
+  });
+});
+
+describe("OpencodeAdapter — tool calls shown as they start", () => {
+  const SERVER_URL = "http://127.0.0.1:41999";
+  // CLI 1.19.5 capture (2026-11-10, fake provider, `sleep 4` bash call), shortened ids.
+  const TOOL_TURN = [
+    `{"type":"step_start","timestamp":1,"sessionID":"${SESSION}","part":{"id":"prt_1","messageID":"msg_1","sessionID":"${SESSION}","type":"step-start"}}`,
+    `{"type":"tool_use","timestamp":2,"sessionID":"${SESSION}","part":{"type":"tool","tool":"bash","callID":"call_slow1","state":{"status":"completed","input":{"command":"sleep 4; echo done","description":"slow"},"output":"done\\n","title":"slow","time":{"start":1,"end":2}},"id":"prt_2","sessionID":"${SESSION}","messageID":"msg_1"}}`,
+    `{"type":"step_finish","timestamp":2,"sessionID":"${SESSION}","part":{"id":"prt_3","reason":"tool-calls","messageID":"msg_1","sessionID":"${SESSION}","type":"step-finish","tokens":{"total":15,"input":10,"output":5,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}`,
+    `{"type":"step_start","timestamp":3,"sessionID":"${SESSION}","part":{"id":"prt_4","messageID":"msg_2","sessionID":"${SESSION}","type":"step-start"}}`,
+    `{"type":"text","timestamp":4,"sessionID":"${SESSION}","part":{"id":"prt_5","messageID":"msg_2","sessionID":"${SESSION}","type":"text","text":"finished","time":{"start":3,"end":4}}}`,
+    `{"type":"step_finish","timestamp":4,"sessionID":"${SESSION}","part":{"id":"prt_6","reason":"stop","messageID":"msg_2","sessionID":"${SESSION}","type":"step-finish","tokens":{"total":15,"input":10,"output":5,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0}}`,
+  ];
+  const toolPart = (status: string, input: Record<string, unknown> = {}, sessionID = SESSION, callID = "call_slow1") => ({
+    id: "evt_1",
+    type: "message.part.updated",
+    properties: {
+      sessionID,
+      part: { id: "prt_t", sessionID, messageID: "msg_1", type: "tool", callID, tool: "bash", state: { status, input } },
+      time: 1,
+    },
+  });
+  const BASH_INPUT = { command: "sleep 4; echo done", description: "slow" };
+
+  function makeLive() {
+    const spawns: { args: string[]; env: Record<string, string>; child: FakeChild }[] = [];
+    const requests: { url: string; authorization: string | undefined }[] = [];
+    const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
+    const serverEvent = (event: unknown): void => {
+      for (const stream of streams) stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+    };
+    const spawnFn = (_cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv }): ChildProcess => {
+      const child = new FakeChild();
+      spawns.push({ args, env: opts.env as Record<string, string>, child });
+      return child as unknown as ChildProcess;
+    };
+    const fetchFn = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      requests.push({ url, authorization: (init?.headers as Record<string, string> | undefined)?.Authorization });
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          streams.push(controller);
+          controller.enqueue(new TextEncoder().encode(`data: {"id":"evt_0","type":"server.connected","properties":{}}\n\n`));
+          init?.signal?.addEventListener("abort", () => {
+            streams.splice(streams.indexOf(controller), 1);
+            controller.error(new DOMException("aborted", "AbortError"));
+          });
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+    }) as unknown as typeof fetch;
+    const adapter = new OpencodeAdapter({ spawnFn, fetchFn });
+    const events: AgentEvent[] = [];
+    adapter.on("event", (e) => events.push(e));
+    const done = new Promise<number>((resolve) => adapter.once("done", resolve));
+    const pick = (verb: string) => (): FakeChild => {
+      const found = spawns.find((s) => s.args[0] === verb);
+      if (!found) throw new Error(`no ${verb} spawn yet`);
+      return found.child;
+    };
+    return { adapter, events, done, spawns, requests, streams, serverEvent, server: pick("serve"), client: pick("run") };
+  }
+  type Live = ReturnType<typeof makeLive>;
+
+  function start(): Live {
+    const h = makeLive();
+    h.adapter.run(RUN_PARAMS);
+    return h;
+  }
+
+  async function announce(h: Live): Promise<void> {
+    h.server().stdout.emit("data", Buffer.from(`opencode server listening on ${SERVER_URL}\n`));
+    await vi.waitFor(() => h.client());
+  }
+
+  const toolUses = (h: Live) => h.events.flatMap((e) => (e.type === "agent_assistant" ? e.content : [])).filter((b) => b.type === "tool_use");
+  const toolResults = (h: Live) => h.events.filter((e) => e.type === "agent_tool_result");
+  const killedTrees = () => vi.mocked(killProcessTree).mock.calls.map((call) => call[0] as unknown as FakeChild);
+
+  beforeEach(() => {
+    vi.mocked(killProcessTree).mockClear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("runs the turn through a server whose events it reads before the turn is sent", async () => {
+    const h = start();
+    expect(h.spawns.map((s) => s.args[0])).toEqual(["serve"]);
+    expect(h.spawns[0].args).toEqual(["serve", "--port", "0", "--hostname", "127.0.0.1"]);
+    await announce(h);
+
+    expect(h.requests.map((r) => r.url)).toEqual([`${SERVER_URL}/event`]);
+    const password = h.spawns[0].env.OPENCODE_SERVER_PASSWORD;
+    expect(password).toMatch(/^[\w-]{20,}$/);
+    expect(h.requests[0].authorization).toBe(`Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`);
+    const run = h.spawns[1];
+    expect(run.args.slice(-2)).toEqual(["--attach", SERVER_URL]);
+    expect(run.args.join(" ")).not.toContain(password);
+    expect(run.env.OPENCODE_SERVER_PASSWORD).toBe(password);
+    expect(h.client().stdin.written).toBe("create hello.txt");
+
+    h.client().close(0);
+    expect(await h.done).toBe(0);
+  });
+
+  it("shows a long call when it starts, then adds only its result when it finishes", async () => {
+    const h = start();
+    await announce(h);
+    h.client().emitStdout([TOOL_TURN[0]]);
+    h.serverEvent(toolPart("pending"));
+    h.serverEvent(toolPart("running", BASH_INPUT));
+    h.serverEvent(toolPart("running", BASH_INPUT));
+    await vi.waitFor(() => expect(toolUses(h)).toHaveLength(1));
+    expect(toolUses(h)[0]).toEqual({ type: "tool_use", id: "call_slow1", name: "Bash", input: { command: "sleep 4; echo done", description: "slow" } });
+    expect(toolResults(h)).toEqual([]);
+
+    h.client().emitStdout(TOOL_TURN.slice(1));
+    h.client().close(0);
+    await h.done;
+    expect(toolUses(h)).toHaveLength(1);
+    expect(toolResults(h)).toMatchObject([{ content: [{ tool_use_id: "call_slow1" }] }]);
+    const kinds = h.events.map((e) => e.type).filter((t) => t === "agent_assistant" || t === "agent_tool_result");
+    expect(kinds).toEqual(["agent_assistant", "agent_tool_result", "agent_assistant"]);
+    expect(h.events.at(-1)).toMatchObject({ type: "agent_result", status: "success" });
+  });
+
+  it("still emits both halves for a call whose start it never saw", async () => {
+    const h = start();
+    await announce(h);
+    h.client().emitStdout(TOOL_TURN);
+    h.client().close(0);
+    await h.done;
+    expect(toolUses(h).map((b) => (b as { id: string }).id)).toEqual(["call_slow1"]);
+    expect(toolResults(h)).toHaveLength(1);
+  });
+
+  it("ignores a start that arrives after the call finished", async () => {
+    const h = start();
+    await announce(h);
+    h.client().emitStdout(TOOL_TURN.slice(0, 2));
+    h.serverEvent(toolPart("running", BASH_INPUT));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    h.client().emitStdout(TOOL_TURN.slice(2));
+    h.client().close(0);
+    await h.done;
+    expect(toolUses(h)).toHaveLength(1);
+    expect(toolResults(h)).toHaveLength(1);
+  });
+
+  it("holds a start until the turn names its session, and drops another session's calls", async () => {
+    const h = start();
+    await announce(h);
+    h.serverEvent(toolPart("running", { command: "ls" }, "ses_child", "call_child"));
+    h.serverEvent(toolPart("running", BASH_INPUT));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(h.events).toEqual([]);
+
+    h.client().emitStdout([TOOL_TURN[0]]);
+    await vi.waitFor(() => expect(toolUses(h)).toHaveLength(1));
+    expect(h.events[0]).toMatchObject({ type: "agent_init" });
+    expect((toolUses(h)[0] as { id: string }).id).toBe("call_slow1");
+    h.client().close(0);
+    await h.done;
+  });
+
+  it("shows a call below the text written before it, which the server closes after the call starts", async () => {
+    const textPart = (text: string, time: Record<string, number>, sessionID = SESSION, id = "prt_text") => ({
+      id: "evt_t", type: "message.part.updated",
+      properties: { sessionID, part: { id, sessionID, messageID: "msg_1", type: "text", text, time }, time: 1 },
+    });
+    const h = start();
+    await announce(h);
+    h.client().emitStdout([TOOL_TURN[0]]);
+    h.serverEvent(textPart("", { start: 1 }, "ses_child", "prt_child"));
+    h.serverEvent(textPart("", { start: 1 }));
+    h.serverEvent(toolPart("running", BASH_INPUT));
+    h.serverEvent(textPart("Let me run it.", { start: 1, end: 2 }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(toolUses(h)).toEqual([]);
+
+    h.client().emitStdout([
+      `{"type":"text","timestamp":2,"sessionID":"${SESSION}","part":{"id":"prt_text","messageID":"msg_1","sessionID":"${SESSION}","type":"text","text":"Let me run it.","time":{"start":1,"end":2}}}`,
+    ]);
+    const blocks = h.events.flatMap((e) => (e.type === "agent_assistant" ? e.content : []));
+    expect(blocks.map((b) => b.type)).toEqual(["text", "tool_use"]);
+    h.client().close(0);
+    await h.done;
+  });
+
+  it("does not hold calls behind text that stdout never prints", async () => {
+    const text = (id: string, value: string, time: Record<string, number>) => ({
+      id: "evt_t", type: "message.part.updated",
+      properties: { sessionID: SESSION, part: { id, sessionID: SESSION, messageID: "msg_1", type: "text", text: value, time } },
+    });
+    const h = start();
+    await announce(h);
+    h.client().emitStdout([TOOL_TURN[0]]);
+    h.serverEvent(text("prt_empty", "", { start: 1 }));
+    h.serverEvent(toolPart("running", BASH_INPUT));
+    h.serverEvent(text("prt_empty", " ", { start: 1, end: 2 }));
+    await vi.waitFor(() => expect(toolUses(h)).toHaveLength(1));
+
+    // Text the server closed but stdout skipped stops holding once its step has printed.
+    h.serverEvent(text("prt_skipped", "unseen", { start: 2, end: 3 }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    h.client().emitStdout(TOOL_TURN.slice(1, 3));
+    h.serverEvent(toolPart("running", { command: "ls" }, SESSION, "call_next"));
+    await vi.waitFor(() => expect(toolUses(h)).toHaveLength(2));
+    h.client().close(0);
+    await h.done;
+  });
+
+  it("keeps holding for another message's text when one step ends", async () => {
+    const text = (id: string, messageID: string) => ({
+      id: "evt_t", type: "message.part.updated",
+      properties: { sessionID: SESSION, part: { id, sessionID: SESSION, messageID, type: "text", text: "", time: { start: 1 } } },
+    });
+    const h = start();
+    await announce(h);
+    h.client().emitStdout([TOOL_TURN[0]]);
+    h.serverEvent(text("prt_a", "msg_1"));
+    h.serverEvent(text("prt_b", "msg_2"));
+    h.serverEvent(toolPart("running", BASH_INPUT));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    h.client().emitStdout([TOOL_TURN[2]]);
+    expect(toolUses(h)).toEqual([]);
+    h.client().emitStdout([TOOL_TURN[5]]);
+    expect(toolUses(h)).toHaveLength(1);
+    h.client().close(0);
+    await h.done;
+  });
+
+  it("ignores text the server reports after stdout printed its step's end", async () => {
+    const h = start();
+    await announce(h);
+    h.client().emitStdout(TOOL_TURN.slice(0, 3));
+    h.serverEvent({
+      id: "evt_t", type: "message.part.updated",
+      properties: { sessionID: SESSION, part: { id: "prt_late", sessionID: SESSION, messageID: "msg_1", type: "text", text: "late", time: { start: 1 } } },
+    });
+    h.serverEvent(toolPart("running", { command: "ls" }, SESSION, "call_next"));
+    await vi.waitFor(() => expect(toolUses(h)).toHaveLength(2));
+    h.client().close(0);
+    await h.done;
+  });
+
+  it("stops the server once the client exits, not before", async () => {
+    const h = start();
+    await announce(h);
+    h.client().emitStdout([TOOL_TURN[0]]);
+    h.adapter.interrupt();
+    h.serverEvent(toolPart("running", BASH_INPUT));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(toolUses(h)).toEqual([]);
+    expect(killedTrees()).not.toContain(h.server());
+    expect(h.client().kill).toHaveBeenCalledWith("SIGINT");
+
+    h.client().close(130);
+    await h.done;
+    expect(killedTrees()).toContain(h.server());
+    expect(h.streams).toHaveLength(0);
+  });
+
+  it("falls back to a plain run when the server does not start", async () => {
+    vi.stubEnv("OPENCODE_SERVER_PASSWORD", "inherited");
+    const h = start();
+    h.server().emit("exit", 1, null);
+    await vi.waitFor(() => h.client());
+    expect(h.client().stdin.written).toBe("create hello.txt");
+    expect(h.spawns[1].args).not.toContain("--attach");
+    expect(h.spawns[1].env.OPENCODE_SERVER_PASSWORD).toBeUndefined();
+    expect(killedTrees()).toContain(h.server());
+
+    h.client().emitStdout(TOOL_TURN);
+    h.client().close(0);
+    await h.done;
+    expect(toolUses(h)).toHaveLength(1);
+    expect(toolResults(h)).toHaveLength(1);
+  });
+
+  it("falls back to a plain run when the server exits right after it is ready", async () => {
+    const h = start();
+    h.server().stdout.emit("data", Buffer.from(`opencode server listening on ${SERVER_URL}\n`));
+    h.server().emit("exit", 1, null);
+    await vi.waitFor(() => h.client());
+    expect(h.spawns[1].args).not.toContain("--attach");
+    h.client().emitStdout(TOOL_TURN);
+    h.client().close(0);
+    expect(await h.done).toBe(0);
+    expect(toolUses(h)).toHaveLength(1);
+  });
+
+  it("masks the turn password in the fallback warning", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const h = start();
+      const password = h.spawns[0].env.OPENCODE_SERVER_PASSWORD;
+      h.server().stderr.emit("data", Buffer.from(`bad password ${password}\n`));
+      h.server().emit("exit", 1, null);
+      await vi.waitFor(() => h.client());
+      const warned = warn.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(warned).toContain("bad password ***");
+      expect(warned).not.toContain(password);
+      h.client().close(0);
+      await h.done;
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("refuses a new turn until a turn stopped during server start has ended", async () => {
+    const h = start();
+    const errors: Error[] = [];
+    h.adapter.on("error", (err) => errors.push(err));
+    h.adapter.interrupt();
+    h.adapter.run(RUN_PARAMS);
+    expect(errors.map((e) => e.message)).toEqual(["OpenCode adapter: run() called while a turn is in flight"]);
+    expect(h.spawns).toHaveLength(1);
+    h.server().emit("exit", null, "SIGTERM");
+    expect(await h.done).toBe(1);
+  });
+
+  it("masks the turn password in the server output it logs", async () => {
+    const h = start();
+    const logs: string[] = [];
+    h.adapter.on("log", (_source, text: string) => logs.push(text));
+    await announce(h);
+    const password = h.spawns[0].env.OPENCODE_SERVER_PASSWORD;
+    h.server().stderr.emit("data", Buffer.from(`auth with ${password} failed\n`));
+    expect(logs).toContain("auth with *** failed");
+    h.client().close(0);
+    await h.done;
+  });
+
+  it("ends the turn without a result when interrupted while the server starts", async () => {
+    const h = start();
+    h.adapter.interrupt();
+    expect(killedTrees()).toContain(h.server());
+    h.server().emit("exit", null, "SIGTERM");
+    expect(await h.done).toBe(1);
+    expect(h.spawns.map((s) => s.args[0])).toEqual(["serve"]);
+    expect(h.events).toEqual([]);
   });
 });
