@@ -101,7 +101,7 @@ describe("the Advanced tab's rows come from the declarations", () => {
     // heading and so is not a named region; it renders between the two that do.
     const sections = screen.getAllByRole("region").map((el) => el.getAttribute("aria-label"));
     expect(sections).toEqual([
-      "Software Updates", "Agent", "Automation", "Conversation", "Notifications",
+      "Software Updates", "Agent", "Code Mode", "Automation", "Conversation", "Notifications",
     ]);
 
     for (const section of sections) {

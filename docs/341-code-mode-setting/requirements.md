@@ -24,14 +24,16 @@ Sources: the user's words of 2026-11-10, passed on by the parent session
    ShipIt. A harness without one gets no control.
 3. **A useful card.** When Code Mode runs, its tool card shows the code it
    ran, its result, and any images the tools inside it returned.
+4. **Defaults.** Code Mode is on by default for OpenCode 2, and off by
+   default for Codex and OpenCode 1.
+5. **OpenCode 1 has a control too.** Its default leaves OpenCode 1's
+   behaviour unchanged.
+6. **Next turn.** A change applies from the next turn of every session,
+   including sessions already running.
 
 ## Open questions
 
-- What is each harness's default: OpenCode 2, Codex (its Code Mode is
-  marked "under development" upstream), and OpenCode 1 (experimental flag)?
-- Does OpenCode 1 get a control at all?
-- Does a change apply from the next turn of a session that is already
-  running, or only to new sessions?
+None.
 
 ## Resolved questions
 
@@ -42,3 +44,10 @@ Sources: the user's words of 2026-11-10, passed on by the parent session
 - **2026-11-10 — Only turn Code Mode on for OpenCode 2, or make it a
   setting?** The user: "ideally I want a setting in the UI to enable/disable
   code mode, per harness" (req 2).
+- **2026-11-10 — What is OpenCode 2's default?** The user: on (req 4).
+- **2026-11-10 — What is Codex's default, given that upstream marks its Code
+  Mode "under development"?** The user: off (req 4).
+- **2026-11-10 — Does OpenCode 1, whose Code Mode is an experimental flag,
+  get a control?** The user: yes, default off (reqs 4, 5).
+- **2026-11-10 — Does a change apply from the next turn, or only to new
+  sessions?** The user: from the next turn (req 6).

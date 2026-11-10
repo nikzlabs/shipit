@@ -4,7 +4,6 @@ import type { OpencodeToolState } from "../../../shared/opencode-stream.js";
 // `bash` to `shell` and `task` to `subagent`, and its file tools take `path`.
 export const OPENCODE2_TRANSCRIPT_TOOL_NAMES: Record<string, string> = {
   edit: "Edit",
-  // Code Mode: JavaScript that calls MCP tools; the client labels it by this name.
   execute: "execute",
   glob: "Glob",
   grep: "Grep",

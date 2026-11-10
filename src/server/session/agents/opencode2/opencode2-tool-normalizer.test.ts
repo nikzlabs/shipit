@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { OPENCODE2_TOOL_NAMES } from "../../../shared/agent-tool-names.js";
 import {
   OPENCODE2_TRANSCRIPT_TOOL_NAMES,
+  isOpencode2ToolError,
   normalizeOpencode2ToolCall,
   normalizeOpencode2ToolResult,
   opencode2ToolResultImages,
@@ -52,5 +53,17 @@ describe("OpenCode 2 tool normalizer", () => {
       .toBe("## Report\n<b>kept</b>");
     expect(normalizeOpencode2ToolResult("subagent", "failed: no model")).toBe("failed: no model");
     expect(normalizeOpencode2ToolResult("shell", "<subagent>x</subagent>")).toBe("<subagent>x</subagent>");
+  });
+
+  it("reads Code Mode's error flag on `execute` only", () => {
+    const flagged = { status: "completed", metadata: { metadata: { error: true } } };
+    expect(isOpencode2ToolError("execute", flagged)).toBe(true);
+    expect(isOpencode2ToolError("execute", { status: "completed", metadata: { metadata: { toolCalls: [] } } })).toBe(false);
+    expect(isOpencode2ToolError("read", flagged)).toBe(false);
+    expect(isOpencode2ToolError("read", { status: "error" })).toBe(true);
+  });
+
+  it("keeps Code Mode's `execute` name and input", () => {
+    expect(normalizeOpencode2ToolCall("execute", { code: "return 1;" })).toEqual({ name: "execute", input: { code: "return 1;" } });
   });
 });

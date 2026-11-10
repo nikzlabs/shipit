@@ -25,6 +25,8 @@ export interface OpencodeToolState {
   status?: string;
   input?: unknown;
   output?: string;
+  /** A failed call's message; `output` is absent then. */
+  error?: string;
   metadata?: Record<string, unknown>;
   title?: string;
   time?: { start?: number; end?: number };

@@ -124,6 +124,58 @@ export const GLOBAL_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
+  // docs/341-code-mode-setting reqs 2, 4-6: one per harness whose Code Mode runs in ShipIt.
+  "advanced.codeMode.opencode2": defineSetting({
+    key: "advanced.codeMode.opencode2",
+    tab: "advanced",
+    section: "Code Mode",
+    scope: "global",
+    label: "Code Mode for OpenCode 2",
+    description:
+      "The agent calls MCP tools, such as the browser and ShipIt's own, from short JavaScript "
+      + "programs instead of one call at a time, which saves model round-trips. The chat shows "
+      + "one Code card with the program and its result, not a card per tool call. "
+      + "Applies from each session's next turn.",
+    type: bool({ default: true }),
+    store: { kind: "credential-store", field: "codeModeOpencode2" },
+    wire: "codeModeOpencode2",
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
+  "advanced.codeMode.codex": defineSetting({
+    key: "advanced.codeMode.codex",
+    tab: "advanced",
+    section: "Code Mode",
+    scope: "global",
+    label: "Code Mode for Codex",
+    description:
+      "Turns on Codex's Code Mode, in which the agent runs its tools from short JavaScript "
+      + "programs. Codex marks it as still under development. Applies from each session's "
+      + "next turn.",
+    type: bool({ default: false }),
+    store: { kind: "credential-store", field: "codeModeCodex" },
+    wire: "codeModeCodex",
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
+  "advanced.codeMode.opencode": defineSetting({
+    key: "advanced.codeMode.opencode",
+    tab: "advanced",
+    section: "Code Mode",
+    scope: "global",
+    label: "Code Mode for OpenCode 1",
+    description:
+      "Turns on OpenCode 1's experimental Code Mode, in which the agent calls MCP tools from "
+      + "short JavaScript programs. Applies from each session's next turn.",
+    type: bool({ default: false }),
+    store: { kind: "credential-store", field: "codeModeOpencode" },
+    wire: "codeModeOpencode",
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
   /*
     Inside Automation, and leading it: every row in that group is ShipIt acting
     on a pull request without being asked, and the group reads in the order a PR

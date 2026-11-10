@@ -432,7 +432,9 @@ export class CodexEventHandler {
         // The worker emits ask cards directly; these events would duplicate or disable them.
         if (isAskUserQuestionTool(item.tool)) return;
         let input: Record<string, unknown> = {};
-        if (item.arguments) {
+        if (typeof item.arguments === "object" && item.arguments !== null) {
+          input = item.arguments;
+        } else if (item.arguments) {
           try {
             input = JSON.parse(item.arguments) as Record<string, unknown>;
           } catch {

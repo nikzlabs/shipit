@@ -90,6 +90,19 @@ describe("ToolUseItem inline tool icon", () => {
     expect(screen.getByText("ls -la")).toBeInTheDocument();
   });
 
+  it("labels Code Mode's `execute` as Code with its code's first line (docs/341-code-mode-setting req 3)", () => {
+    render(
+      <ToolUseItem
+        tool={tool("execute", { code: "\n  const r = await tools.probe.snap({});\nreturn r;" })}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    expect(screen.getByText("Code")).toBeInTheDocument();
+    expect(screen.getByText("const r = await tools.probe.snap({});")).toBeInTheDocument();
+  });
+
   it("falls back to text for tools without a mapped icon", () => {
     render(
       <ToolUseItem

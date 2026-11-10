@@ -64,8 +64,7 @@ const INTERRUPT_ESCALATE_MS = 5_000;
 const STALL_DEADLINE_MS = 45 * 60_000;
 const ACCOUNT_RESYNC_DEBOUNCE_MS = 200;
 
-// `question` and `websearch` need an interactive answer that `run` cancels. Code Mode's
-// `execute` stays on: agent efficiency wins over one card per tool call (req 7).
+// `question` and `websearch` need an interactive answer that `run` cancels.
 const TURN_TOOLS: Readonly<Record<string, boolean>> = { question: false, websearch: false };
 const TOOLS_OFF: Readonly<Record<string, boolean>> = { "*": false };
 
@@ -173,9 +172,11 @@ export class Opencode2Adapter
     const args = ["run", "--format", "json", "--auto"];
     if (params.sessionId) args.push("--session", params.sessionId);
 
+    // docs/341-code-mode-setting: off means no `execute`, so every MCP tool must be direct.
+    const codeMode = params.codeMode !== false;
     const config: Record<string, unknown> = {
       $schema: "https://opencode.ai/config.json",
-      tools: { ...(params.toolsOff ? TOOLS_OFF : TURN_TOOLS) },
+      tools: params.toolsOff ? { ...TOOLS_OFF } : { ...TURN_TOOLS, ...(codeMode ? {} : { execute: false }) },
     };
     const variant = params.reasoningEffort;
     if (isOpenCodeAccountRouting(params.serviceRouting) && params.model) {
@@ -199,7 +200,13 @@ export class Opencode2Adapter
       args.push("--model", `${params.model}${variant ? `#${variant}` : ""}`);
     }
     const mcpServerNames = params.toolsOff ? [] : Object.keys(this.pendingMcpServers);
-    if (mcpServerNames.length > 0) config.mcp = { servers: this.pendingMcpServers };
+    if (mcpServerNames.length > 0) {
+      config.mcp = {
+        servers: codeMode
+          ? this.pendingMcpServers
+          : Object.fromEntries(Object.entries(this.pendingMcpServers).map(([name, server]) => [name, { ...(server as object), codemode: false }])),
+      };
+    }
 
     const home = resolveAgentHome(params.homeDir ?? this.resolveHome?.());
     const roots = opencode2Roots(home);
@@ -650,7 +657,7 @@ export class Opencode2Adapter
             : {};
         const { name, input } = normalizeOpencode2ToolCall(part.tool ?? "unknown", rawInput);
         const isError = isOpencode2ToolError(part.tool ?? "unknown", part.state);
-        const output = normalizeOpencode2ToolResult(part.tool ?? "unknown", part.state?.output ?? "");
+        const output = normalizeOpencode2ToolResult(part.tool ?? "unknown", part.state?.output ?? part.state?.error ?? "");
         const images = opencode2ToolResultImages(part.state?.metadata);
         const content = images.length > 0 ? [{ type: "text", text: output }, ...images] : output;
         return [

@@ -12,7 +12,8 @@ export interface CodexItem {
   changes?: { path: string; kind?: string | Record<string, unknown>; diff?: string }[];
   server?: string;
   tool?: string;
-  arguments?: string; // JSON-encoded arguments
+  // 0.162.1 sends an object; older builds sent JSON text.
+  arguments?: string | Record<string, unknown>;
   result?: unknown;
   error?: unknown;
   query?: string;

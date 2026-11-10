@@ -7,6 +7,7 @@ import {
   releaseResidentOnStatusCardChange,
 } from "./resident-spawn-guard.js";
 import { desiredSpawnIdentity } from "./service-routing.js";
+import { withCodeMode } from "./code-mode.js";
 import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { resolveFileAttachments, resolveUploadRefs, formatFileContext, imageAttachmentRefusal } from "./validation.js";
 import { modelSelectionOf } from "./session-agent-env.js";
@@ -424,7 +425,10 @@ async function runDispatchedTurnInner(
     }
     releaseResidentOnSpawnChange(
       runner,
-      desiredSpawnIdentity(deps.listenerDeps.sessionManager, runner.sessionId, agentId),
+      withCodeMode(
+        desiredSpawnIdentity(deps.listenerDeps.sessionManager, runner.sessionId, agentId),
+        deps.codeModeFor?.(agentId),
+      ),
     );
     releaseResidentOnPendingRewind(runner, deps.listenerDeps.sessionManager.get(runner.sessionId)?.agentResumeAt);
     // docs/303 req 21, the same comparison the interactive path makes. Skipped when the
