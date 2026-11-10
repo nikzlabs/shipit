@@ -40,7 +40,7 @@ import { parseOpencodeLine, OpencodeTurnAccumulator, type OpencodeEvent, type Op
 import { shipitToolSpec } from "../../mcp-tool-spec.js";
 import { writeOpencodeTurnFiles, type OpencodeTurnFiles } from "../opencode/turn-files.js";
 import { OpenCodeSubscriptionLimits } from "../opencode/subscription-limits.js";
-import { normalizeOpencode2ToolCall, normalizeOpencode2ToolResult, opencode2ToolResultImages } from "./opencode2-tool-normalizer.js";
+import { isOpencode2ToolError, normalizeOpencode2ToolCall, normalizeOpencode2ToolResult, opencode2ToolResultImages } from "./opencode2-tool-normalizer.js";
 import {
   OPENCODE2_BIN,
   basicAuthorization,
@@ -64,9 +64,9 @@ const INTERRUPT_ESCALATE_MS = 5_000;
 const STALL_DEADLINE_MS = 45 * 60_000;
 const ACCOUNT_RESYNC_DEBOUNCE_MS = 200;
 
-// `question` and `websearch` need an interactive answer that `run` cancels; Code Mode's
-// `execute` would hide edits from the transcript, and every MCP server sets codemode off.
-const TURN_TOOLS: Readonly<Record<string, boolean>> = { question: false, websearch: false, execute: false };
+// `question` and `websearch` need an interactive answer that `run` cancels. Code Mode's
+// `execute` stays on: agent efficiency wins over one card per tool call (req 7).
+const TURN_TOOLS: Readonly<Record<string, boolean>> = { question: false, websearch: false };
 const TOOLS_OFF: Readonly<Record<string, boolean>> = { "*": false };
 
 interface TurnPlan {
@@ -649,7 +649,7 @@ export class Opencode2Adapter
             ? (part.state.input as Record<string, unknown>)
             : {};
         const { name, input } = normalizeOpencode2ToolCall(part.tool ?? "unknown", rawInput);
-        const isError = part.state?.status === "error";
+        const isError = isOpencode2ToolError(part.tool ?? "unknown", part.state);
         const output = normalizeOpencode2ToolResult(part.tool ?? "unknown", part.state?.output ?? "");
         const images = opencode2ToolResultImages(part.state?.metadata);
         const content = images.length > 0 ? [{ type: "text", text: output }, ...images] : output;
@@ -722,19 +722,16 @@ export class Opencode2Adapter
   }
 
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult {
-    // Code Mode is off for every server: `execute` is disabled, so its tools must be direct.
     const servers: Record<string, unknown> = {
       playwright: {
         type: "local",
         command: [PLAYWRIGHT_MCP_COMMAND, ...PLAYWRIGHT_MCP_ARGS],
-        codemode: false,
       },
     };
     if (ctx.shipitBridge) {
       servers.shipit = {
         type: "local",
         command: [ctx.shipitBridge.tsxBin, ctx.shipitBridge.bridgePath],
-        codemode: false,
         environment: { SHIPIT_MCP_TOOLS: shipitToolSpec("present,voice,bug,ask,propose_actions,propose_repo_session,propose_session_message", ctx) },
       };
     }
@@ -743,11 +740,10 @@ export class Opencode2Adapter
       if (resolved) {
         const r = resolved as { command?: string; args?: string[]; env?: Record<string, string>; url?: string; headers?: Record<string, string> };
         servers[server.name] = r.url
-          ? { type: "remote", url: r.url, codemode: false, ...(r.headers ? { headers: r.headers } : {}) }
+          ? { type: "remote", url: r.url, ...(r.headers ? { headers: r.headers } : {}) }
           : {
               type: "local",
               command: [r.command ?? "", ...(r.args ?? [])],
-              codemode: false,
               ...(r.env ? { environment: r.env } : {}),
             };
       } else {

@@ -33,6 +33,7 @@ export function inputKeyTreatment(
   if (isTaskListTool(toolName)) return TASK_LIST_SUMMARY_KEYS.has(key) ? "keep" : "drop";
   if (SUBAGENT_TOOL_NAMES.has(toolName)) return SUBAGENT_SUMMARY_KEYS.has(key) ? "keep" : "drop";
   if (isPresentTool(toolName)) return key === "title" ? "keep" : "drop";
-  if (key === "command") return "head";
+  // OpenCode 2's Code Mode `execute` draws its code's first line like a command.
+  if (key === "command" || (toolName === "execute" && key === "code")) return "head";
   return "drop";
 }
