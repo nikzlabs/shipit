@@ -55,6 +55,7 @@ import {
 } from "./server.js";
 import { Opencode2Account, type Opencode2AccountTarget } from "./account.js";
 import { Opencode2Steering } from "./steering.js";
+import { Opencode2ToolStarts, type Opencode2ToolStart } from "./tool-starts.js";
 
 const HARNESS = HARNESSES.find((h) => h.id === "opencode2");
 
@@ -125,6 +126,10 @@ export class Opencode2Adapter
   private accountWatcher: fs.FSWatcher | null = null;
   private accountResyncTimer: NodeJS.Timeout | null = null;
   private readonly steering: Opencode2Steering;
+  private readonly toolStarts: Opencode2ToolStarts;
+  // Calls whose `tool_use` went out when they started; their completion adds only the result.
+  private startedCalls = new Set<string>();
+  private finishedCalls = new Set<string>();
   private turnResult: AgentEvent | null = null;
 
   constructor(opts?: {
@@ -140,6 +145,11 @@ export class Opencode2Adapter
       (event) => this.emit("event", event),
       this.fetchFn,
       (message) => this.emit("log", "server", `OpenCode 2 steering: ${message}`),
+    );
+    this.toolStarts = new Opencode2ToolStarts(
+      (start) => this.onToolStart(start),
+      this.fetchFn,
+      (message) => this.emit("log", "server", `OpenCode 2 tool starts: ${message}`),
     );
   }
 
@@ -158,6 +168,8 @@ export class Opencode2Adapter
     this.stdinFailure = null;
     this.resumeSessionId = params.sessionId;
     this.turnResult = null;
+    this.startedCalls = new Set();
+    this.finishedCalls = new Set();
     this.steering.begin(!params.compact);
     const plan = this.prepare(params);
     if (!plan) {
@@ -339,12 +351,15 @@ export class Opencode2Adapter
       if (!settled) console.warn("[opencode2] MCP servers did not settle; sending the turn anyway");
       if (this.stopped) return;
 
+      await this.toolStarts.open(handle);
+      if (this.stopped) return;
       exitCode = await this.runClient(params, plan, handle);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       console.warn(`[opencode2] turn failed: ${reason}`);
       if (!this.stopped) this.emitResult({ error: `OpenCode 2 could not run the turn: ${reason}` });
     } finally {
+      this.toolStarts.close();
       await this.steering.close();
       account?.close();
       this.teardown(plan);
@@ -403,6 +418,7 @@ export class Opencode2Adapter
   }
 
   private async settleClient(exitCode: number | null, signal: NodeJS.Signals | null, handle: Opencode2Server): Promise<void> {
+    this.toolStarts.close();
     await this.steering.close();
     const sessionId = this.accumulator.sessionId ?? this.resumeSessionId;
     if (sessionId && this.sawAnyEvent()) {
@@ -619,6 +635,7 @@ export class Opencode2Adapter
         sessionId: event.sessionID,
         tools: [...OPENCODE2_TOOL_NAMES],
       });
+      this.toolStarts.setSession(event.sessionID);
     }
     for (const mapped of this.mapEvent(event)) this.emit("event", mapped);
     if (event.type === "step_start") this.steering.noteStep();
@@ -647,30 +664,36 @@ export class Opencode2Adapter
         return [{ type: "agent_assistant", content: [block] }];
       }
       case "tool_use": {
-        // This wire has no start event; emit both halves to preserve message groups.
-        // 2.x dropped `callID`: `part.id` carries the provider's call id.
+        // A completed call. Its `tool_use` went out at the start when the server reported one;
+        // otherwise both halves go out together. 2.x dropped `callID`: `part.id` is the call id.
         const part = event.part as OpencodeToolPart & { id?: string };
         const callId = part.callID ?? part.id ?? `opencode2-call-${Date.now()}`;
-        const rawInput =
-          typeof part.state?.input === "object" && part.state.input !== null
-            ? (part.state.input as Record<string, unknown>)
-            : {};
-        const { name, input } = normalizeOpencode2ToolCall(part.tool ?? "unknown", rawInput);
+        const started = this.startedCalls.has(callId);
+        this.finishedCalls.add(callId);
         const isError = isOpencode2ToolError(part.tool ?? "unknown", part.state);
         const output = normalizeOpencode2ToolResult(part.tool ?? "unknown", part.state?.output ?? part.state?.error ?? "");
         const images = opencode2ToolResultImages(part.state?.metadata);
         const content = images.length > 0 ? [{ type: "text", text: output }, ...images] : output;
-        return [
-          { type: "agent_assistant", content: [{ type: "tool_use", id: callId, name, input }] },
-          {
-            type: "agent_tool_result",
-            content: [{ type: "tool_result", tool_use_id: callId, content, ...(isError ? { is_error: true } : {}) }],
-          },
-        ];
+        const result: AgentEvent = {
+          type: "agent_tool_result",
+          content: [{ type: "tool_result", tool_use_id: callId, content, ...(isError ? { is_error: true } : {}) }],
+        };
+        if (started) return [result];
+        const rawInput =
+          typeof part.state?.input === "object" && part.state.input !== null
+            ? (part.state.input as Record<string, unknown>)
+            : {};
+        return [toolUseEvent(callId, part.tool ?? "unknown", rawInput), result];
       }
       default:
         return [];
     }
+  }
+
+  private onToolStart(start: Opencode2ToolStart): void {
+    if (!this.active || this.stopped || this.startedCalls.has(start.id) || this.finishedCalls.has(start.id)) return;
+    this.startedCalls.add(start.id);
+    this.emit("event", toolUseEvent(start.id, start.tool, start.input));
   }
 
   compact(_instructions?: string): void {
@@ -766,4 +789,9 @@ export class Opencode2Adapter
       },
     };
   }
+}
+
+function toolUseEvent(callId: string, tool: string, rawInput: Record<string, unknown>): AgentEvent {
+  const { name, input } = normalizeOpencode2ToolCall(tool, rawInput);
+  return { type: "agent_assistant", content: [{ type: "tool_use", id: callId, name, input }] };
 }

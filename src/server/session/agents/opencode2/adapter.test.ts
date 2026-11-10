@@ -70,6 +70,8 @@ interface Harness {
   client: () => FakeChild;
   requests: { url: string; method: string; body?: string }[];
   inbox: Set<string>;
+  /** Sends one event down the turn server's event stream. */
+  serverEvent: (event: unknown) => void;
   done: Promise<number>;
 }
 
@@ -80,6 +82,10 @@ function makeAdapter(opts: { mcp?: boolean; messages?: unknown; holdCompaction?:
   const spawns: Harness["spawns"] = [];
   const requests: Harness["requests"] = [];
   const inbox = new Set<string>();
+  const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
+  const serverEvent = (event: unknown): void => {
+    for (const stream of streams) stream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+  };
   const spawnFn = (_cmd: string, args: string[], spawnOpts: SpawnOptions): ChildProcess => {
     const child = new FakeChild();
     spawns.push({ args, opts: spawnOpts, child });
@@ -92,6 +98,19 @@ function makeAdapter(opts: { mcp?: boolean; messages?: unknown; holdCompaction?:
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     requests.push({ url, method: init?.method ?? "GET", ...(typeof init?.body === "string" ? { body: init.body } : {}) });
     if (url.includes("/message/msg_c") && opts.holdCompaction) await opts.holdCompaction;
+    if (url.includes("/api/event?")) {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          streams.push(controller);
+          controller.enqueue(new TextEncoder().encode(`data: {"id":"evt_0","type":"server.connected","data":{}}\n\n`));
+          init?.signal?.addEventListener("abort", () => {
+            streams.splice(streams.indexOf(controller), 1);
+            controller.error(new DOMException("aborted", "AbortError"));
+          });
+        },
+      });
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    }
     if (url.endsWith("/prompt")) {
       const id = `msg_steer${String(inbox.size + 1)}`;
       inbox.add(id);
@@ -122,7 +141,7 @@ function makeAdapter(opts: { mcp?: boolean; messages?: unknown; holdCompaction?:
     if (!found) throw new Error(`no ${verb} spawn yet`);
     return found.child;
   };
-  return { adapter, events, spawns, server: pick("serve"), client: pick("run"), requests, inbox };
+  return { adapter, events, spawns, server: pick("serve"), client: pick("run"), requests, inbox, serverEvent };
 }
 
 function start(h: Omit<Harness, "done">, params: AgentRunParams): Harness {
@@ -387,6 +406,117 @@ describe("Opencode2Adapter — per-turn server", () => {
     expect(JSON.parse(posts[0].body!)).toEqual({ model: { providerID: "shipit", id: "deepseek-v4-flash" } });
     expect(h.events.map((e) => e.type)).toEqual(["agent_compaction_started", "agent_compacted", "agent_result"]);
     expect(h.spawns.some((s) => s.args[0] === "run")).toBe(false);
+  });
+});
+
+describe("Opencode2Adapter — tool calls shown as they start", () => {
+  // CLI 2.2.5 server events (2026-11-10, mock provider, `sleep 4` shell call), shortened ids.
+  const inputStarted = (id: string, name: string, sessionID = SESSION) => ({
+    id: "evt_1", type: "session.tool.input.started", data: { sessionID, assistantMessageID: "msg_1", id, name },
+  });
+  const called = (id: string, input: Record<string, unknown>, sessionID = SESSION) => ({
+    id: "evt_2", type: "session.tool.called", data: { sessionID, assistantMessageID: "msg_1", id, input, executed: false },
+  });
+  const toolUses = (h: Harness) => h.events.flatMap((e) => (e.type === "agent_assistant" ? e.content : [])).filter((b) => b.type === "tool_use");
+  const toolResults = (h: Harness) => h.events.filter((e) => e.type === "agent_tool_result");
+
+  it("subscribes to the turn server's tool-start events before the turn is sent", async () => {
+    const h = start(makeAdapter(), PARAMS);
+    await announce(h);
+    const stream = h.requests.find((r) => r.url.includes("/api/event?"));
+    expect(stream?.url).toBe("http://127.0.0.1:41234/api/event?types=session.tool.input.started&types=session.tool.called");
+    h.client().emit("close", 0, null);
+    await h.done;
+  });
+
+  it("shows a long call when it starts, then adds only its result when it finishes", async () => {
+    const h = start(makeAdapter(), PARAMS);
+    await announce(h);
+    h.client().emitStdout([TOOL_TURN[0]]);
+    h.serverEvent(inputStarted("call_phase0", "shell"));
+    h.serverEvent(called("call_phase0", { command: "echo phase0-tool-ran" }));
+    await vi.waitFor(() => expect(toolUses(h)).toHaveLength(1));
+    expect(toolUses(h)[0]).toEqual({ type: "tool_use", id: "call_phase0", name: "Bash", input: { command: "echo phase0-tool-ran" } });
+    expect(toolResults(h)).toEqual([]);
+
+    h.client().emitStdout(TOOL_TURN.slice(1));
+    h.client().emit("close", 0, null);
+    await h.done;
+    expect(toolUses(h)).toHaveLength(1);
+    expect(toolResults(h)).toEqual([
+      { type: "agent_tool_result", content: [{ type: "tool_result", tool_use_id: "call_phase0", content: "phase0-tool-ran\n" }] },
+    ]);
+    const kinds = h.events.map((e) => e.type).filter((t) => t === "agent_assistant" || t === "agent_tool_result");
+    expect(kinds).toEqual(["agent_assistant", "agent_tool_result", "agent_assistant"]);
+  });
+
+  it("still emits both halves for a call whose start it never saw", async () => {
+    const h = start(makeAdapter(), PARAMS);
+    await announce(h);
+    h.client().emitStdout(TOOL_TURN);
+    h.client().emit("close", 0, null);
+    await h.done;
+    expect(toolUses(h).map((b) => (b as { id: string }).id)).toEqual(["call_phase0"]);
+    expect(toolResults(h)).toHaveLength(1);
+  });
+
+  it("ignores a start that arrives after the call finished", async () => {
+    const h = start(makeAdapter(), PARAMS);
+    await announce(h);
+    h.client().emitStdout(TOOL_TURN.slice(0, 2));
+    h.serverEvent(inputStarted("call_phase0", "shell"));
+    h.serverEvent(called("call_phase0", { command: "echo phase0-tool-ran" }));
+    h.client().emitStdout(TOOL_TURN.slice(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    h.client().emit("close", 0, null);
+    await h.done;
+    expect(toolUses(h)).toHaveLength(1);
+    expect(toolResults(h)).toHaveLength(1);
+  });
+
+  it("posts no new call after the user stopped the turn", async () => {
+    const h = start(makeAdapter(), PARAMS);
+    await announce(h);
+    h.client().emitStdout([TOOL_TURN[0]]);
+    h.adapter.interrupt();
+    h.serverEvent(inputStarted("call_late", "shell"));
+    h.serverEvent(called("call_late", { command: "ls" }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    h.client().emit("close", null, "SIGINT");
+    await h.done;
+    expect(toolUses(h)).toEqual([]);
+  });
+
+  it("does not take a call's name from another session's call with the same id", async () => {
+    const h = start(makeAdapter(), PARAMS);
+    await announce(h);
+    h.client().emitStdout([TOOL_TURN[0]]);
+    h.serverEvent(inputStarted("call_1", "shell"));
+    h.serverEvent(inputStarted("call_1", "read", "ses_child"));
+    h.serverEvent(called("call_1", { path: "/x" }, "ses_child"));
+    h.serverEvent(called("call_1", { command: "ls" }));
+    await vi.waitFor(() => expect(toolUses(h)).toHaveLength(1));
+    expect(toolUses(h)[0]).toMatchObject({ id: "call_1", name: "Bash", input: { command: "ls" } });
+    h.client().emit("close", 0, null);
+    await h.done;
+  });
+
+  it("holds a start until the turn names its session, and drops another session's calls", async () => {
+    const h = start(makeAdapter(), PARAMS);
+    await announce(h);
+    h.serverEvent(inputStarted("call_child", "shell", "ses_child"));
+    h.serverEvent(called("call_child", { command: "ls" }, "ses_child"));
+    h.serverEvent(inputStarted("call_phase0", "shell"));
+    h.serverEvent(called("call_phase0", { command: "echo phase0-tool-ran" }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(h.events).toEqual([]);
+
+    h.client().emitStdout([TOOL_TURN[0]]);
+    await vi.waitFor(() => expect(toolUses(h)).toHaveLength(1));
+    expect(h.events[0]).toMatchObject({ type: "agent_init" });
+    expect((toolUses(h)[0] as { id: string }).id).toBe("call_phase0");
+    h.client().emit("close", 0, null);
+    await h.done;
   });
 });
 
