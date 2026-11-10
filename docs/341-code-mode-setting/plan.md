@@ -57,9 +57,8 @@ registration.
 - **OpenCode 2** reports `execute` as one tool event: `input.code` is the
   program, `output` its result, and `state.metadata.content` holds the text
   and every image the inner tools returned, as `file` parts with `data:`
-  URIs. That is the field PR #3334's image mapping reads for every tool, so
-  the card's images come with that PR; until it merges, the card shows the
-  program and its text result only. A throw or an unknown tool inside the code
+  URIs. `opencode2ToolResultImages` (PR #3334) maps that field for every
+  tool, so the Code card shows those images with no Code Mode code. A throw or an unknown tool inside the code
   reports `status: "completed"` with `state.metadata.metadata.error: true`;
   `isOpencode2ToolError` marks that result as an error.
 - **OpenCode 1** reports the same `execute` event, but a failure is
@@ -87,7 +86,9 @@ with a stdio MCP server that returns text and a PNG:
 
 - OpenCode 2 on: the first request carries `execute` and the MCP tool in its
   catalog; `execute` on step one returns the tool's text, and the image in
-  `state.metadata.content` (from two concurrent calls too). Off: no
+  `state.metadata.content` (from two concurrent calls too). After the rebase
+  onto PR #3334, the adapter's `agent_tool_result` for `execute` carries the
+  text and the PNG as an `image` block. Off: no
   `execute`, and the MCP tool is a direct tool on the first request, as
   before.
 - OpenCode 1 on: `execute` on step one calls the MCP tool; off: `execute` is
