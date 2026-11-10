@@ -358,6 +358,7 @@ Harness id `opencode2`, display name "OpenCode 2", binary `opencode2`, opt-in
 | `session/agents/opencode2/adapter.ts` | The turn: config and env, the per-turn server, the `run --server` client, the synthesized result, interrupt and teardown |
 | `session/agents/opencode2/server.ts` | `serve --port 0` start-up, the MCP readiness wait, per-step usage from the message list, compaction, the steering routes |
 | `session/agents/opencode2/steering.ts` | Live steering: a steer into the turn's inbox, acknowledged or taken back before the result |
+| `session/agents/opencode2/tool-starts.ts` | Tool calls as they start, read from the turn server's event stream |
 | `session/agents/opencode2/account.ts` | ChatGPT token delivery into the v2 database |
 | `session/agents/opencode2/opencode2-tool-normalizer.ts` | 2.x tool names and arguments onto transcript names |
 | `shared/opencode-harness.ts` | `isOpenCodeHarness()` and v2's roots |
@@ -399,6 +400,18 @@ Decisions made during the build:
   credential. A logout that fails is kept and retried by every later turn,
   and no `auth` output is ever logged, because an import failure can echo
   the token.
+- **Tool calls show when they start.** `run --format json` prints a
+  `tool_use` line only on `session.tool.success`/`failed`, so a call that runs
+  for minutes was invisible until it ended. Before `run`, the adapter opens
+  `GET /api/event?types=session.tool.input.started&types=session.tool.called`
+  on the turn's server (2.2.5: `input.started` carries the tool name,
+  `called` the parsed input, and both carry the same `id` that `run` later
+  prints as `part.id`). A `called` for the turn's session posts the
+  `tool_use` block; the later stdout line then posts only the result. Starts
+  are held until `run`'s first line names the session, so `agent_init` goes
+  first and a subagent's calls are dropped. A call with no start seen (the
+  stream failed, or the start lost a race with the completion) still gets
+  both halves at completion, as before.
 - **Compaction.** The run that compacts starts the server, then `POST
   /api/session/{id}/model` (compaction otherwise runs on the session's last
   model, which this run's config may not declare), then `POST /compact`, then
