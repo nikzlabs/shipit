@@ -96,3 +96,15 @@ OpenCode 2 specifics are in [plan.md](./plan.md); the requirements are in
 - [ ] One dogfood turn per auth mode; `shipit agent run` both directions
 - [ ] Probe whether a new process reads the previous turn's prompt cache;
       until then idle compaction skips OpenCode 2
+
+**11 — Live steering (req 6, planning#707)**
+- [x] Probe `delivery: "steer"` on 2.2.5: busy tool step, busy final step,
+      `resume: false` busy and idle, inbox durability and `DELETE`
+- [x] `opencode2/steering.ts`: hold until the turn's prompt, post, acknowledge
+      at a step, settle every steer before the result
+- [x] Usage counts the steps on both sides of a steer
+- [x] The result goes out right before `done`
+- [x] `supportsSteering: true` in the catalogue row and the adapter
+- [x] Through the real adapter and binary: a steer read mid-turn, a late steer
+      refused and not seen by the next turn
+- [ ] A steered turn through the orchestrator and the UI

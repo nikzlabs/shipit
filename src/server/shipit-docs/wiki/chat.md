@@ -131,7 +131,8 @@ user installs more.
 The Send button is replaced by a red **Stop**. Two things decide whether they
 can also send:
 
-- **Live steering is on and the harness supports it** — Send stays beside Stop,
+- **Live steering is on and the harness supports it** (Claude Code, Codex and
+  OpenCode 2 do; OpenCode 1, Grok Build and Antigravity do not) — Send stays beside Stop,
   and a message sent now is normally injected into the turn you are already
   running. It appears in the transcript as an ordinary message from them, and
   you see it mid-turn. The switch is *Inject messages mid-turn* in **Settings →

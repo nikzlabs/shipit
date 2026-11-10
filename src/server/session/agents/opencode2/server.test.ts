@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
-import { compactOpencode2Session, readTurnSteps, waitForMcpServers, waitForServerUrl, type Opencode2Server } from "./server.js";
+import { compactOpencode2Session, readOpencode2Inbox, readTurnSteps, waitForMcpServers, waitForServerUrl, type Opencode2Server } from "./server.js";
 
 const SERVER: Opencode2Server = { url: "http://127.0.0.1:5555", authorization: "Basic x" };
 
@@ -73,6 +73,25 @@ describe("readTurnSteps", () => {
     const steps = await readTurnSteps(SERVER, "ses_1", fetchFn);
     expect(steps).toEqual([{ tokens: { input: 2 } }, { tokens: { input: 3 }, cost: 0.3 }]);
     expect(vi.mocked(fetchFn).mock.calls[1][0]).toBe("http://127.0.0.1:5555/api/session/ses_1/message?limit=100&cursor=c1");
+  });
+
+  it("does not stop at a user message steered into the turn", async () => {
+    const fetchFn = fetchSequence([
+      { data: [{ type: "idle" }, { type: "assistant", tokens: { input: 3 } }, { id: "msg_s", type: "user" }, { type: "assistant", tokens: { input: 2 } }, { id: "msg_p", type: "user" }, { type: "assistant", tokens: { input: 1 } }], cursor: {} },
+    ]);
+    const steps = await readTurnSteps(SERVER, "ses_1", fetchFn, new Set(["msg_s"]));
+    expect(steps).toEqual([{ tokens: { input: 2 } }, { tokens: { input: 3 } }]);
+  });
+});
+
+describe("readOpencode2Inbox", () => {
+  it("returns the ids of the items waiting", async () => {
+    await expect(readOpencode2Inbox(SERVER, "ses_1", fetchSequence([{ data: [{ id: "msg_a" }, { id: "msg_b" }] }])))
+      .resolves.toEqual(new Set(["msg_a", "msg_b"]));
+  });
+
+  it("rejects an answer with no list, which would otherwise read as an empty inbox", async () => {
+    await expect(readOpencode2Inbox(SERVER, "ses_1", fetchSequence([{}]))).rejects.toThrow("no list");
   });
 });
 
