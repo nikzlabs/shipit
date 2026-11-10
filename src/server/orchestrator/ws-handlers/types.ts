@@ -147,7 +147,7 @@ export interface AppCtx {
   /** until is epoch milliseconds. */
   markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
   nudgeClaudeOAuthRefresh?: () => void;
-  onAgentAuthRequired?: (agentId: AgentId) => void;
+  onAgentAuthRequired?: (agentId: AgentId, accountId?: string) => void;
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
   removeSessionLogs?: (sessionId: string) => void;
 

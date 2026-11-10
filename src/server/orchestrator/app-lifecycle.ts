@@ -1070,10 +1070,15 @@ export interface EventWiringDeps {
 }
 
 // One account can serve several harnesses.
-function refreshAuthForAccountHarness(agentRegistry: AgentRegistry, agentId: AgentId): void {
-  const loginId = loginIntegrationForService(nativeServiceForHarness(agentId));
+function refreshAuthForAccountHarness(agentRegistry: AgentRegistry, agentId: AgentId, serviceId?: string): void {
+  const loginId = loginIntegrationForService(serviceId ?? nativeServiceForHarness(agentId));
   if (loginId) agentRegistry.refreshAuthForLogin(loginId);
   else agentRegistry.refreshAuth(agentId);
+}
+
+// The id names the account's own service; OpenCode's can be Claude's (docs/340).
+function accountServiceOf(manager: ProviderAccountManager, agentId: AgentId, accountId: string): string {
+  return manager.getByRouteId(accountId)?.serviceId ?? accountServiceForHarness(agentId);
 }
 
 export function markProviderAccountUnauthenticated(opts: {
@@ -1085,12 +1090,13 @@ export function markProviderAccountUnauthenticated(opts: {
   credentialStore: CredentialStore | undefined;
 }): void {
   const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast, credentialStore } = opts;
+  const serviceId = accountServiceOf(providerAccountManager, agentId, accountId);
   try {
-    providerAccountManager.setAccountStatus(accountServiceForHarness(agentId), accountId, "auth_failed");
+    providerAccountManager.setAccountStatus(serviceId, accountId, "auth_failed");
   } catch (err) {
     console.error(`[auth] failed to mark account ${accountId} auth_failed:`, err);
   }
-  refreshAuthForAccountHarness(agentRegistry, agentId);
+  refreshAuthForAccountHarness(agentRegistry, agentId, serviceId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
   sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
 }
@@ -1104,15 +1110,16 @@ export function markProviderAccountReauthenticated(opts: {
   credentialStore: CredentialStore | undefined;
 }): void {
   const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast, credentialStore } = opts;
-  const current = providerAccountManager.get(accountServiceForHarness(agentId), accountId);
+  const serviceId = accountServiceOf(providerAccountManager, agentId, accountId);
+  const current = providerAccountManager.get(serviceId, accountId);
   if (!current || current.status === "ready") return;
   try {
-    providerAccountManager.setAccountStatus(accountServiceForHarness(agentId), accountId, "ready");
+    providerAccountManager.setAccountStatus(serviceId, accountId, "ready");
   } catch (err) {
     console.error(`[auth] failed to mark account ${accountId} ready:`, err);
     return;
   }
-  refreshAuthForAccountHarness(agentRegistry, agentId);
+  refreshAuthForAccountHarness(agentRegistry, agentId, serviceId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
   sseBroadcast("agent_list", seedAndBuildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
 }

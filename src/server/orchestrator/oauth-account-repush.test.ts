@@ -29,7 +29,7 @@ vi.mock("./session-credentials.js", () => ({
 import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 import { createOAuthAccountRepush } from "./oauth-account-repush.js";
 
-const session = (id: string, agentId: "claude" | "codex" = "claude", agentPinned = true) => ({ id, agentId, agentPinned });
+const session = (id: string, agentId: "claude" | "codex" | "opencode2" = "claude", agentPinned = true) => ({ id, agentId, agentPinned });
 
 describe("createOAuthAccountRepush", () => {
   beforeEach(() => {
@@ -73,5 +73,19 @@ describe("createOAuthAccountRepush", () => {
       { sessionId: "this-account", via: "account", repair: true },
       { sessionId: "unmarked", via: "legacy", repair: true },
     ]);
+  });
+
+  it("reaches an OpenCode session holding this Claude account's files, and no other OpenCode session (docs/340)", () => {
+    markers.set("oc-claude", "acct-1");
+    markers.set("oc-other", "acct-2");
+    const repush = createOAuthAccountRepush({
+      credentialsDir: TEST_CREDENTIALS_DIR,
+      listSessions: () => [session("oc-claude", "opencode2"), session("oc-other", "opencode2"), session("oc-none", "opencode2")],
+      hasLiveAgent: () => true,
+    }, "test");
+
+    repush("claude", "acct-1");
+
+    expect(pushed).toEqual([{ sessionId: "oc-claude", via: "account", repair: false }]);
   });
 });

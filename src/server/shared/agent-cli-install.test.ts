@@ -146,7 +146,7 @@ for b in claude codex playwright-mcp; do
   chmod 0755 "node_modules/.bin/$b"
 done
 printf '#!/bin/sh\\necho 1.19.0\\n' > node_modules/opencode-ai/bin/opencode.exe
-printf '#!/bin/sh\\necho opencode v2.1.1\\n' > node_modules/@opencode/cli/bin/opencode.exe
+printf '#!/bin/sh\\necho opencode v2.2.5\\n' > node_modules/@opencode/cli/bin/opencode.exe
 chmod 0755 node_modules/opencode-ai/bin/opencode.exe node_modules/@opencode/cli/bin/opencode.exe
 # Measured: npm links @opencode/cli's \`opencode\` bin over v1's whenever both are installed.
 ln -sfn ../@opencode/cli/bin/opencode.exe node_modules/.bin/opencode
@@ -246,11 +246,18 @@ ${opts?.breakBin ? `printf '#!/bin/sh\\nexit 1\\n' > "node_modules/.bin/${opts.b
     expect(exists(path.join(binDir, "claude"))).toBe(false);
   });
 
+  it("keeps the Claude Code dependency for an OpenCode 2-only install without offering its harness (docs/340)", () => {
+    run("opencode2");
+    expect(declared()).toEqual(["opencode2"]);
+    expect(exists(path.join(binDir, "claude"))).toBe(true);
+    expect(exists(path.join(agentCliDir, "node_modules/@anthropic-ai/claude-code"))).toBe(true);
+  });
+
   it("keeps OpenCode 1 on the `opencode` name when both OpenCode harnesses are installed (docs/269 req 2)", () => {
     run("opencode,opencode2");
     expect(declared()).toEqual(["opencode", "opencode2"]);
     expect(execFileSync(path.join(binDir, "opencode"), ["--version"], { encoding: "utf8" })).toBe("1.19.0\n");
-    expect(execFileSync(path.join(binDir, "opencode2"), ["--version"], { encoding: "utf8" })).toBe("opencode v2.1.1\n");
+    expect(execFileSync(path.join(binDir, "opencode2"), ["--version"], { encoding: "utf8" })).toBe("opencode v2.2.5\n");
     const containerPath = `${path.join(agentCliDir, "node_modules/.bin")}${path.delimiter}${binDir}`;
     expect(execFileSync("/bin/sh", ["-c", "opencode --version"], { encoding: "utf8", env: { PATH: containerPath } }))
       .toBe("1.19.0\n");

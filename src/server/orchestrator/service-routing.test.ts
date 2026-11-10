@@ -738,3 +738,19 @@ it("captures an OpenCode account route and refuses a model OpenCode's filter rej
   // gpt-5.5-pro is refused by id inside the CLI, so no route may be captured for it.
   expect(serviceRoutingForSelection("opencode", { ...selection, modelId: "gpt-5.5-pro" }, account, storeHolding())).toBeUndefined();
 });
+
+it("captures a Claude account route for OpenCode 2 and none for OpenCode 1 or Claude Code (docs/340)", () => {
+  const selection = { serviceId: "anthropic", billingMode: "sub" as const, modelId: "claude-opus-5-5" };
+  const account = { kind: "account" as const, id: "account-c" };
+  expect(serviceRoutingForSelection("opencode2", selection, account, storeHolding())).toEqual({
+    serviceId: "anthropic",
+    serviceName: "Anthropic",
+    billingMode: "sub",
+    style: "anthropic-messages",
+    baseUrl: "https://api.anthropic.com",
+    credentialTarget: { kind: "anthropic-oauth", accountId: "account-c" },
+  });
+  expect(serviceRoutingForSelection("opencode", selection, account, storeHolding())).toBeUndefined();
+  // Claude Code reads its own scoped home; it takes no routing.
+  expect(serviceRoutingForSelection("claude", selection, account, storeHolding())).toBeUndefined();
+});

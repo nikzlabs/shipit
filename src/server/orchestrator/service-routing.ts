@@ -302,6 +302,18 @@ export function serviceRoutingForSelection(
         credentialTarget: { kind: "openai-chatgpt", accountId: route.id },
       };
     }
+    if (isOpenCodeHarness(harnessId) && selection.serviceId === "anthropic" && selection.billingMode === "sub") {
+      const model = getModel(selection);
+      const mode = getMode(selection.serviceId, selection.billingMode);
+      const style = model && resolveStyle(harnessId, model, "account");
+      const baseUrl = style && mode?.endpoints[style];
+      if (style !== "anthropic-messages" || !baseUrl) return undefined;
+      return {
+        serviceId: "anthropic", serviceName: "Anthropic", billingMode: "sub",
+        style, baseUrl,
+        credentialTarget: { kind: "anthropic-oauth", accountId: route.id },
+      };
+    }
     return undefined;
   }
   // Without a resolved route, do not guess between account and string delivery.

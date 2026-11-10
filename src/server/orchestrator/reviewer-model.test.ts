@@ -405,9 +405,10 @@ describe("reviewer harness derivation", () => {
       readInstalledHarnesses: () => ["claude", "codex"],
     }));
     const { harnessesForSelection } = await import("./non-turn-model.js");
-    // The subscription credential restricts this model to Claude Code.
+    // A pasted subscription token restricts this model to Claude Code; the login reaches
+    // both OpenCodes too (docs/340).
     const credentials = [
-      { serviceId: "anthropic", billingMode: "sub" as const, via: "account" as const },
+      { serviceId: "anthropic", billingMode: "sub" as const, via: "string" as const },
     ];
     const selection = {
       serviceId: "anthropic",

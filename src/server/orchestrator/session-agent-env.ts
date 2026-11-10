@@ -40,7 +40,7 @@ import { provisionSessionSshFromGrant } from "./ssh-provision.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { agentHome, codexHome } from "../shared/agent-home.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
-import { accountServiceForHarness, providerAccountCredentialRoot } from "./provider-account-manager.js";
+import { accountCredentialHarness, accountServiceForHarness, providerAccountCredentialRoot } from "./provider-account-manager.js";
 import { routeFromSelection } from "./provider-route-preflight.js";
 import {
   markCredentialRouteUsed,
@@ -347,11 +347,28 @@ export async function prepareSessionAgentEnvironment(
       })
     : undefined;
 
+  const routeServiceId = selectedRoute?.kind === "account"
+    ? deps.credentialStore.getCredentialRoute(selectedRoute.id)?.serviceId
+    : undefined;
+  // The files an account route places in the session belong to this harness.
+  const credentialAgentId = selectedRoute?.kind === "account" ? accountCredentialHarness(agentId, routeServiceId) : agentId;
+
   // Refresh the source account before creating its cross-harness projection.
   // OpenCode needs an access-only ChatGPT projection in a private XDG home.
   if (isTurn && isOpenCodeHarness(agentId)) {
     if (isLocalRuntime()) ensureOpenCodeAccountHome(perSessionCredentialsDir(deps.credentialsDir, sessionId), agentId, agentHome());
-    if (selectedRoute?.kind === "account") {
+    if (selectedRoute?.kind === "account" && credentialAgentId !== agentId) {
+      // docs/340 — the turn's `claude` CLI reads Claude's own files; no ChatGPT credential may ride along.
+      revokeOpenCodeAccount(perSessionCredentialsDir(deps.credentialsDir, sessionId), undefined, agentId);
+      // Containers copy the files below. Local mode has no write-back, so `claude` runs on the
+      // account's own files, as a local Claude Code turn does.
+      if (isLocalRuntime()) {
+        linkAgentHomeToCredentials({
+          credentialsDir: deps.credentialsDir, agentId: credentialAgentId, accountId: selectedRoute.id,
+          home: perSessionCredentialsDir(deps.credentialsDir, sessionId),
+        });
+      }
+    } else if (selectedRoute?.kind === "account") {
       if (deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", selectedRoute.id)) throw new Error("ChatGPT account renewal failed. Reconnect the OpenAI account.");
       ensureSessionAccountCredentials(deps.credentialsDir, sessionId, agentId, selectedRoute.id);
     } else {
@@ -374,7 +391,7 @@ export async function prepareSessionAgentEnvironment(
   }
 
   if (selectedRoute?.kind === "account" && deps.providerAccountManager) {
-    deps.providerAccountManager.markAccountUsed(accountServiceForHarness(agentId), selectedRoute.id);
+    deps.providerAccountManager.markAccountUsed(routeServiceId ?? accountServiceForHarness(agentId), selectedRoute.id);
   }
   markCredentialRouteUsed(deps.credentialStore, selectedRoute);
 
@@ -388,7 +405,7 @@ export async function prepareSessionAgentEnvironment(
     // Identity checks must throw on failure; the old files may belong to another account.
     if (selectedRoute?.kind === "account") {
       const outcome = ensureSessionAccountCredentials(
-        deps.credentialsDir, sessionId, agentId, selectedRoute.id,
+        deps.credentialsDir, sessionId, credentialAgentId, selectedRoute.id,
       );
       if (outcome !== "match") {
         console.log(
@@ -500,7 +517,7 @@ export async function prepareSessionAgentEnvironment(
     const ensureFresh = deps.ensureAgentTokenFresh;
     await withFailOpenTimeout(
       "token-fresh",
-      () => ensureFresh(agentId, accountId),
+      () => ensureFresh(credentialAgentId, accountId),
       ENSURE_TOKEN_FRESH_TIMEOUT_MS,
     );
   }
@@ -511,7 +528,7 @@ export async function prepareSessionAgentEnvironment(
       // The CLI owns its conversations: nothing here reads them or touches the stored resume id.
       const syncOpts = { repairLeakedSubtrees: !args.reusingResidentAgent };
       if (selectedRoute?.kind === "account") {
-        syncProviderAccountTokenIn(deps.credentialsDir, sessionId, agentId, selectedRoute.id, syncOpts);
+        syncProviderAccountTokenIn(deps.credentialsDir, sessionId, credentialAgentId, selectedRoute.id, syncOpts);
       } else if (selectedRoute?.id !== "claude-env-oauth") {
         syncAgentTokenIn(deps.credentialsDir, sessionId, agentId, syncOpts);
       }
@@ -524,7 +541,7 @@ export async function prepareSessionAgentEnvironment(
   if (runner instanceof ContainerSessionRunner && args.enforceAccountRouting) {
     if (selectedRoute?.kind === "account") {
       startTokenWriteBackWatch({
-        credentialsDir: deps.credentialsDir, sessionId, agentId,
+        credentialsDir: deps.credentialsDir, sessionId, agentId: credentialAgentId,
         accountId: selectedRoute.id, runner,
       });
     } else if (selectedRoute?.id !== "claude-env-oauth") {
@@ -564,9 +581,13 @@ export function repushSessionAgentToken(
 ): void {
   if (!(runner instanceof ContainerSessionRunner)) return;
   try {
-    const marked = readSessionAccountMarker(args.deps.credentialsDir, args.sessionId)[args.agentId];
+    const markers = readSessionAccountMarker(args.deps.credentialsDir, args.sessionId);
+    const residentId = runner.residentRoute?.kind === "account" ? runner.residentRoute.id : undefined;
+    // docs/340 — an OpenCode turn on a Claude account holds Claude's files under Claude's marker.
+    const claudeHeld = isOpenCodeHarness(args.agentId) && residentId !== undefined && markers.claude === residentId;
+    const marked = claudeHeld ? markers.claude : markers[args.agentId];
     if (marked) {
-      repushProviderAccountToken(args.deps.credentialsDir, args.sessionId, args.agentId, marked);
+      repushProviderAccountToken(args.deps.credentialsDir, args.sessionId, claudeHeld ? "claude" : args.agentId, marked);
     } else if (runner.residentRoute?.id !== "claude-env-oauth") {
       repushAgentToken(args.deps.credentialsDir, args.sessionId, args.agentId);
     }
@@ -598,10 +619,11 @@ export function finalizeSessionAgentEnvironment(
       : undefined);
   try {
     if (route?.providerRouteKind === "account" && route.providerRouteId) {
+      const serviceId = args.deps.credentialStore.getCredentialRoute(route.providerRouteId)?.serviceId;
       syncProviderAccountTokenBack(
         args.deps.credentialsDir,
         args.sessionId,
-        args.agentId,
+        accountCredentialHarness(args.agentId, serviceId),
         route.providerRouteId,
         { sessionOwnRoute: true },
       );

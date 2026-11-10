@@ -80,7 +80,7 @@ export interface AgentListenerDeps {
   markCredentialRouteAuthFailed?: (routeId: string) => void;
   clearCredentialRouteAuthFailed?: (routeId: string) => void;
   nudgeClaudeOAuthRefresh?: () => void;
-  onAgentAuthRequired?: (agentId: AgentId) => void;
+  onAgentAuthRequired?: (agentId: AgentId, accountId?: string) => void;
   deliverVoiceNote?: (
     payload: VoiceNotePayload,
     runner: SessionRunnerInterface,

@@ -1,5 +1,17 @@
 import { afterEach, describe, it, expect } from "vitest";
-import { opencodeProviderConfig, opencodeModelArg, opencodeAccountConfig, opencode2ModelArg } from "./opencode-spawn-shaping.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  claudeVariant,
+  opencode2ModelArg,
+  opencodeAccountConfig,
+  opencode2ClaudeConfig,
+  opencodeModelArg,
+  opencodeProviderConfig,
+  prepareOpenCodeClaudeEnv,
+  requireClaudeLogin,
+} from "./opencode-spawn-shaping.js";
 import {
   adoptModelList,
   applyModelList,
@@ -189,5 +201,61 @@ describe("OpenCode 2 shaping (docs/269)", () => {
     const config = opencodeProviderConfig(ROUTING, "claude-haiku-4-5", "opencode2") as { shipit: { models: Record<string, { variants: Record<string, unknown> }> } };
     expect(Object.keys(config.shipit.models["claude-haiku-4-5"].variants)).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(opencodeProviderConfig(ROUTING, "claude-haiku-4-5", "opencode2")).toEqual(opencodeProviderConfig(ROUTING, "claude-haiku-4-5"));
+  });
+});
+
+interface Config {
+  enabled_providers?: string[];
+  small_model?: string;
+  provider: Record<string, { models: Record<string, { id: string; name: string; variants: Record<string, unknown> }> }>;
+}
+
+describe("OpenCode 2 on a Claude account (docs/340)", () => {
+  it("declares the catalogue model under the claude-agent provider, with the id `claude` is given", () => {
+    const v2 = opencode2ClaudeConfig("claude-opus-5-5") as unknown as Config;
+    // A credential another route left behind serves nothing, title generation included.
+    expect(v2.enabled_providers).toEqual(["claude-agent"]);
+    expect(v2.small_model).toBe("claude-agent/claude-opus-5-5");
+    expect(v2.provider["claude-agent"]?.models["claude-opus-5-5"]).toEqual({
+      id: "claude-opus-5-5[1m]",
+      name: "claude-opus-5-5",
+      variants: { low: { effort: "low" }, medium: { effort: "medium" }, high: { effort: "high" }, xhigh: { effort: "xhigh" }, max: { effort: "max" } },
+    });
+    // A row named for a Claude Code alias sends its vendor id, as on Claude Code.
+    const haiku = opencode2ClaudeConfig("haiku") as unknown as Config;
+    expect(haiku.provider["claude-agent"]?.models.haiku?.id).toBe("claude-haiku-4-5");
+  });
+
+  it("drops a reasoning level that is not a Claude effort", () => {
+    expect(claudeVariant("high")).toBe("high");
+    expect(claudeVariant("minimal")).toBeUndefined();
+    expect(claudeVariant("none")).toBeUndefined();
+    expect(claudeVariant(undefined)).toBeUndefined();
+  });
+
+  it("removes every variable that would replace the session's Claude login", () => {
+    const env: Record<string, string> = {
+      PATH: "/usr/bin",
+      CLAUDE_CODE_OAUTH_TOKEN: "t",
+      CLAUDE_CONFIG_DIR: "/elsewhere",
+      ANTHROPIC_BASE_URL: "https://proxy.example",
+      SHIPIT_CREDENTIAL_ABC: "s",
+      OPENCODE_CONFIG_CONTENT: '{"provider":{"claude-agent":{"options":{"apiKey":"sk"}}}}',
+      OPENCODE_CLAUDE_PATH: "/tmp/other-claude",
+    };
+    prepareOpenCodeClaudeEnv(env);
+    expect(env).toEqual({ PATH: "/usr/bin" });
+  });
+
+  it("requires a provisioned Claude login under the home", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "oc-claude-login-"));
+    try {
+      expect(() => requireClaudeLogin(home)).toThrow(/No Claude login/);
+      fs.mkdirSync(path.join(home, ".claude"));
+      fs.writeFileSync(path.join(home, ".claude", ".credentials.json"), "{}");
+      expect(() => requireClaudeLogin(home)).not.toThrow();
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });

@@ -447,7 +447,18 @@ export interface OpenAIAccountRouting {
   credentialTarget: { kind: "openai-chatgpt"; accountId: string };
 }
 
-export type ServiceRouting = StringServiceRouting | OpenAIAccountRouting;
+/** docs/340 — OpenCode runs the session's own `claude` CLI, which reads the account's `.claude` login. */
+export interface AnthropicAccountRouting {
+  serviceId: "anthropic";
+  serviceName: string;
+  billingMode: "sub";
+  style: "anthropic-messages";
+  baseUrl: string;
+  credentialSourceEnv?: never;
+  credentialTarget: { kind: "anthropic-oauth"; accountId: string };
+}
+
+export type ServiceRouting = StringServiceRouting | OpenAIAccountRouting | AnthropicAccountRouting;
 
 export interface AgentRunParams {
   prompt: string;

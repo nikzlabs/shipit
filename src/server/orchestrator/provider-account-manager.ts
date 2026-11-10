@@ -108,6 +108,15 @@ export function accountOwnerHarness(provider: AgentId): AgentId {
   return isOpenCodeHarness(provider) ? "codex" : provider;
 }
 
+/**
+ * docs/340 — the harness whose credential files a turn's account route places in the session.
+ * OpenCode 2 on a Claude account runs the `claude` CLI, so the session holds Claude's files, and
+ * refresh, write-back and harvest treat them as Claude's.
+ */
+export function accountCredentialHarness(provider: AgentId, serviceId: string | undefined): AgentId {
+  return provider === "opencode2" && serviceId === "anthropic" ? "claude" : provider;
+}
+
 export function accountServiceForHarness(provider: AgentId): string {
   return nativeServiceForHarness(accountOwnerHarness(provider)) ?? "";
 }

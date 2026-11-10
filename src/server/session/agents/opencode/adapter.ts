@@ -186,7 +186,8 @@ export class OpencodeAdapter
       prepareOpenCodeAccountEnv(spawnEnv);
     } else if (params.serviceRouting) {
       const routing = params.serviceRouting;
-      const secret = process.env[routing.credentialSourceEnv];
+      // An account route has no source variable; OpenCode 1 carries none of those here.
+      const secret = routing.credentialSourceEnv ? process.env[routing.credentialSourceEnv] : undefined;
       if (!secret || routing.credentialTarget.kind !== "env") {
         console.warn(
           `[opencode] no credential in the environment for ${routing.serviceId}` +

@@ -13,7 +13,7 @@ import {
   type SessionNameResult,
 } from "../session-namer.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
-import { accountServiceForHarness, providerAccountCredentialRoot } from "../provider-account-manager.js";
+import { accountCredentialHarness, accountServiceForHarness, providerAccountCredentialRoot } from "../provider-account-manager.js";
 import { getErrorMessage } from "../validation.js";
 import { isTitleLockedAgainst } from "./session-title.js";
 import { nativeServiceForHarness, selectionExists } from "../../shared/catalogue/index.js";
@@ -178,7 +178,12 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
   // A missing pinned model stops naming; no eligible selection allows the legacy CLI fallback.
   const pinUnavailable = resolution !== undefined && !resolution.ok
     && resolution.reason === "pin_unavailable";
-  const namingHarness = target?.harnessId ?? agentId;
+  // docs/340 — the namer drives OpenCode on ChatGPT only. On a Claude account the same model
+  // names on Claude Code, whose namer runs in a private copy of the login.
+  const namingHarness = target
+    ? (target.route?.kind === "account" ? accountCredentialHarness(target.harnessId, target.selection.serviceId) : target.harnessId)
+    : agentId;
+  const namingOnOwnHarness = !target || namingHarness === target.harnessId;
 
   const namingRoute = directTarget
     ? null
@@ -286,7 +291,7 @@ function scheduleSessionNaming(deps: ScheduleSessionNamingDeps, opts: ScheduleSe
     const result = await generateSessionName(userText, {
       harnessId: namingHarness,
       ...(target?.selection.modelId ? { model: target.selection.modelId } : {}),
-      ...(target?.serviceRouting ? { serviceRouting: target.serviceRouting } : {}),
+      ...(target?.serviceRouting && namingOnOwnHarness ? { serviceRouting: target.serviceRouting } : {}),
       ...(target?.credentialSecret ? { credentialSecret: target.credentialSecret } : {}),
       ...(namingCredentialRoot ? { credentialRoot: namingCredentialRoot } : {}),
       ...(inCredentialCopy ? { inCredentialCopy } : {}),

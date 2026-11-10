@@ -5,6 +5,7 @@ import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-r
 import type { UsageManager } from "../usage.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
+import { accountCredentialHarness } from "../provider-account-manager.js";
 import type { PersistedMessage } from "../chat-history.js";
 import {
   emitChatCard,
@@ -496,10 +497,12 @@ async function runNonTurnSpawn(
   const accountId = target.route?.kind === "account" ? target.route.id : undefined;
   try {
     // Provision inside try so a partial failure still releases the home.
-    if (isOpenCodeHarness(target.harnessId) && accountId && deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", accountId)) throw new Error("ChatGPT account renewal failed.");
+    // docs/340 — OpenCode on a Claude account gets Claude's files, copied like a Claude run's.
+    const credentialAgentId = accountId ? accountCredentialHarness(target.harnessId, deps.credentialStore.getCredentialRoute(accountId)?.serviceId) : target.harnessId;
+    if (credentialAgentId === target.harnessId && isOpenCodeHarness(target.harnessId) && accountId && deps.ensureAgentTokenFresh && !await deps.ensureAgentTokenFresh("codex", accountId)) throw new Error("ChatGPT account renewal failed.");
     // A private home for each run, as in runSubAgent: runs that share one home break each other's CLI state.
     if (provisioned && credentialsDir) {
-      provisionSubAgentSpawnHome(credentialsDir, sessionId, spawnId, target.harnessId, accountId);
+      provisionSubAgentSpawnHome(credentialsDir, sessionId, spawnId, credentialAgentId, accountId);
     }
     const result = await runner.spawnSubAgent({
       agentId: target.harnessId,

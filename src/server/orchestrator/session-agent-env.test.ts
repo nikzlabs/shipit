@@ -1394,6 +1394,44 @@ describe("mid-turn token write-back watch wiring", () => {
     expect(fs.readFileSync(path.join(tmpDir, ".claude", ".credentials.json"), "utf8"))
       .not.toContain("rotated");
   });
+
+  it("gives an OpenCode turn on a Claude account Claude's files, marker and write-back (docs/340)", async () => {
+    const accountSource = path.join(
+      tmpDir, "provider-accounts", "claude", "acct-c", ".claude", ".credentials.json",
+    );
+    fs.mkdirSync(path.dirname(accountSource), { recursive: true });
+    fs.writeFileSync(accountSource, JSON.stringify({ claudeAiOauth: { expiresAt: 1_000, accessToken: "source" } }));
+    const runner = new FakeContainerRunner();
+    const { sm } = makeFakeSessionManager({
+      agentPinned: true, model: "claude-opus-5-5", extra: { serviceId: "anthropic", billingMode: "sub" },
+    });
+    const credentialStore = makeFakeCredentialStore({
+      credentialRoutes: [{
+        id: "acct-c", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Claude",
+        isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+      }],
+    });
+    const manager = fakeAccountManager({ ok: true, route: { kind: "account", id: "acct-c" } });
+    const deps = { credentialsDir: tmpDir, credentialStore, sessionManager: sm, providerAccountManager: manager as never };
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1", agentId: "opencode2", enforceAccountRouting: true, deps,
+    });
+
+    const sessionCreds = path.join(tmpDir, "sessions", "s1", ".claude", ".credentials.json");
+    expect(fs.readFileSync(sessionCreds, "utf8")).toContain("source");
+    expect(readSessionAccountMarker(tmpDir, "s1")).toEqual({ claude: "acct-c" });
+    expect(manager.markAccountUsed).toHaveBeenCalledWith("anthropic", "acct-c");
+    expect(hasTokenWriteBackWatch("s1")).toBe(true);
+
+    // A rotation the turn's `claude` makes reaches the Claude account at turn end.
+    stopAllTokenWriteBackWatches();
+    fs.writeFileSync(sessionCreds, JSON.stringify({ claudeAiOauth: { expiresAt: 2_000_000_000_000, accessToken: "rotated" } }));
+    finalizeSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1", agentId: "opencode2", deps,
+      capturedRoute: { providerRouteKind: "account", providerRouteId: "acct-c" },
+    });
+    expect(fs.readFileSync(accountSource, "utf8")).toContain("rotated");
+  });
 });
 
 describe("selectAgentEnvForPush (relocated from agent-execution.ts)", () => {
@@ -1647,6 +1685,51 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
 
     expect(fs.existsSync(path.join(leakedTarget, ".credentials.json"))).toBe(true);
     expect(fs.lstatSync(path.join(sessionDir, ".claude")).isSymbolicLink()).toBe(true);
+  });
+});
+
+describe("local-mode OpenCode on a Claude account (docs/340)", () => {
+  let tmpDir: string;
+  let runtimeModeBefore: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-local-oc-claude-"));
+    runtimeModeBefore = process.env.RUNTIME_MODE;
+    process.env.RUNTIME_MODE = "local";
+  });
+  afterEach(() => {
+    if (runtimeModeBefore === undefined) delete process.env.RUNTIME_MODE;
+    else process.env.RUNTIME_MODE = runtimeModeBefore;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("links the session's .claude to the account's own files, so a rotation lands in the account", async () => {
+    const accountClaude = path.join(tmpDir, "provider-accounts", "claude", "acct-c", ".claude");
+    fs.mkdirSync(accountClaude, { recursive: true });
+    fs.writeFileSync(path.join(accountClaude, ".credentials.json"), "{}");
+    const runner = new EventEmitter() as unknown as { sessionId: string; sessionDir: string };
+    runner.sessionId = "s1";
+    runner.sessionDir = path.join(tmpDir, "sessions", "s1");
+    const { sm } = makeFakeSessionManager({
+      agentPinned: true, model: "claude-opus-5-5", extra: { serviceId: "anthropic", billingMode: "sub" },
+    });
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1", agentId: "opencode2", enforceAccountRouting: true,
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore: makeFakeCredentialStore({
+          credentialRoutes: [{
+            id: "acct-c", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Claude",
+            isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+          }],
+        }),
+        sessionManager: sm,
+        providerAccountManager: fakeAccountManager({ ok: true, route: { kind: "account", id: "acct-c" } }) as never,
+      },
+    });
+    const sessionClaude = path.join(tmpDir, "sessions", "s1", ".claude");
+    expect(fs.lstatSync(sessionClaude).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(sessionClaude)).toBe(fs.realpathSync(accountClaude));
   });
 });
 

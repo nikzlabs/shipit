@@ -106,6 +106,12 @@ A subscription arrives one of two ways, and some services take both at once:
 - **A supplied secret** — a token or plan key pasted in, handled as an ordinary
   row from then on.
 
+The two ways are not always worth the same. A **Claude subscription** runs on
+Claude Code and OpenCode 2 when it is a signed-in account — OpenCode 2 drives
+the session's own Claude Code for it — but a pasted Claude token runs on
+Claude Code only, and OpenCode 1 does not offer the Claude subscription at all.
+The ChatGPT account runs on Codex and both OpenCodes.
+
 **This is the user's act, and only theirs.** Say which service and which mode
 the work needs, then: *Settings → Model providers → Add a model provider*. Do
 not narrate the rest of the flow; they are looking at it.

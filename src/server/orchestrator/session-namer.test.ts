@@ -523,7 +523,7 @@ describe("generateSessionName", () => {
   it("skips naming for a harness this deployment did not install", async () => {
     let spawned = false;
     vi.doMock("../shared/installed-harnesses.js", () => ({
-      isHarnessInstalled: (id: string) => id !== "claude",
+      isHarnessCliPresent: (id: string) => id !== "claude",
       readInstalledHarnesses: () => ["codex"],
     }));
     vi.doMock("node:child_process", () => ({

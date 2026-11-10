@@ -86,10 +86,14 @@ if [ -z "$selected" ]; then
   echo "       Valid harnesses: $(echo $KNOWN_HARNESSES | tr ' ' ',')" >&2
   exit 1
 fi
-# OpenCode needs Codex for ChatGPT login/renewal, without offering its harness.
+# OpenCode needs Codex for ChatGPT login/renewal, and OpenCode 2 needs Claude Code
+# for a Claude subscription (docs/340), without offering either harness.
 required_clis="$selected"
 if { contains opencode $selected || contains opencode2 $selected; } && ! contains codex $selected; then
   required_clis="$required_clis codex"
+fi
+if contains opencode2 $selected && ! contains claude $selected; then
+  required_clis="$required_clis claude"
 fi
 echo "[install-agent-clis] installing harnesses:$selected"
 
@@ -97,7 +101,7 @@ cd "$AGENT_CLI_DIR"
 npm ci --ignore-scripts
 
 # These postinstall scripts materialize binaries inside node_modules.
-if contains claude $selected; then
+if contains claude $required_clis; then
   npm rebuild @anthropic-ai/claude-code
 fi
 

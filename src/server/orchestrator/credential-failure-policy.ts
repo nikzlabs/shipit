@@ -29,8 +29,8 @@ export function credentialFailurePolicyForRoute(
     stopsOnFailure: billingMode === "key",
     vendorOwnedRecovery:
       serviceId === undefined
-      // OpenCode needs an access-only ChatGPT projection in a private XDG home.
-      || ((serviceId === nativeService || (isOpenCodeHarness(agentId) && serviceId === "openai" && billingMode === "sub")) && loginIntegrationForService(serviceId) !== undefined),
+      // OpenCode signs in through the ChatGPT or Claude login another harness owns (docs/340).
+      || ((serviceId === nativeService || (isOpenCodeHarness(agentId) && (serviceId === "openai" || serviceId === "anthropic") && billingMode === "sub")) && loginIntegrationForService(serviceId) !== undefined),
   };
 }
 

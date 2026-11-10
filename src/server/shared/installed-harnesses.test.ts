@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  isHarnessCliPresent,
   DEFAULT_INSTALL_REPORT_PATH,
   installReportPath,
   isHarnessInstalled,
@@ -96,5 +97,17 @@ describe("isHarnessInstalled", () => {
 
   it("is true when nothing is declared — a checkout keeps today's behaviour", () => {
     expect(isHarnessInstalled("claude", null)).toBe(true);
+  });
+});
+
+describe("isHarnessCliPresent (docs/340)", () => {
+  it("counts the CLIs an OpenCode install carries for its sign-ins, and nothing more", () => {
+    expect(isHarnessCliPresent("claude", ["opencode2"])).toBe(true);
+    expect(isHarnessCliPresent("codex", ["opencode"])).toBe(true);
+    expect(isHarnessCliPresent("claude", ["opencode"])).toBe(false);
+    expect(isHarnessCliPresent("grok", ["opencode", "opencode2"])).toBe(false);
+    expect(isHarnessCliPresent("claude", ["codex"])).toBe(false);
+    expect(isHarnessCliPresent("opencode", ["opencode"])).toBe(true);
+    expect(isHarnessCliPresent("claude", null)).toBe(true);
   });
 });
