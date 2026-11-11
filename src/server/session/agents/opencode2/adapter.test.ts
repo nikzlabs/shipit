@@ -665,6 +665,33 @@ describe("Opencode2Adapter — background subagents", () => {
     expect(h.events.filter((e) => e.type === "agent_assistant" && e.content.some((b) => b.type === "text" && b.text === "launched"))).toHaveLength(1);
   });
 
+  it("shows a reply the parent finished before the first look, and rides out a failed one", async () => {
+    let calls = 0;
+    const messages = (): unknown => {
+      calls++;
+      if (calls === 1) throw new Error("connection reset");
+      return { data: [{ id: "msg_idle2", type: "idle" }, REPLY, NOTICE, ...AT_EXIT], cursor: {} };
+    };
+    const h = start(makeAdapter({ messages }), PARAMS);
+    await announce(h);
+    h.client().emitStdout(LAUNCH);
+    h.client().emit("close", 0, null);
+    expect(await h.done).toBe(0);
+    expect(h.events.find((e) => e.type === "agent_self_wake")).toMatchObject({ toolUseId: "call_bg", status: "completed" });
+    expect(h.events.some((e) => e.type === "agent_assistant" && e.content.some((b) => b.type === "text" && b.text === "GOT-IT"))).toBe(true);
+    expect(h.events.filter((e) => e.type === "agent_assistant" && e.content.some((b) => b.type === "text" && b.text === "launched"))).toHaveLength(1);
+  });
+
+  it("ends the turn as an error when the server stops answering while it waits", async () => {
+    const h = start(makeAdapter({ messages: () => { throw new Error("connection refused"); } }), PARAMS);
+    await announce(h);
+    h.client().emitStdout(LAUNCH);
+    h.client().emit("close", 0, null);
+    await h.done;
+    expect(h.events.find((e) => e.type === "agent_self_wake")).toMatchObject({ toolUseId: "call_bg", status: "stopped" });
+    expect(h.events.find((e) => e.type === "agent_result")).toMatchObject({ status: "error", error: expect.stringContaining("connection refused") });
+  });
+
   it("marks a subagent still running when the user stops the turn as stopped", async () => {
     const h = start(makeAdapter({ messages: { data: AT_EXIT, cursor: {} } }), PARAMS);
     await announce(h);

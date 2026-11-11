@@ -66,7 +66,9 @@ const INTERRUPT_ESCALATE_MS = 5_000;
 // One quiet operation can include a supported 30-minute review wait.
 const STALL_DEADLINE_MS = 45 * 60_000;
 const ACCOUNT_RESYNC_DEBOUNCE_MS = 200;
+// 2.2.5 logs no message-list request, so polling never feeds the stall check's log heartbeat.
 const BACKGROUND_POLL_MS = 1_000;
+const BACKGROUND_POLL_FAILURES = 5;
 
 // `question` and `websearch` need an interactive answer that `run` cancels.
 const TURN_TOOLS: Readonly<Record<string, boolean>> = { question: false, websearch: false };
@@ -136,6 +138,8 @@ export class Opencode2Adapter
   private finishedCalls = new Set<string>();
   // Background subagents still running: child session id -> the launching call's id.
   private backgroundCalls = new Map<string, string>();
+  // Assistant messages this turn has shown, from `run` or from following it.
+  private shownMessages = new Set<string>();
   private turnResult: AgentEvent | null = null;
 
   constructor(opts?: {
@@ -179,6 +183,7 @@ export class Opencode2Adapter
     this.startedCalls = new Set();
     this.finishedCalls = new Set();
     this.backgroundCalls = new Map();
+    this.shownMessages = new Set();
     this.steering.begin(!params.compact);
     const plan = this.prepare(params);
     if (!plan) {
@@ -429,11 +434,13 @@ export class Opencode2Adapter
 
   private async settleClient(exitCode: number | null, signal: NodeJS.Signals | null, handle: Opencode2Server): Promise<void> {
     const sessionId = this.accumulator.sessionId ?? this.resumeSessionId;
+    // Messages sent while it waits go to the next turn: a steer the parent took would read
+    // as the turn's first user message and hide the report behind it.
+    await this.steering.close();
     if (exitCode === 0 && signal === null && sessionId && this.backgroundCalls.size > 0) {
       await this.followBackground(handle, sessionId);
     }
     this.toolStarts.close();
-    await this.steering.close();
     if (sessionId && this.sawAnyEvent()) {
       try {
         const steps = await readTurnSteps(handle, sessionId, this.fetchFn, this.steering.readIds());
@@ -455,31 +462,40 @@ export class Opencode2Adapter
    */
   private async followBackground(handle: Opencode2Server, sessionId: string): Promise<void> {
     const seen = new Set<string>();
-    let first = true;
-    try {
-      while (!this.stopped) {
-        const messages = await readTurnMessages(handle, sessionId, this.fetchFn, this.steering.readIds());
-        for (const message of messages) {
-          const id = message.id;
-          if (!id || seen.has(id)) continue;
-          // Later messages wait, so the transcript keeps the session's order.
-          if (message.type === "assistant" && message.time?.completed === undefined) break;
-          seen.add(id);
-          const notice = subagentNotice(message);
-          if (notice) this.retireBackground(notice.childSessionId, notice.status, notice.report);
-          // `run` printed the messages that were there when it exited.
-          else if (!first && message.type === "assistant") {
-            for (const event of messageRunEvents(sessionId, message)) this.handleEvent(event);
-          }
+    let failures = 0;
+    // `run`'s close cleared the stall check; a subagent that never reports must still end.
+    this.armWatchdog();
+    while (!this.stopped && this.stallReason === null) {
+      let messages;
+      try {
+        messages = await readTurnMessages(handle, sessionId, this.fetchFn, this.steering.readIds());
+        failures = 0;
+      } catch (err) {
+        if (this.stopped || this.stallReason !== null) return;
+        if (++failures >= BACKGROUND_POLL_FAILURES) {
+          const reason = err instanceof Error ? err.message : String(err);
+          this.emit("log", "server", `OpenCode 2 stopped following its background subagents: ${reason}`);
+          this.accumulator.observe({ type: "error", error: { message: `ShipIt lost track of a background subagent, so it was stopped: ${reason}` } });
+          return;
         }
-        first = false;
-        if (this.backgroundCalls.size === 0 && messages.at(-1)?.type === "idle") return;
         await new Promise((resolve) => setTimeout(resolve, this.backgroundPollMs));
+        continue;
       }
-    } catch (err) {
-      if (!this.stopped && this.stallReason === null) {
-        this.emit("log", "server", `OpenCode 2 stopped following its background subagents: ${err instanceof Error ? err.message : String(err)}`);
+      for (const message of messages) {
+        const id = message.id;
+        if (!id || seen.has(id)) continue;
+        // Later messages wait, so the transcript keeps the session's order.
+        if (message.type === "assistant" && message.time?.completed === undefined) break;
+        seen.add(id);
+        const notice = subagentNotice(message);
+        if (notice) this.retireBackground(notice.childSessionId, notice.status, notice.report);
+        else if (message.type === "assistant" && !this.shownMessages.has(id)) {
+          this.armWatchdog();
+          for (const event of messageRunEvents(sessionId, message)) this.handleEvent(event);
+        }
       }
+      if (this.backgroundCalls.size === 0 && messages.at(-1)?.type === "idle") return;
+      await new Promise((resolve) => setTimeout(resolve, this.backgroundPollMs));
     }
   }
 
@@ -684,6 +700,8 @@ export class Opencode2Adapter
 
   private handleEvent(event: OpencodeEvent): void {
     this.accumulator.observe(event);
+    const shownId = (event.part as { messageID?: unknown } | undefined)?.messageID;
+    if (typeof shownId === "string") this.shownMessages.add(shownId);
     if (!this.emittedInit && typeof event.sessionID === "string") {
       this.emittedInit = true;
       // The first event means `run` has submitted the turn's prompt.
