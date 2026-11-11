@@ -461,10 +461,18 @@ Decisions made during the build:
   once the context passes `window − max(15% of window, 16K)`. A model with no
   declared window counts as 200K, so it compacted near 170K even on a 1M model.
   The config therefore declares `limit: { context, output: 32000 }` from the
-  catalogue window for every Claude model, on the API-key and Claude-account
-  routes (`opencode2ClaudeLimit` in `shared/opencode-spawn-shaping.ts`); the
-  binary ignores a `limit` without `output`, and 32K is its own default. Other
-  model families are unchanged.
+  catalogue window for every model, on the API-key and Claude-account routes
+  (`opencode2Limit` in `shared/opencode-spawn-shaping.ts`); the binary ignores
+  a `limit` without `output`, and 32K is its own default. Measured on 2.2.5,
+  all 45 non-Claude API-key rows reported 200K before this. On the ChatGPT
+  route the config declares the catalogue window with output 128K and no
+  `input`: the binary's `openai-context-caps` rule, which runs for an `oauth`
+  login with method `chatgpt-browser` (ShipIt's import), caps input at 272K
+  for GPT-6 and earlier and 500K for GPT-6.1 and later. The old fixed
+  `input: 272000` hid the 500K cap. A turn without that login does not run
+  (`account.sync` failure ends it), so the cap is always in force; without
+  it, OpenCode's own list reports 922K input. OpenCode 1 keeps the fixed
+  400K / 272K limit.
 - **Session naming** uses `run --standalone`: naming starts no MCP server, so
   the race cannot occur. On the ChatGPT route it imports the token with
   `auth import` / `switch --standalone` into a throwaway root first.

@@ -206,8 +206,8 @@ describe("OpenCode 2 shaping (docs/269)", () => {
 });
 
 // Without a declared limit OpenCode 2 assumes 200K and compacts near 170K, even for a 1M model.
-describe("OpenCode 2 context window for Claude models", () => {
-  interface Limited { limit?: { context: number; output: number } }
+describe("OpenCode 2 context window", () => {
+  interface Limited { limit?: { context: number; input?: number; output: number } }
   const ANTHROPIC_KEY: ServiceRouting = {
     serviceId: "anthropic",
     serviceName: "Anthropic",
@@ -228,12 +228,10 @@ describe("OpenCode 2 context window for Claude models", () => {
     expect(accountModel("haiku").limit).toEqual({ context: 200_000, output: 32_000 });
   });
 
-  it("declares the catalogue window for every Claude model on the API-key routes", () => {
-    const claude = catalogueEntriesForHarness("opencode2").filter(
-      (e) => e.model.family === "claude" && e.selection.billingMode === "key",
-    );
-    expect(claude.map((e) => e.selection.serviceId)).toEqual(expect.arrayContaining(["anthropic", "opencode", "openrouter"]));
-    for (const entry of claude) {
+  it("declares the catalogue window for every model on the API-key routes", () => {
+    const keyed = catalogueEntriesForHarness("opencode2").filter((e) => e.mode.credentials.some((c) => c.via === "string"));
+    expect(keyed.map((e) => e.model.family)).toEqual(expect.arrayContaining(["claude", "gpt", "deepseek", "glm", "grok", "kimi"]));
+    for (const entry of keyed) {
       const { serviceId, billingMode, modelId } = entry.selection;
       const style = resolveStyle("opencode2", entry.model, "string");
       if (!style) continue;
@@ -245,11 +243,20 @@ describe("OpenCode 2 context window for Claude models", () => {
     }
   });
 
-  it("leaves non-Claude models, unknown models and OpenCode 1 to OpenCode's own window", () => {
-    const chat = { ...ROUTING, style: "openai-chat-completions", baseUrl: "https://opencode.ai/zen/v1" } as ServiceRouting;
-    expect(keyModel(chat, "kimi-k3", "opencode2").limit).toBeUndefined();
+  // Measured on 2.2.5: the login then caps input at 272K (GPT-6) or 500K (GPT-6.1 and later).
+  it("gives a ChatGPT login the catalogue window, for OpenCode 2 to cap", () => {
+    const chatgpt = (modelId: string, harness: "opencode" | "opencode2") =>
+      (opencodeAccountConfig(modelId, harness) as { provider: { openai: { models: Record<string, Limited> } } }).provider.openai.models[modelId];
+    expect(chatgpt("gpt-6.1-sol", "opencode2").limit).toEqual({ context: 1_050_000, output: 128_000 });
+    expect(chatgpt("gpt-6-astra", "opencode2").limit).toEqual({ context: 272_000, output: 128_000 });
+    expect(chatgpt("gpt-6.1-sol", "opencode").limit).toEqual({ context: 400_000, input: 272_000, output: 128_000 });
+  });
+
+  it("leaves unknown models and OpenCode 1 to OpenCode's own window", () => {
     expect(keyModel(ANTHROPIC_KEY, "no-such-model", "opencode2").limit).toBeUndefined();
     expect(keyModel(ANTHROPIC_KEY, "claude-opus-5-5", "opencode").limit).toBeUndefined();
+    const chat = { ...ROUTING, style: "openai-chat-completions", baseUrl: "https://opencode.ai/zen/v1" } as ServiceRouting;
+    expect(keyModel(chat, "kimi-k3", "opencode").limit).toBeUndefined();
     expect(accountModel("no-such-model").limit).toBeUndefined();
   });
 });

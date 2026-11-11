@@ -3,7 +3,7 @@ import path from "node:path";
 import type { ServiceRouting, OpenAIAccountRouting, AnthropicAccountRouting } from "./types/agent-types.js";
 import { SHIPIT_PROVIDER_ID, claudeModelArg, scrubHarnessEnvCredentials } from "./spawn-routing.js";
 import { HARNESSES } from "./catalogue/harnesses.js";
-import { apiModelIdFor, contextWindowFor, modelIdentityFor, visionSupportFor } from "./catalogue/index.js";
+import { apiModelIdFor, contextWindowFor, visionSupportFor } from "./catalogue/index.js";
 import type { ModelSelection } from "./catalogue/types.js";
 import type { OpenCodeHarnessId } from "./opencode-harness.js";
 
@@ -12,10 +12,9 @@ const OPENCODE2_DEFAULT_OUTPUT_TOKENS = 32_000;
 
 // OpenCode 2 assumes 200K for a model it has no window for and compacts near 170K,
 // whatever the model takes. It ignores a limit without `output`.
-function opencode2ClaudeLimit(selection: ModelSelection): { context: number; output: number } | undefined {
-  if (modelIdentityFor(selection)?.family !== "claude") return undefined;
+function opencode2Limit(selection: ModelSelection, output = OPENCODE2_DEFAULT_OUTPUT_TOKENS): { context: number; output: number } | undefined {
   const context = contextWindowFor(selection, "opencode2");
-  return context && context > 0 ? { context, output: OPENCODE2_DEFAULT_OUTPUT_TOKENS } : undefined;
+  return context && context > 0 ? { context, output } : undefined;
 }
 
 function reasoningLevels(harness: OpenCodeHarnessId): readonly string[] {
@@ -70,7 +69,7 @@ export function opencodeProviderConfig(
   }
   const selection = { serviceId: routing.serviceId, billingMode: routing.billingMode, modelId };
   const modalities = visionSupportFor(selection) === "no" ? TEXT_ONLY_MODALITIES : IMAGE_MODALITIES;
-  const limit = harness === "opencode2" ? opencode2ClaudeLimit(selection) : undefined;
+  const limit = harness === "opencode2" ? opencode2Limit(selection) : undefined;
   return {
     [SHIPIT_PROVIDER_ID]: {
       name: routing.serviceName,
@@ -114,7 +113,7 @@ const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 // given. It is the only enabled provider, so a credential another route left behind serves nothing.
 export function opencode2ClaudeConfig(modelId: string): Record<string, unknown> {
   const providerId = OPENCODE2_CLAUDE_PROVIDER_ID;
-  const limit = opencode2ClaudeLimit({ serviceId: "anthropic", billingMode: "sub", modelId });
+  const limit = opencode2Limit({ serviceId: "anthropic", billingMode: "sub", modelId });
   return {
     enabled_providers: [providerId],
     model: `${providerId}/${modelId}`,
@@ -160,8 +159,14 @@ const ACCOUNT_MODE = { serviceId: "openai", billingMode: "sub" } as const satisf
   "serviceId" | "billingMode"
 >;
 
+const ACCOUNT_OUTPUT_TOKENS = 128_000;
+
 // Native auth rewrites Responses to the ChatGPT backend and rereads file auth.
+// OpenCode 2 caps a ChatGPT login's input per model itself, so it gets the full window to cap.
 export function opencodeAccountConfig(modelId: string, harness: OpenCodeHarnessId = "opencode"): Record<string, unknown> {
+  const limit = harness === "opencode2"
+    ? opencode2Limit({ ...ACCOUNT_MODE, modelId }, ACCOUNT_OUTPUT_TOKENS)
+    : { context: 400_000, input: 272_000, output: ACCOUNT_OUTPUT_TOKENS };
   return {
     enabled_providers: ["openai"],
     disabled_providers: [],
@@ -177,7 +182,7 @@ export function opencodeAccountConfig(modelId: string, harness: OpenCodeHarnessI
             id: apiModelIdFor({ ...ACCOUNT_MODE, modelId }) ?? modelId,
             name: modelId,
             modalities: IMAGE_MODALITIES,
-            limit: { context: 400_000, input: 272_000, output: 128_000 },
+            ...(limit ? { limit } : {}),
             variants: Object.fromEntries((harness === "opencode" ? OPENCODE_REASONING_LEVELS : reasoningLevels(harness)).map((level) => [level, { reasoningEffort: level }])),
           },
         },
