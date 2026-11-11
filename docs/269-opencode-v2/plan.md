@@ -418,6 +418,22 @@ Decisions made during the build:
   the session's open text (counted per `assistantMessageID`, which is stdout's
   `part.messageID`). Text that ends empty, or a printed `step_finish`, stops
   the wait.
+- **Background subagents keep the turn open** (2.2.5, probed 2026-11-11).
+  `subagent` with `background: true` returns a launch note at once
+  (`metadata.metadata.status: "running"`, the child `sessionID`), and `run`
+  exits as soon as the parent goes idle, which used to tear the server down
+  and kill the subagent with it. Now, when `run` exits cleanly with a
+  background subagent still running, the adapter keeps the server and polls
+  the turn's messages (`background-subagents.ts`). The report arrives as a
+  `synthetic` message (`metadata.source: "subagent"`, `childID`, `state`);
+  it goes to the card as `agent_self_wake`, the same retirement Claude's
+  background agents use. The shared launch-note check
+  (`isBackgroundLaunchAck`) knows OpenCode 2's wording, so the card reads
+  *running · background* until then. The server resumes the parent on its
+  own; its finished messages are fed through the same path as `run`'s lines,
+  and the turn ends on the next `idle` message once no subagent is left. A
+  turn that ends any other way (stop, error, stall) marks the remaining ones
+  *stopped*. Background **shell** commands still end with the turn.
 - **Compaction.** The run that compacts starts the server, then `POST
   /api/session/{id}/model` (compaction otherwise runs on the session's last
   model, which this run's config may not declare), then `POST /compact`, then

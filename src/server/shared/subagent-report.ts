@@ -72,6 +72,8 @@ const LAUNCH_ACK_MAX_BYTES = 2_000;
 export function isBackgroundLaunchAck(text: string): boolean {
   if (text.length > LAUNCH_ACK_MAX_BYTES) return false;
   const head = text.trimStart();
+  // OpenCode 2's `subagent` with `background: true` (2.2.5).
+  if (/^The subagent is working in the background \(sessionID: \S+\)\./.test(head)) return true;
   if (!head.startsWith("Async agent launched successfully")) return false;
   return /^agentId:/m.test(head) || /^output_file:/m.test(head);
 }

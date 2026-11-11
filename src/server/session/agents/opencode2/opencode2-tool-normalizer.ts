@@ -34,7 +34,10 @@ const TOOL_INPUT_RENAMES: Record<string, Record<string, string>> = {
 const SUBAGENT_RESULT_WRAPPER = /^\s*<subagent\b[^>]*>([\s\S]*)<\/subagent>\s*$/;
 
 export function normalizeOpencode2ToolResult(name: string, output: string): string {
-  if (name !== "subagent") return output;
+  return name === "subagent" ? unwrapOpencode2SubagentReport(output) : output;
+}
+
+export function unwrapOpencode2SubagentReport(output: string): string {
   const match = SUBAGENT_RESULT_WRAPPER.exec(output);
   if (!match) return output;
   return match[1].replace(/^\r?\n/, "").replace(/\r?\n$/, "");

@@ -39,6 +39,15 @@ describe("isBackgroundLaunchAck", () => {
     expect(isBackgroundLaunchAck(ACK)).toBe(true);
   });
 
+  it("recognizes OpenCode 2's note for a background subagent (2.2.5)", () => {
+    const note = [
+      "The subagent is working in the background (sessionID: ses_e34a893fcffem5BWt0rCdk0KKc). You will be notified automatically when it finishes.",
+      "DO NOT sleep, poll for progress, ask the subagent for status, or duplicate this subagent's work; avoid working with the same files or topics it is using.",
+    ].join("\n");
+    expect(isBackgroundLaunchAck(note)).toBe(true);
+    expect(isBackgroundLaunchAck("The subagent is working in the background, so I moved on.")).toBe(false);
+  });
+
   it("is false for a report that merely quotes the phrase", () => {
     expect(isBackgroundLaunchAck('The CLI says "Async agent launched successfully" and returns an id.')).toBe(false);
   });

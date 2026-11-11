@@ -21,6 +21,8 @@ import {
 import { DatabaseManager } from "../../shared/database.js";
 import { isBackgroundLaunchAck, parseSubagentReport, parseReportMeta } from "../../shared/subagent-report.js";
 import type { ToolResultEntry } from "../session-runner.js";
+import { deriveSubagentRuns } from "../../../client/utils/subagent-runs.js";
+import type { ChatMessage } from "../../../client/components/MessageList.js";
 
 const TOOL_ID = "toolu_013fUMwLfWGNwaaqVsj8ojXF";
 
@@ -186,6 +188,40 @@ describe("Integration: a finished background subagent's card", () => {
     });
     await settle();
 
+    expect(parseSubagentReport((await storedResult(sessionId))!.content).text).toBe(REPORT);
+    client.close();
+  });
+
+  it("shows an OpenCode 2 background subagent as running until its report arrives (2.2.5 shapes)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const sessionId = client.sessionId;
+
+    client.send({ type: "send_message", text: "Look into the number seven" });
+    await waitForClaude(() => lastClaude);
+    lastClaude.initSession("bg-oc2");
+    await client.receiveType("session_started");
+
+    const note = "The subagent is working in the background (sessionID: ses_child1). You will be notified automatically when it finishes.\nDO NOT sleep, poll for progress, ask the subagent for status, or duplicate this subagent's work.";
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: TOOL_ID, name: "Agent", input: { description: "Count the files", subagent_type: "general", background: true } }] },
+    });
+    lastClaude.emit("event", { type: "user", message: { content: [{ type: "tool_result", tool_use_id: TOOL_ID, content: note }] } });
+    await settle();
+
+    const messages = async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/sessions/${sessionId}/history`);
+      return (await res.json() as { messages: ChatMessage[] }).messages;
+    };
+    expect(deriveSubagentRuns(await messages(), { turnRunning: true })[0]).toMatchObject({ status: "running", backgrounded: true });
+
+    lastClaude.emit("event", { type: "agent_self_wake", taskId: "ses_child1", toolUseId: TOOL_ID, status: "completed", summary: REPORT });
+    lastClaude.finish("bg-oc2");
+    await settle(250);
+
+    const [run] = deriveSubagentRuns(await messages(), { turnRunning: false });
+    expect(run).toMatchObject({ status: "done", backgrounded: false });
     expect(parseSubagentReport((await storedResult(sessionId))!.content).text).toBe(REPORT);
     client.close();
   });

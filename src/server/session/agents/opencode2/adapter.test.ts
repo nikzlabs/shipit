@@ -79,6 +79,7 @@ let testHome: string;
 let configs: Record<string, unknown>[];
 
 function makeAdapter(opts: { mcp?: boolean; messages?: unknown; holdCompaction?: Promise<void> } = {}): Omit<Harness, "done"> {
+  const listMessages = (): unknown => (typeof opts.messages === "function" ? (opts.messages as () => unknown)() : opts.messages ?? MESSAGES);
   const spawns: Harness["spawns"] = [];
   const requests: Harness["requests"] = [];
   const inbox = new Set<string>();
@@ -123,10 +124,10 @@ function makeAdapter(opts: { mcp?: boolean; messages?: unknown; holdCompaction?:
     }
     const body = url.includes("/api/mcp")
       ? { data: opts.mcp ? [{ name: "playwright", status: { status: "connected" } }, { name: "broken", status: { status: "failed", error: "spawn ENOENT" } }] : [] }
-      : url.includes("/message?") ? (opts.messages ?? MESSAGES) : url.endsWith("/compact") ? { data: { id: "msg_c" } } : url.includes("/message/msg_c") ? { data: { status: "completed" } } : undefined;
+      : url.includes("/message?") ? listMessages() : url.endsWith("/compact") ? { data: { id: "msg_c" } } : url.includes("/message/msg_c") ? { data: { status: "completed" } } : undefined;
     return new Response(body === undefined ? "" : JSON.stringify(body), { status: 200 });
   }) as unknown as typeof fetch;
-  const adapter = new Opencode2Adapter({ spawnFn, fetchFn });
+  const adapter = new Opencode2Adapter({ spawnFn, fetchFn, backgroundPollMs: 5 });
   if (opts.mcp) {
     adapter.writeMcpConfig({
       servers: [{ type: "stdio", name: "broken", command: "nope" }],
@@ -587,6 +588,135 @@ describe("Opencode2Adapter — tool calls shown as they start", () => {
     expect((toolUses(h)[0] as { id: string }).id).toBe("call_phase0");
     h.client().emit("close", 0, null);
     await h.done;
+  });
+});
+
+describe("Opencode2Adapter — background subagents", () => {
+  // CLI 2.2.5 capture (2026-11-11, DeepSeek), shortened ids and launch note.
+  const CHILD = "ses_child1";
+  const ACK = `The subagent is working in the background (sessionID: ${CHILD}). You will be notified automatically when it finishes.\nDO NOT sleep, poll for progress, ask the subagent for status, or duplicate this subagent's work.`;
+  const LAUNCH = [
+    `{"type":"step_start","timestamp":1,"sessionID":"${SESSION}","part":{"id":"prt_1","sessionID":"${SESSION}","messageID":"msg_1","type":"step-start"}}`,
+    JSON.stringify({
+      type: "tool_use", timestamp: 2, sessionID: SESSION,
+      part: {
+        partID: "prt_2", sessionID: SESSION, messageID: "msg_1", type: "tool", id: "call_bg", tool: "subagent",
+        state: {
+          status: "completed",
+          input: { agent: "general", description: "Probe sleep", prompt: "sleep", background: true },
+          output: ACK, title: "subagent",
+          metadata: { metadata: { sessionID: CHILD, status: "running", truncated: false }, content: [{ type: "text", text: ACK }] },
+        },
+      },
+    }),
+    `{"type":"step_finish","timestamp":3,"sessionID":"${SESSION}","part":{"id":"prt_3","sessionID":"${SESSION}","messageID":"msg_1","type":"step-finish","reason":"tool-calls","cost":0,"tokens":{"input":100,"output":10,"reasoning":0,"cache":{"read":0,"write":0}}}}`,
+    `{"type":"text","timestamp":4,"sessionID":"${SESSION}","part":{"id":"prt_4","sessionID":"${SESSION}","messageID":"msg_2","type":"text","text":"launched"}}`,
+  ];
+  const tokens = (input: number) => ({ input, output: 5, reasoning: 0, cache: { read: 0, write: 0 } });
+  // Newest first, as the server lists them.
+  const AT_EXIT = [
+    { id: "msg_idle1", type: "idle", outcome: "succeeded" },
+    { id: "msg_2", type: "assistant", finish: "stop", time: { completed: 5 }, tokens: tokens(120), content: [{ type: "text", text: "launched" }] },
+    { id: "msg_1", type: "assistant", finish: "tool-calls", time: { completed: 3 }, tokens: tokens(100), content: [] },
+    { id: "msg_0", type: "user", text: "run it" },
+  ];
+  const NOTICE = {
+    id: "msg_note", type: "synthetic", description: "Probe sleep",
+    text: `<subagent sessionID="${CHILD}" state="completed" description="Probe sleep">\nDONE-PROBE\n</subagent>`,
+    metadata: { source: "subagent", childID: CHILD, agent: "General", state: "completed" },
+  };
+  const REPLY = {
+    id: "msg_3", type: "assistant", finish: "stop", time: { completed: 9 }, tokens: tokens(140),
+    content: [
+      { type: "text", text: "GOT-IT" },
+      { type: "tool", id: "call_after", name: "shell", state: { status: "completed", input: { command: "ls" }, content: [{ type: "text", text: "a.txt" }], metadata: {} } },
+    ],
+  };
+
+  it("keeps the turn open until the subagent reports, puts the report on its card, and shows the parent's reply", async () => {
+    let messages: unknown[] = AT_EXIT;
+    const h = start(makeAdapter({ messages: () => ({ data: messages, cursor: {} }) }), PARAMS);
+    await announce(h);
+    h.client().emitStdout(LAUNCH);
+    h.client().emit("close", 0, null);
+
+    await vi.waitFor(() => expect(h.requests.filter((r) => r.url.includes("/message?")).length).toBeGreaterThan(1));
+    expect(h.events.some((e) => e.type === "agent_result")).toBe(false);
+    expect(vi.mocked(killProcessTree)).not.toHaveBeenCalled();
+    const ackResult = h.events.find((e) => e.type === "agent_tool_result");
+    expect(ackResult).toMatchObject({ content: [{ tool_use_id: "call_bg", content: ACK }] });
+
+    // The report, then the parent's own reply to it, still in progress.
+    messages = [{ id: "msg_3", type: "assistant", time: {}, content: [] }, NOTICE, ...AT_EXIT];
+    await vi.waitFor(() => expect(h.events.some((e) => e.type === "agent_self_wake")).toBe(true));
+    messages = [{ id: "msg_idle2", type: "idle", outcome: "succeeded" }, REPLY, NOTICE, ...AT_EXIT];
+    expect(await h.done).toBe(0);
+
+    expect(h.events.find((e) => e.type === "agent_self_wake")).toEqual({
+      type: "agent_self_wake", taskId: CHILD, toolUseId: "call_bg", status: "completed", summary: "DONE-PROBE",
+    });
+    const after = h.events.slice(h.events.findIndex((e) => e.type === "agent_self_wake") + 1);
+    expect(after.map((e) => e.type)).toEqual(["agent_assistant", "agent_assistant", "agent_tool_result", "agent_result"]);
+    expect(after[0]).toEqual({ type: "agent_assistant", content: [{ type: "text", text: "GOT-IT" }] });
+    expect(after[1]).toMatchObject({ content: [{ type: "tool_use", id: "call_after", name: "Bash", input: { command: "ls" } }] });
+    expect(after[2]).toMatchObject({ content: [{ tool_use_id: "call_after", content: "a.txt" }] });
+    expect(after[3]).toMatchObject({ status: "success", requests: [{ input: 100 }, { input: 120 }, { input: 140 }] });
+    // Only the messages after `run` exited are shown here: `run` printed the rest.
+    expect(h.events.filter((e) => e.type === "agent_assistant" && e.content.some((b) => b.type === "text" && b.text === "launched"))).toHaveLength(1);
+  });
+
+  it("shows a reply the parent finished before the first look, and rides out a failed one", async () => {
+    let calls = 0;
+    const messages = (): unknown => {
+      calls++;
+      if (calls === 1) throw new Error("connection reset");
+      return { data: [{ id: "msg_idle2", type: "idle" }, REPLY, NOTICE, ...AT_EXIT], cursor: {} };
+    };
+    const h = start(makeAdapter({ messages }), PARAMS);
+    await announce(h);
+    h.client().emitStdout(LAUNCH);
+    h.client().emit("close", 0, null);
+    expect(await h.done).toBe(0);
+    expect(h.events.find((e) => e.type === "agent_self_wake")).toMatchObject({ toolUseId: "call_bg", status: "completed" });
+    expect(h.events.some((e) => e.type === "agent_assistant" && e.content.some((b) => b.type === "text" && b.text === "GOT-IT"))).toBe(true);
+    expect(h.events.filter((e) => e.type === "agent_assistant" && e.content.some((b) => b.type === "text" && b.text === "launched"))).toHaveLength(1);
+  });
+
+  it("ends the turn as an error when the server stops answering while it waits", async () => {
+    const h = start(makeAdapter({ messages: () => { throw new Error("connection refused"); } }), PARAMS);
+    await announce(h);
+    h.client().emitStdout(LAUNCH);
+    h.client().emit("close", 0, null);
+    await h.done;
+    expect(h.events.find((e) => e.type === "agent_self_wake")).toMatchObject({ toolUseId: "call_bg", status: "stopped" });
+    expect(h.events.find((e) => e.type === "agent_result")).toMatchObject({ status: "error", error: expect.stringContaining("connection refused") });
+  });
+
+  it("marks a subagent still running when the user stops the turn as stopped", async () => {
+    const h = start(makeAdapter({ messages: { data: AT_EXIT, cursor: {} } }), PARAMS);
+    await announce(h);
+    h.client().emitStdout(LAUNCH);
+    h.client().emit("close", 0, null);
+    await vi.waitFor(() => expect(h.requests.filter((r) => r.url.includes("/message?")).length).toBeGreaterThan(1));
+
+    h.adapter.interrupt();
+    expect(vi.mocked(killProcessTree)).toHaveBeenCalledWith(h.server(), "SIGTERM", { label: "opencode2-interrupt" });
+    expect(await h.done).toBe(0);
+    expect(h.events.find((e) => e.type === "agent_self_wake")).toEqual({
+      type: "agent_self_wake", taskId: CHILD, toolUseId: "call_bg", status: "stopped",
+    });
+    expect(h.events.some((e) => e.type === "agent_result")).toBe(false);
+  });
+
+  it("does not wait when `run` failed, and marks the subagent stopped", async () => {
+    const h = start(makeAdapter({ messages: { data: AT_EXIT, cursor: {} } }), PARAMS);
+    await announce(h);
+    h.client().emitStdout(LAUNCH);
+    h.client().emit("close", 1, null);
+    expect(await h.done).toBe(1);
+    const kinds = h.events.map((e) => e.type);
+    expect(kinds.indexOf("agent_self_wake")).toBeLessThan(kinds.indexOf("agent_result"));
+    expect(h.events.find((e) => e.type === "agent_self_wake")).toMatchObject({ toolUseId: "call_bg", status: "stopped" });
   });
 });
 
