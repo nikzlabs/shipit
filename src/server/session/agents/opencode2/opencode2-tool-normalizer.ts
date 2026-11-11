@@ -1,4 +1,5 @@
-import type { OpencodeToolState } from "../../../shared/opencode-stream.js";
+import type { OpencodeToolPart, OpencodeToolState } from "../../../shared/opencode-stream.js";
+import type { AgentEvent } from "../agent-process.js";
 
 // Transcript names control field retention and inline rendering. OpenCode 2 renamed
 // `bash` to `shell` and `task` to `subagent`, and its file tools take `path`.
@@ -87,4 +88,32 @@ export function normalizeOpencode2ToolCall(
   const renamed: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) renamed[renames[key] ?? key] = value;
   return { name: transcriptName, input: renamed };
+}
+
+/** `parentToolUseId` files the call under the subagent call that made it. */
+export function opencode2ToolUseEvent(
+  callId: string,
+  tool: string,
+  rawInput: Record<string, unknown>,
+  parentToolUseId?: string,
+): AgentEvent {
+  const { name, input } = normalizeOpencode2ToolCall(tool, rawInput);
+  return {
+    type: "agent_assistant",
+    content: [{ type: "tool_use", id: callId, name, input }],
+    ...(parentToolUseId ? { parentToolUseId } : {}),
+  };
+}
+
+export function opencode2ToolResultEvent(callId: string, part: OpencodeToolPart, parentToolUseId?: string): AgentEvent {
+  const tool = part.tool ?? "unknown";
+  const isError = isOpencode2ToolError(tool, part.state);
+  const output = normalizeOpencode2ToolResult(tool, part.state?.output ?? part.state?.error ?? "");
+  const images = opencode2ToolResultImages(part.state?.metadata);
+  const content = images.length > 0 ? [{ type: "text", text: output }, ...images] : output;
+  return {
+    type: "agent_tool_result",
+    content: [{ type: "tool_result", tool_use_id: callId, content, ...(isError ? { is_error: true } : {}) }],
+    ...(parentToolUseId ? { parentToolUseId } : {}),
+  };
 }

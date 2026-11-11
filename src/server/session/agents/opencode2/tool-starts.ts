@@ -15,13 +15,23 @@ const EVENT_TYPES = [
   "session.tool.called",
   "session.text.started",
   "session.text.ended",
+  // A subagent call's progress names its child session.
+  "session.tool.progress",
 ] as const;
 const CONNECT_TIMEOUT_MS = 2_000;
 const MAX_HELD = 100;
 
 interface StreamEvent {
   type?: string;
-  data?: { sessionID?: string; id?: string; name?: string; input?: unknown; assistantMessageID?: string; text?: string };
+  data?: {
+    sessionID?: string;
+    id?: string;
+    name?: string;
+    input?: unknown;
+    assistantMessageID?: string;
+    text?: string;
+    metadata?: { sessionID?: unknown; status?: unknown };
+  };
 }
 
 export class Opencode2ToolStarts {
@@ -38,11 +48,13 @@ export class Opencode2ToolStarts {
   private printedAhead = new Map<string, number>();
   // Messages whose step end is printed: a text start for one arriving later holds nothing.
   private finishedMessages = new Set<string>();
+  private heldSubagents: { sessionId: string; callId: string; childSessionId: string }[] = [];
 
   constructor(
     private readonly onStart: (start: Opencode2ToolStart) => void,
     private readonly fetchFn: FetchFn,
     private readonly log: (message: string) => void,
+    private readonly onSubagent: (callId: string, childSessionId: string) => void = () => {},
   ) {}
 
   /** Resolves once the server has accepted the stream, or it failed; a failure only loses the early cards. */
@@ -54,6 +66,7 @@ export class Opencode2ToolStarts {
     this.unprintedText = new Map();
     this.printedAhead = new Map();
     this.finishedMessages = new Set();
+    this.heldSubagents = [];
     const controller = new AbortController();
     this.controller = controller;
     const query = EVENT_TYPES.map((type) => `types=${encodeURIComponent(type)}`).join("&");
@@ -71,6 +84,9 @@ export class Opencode2ToolStarts {
   setSession(sessionId: string): void {
     if (this.sessionId) return;
     this.sessionId = sessionId;
+    const held = this.heldSubagents;
+    this.heldSubagents = [];
+    for (const item of held) if (item.sessionId === sessionId) this.onSubagent(item.callId, item.childSessionId);
     this.release();
   }
 
@@ -172,6 +188,14 @@ export class Opencode2ToolStarts {
     }
     const id = data?.id;
     if (!id || !sessionId) return;
+    if (event.type === "session.tool.progress") {
+      const child = data.metadata?.sessionID;
+      if (typeof child !== "string" || data.metadata?.status !== "running") return;
+      if (this.sessionId === undefined) {
+        if (this.heldSubagents.length < MAX_HELD) this.heldSubagents.push({ sessionId, callId: id, childSessionId: child });
+      } else if (sessionId === this.sessionId) this.onSubagent(id, child);
+      return;
+    }
     const key = `${sessionId}\0${id}`;
     if (event.type === "session.tool.input.started") {
       if (typeof data.name === "string") this.names.set(key, data.name);
