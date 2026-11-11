@@ -5,7 +5,7 @@
 import type { AgentEvent } from "../agent-process.js";
 import { listedToolPart } from "./background-subagents.js";
 import { opencode2ToolResultEvent, opencode2ToolUseEvent } from "./opencode2-tool-normalizer.js";
-import { readTurnMessages, type FetchFn, type Opencode2Server } from "./server.js";
+import { readMessagesAfter, type FetchFn, type Opencode2Server } from "./server.js";
 
 interface Child {
   callId: string;
@@ -14,36 +14,46 @@ interface Child {
   finishedCalls: Set<string>;
   /** The subagent finished: one more read, then it is dropped. */
   finished: boolean;
+  /** The user message this call's work follows, fixed at the first read. */
+  boundaryId?: string;
 }
 
 export class Opencode2SubagentWork {
   private server: Opencode2Server | null = null;
   private children = new Map<string, Child>();
+  // Read to the end: a late progress event for one must not post its work again.
+  private done = new Set<string>();
   private loop: Promise<void> | null = null;
   private stopped = false;
   private failureLogged = false;
+  // A loop of an earlier turn may still be awaiting a read; it posts nothing.
+  private generation = 0;
 
   constructor(
     private readonly emit: (event: AgentEvent) => void,
     private readonly fetchFn: FetchFn,
     private readonly log: (message: string) => void,
     private readonly pollMs: number,
+    // The orchestrator drops nested work whose launching call it has not seen yet.
+    private readonly callShown: (callId: string) => boolean,
   ) {}
 
   begin(server: Opencode2Server): void {
+    this.generation++;
     this.server = server;
     this.children = new Map();
+    this.done = new Set();
     this.loop = null;
     this.stopped = false;
     this.failureLogged = false;
   }
 
   track(childSessionId: string, callId: string): void {
-    if (this.stopped || !this.server || this.children.has(childSessionId)) return;
+    if (this.stopped || !this.server || this.children.has(childSessionId) || this.done.has(`${childSessionId}\0${callId}`)) return;
     this.children.set(childSessionId, {
       callId, shownText: new Set(), startedCalls: new Set(), finishedCalls: new Set(), finished: false,
     });
-    this.loop ??= this.run();
+    this.loop ??= this.run(this.generation);
   }
 
   finish(childSessionId: string): void {
@@ -61,35 +71,46 @@ export class Opencode2SubagentWork {
   stop(): void {
     this.stopped = true;
     this.children = new Map();
-  }
-
-  private async run(): Promise<void> {
-    while (!this.stopped && this.children.size > 0) {
-      for (const [sessionId, child] of [...this.children]) {
-        const wasFinished = child.finished;
-        await this.read(sessionId, child);
-        if (wasFinished) this.children.delete(sessionId);
-      }
-      if (this.children.size === 0 || this.stopped) break;
-      await new Promise((resolve) => setTimeout(resolve, this.pollMs));
-    }
     this.loop = null;
   }
 
-  private async read(sessionId: string, child: Child): Promise<void> {
+  private live(generation: number): boolean {
+    return !this.stopped && generation === this.generation;
+  }
+
+  private async run(generation: number): Promise<void> {
+    while (this.live(generation) && this.children.size > 0) {
+      for (const [sessionId, child] of [...this.children]) {
+        const wasFinished = child.finished;
+        if (this.callShown(child.callId)) await this.read(sessionId, child, generation);
+        if (!this.live(generation)) return;
+        if (wasFinished) {
+          this.children.delete(sessionId);
+          this.done.add(`${sessionId}\0${child.callId}`);
+        }
+      }
+      if (this.children.size === 0 || !this.live(generation)) break;
+      await new Promise((resolve) => setTimeout(resolve, this.pollMs));
+    }
+    if (generation === this.generation) this.loop = null;
+  }
+
+  private async read(sessionId: string, child: Child, generation: number): Promise<void> {
     const server = this.server;
     if (!server) return;
     let messages;
     try {
-      messages = await readTurnMessages(server, sessionId, this.fetchFn);
+      const read = await readMessagesAfter(server, sessionId, this.fetchFn, child.boundaryId);
+      messages = read.messages;
+      child.boundaryId ??= read.boundaryId;
     } catch (err) {
-      if (!this.failureLogged && !this.stopped) {
+      if (!this.failureLogged && this.live(generation)) {
         this.failureLogged = true;
         this.log(`could not read a subagent's work: ${err instanceof Error ? err.message : String(err)}`);
       }
       return;
     }
-    if (this.stopped) return;
+    if (!this.live(generation)) return;
     for (const message of messages) {
       if (message.type !== "assistant" || !message.id) continue;
       const parts = message.content ?? [];

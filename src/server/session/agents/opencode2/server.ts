@@ -207,6 +207,34 @@ export async function readTurnMessages(
   return messages.reverse();
 }
 
+/**
+ * Messages after `afterId`, oldest first, or, with no id yet, after the newest user
+ * message, whose id comes back so a later read keeps the same start.
+ */
+export async function readMessagesAfter(
+  server: Opencode2Server,
+  sessionId: string,
+  fetchFn: FetchFn,
+  afterId: string | undefined,
+): Promise<{ messages: Opencode2Message[]; boundaryId?: string }> {
+  const messages: Opencode2Message[] = [];
+  const base = `/api/session/${encodeURIComponent(sessionId)}/message`;
+  let path = `${base}?order=desc&limit=${String(MESSAGE_PAGE_LIMIT)}`;
+  for (let page = 0; page < MESSAGE_PAGE_MAX; page++) {
+    const body = await request<MessageListResponse>(server, path, fetchFn);
+    for (const message of body.data ?? []) {
+      if (afterId !== undefined ? message.id === afterId : message.type === "user") {
+        return { messages: messages.reverse(), boundaryId: message.id };
+      }
+      messages.push(message);
+    }
+    const next = body.cursor?.next;
+    if (!next) break;
+    path = `${base}?limit=${String(MESSAGE_PAGE_LIMIT)}&cursor=${encodeURIComponent(next)}`;
+  }
+  return { messages: messages.reverse(), ...(afterId !== undefined ? { boundaryId: afterId } : {}) };
+}
+
 /** Every model call of the newest turn, oldest first. */
 export async function readTurnSteps(
   server: Opencode2Server,

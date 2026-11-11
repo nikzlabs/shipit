@@ -173,6 +173,7 @@ export class Opencode2Adapter
       this.fetchFn,
       (message) => this.emit("log", "server", `OpenCode 2 subagent work: ${message}`),
       this.backgroundPollMs,
+      (callId) => this.startedCalls.has(callId) || this.finishedCalls.has(callId),
     );
   }
 
@@ -485,6 +486,7 @@ export class Opencode2Adapter
       try {
         messages = await readTurnMessages(handle, sessionId, this.fetchFn, this.steering.readIds());
         failures = 0;
+        if (this.stopped) return;
       } catch (err) {
         if (this.stopped || this.stallReason !== null) return;
         if (++failures >= BACKGROUND_POLL_FAILURES) {
@@ -812,6 +814,7 @@ export class Opencode2Adapter
     this.subscriptionLimits?.stop();
     if (!this.active) return;
     this.stopped = true;
+    this.subagentWork.stop();
     if (this.watchdog) {
       clearTimeout(this.watchdog);
       this.watchdog = null;
@@ -835,6 +838,7 @@ export class Opencode2Adapter
   kill(): void {
     this.subscriptionLimits?.stop();
     this.stopped = true;
+    this.subagentWork.stop();
     this.clearTimers();
     if (this.proc) killProcessTree(this.proc, "SIGTERM", { label: "opencode2" });
     if (this.server) killProcessTree(this.server, "SIGTERM", { label: "opencode2-server" });

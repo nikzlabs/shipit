@@ -754,9 +754,15 @@ describe("Opencode2Adapter — a subagent's own work", () => {
     const h = start(makeAdapter({ messages: (url: string) => ({ data: url.includes(CHILD) ? child : MESSAGES.data, cursor: {} }) }), PARAMS);
     await announce(h);
     h.client().emitStdout([TOOL_TURN[0]]);
+    h.serverEvent({ id: "evt_1", type: "session.tool.input.started", data: { sessionID: SESSION, assistantMessageID: "msg_1", id: "call_fg", name: "subagent" } });
+    h.serverEvent({ id: "evt_2", type: "session.tool.called", data: { sessionID: SESSION, assistantMessageID: "msg_1", id: "call_fg", input: { agent: "general", description: "Two steps", prompt: "go" } } });
     h.serverEvent(PROGRESS);
     child = CHILD_WORK;
     await vi.waitFor(() => expect(nested(h)).toHaveLength(2));
+    // The launching call is in the transcript first, or its work would have nowhere to go.
+    const launch = h.events.findIndex((e) => e.type === "agent_assistant" && e.content.some((b) => b.type === "tool_use" && b.id === "call_fg"));
+    expect(launch).toBeGreaterThanOrEqual(0);
+    expect(launch).toBeLessThan(h.events.indexOf(nested(h)[0]));
     expect(nested(h)[0]).toMatchObject({ type: "agent_assistant", content: [{ type: "tool_use", id: "call_echo", name: "Bash" }] });
     expect(nested(h)[1]).toMatchObject({ type: "agent_tool_result", content: [{ tool_use_id: "call_echo", content: "one\n" }] });
 
