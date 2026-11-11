@@ -148,37 +148,78 @@ export async function waitForMcpServers(
   return { statuses, settled };
 }
 
+export interface Opencode2MessagePart {
+  type?: string;
+  id?: string;
+  text?: string;
+  name?: string;
+  state?: {
+    status?: string;
+    input?: unknown;
+    content?: unknown[];
+    metadata?: Record<string, unknown>;
+    error?: { message?: string };
+  };
+}
+
+/** A session message as the server lists it (2.2.5): `user`, `assistant`, `synthetic`, `idle`, … */
+export interface Opencode2Message {
+  id?: string;
+  type?: string;
+  text?: string;
+  finish?: string;
+  tokens?: OpencodeTokens;
+  cost?: number;
+  time?: { created?: number; completed?: number };
+  error?: { type?: string; message?: string };
+  metadata?: Record<string, unknown>;
+  content?: Opencode2MessagePart[];
+}
+
 interface MessageListResponse {
-  data?: { id?: string; type?: string; tokens?: OpencodeTokens; cost?: number }[];
+  data?: Opencode2Message[];
   cursor?: { next?: string | null };
 }
 
 /**
- * Every model call of the newest turn: the steps after its user message, oldest first.
+ * The newest turn's messages after its user message, oldest first.
  * `steerIds` are user messages steered into this turn, which do not start one.
  */
+export async function readTurnMessages(
+  server: Opencode2Server,
+  sessionId: string,
+  fetchFn: FetchFn,
+  steerIds: ReadonlySet<string> = new Set(),
+): Promise<Opencode2Message[]> {
+  const messages: Opencode2Message[] = [];
+  const base = `/api/session/${encodeURIComponent(sessionId)}/message`;
+  let path = `${base}?order=desc&limit=${String(MESSAGE_PAGE_LIMIT)}`;
+  for (let page = 0; page < MESSAGE_PAGE_MAX; page++) {
+    const body = await request<MessageListResponse>(server, path, fetchFn);
+    for (const message of body.data ?? []) {
+      if (message.type === "user" && !steerIds.has(message.id ?? "")) return messages.reverse();
+      messages.push(message);
+    }
+    const next = body.cursor?.next;
+    if (!next) break;
+    path = `${base}?limit=${String(MESSAGE_PAGE_LIMIT)}&cursor=${encodeURIComponent(next)}`;
+  }
+  return messages.reverse();
+}
+
+/** Every model call of the newest turn, oldest first. */
 export async function readTurnSteps(
   server: Opencode2Server,
   sessionId: string,
   fetchFn: FetchFn,
   steerIds: ReadonlySet<string> = new Set(),
 ): Promise<{ tokens?: OpencodeTokens; cost?: number }[]> {
-  const steps: { tokens?: OpencodeTokens; cost?: number }[] = [];
-  const base = `/api/session/${encodeURIComponent(sessionId)}/message`;
-  let path = `${base}?order=desc&limit=${String(MESSAGE_PAGE_LIMIT)}`;
-  for (let page = 0; page < MESSAGE_PAGE_MAX; page++) {
-    const body = await request<MessageListResponse>(server, path, fetchFn);
-    for (const message of body.data ?? []) {
-      if (message.type === "user" && !steerIds.has(message.id ?? "")) return steps.reverse();
-      if ((message.type === "assistant" || message.type === "compaction") && message.tokens) {
-        steps.push({ tokens: message.tokens, ...(typeof message.cost === "number" ? { cost: message.cost } : {}) });
-      }
-    }
-    const next = body.cursor?.next;
-    if (!next) break;
-    path = `${base}?limit=${String(MESSAGE_PAGE_LIMIT)}&cursor=${encodeURIComponent(next)}`;
-  }
-  return steps.reverse();
+  const messages = await readTurnMessages(server, sessionId, fetchFn, steerIds);
+  return messages.flatMap((message) =>
+    (message.type === "assistant" || message.type === "compaction") && message.tokens
+      ? [{ tokens: message.tokens, ...(typeof message.cost === "number" ? { cost: message.cost } : {}) }]
+      : [],
+  );
 }
 
 interface InboxResponse {

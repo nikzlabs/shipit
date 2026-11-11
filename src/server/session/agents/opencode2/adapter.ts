@@ -46,6 +46,7 @@ import {
   basicAuthorization,
   compactOpencode2Session,
   newServerPassword,
+  readTurnMessages,
   readTurnSteps,
   spawnOpencode2Server,
   waitForMcpServers,
@@ -56,6 +57,7 @@ import {
 import { Opencode2Account, type Opencode2AccountTarget } from "./account.js";
 import { Opencode2Steering } from "./steering.js";
 import { Opencode2ToolStarts, type Opencode2ToolStart } from "./tool-starts.js";
+import { backgroundSubagentSession, messageRunEvents, subagentNotice } from "./background-subagents.js";
 
 const HARNESS = HARNESSES.find((h) => h.id === "opencode2");
 
@@ -64,6 +66,7 @@ const INTERRUPT_ESCALATE_MS = 5_000;
 // One quiet operation can include a supported 30-minute review wait.
 const STALL_DEADLINE_MS = 45 * 60_000;
 const ACCOUNT_RESYNC_DEBOUNCE_MS = 200;
+const BACKGROUND_POLL_MS = 1_000;
 
 // `question` and `websearch` need an interactive answer that `run` cancels.
 const TURN_TOOLS: Readonly<Record<string, boolean>> = { question: false, websearch: false };
@@ -103,6 +106,7 @@ export class Opencode2Adapter
   private readonly resolveHome: AgentHomeResolver | undefined;
   private readonly spawnFn: (cmd: string, args: string[], opts: SpawnOptions) => ChildProcess;
   private readonly fetchFn: FetchFn;
+  private readonly backgroundPollMs: number;
   private active = false;
   private server: ChildProcess | null = null;
   private proc: ChildProcess | null = null;
@@ -130,17 +134,21 @@ export class Opencode2Adapter
   // Calls whose `tool_use` went out when they started; their completion adds only the result.
   private startedCalls = new Set<string>();
   private finishedCalls = new Set<string>();
+  // Background subagents still running: child session id -> the launching call's id.
+  private backgroundCalls = new Map<string, string>();
   private turnResult: AgentEvent | null = null;
 
   constructor(opts?: {
     resolveHome?: AgentHomeResolver;
     spawnFn?: (cmd: string, args: string[], opts: SpawnOptions) => ChildProcess;
     fetchFn?: FetchFn;
+    backgroundPollMs?: number;
   }) {
     super();
     this.resolveHome = opts?.resolveHome;
     this.spawnFn = opts?.spawnFn ?? nodeSpawn;
     this.fetchFn = opts?.fetchFn ?? fetch;
+    this.backgroundPollMs = opts?.backgroundPollMs ?? BACKGROUND_POLL_MS;
     this.steering = new Opencode2Steering(
       (event) => this.emit("event", event),
       this.fetchFn,
@@ -170,6 +178,7 @@ export class Opencode2Adapter
     this.turnResult = null;
     this.startedCalls = new Set();
     this.finishedCalls = new Set();
+    this.backgroundCalls = new Map();
     this.steering.begin(!params.compact);
     const plan = this.prepare(params);
     if (!plan) {
@@ -363,6 +372,7 @@ export class Opencode2Adapter
       await this.steering.close();
       account?.close();
       this.teardown(plan);
+      this.retireUnfinishedBackground();
       this.finishSubscriptionLimits(() => {
         this.active = false;
         // With steering on, a turn queued behind this one drains at the result and takes this
@@ -418,9 +428,12 @@ export class Opencode2Adapter
   }
 
   private async settleClient(exitCode: number | null, signal: NodeJS.Signals | null, handle: Opencode2Server): Promise<void> {
+    const sessionId = this.accumulator.sessionId ?? this.resumeSessionId;
+    if (exitCode === 0 && signal === null && sessionId && this.backgroundCalls.size > 0) {
+      await this.followBackground(handle, sessionId);
+    }
     this.toolStarts.close();
     await this.steering.close();
-    const sessionId = this.accumulator.sessionId ?? this.resumeSessionId;
     if (sessionId && this.sawAnyEvent()) {
       try {
         const steps = await readTurnSteps(handle, sessionId, this.fetchFn, this.steering.readIds());
@@ -434,6 +447,52 @@ export class Opencode2Adapter
       return;
     }
     this.emitSynthesizedResult(exitCode, signal);
+  }
+
+  /**
+   * The turn's server outlives `run` while background subagents work: each report goes to
+   * its card, and what the parent does after it is shown as `run` would have printed it.
+   */
+  private async followBackground(handle: Opencode2Server, sessionId: string): Promise<void> {
+    const seen = new Set<string>();
+    let first = true;
+    try {
+      while (!this.stopped) {
+        const messages = await readTurnMessages(handle, sessionId, this.fetchFn, this.steering.readIds());
+        for (const message of messages) {
+          const id = message.id;
+          if (!id || seen.has(id)) continue;
+          // Later messages wait, so the transcript keeps the session's order.
+          if (message.type === "assistant" && message.time?.completed === undefined) break;
+          seen.add(id);
+          const notice = subagentNotice(message);
+          if (notice) this.retireBackground(notice.childSessionId, notice.status, notice.report);
+          // `run` printed the messages that were there when it exited.
+          else if (!first && message.type === "assistant") {
+            for (const event of messageRunEvents(sessionId, message)) this.handleEvent(event);
+          }
+        }
+        first = false;
+        if (this.backgroundCalls.size === 0 && messages.at(-1)?.type === "idle") return;
+        await new Promise((resolve) => setTimeout(resolve, this.backgroundPollMs));
+      }
+    } catch (err) {
+      if (!this.stopped && this.stallReason === null) {
+        this.emit("log", "server", `OpenCode 2 stopped following its background subagents: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  private retireBackground(childSessionId: string, status: "completed" | "failed" | "stopped", summary?: string): void {
+    const toolUseId = this.backgroundCalls.get(childSessionId);
+    if (!toolUseId) return;
+    this.backgroundCalls.delete(childSessionId);
+    this.emit("event", { type: "agent_self_wake", taskId: childSessionId, toolUseId, status, ...(summary !== undefined ? { summary } : {}) });
+  }
+
+  // The server goes with the turn, and every subagent on it.
+  private retireUnfinishedBackground(): void {
+    for (const childSessionId of [...this.backgroundCalls.keys()]) this.retireBackground(childSessionId, "stopped");
   }
 
   private async runCompaction(params: AgentRunParams, handle: Opencode2Server): Promise<number> {
@@ -678,6 +737,8 @@ export class Opencode2Adapter
         const output = normalizeOpencode2ToolResult(part.tool ?? "unknown", part.state?.output ?? part.state?.error ?? "");
         const images = opencode2ToolResultImages(part.state?.metadata);
         const content = images.length > 0 ? [{ type: "text", text: output }, ...images] : output;
+        const child = backgroundSubagentSession(part);
+        if (child) this.backgroundCalls.set(child, callId);
         const result: AgentEvent = {
           type: "agent_tool_result",
           content: [{ type: "tool_result", tool_use_id: callId, content, ...(isError ? { is_error: true } : {}) }],
