@@ -40,7 +40,7 @@ import { parseOpencodeLine, OpencodeTurnAccumulator, type OpencodeEvent, type Op
 import { shipitToolSpec } from "../../mcp-tool-spec.js";
 import { writeOpencodeTurnFiles, type OpencodeTurnFiles } from "../opencode/turn-files.js";
 import { OpenCodeSubscriptionLimits } from "../opencode/subscription-limits.js";
-import { isOpencode2ToolError, normalizeOpencode2ToolCall, normalizeOpencode2ToolResult, opencode2ToolResultImages } from "./opencode2-tool-normalizer.js";
+import { opencode2ToolResultEvent, opencode2ToolUseEvent } from "./opencode2-tool-normalizer.js";
 import {
   OPENCODE2_BIN,
   basicAuthorization,
@@ -57,7 +57,8 @@ import {
 import { Opencode2Account, type Opencode2AccountTarget } from "./account.js";
 import { Opencode2Steering } from "./steering.js";
 import { Opencode2ToolStarts, type Opencode2ToolStart } from "./tool-starts.js";
-import { backgroundSubagentSession, messageRunEvents, subagentNotice } from "./background-subagents.js";
+import { backgroundSubagentSession, messageRunEvents, subagentNotice, subagentSession } from "./background-subagents.js";
+import { Opencode2SubagentWork } from "./subagent-work.js";
 
 const HARNESS = HARNESSES.find((h) => h.id === "opencode2");
 
@@ -133,6 +134,7 @@ export class Opencode2Adapter
   private accountResyncTimer: NodeJS.Timeout | null = null;
   private readonly steering: Opencode2Steering;
   private readonly toolStarts: Opencode2ToolStarts;
+  private readonly subagentWork: Opencode2SubagentWork;
   // Calls whose `tool_use` went out when they started; their completion adds only the result.
   private startedCalls = new Set<string>();
   private finishedCalls = new Set<string>();
@@ -162,6 +164,15 @@ export class Opencode2Adapter
       (start) => this.onToolStart(start),
       this.fetchFn,
       (message) => this.emit("log", "server", `OpenCode 2 tool starts: ${message}`),
+      (callId, childSessionId) => {
+        if (this.active && !this.stopped) this.subagentWork.track(childSessionId, callId);
+      },
+    );
+    this.subagentWork = new Opencode2SubagentWork(
+      (event) => this.emit("event", event),
+      this.fetchFn,
+      (message) => this.emit("log", "server", `OpenCode 2 subagent work: ${message}`),
+      this.backgroundPollMs,
     );
   }
 
@@ -328,6 +339,7 @@ export class Opencode2Adapter
       if (this.stopped) return;
       const handle: Opencode2Server = { url, authorization: basicAuthorization(plan.env.OPENCODE_PASSWORD) };
       this.serverHandle = handle;
+      this.subagentWork.begin(handle);
       account = new Opencode2Account({
         dataRoot: plan.dataRoot,
         serverUrl: url,
@@ -373,6 +385,7 @@ export class Opencode2Adapter
       console.warn(`[opencode2] turn failed: ${reason}`);
       if (!this.stopped) this.emitResult({ error: `OpenCode 2 could not run the turn: ${reason}` });
     } finally {
+      this.subagentWork.stop();
       this.toolStarts.close();
       await this.steering.close();
       account?.close();
@@ -440,6 +453,8 @@ export class Opencode2Adapter
     if (exitCode === 0 && signal === null && sessionId && this.backgroundCalls.size > 0) {
       await this.followBackground(handle, sessionId);
     }
+    if (this.stopped) this.subagentWork.stop();
+    else await this.subagentWork.close();
     this.toolStarts.close();
     if (sessionId && this.sawAnyEvent()) {
       try {
@@ -503,6 +518,7 @@ export class Opencode2Adapter
     const toolUseId = this.backgroundCalls.get(childSessionId);
     if (!toolUseId) return;
     this.backgroundCalls.delete(childSessionId);
+    this.subagentWork.finish(childSessionId);
     this.emit("event", { type: "agent_self_wake", taskId: childSessionId, toolUseId, status, ...(summary !== undefined ? { summary } : {}) });
   }
 
@@ -751,22 +767,21 @@ export class Opencode2Adapter
         const callId = part.callID ?? part.id ?? `opencode2-call-${Date.now()}`;
         const started = this.startedCalls.has(callId);
         this.finishedCalls.add(callId);
-        const isError = isOpencode2ToolError(part.tool ?? "unknown", part.state);
-        const output = normalizeOpencode2ToolResult(part.tool ?? "unknown", part.state?.output ?? part.state?.error ?? "");
-        const images = opencode2ToolResultImages(part.state?.metadata);
-        const content = images.length > 0 ? [{ type: "text", text: output }, ...images] : output;
         const child = backgroundSubagentSession(part);
         if (child) this.backgroundCalls.set(child, callId);
-        const result: AgentEvent = {
-          type: "agent_tool_result",
-          content: [{ type: "tool_result", tool_use_id: callId, content, ...(isError ? { is_error: true } : {}) }],
-        };
+        // Also tracked here in case the progress event that names the child never arrived.
+        const ran = subagentSession(part);
+        if (ran && !this.stopped) {
+          this.subagentWork.track(ran, callId);
+          if (!child) this.subagentWork.finish(ran);
+        }
+        const result = opencode2ToolResultEvent(callId, part);
         if (started) return [result];
         const rawInput =
           typeof part.state?.input === "object" && part.state.input !== null
             ? (part.state.input as Record<string, unknown>)
             : {};
-        return [toolUseEvent(callId, part.tool ?? "unknown", rawInput), result];
+        return [opencode2ToolUseEvent(callId, part.tool ?? "unknown", rawInput), result];
       }
       default:
         return [];
@@ -776,7 +791,7 @@ export class Opencode2Adapter
   private onToolStart(start: Opencode2ToolStart): void {
     if (!this.active || this.stopped || this.startedCalls.has(start.id) || this.finishedCalls.has(start.id)) return;
     this.startedCalls.add(start.id);
-    this.emit("event", toolUseEvent(start.id, start.tool, start.input));
+    this.emit("event", opencode2ToolUseEvent(start.id, start.tool, start.input));
   }
 
   compact(_instructions?: string): void {
@@ -872,9 +887,4 @@ export class Opencode2Adapter
       },
     };
   }
-}
-
-function toolUseEvent(callId: string, tool: string, rawInput: Record<string, unknown>): AgentEvent {
-  const { name, input } = normalizeOpencode2ToolCall(tool, rawInput);
-  return { type: "agent_assistant", content: [{ type: "tool_use", id: callId, name, input }] };
 }

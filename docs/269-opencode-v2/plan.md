@@ -433,7 +433,26 @@ Decisions made during the build:
   own; its finished messages are fed through the same path as `run`'s lines,
   and the turn ends on the next `idle` message once no subagent is left. A
   turn that ends any other way (stop, error, stall) marks the remaining ones
-  *stopped*. Background **shell** commands still end with the turn.
+  *stopped*. Background **shell** commands still end with the turn; waiting
+  for them would hold a dev server's turn open until the stall limit, so the
+  agent is told instead (`agents/opencode2/system-prompt.md`). The shared
+  prompt says a background command needs no wait "unless ShipIt tells you
+  this turn's process exits when your message ends", and Claude's per-turn
+  `ONE_SHOT_TURN_NOTE` reaches only harnesses that start their own turns.
+- **A subagent's own work fills its Work tab** (2.2.5, probed 2026-11-11).
+  A subagent runs in a child session that `run` never prints. The tool-start
+  stream also takes `session.tool.progress`, whose `metadata` on a
+  `subagent` call is `{sessionID: <child>, status: "running"}` as the child
+  starts. `subagent-work.ts` then reads the child's messages about once a
+  second and posts its text and calls with `parentToolUseId` set to the
+  launching call, which the orchestrator files under that call as it does
+  for Claude. A call appears once it is `running` (its input is whole), its
+  result once it is `completed` or `error`; text appears once its message is
+  done or another part follows it. The child gets one last read when its
+  call returns (foreground) or its report arrives (background), and every
+  child before the turn's result. A call whose progress event was missed is
+  still read once, from the child id in its result's metadata. Child reads
+  write no server log line, so they do not feed the stall check either.
 - **Compaction.** The run that compacts starts the server, then `POST
   /api/session/{id}/model` (compaction otherwise runs on the session's last
   model, which this run's config may not declare), then `POST /compact`, then

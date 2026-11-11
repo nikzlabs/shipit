@@ -324,4 +324,51 @@ describe("Integration: Subagent transparency (109)", () => {
 
     client.close();
   });
+  // OpenCode 2 reads a child session after the fact, so its last work can arrive after the
+  // launching call's result and after the parent has moved on to a new message.
+  it("files late subagent events under the launching call, not the newest message", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+
+    client.send({ type: "send_message", text: "Spawn a subagent" });
+    await waitForClaude(() => lastClaude);
+    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "subagent-session-late" });
+    const sessionStarted = await client.receiveType("session_started");
+    const appSessionId = (sessionStarted as { session: { id: string } }).session.id;
+
+    lastClaude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "task-late", name: "Agent", input: { description: "Two steps", prompt: "go" } }] },
+    });
+    lastClaude.emit("event", {
+      type: "assistant",
+      parent_tool_use_id: "task-late",
+      message: { content: [{ type: "tool_use", id: "sub-echo", name: "Bash", input: { command: "echo one" } }] },
+    });
+    lastClaude.emit("event", {
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "task-late", content: "DONE" }] },
+    });
+    lastClaude.emit("event", { type: "assistant", message: { content: [{ type: "text", text: "ok" }] } });
+    lastClaude.emit("event", {
+      type: "user",
+      parent_tool_use_id: "task-late",
+      message: { content: [{ type: "tool_result", tool_use_id: "sub-echo", content: "one\n" }] },
+    });
+    lastClaude.emit("event", {
+      type: "assistant",
+      parent_tool_use_id: "task-late",
+      message: { content: [{ type: "text", text: "DONE" }] },
+    });
+
+    lastClaude.finish("subagent-session-late");
+    try { for (let i = 0; i < 20; i++) await client.receive(300); } catch { /* drain */ }
+
+    const messages = chatHistoryManager.load(appSessionId);
+    const launcher = messages.find((m) => m.toolUse?.some((t) => t.id === "task-late"));
+    expect(launcher!.subagentEvents!.map((e) => e.kind)).toEqual(["assistant", "tool_result", "assistant"]);
+    expect(messages.filter((m) => m !== launcher).some((m) => (m.subagentEvents ?? []).length > 0)).toBe(false);
+    expect(messages.some((m) => m.text === "ok")).toBe(true);
+    client.close();
+  });
 });

@@ -79,7 +79,9 @@ let testHome: string;
 let configs: Record<string, unknown>[];
 
 function makeAdapter(opts: { mcp?: boolean; messages?: unknown; holdCompaction?: Promise<void> } = {}): Omit<Harness, "done"> {
-  const listMessages = (): unknown => (typeof opts.messages === "function" ? (opts.messages as () => unknown)() : opts.messages ?? MESSAGES);
+  // A function answers per URL; a value is every session's list.
+  const listMessages = (url: string): unknown =>
+    typeof opts.messages === "function" ? (opts.messages as (url: string) => unknown)(url) : opts.messages ?? MESSAGES;
   const spawns: Harness["spawns"] = [];
   const requests: Harness["requests"] = [];
   const inbox = new Set<string>();
@@ -124,7 +126,7 @@ function makeAdapter(opts: { mcp?: boolean; messages?: unknown; holdCompaction?:
     }
     const body = url.includes("/api/mcp")
       ? { data: opts.mcp ? [{ name: "playwright", status: { status: "connected" } }, { name: "broken", status: { status: "failed", error: "spawn ENOENT" } }] : [] }
-      : url.includes("/message?") ? listMessages() : url.endsWith("/compact") ? { data: { id: "msg_c" } } : url.includes("/message/msg_c") ? { data: { status: "completed" } } : undefined;
+      : url.includes("/message?") ? listMessages(url) : url.endsWith("/compact") ? { data: { id: "msg_c" } } : url.includes("/message/msg_c") ? { data: { status: "completed" } } : undefined;
     return new Response(body === undefined ? "" : JSON.stringify(body), { status: 200 });
   }) as unknown as typeof fetch;
   const adapter = new Opencode2Adapter({ spawnFn, fetchFn, backgroundPollMs: 5 });
@@ -427,7 +429,7 @@ describe("Opencode2Adapter — tool calls shown as they start", () => {
     const stream = h.requests.find((r) => r.url.includes("/api/event?"));
     expect(stream?.url).toBe(
       "http://127.0.0.1:41234/api/event?types=session.tool.input.started&types=session.tool.called"
-      + "&types=session.text.started&types=session.text.ended",
+      + "&types=session.text.started&types=session.text.ended&types=session.tool.progress",
     );
     h.client().emit("close", 0, null);
     await h.done;
@@ -635,7 +637,7 @@ describe("Opencode2Adapter — background subagents", () => {
 
   it("keeps the turn open until the subagent reports, puts the report on its card, and shows the parent's reply", async () => {
     let messages: unknown[] = AT_EXIT;
-    const h = start(makeAdapter({ messages: () => ({ data: messages, cursor: {} }) }), PARAMS);
+    const h = start(makeAdapter({ messages: (url: string) => ({ data: url.includes(CHILD) ? [] : messages, cursor: {} }) }), PARAMS);
     await announce(h);
     h.client().emitStdout(LAUNCH);
     h.client().emit("close", 0, null);
@@ -667,7 +669,8 @@ describe("Opencode2Adapter — background subagents", () => {
 
   it("shows a reply the parent finished before the first look, and rides out a failed one", async () => {
     let calls = 0;
-    const messages = (): unknown => {
+    const messages = (url: string): unknown => {
+      if (url.includes(CHILD)) return { data: [], cursor: {} };
       calls++;
       if (calls === 1) throw new Error("connection reset");
       return { data: [{ id: "msg_idle2", type: "idle" }, REPLY, NOTICE, ...AT_EXIT], cursor: {} };
@@ -717,6 +720,63 @@ describe("Opencode2Adapter — background subagents", () => {
     const kinds = h.events.map((e) => e.type);
     expect(kinds.indexOf("agent_self_wake")).toBeLessThan(kinds.indexOf("agent_result"));
     expect(h.events.find((e) => e.type === "agent_self_wake")).toMatchObject({ toolUseId: "call_bg", status: "stopped" });
+  });
+});
+
+describe("Opencode2Adapter — a subagent's own work", () => {
+  // CLI 2.2.5 capture (2026-11-11, DeepSeek), shortened ids.
+  const CHILD = "ses_child2";
+  const PROGRESS = {
+    id: "evt_p", type: "session.tool.progress",
+    data: { sessionID: SESSION, assistantMessageID: "msg_1", id: "call_fg", metadata: { sessionID: CHILD, status: "running" } },
+  };
+  const CHILD_WORK = [
+    { id: "msg_c1", type: "assistant", time: { completed: 2 }, content: [
+      { type: "tool", id: "call_echo", name: "shell", state: { status: "completed", input: { command: "echo one" }, content: [{ type: "text", text: "one\n" }], metadata: {} } },
+    ] },
+    { id: "msg_cu", type: "user", text: "You are a subagent spawned by another session." },
+  ];
+  const report = `<subagent sessionID="${CHILD}" state="completed">\nDONE\n</subagent>`;
+  const FINISHED = JSON.stringify({
+    type: "tool_use", timestamp: 3, sessionID: SESSION,
+    part: {
+      sessionID: SESSION, messageID: "msg_1", type: "tool", id: "call_fg", tool: "subagent",
+      state: {
+        status: "completed", input: { agent: "general", description: "Two steps", prompt: "go" }, output: report,
+        metadata: { metadata: { sessionID: CHILD, status: "completed" }, content: [{ type: "text", text: report }] },
+      },
+    },
+  });
+  const nested = (h: Harness) => h.events.filter((e) => (e as { parentToolUseId?: string }).parentToolUseId === "call_fg");
+
+  it("posts a running subagent's calls under its card, all before the turn's result", async () => {
+    let child: unknown[] = [];
+    const h = start(makeAdapter({ messages: (url: string) => ({ data: url.includes(CHILD) ? child : MESSAGES.data, cursor: {} }) }), PARAMS);
+    await announce(h);
+    h.client().emitStdout([TOOL_TURN[0]]);
+    h.serverEvent(PROGRESS);
+    child = CHILD_WORK;
+    await vi.waitFor(() => expect(nested(h)).toHaveLength(2));
+    expect(nested(h)[0]).toMatchObject({ type: "agent_assistant", content: [{ type: "tool_use", id: "call_echo", name: "Bash" }] });
+    expect(nested(h)[1]).toMatchObject({ type: "agent_tool_result", content: [{ tool_use_id: "call_echo", content: "one\n" }] });
+
+    child = [{ id: "msg_c2", type: "assistant", time: { completed: 4 }, content: [{ type: "text", text: "DONE" }] }, ...CHILD_WORK];
+    h.client().emitStdout([FINISHED]);
+    h.client().emit("close", 0, null);
+    await h.done;
+    expect(nested(h).map((e) => e.type)).toEqual(["agent_assistant", "agent_tool_result", "agent_assistant"]);
+    expect(nested(h)[2]).toMatchObject({ content: [{ type: "text", text: "DONE" }] });
+    const kinds = h.events.map((e) => e.type);
+    expect(h.events.indexOf(nested(h)[2])).toBeLessThan(kinds.indexOf("agent_result"));
+  });
+
+  it("still reads a finished subagent's work when the progress event never came", async () => {
+    const h = start(makeAdapter({ messages: (url: string) => ({ data: url.includes(CHILD) ? CHILD_WORK : MESSAGES.data, cursor: {} }) }), PARAMS);
+    await announce(h);
+    h.client().emitStdout([TOOL_TURN[0], FINISHED]);
+    h.client().emit("close", 0, null);
+    await h.done;
+    expect(nested(h).map((e) => e.type)).toEqual(["agent_assistant", "agent_tool_result"]);
   });
 });
 

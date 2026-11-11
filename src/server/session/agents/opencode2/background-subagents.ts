@@ -4,15 +4,23 @@
 
 import type { OpencodeEvent, OpencodeToolPart } from "../../../shared/opencode-stream.js";
 import { unwrapOpencode2SubagentReport } from "./opencode2-tool-normalizer.js";
-import type { Opencode2Message } from "./server.js";
+import type { Opencode2Message, Opencode2MessagePart } from "./server.js";
+
+function subagentMeta(part: OpencodeToolPart): { status?: unknown; sessionID?: unknown } | undefined {
+  if (part.tool !== "subagent") return undefined;
+  const meta = part.state?.metadata?.metadata;
+  return typeof meta === "object" && meta !== null ? meta : undefined;
+}
+
+/** The child session a subagent call ran in. */
+export function subagentSession(part: OpencodeToolPart): string | undefined {
+  const sessionID = subagentMeta(part)?.sessionID;
+  return typeof sessionID === "string" ? sessionID : undefined;
+}
 
 /** The child session of a subagent call that is still running after it returned. */
 export function backgroundSubagentSession(part: OpencodeToolPart): string | undefined {
-  if (part.tool !== "subagent") return undefined;
-  const meta = part.state?.metadata?.metadata;
-  if (typeof meta !== "object" || meta === null) return undefined;
-  const { status, sessionID } = meta as { status?: unknown; sessionID?: unknown };
-  return status === "running" && typeof sessionID === "string" ? sessionID : undefined;
+  return subagentMeta(part)?.status === "running" ? subagentSession(part) : undefined;
 }
 
 export interface SubagentNotice {
@@ -41,6 +49,24 @@ function contentText(content: unknown[] | undefined): string {
     .join("\n");
 }
 
+/** A listed tool part in the shape `run --format json` prints, whatever its status. */
+export function listedToolPart(part: Opencode2MessagePart): (OpencodeToolPart & { id: string }) | undefined {
+  if (part.type !== "tool" || !part.id) return undefined;
+  const state = part.state ?? {};
+  const status = state.status;
+  return {
+    id: part.id,
+    type: "tool",
+    tool: part.name,
+    state: {
+      status,
+      input: state.input,
+      ...(status === "error" ? { error: state.error?.message ?? "" } : { output: contentText(state.content) }),
+      metadata: { metadata: state.metadata, content: state.content },
+    },
+  };
+}
+
 /** A finished assistant message as the lines `run --format json` prints for it. */
 export function messageRunEvents(sessionId: string, message: Opencode2Message): OpencodeEvent[] {
   const messageID = message.id;
@@ -50,25 +76,10 @@ export function messageRunEvents(sessionId: string, message: Opencode2Message): 
       events.push({ type: "text", sessionID: sessionId, part: { id: part.id, messageID, type: "text", text: part.text } });
       continue;
     }
-    const status = part.state?.status;
-    if (part.type !== "tool" || (status !== "completed" && status !== "error")) continue;
-    const state = part.state ?? {};
-    events.push({
-      type: "tool_use",
-      sessionID: sessionId,
-      part: {
-        id: part.id,
-        messageID,
-        type: "tool",
-        tool: part.name,
-        state: {
-          status,
-          input: state.input,
-          ...(status === "error" ? { error: state.error?.message ?? "" } : { output: contentText(state.content) }),
-          metadata: { metadata: state.metadata, content: state.content },
-        },
-      },
-    });
+    const tool = listedToolPart(part);
+    if (tool && (tool.state?.status === "completed" || tool.state?.status === "error")) {
+      events.push({ type: "tool_use", sessionID: sessionId, part: { ...tool, messageID } });
+    }
   }
   if (message.error) events.push({ type: "error", sessionID: sessionId, error: message.error });
   events.push({
