@@ -40,6 +40,8 @@ Reflect.deleteProperty(process.env, "SHIPIT_AGENT_DEPTH");
 Reflect.deleteProperty(process.env, "SSH_AUTH_SOCK");
 // An in-process worker reports its turns to this orchestrator: inside a session that is the live one.
 Reflect.deleteProperty(process.env, "SHIPIT_HOST");
+// A missing report, as on CI, gates no harness; a session image's report omits harnesses it skipped.
+process.env.SHIPIT_AGENTS_INSTALL_REPORT = path.join(testGitConfigDir, "no-agents-install-report.json");
 
 if (process.env.GIT_ALLOW_PROTOCOL === undefined) {
   process.env.GIT_ALLOW_PROTOCOL = "file";
