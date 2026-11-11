@@ -457,6 +457,14 @@ Decisions made during the build:
   /api/session/{id}/model` (compaction otherwise runs on the session's last
   model, which this run's config may not declare), then `POST /compact`, then
   polls the compaction message until it is `completed` or `failed`.
+- **Automatic compaction and the window.** OpenCode 2 also compacts by itself
+  once the context passes `window − max(15% of window, 16K)`. A model with no
+  declared window counts as 200K, so it compacted near 170K even on a 1M model.
+  The config therefore declares `limit: { context, output: 32000 }` from the
+  catalogue window for every Claude model, on the API-key and Claude-account
+  routes (`opencode2ClaudeLimit` in `shared/opencode-spawn-shaping.ts`); the
+  binary ignores a `limit` without `output`, and 32K is its own default. Other
+  model families are unchanged.
 - **Session naming** uses `run --standalone`: naming starts no MCP server, so
   the race cannot occur. On the ChatGPT route it imports the token with
   `auth import` / `switch --standalone` into a throwaway root first.

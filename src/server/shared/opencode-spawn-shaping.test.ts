@@ -200,7 +200,57 @@ describe("OpenCode 2 shaping (docs/269)", () => {
   it("declares OpenCode 2's own reasoning levels as variants", () => {
     const config = opencodeProviderConfig(ROUTING, "claude-haiku-4-5", "opencode2") as { shipit: { models: Record<string, { variants: Record<string, unknown> }> } };
     expect(Object.keys(config.shipit.models["claude-haiku-4-5"].variants)).toEqual(["low", "medium", "high", "xhigh", "max"]);
-    expect(opencodeProviderConfig(ROUTING, "claude-haiku-4-5", "opencode2")).toEqual(opencodeProviderConfig(ROUTING, "claude-haiku-4-5"));
+    const v1 = opencodeProviderConfig(ROUTING, "claude-haiku-4-5") as typeof config;
+    expect(config.shipit.models["claude-haiku-4-5"].variants).toEqual(v1.shipit.models["claude-haiku-4-5"].variants);
+  });
+});
+
+// Without a declared limit OpenCode 2 assumes 200K and compacts near 170K, even for a 1M model.
+describe("OpenCode 2 context window for Claude models", () => {
+  interface Limited { limit?: { context: number; output: number } }
+  const ANTHROPIC_KEY: ServiceRouting = {
+    serviceId: "anthropic",
+    serviceName: "Anthropic",
+    billingMode: "key",
+    style: "anthropic-messages",
+    baseUrl: "https://api.anthropic.com",
+    credentialSourceEnv: "ANTHROPIC_API_KEY",
+    credentialTarget: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
+  };
+  const keyModel = (routing: ServiceRouting, modelId: string, harness?: "opencode" | "opencode2") =>
+    (opencodeProviderConfig(routing, modelId, harness) as { shipit: { models: Record<string, Limited> } }).shipit.models[modelId];
+  const accountModel = (modelId: string) =>
+    (opencode2ClaudeConfig(modelId) as { provider: Record<string, { models: Record<string, Limited> }> }).provider["claude-agent"].models[modelId];
+
+  it("declares the catalogue window on the Claude account route", () => {
+    expect(accountModel("claude-opus-5-5").limit).toEqual({ context: 1_000_000, output: 32_000 });
+    expect(accountModel("claude-sonnet-5-5").limit).toEqual({ context: 1_000_000, output: 32_000 });
+    expect(accountModel("haiku").limit).toEqual({ context: 200_000, output: 32_000 });
+  });
+
+  it("declares the catalogue window for every Claude model on the API-key routes", () => {
+    const claude = catalogueEntriesForHarness("opencode2").filter(
+      (e) => e.model.family === "claude" && e.selection.billingMode === "key",
+    );
+    expect(claude.map((e) => e.selection.serviceId)).toEqual(expect.arrayContaining(["anthropic", "opencode", "openrouter"]));
+    for (const entry of claude) {
+      const { serviceId, billingMode, modelId } = entry.selection;
+      const style = resolveStyle("opencode2", entry.model, "string");
+      if (!style) continue;
+      const routing = { ...ANTHROPIC_KEY, serviceId, billingMode, style } as ServiceRouting;
+      expect(keyModel(routing, modelId, "opencode2").limit, `${serviceId}/${modelId}`).toEqual({
+        context: entry.model.contextWindow.byHarness?.opencode2 ?? entry.model.contextWindow.default,
+        output: 32_000,
+      });
+    }
+  });
+
+  it("leaves non-Claude models, unknown models and OpenCode 1 to OpenCode's own window", () => {
+    const chat = { ...ROUTING, style: "openai-chat-completions", baseUrl: "https://opencode.ai/zen/v1" } as ServiceRouting;
+    expect(keyModel(chat, "kimi-k3", "opencode2").limit).toBeUndefined();
+    expect(keyModel(ANTHROPIC_KEY, "no-such-model", "opencode2").limit).toBeUndefined();
+    expect(keyModel(ANTHROPIC_KEY, "claude-opus-5-5", "opencode").limit).toBeUndefined();
+    expect(accountModel("no-such-model").limit).toBeUndefined();
   });
 });
 
@@ -220,6 +270,7 @@ describe("OpenCode 2 on a Claude account (docs/340)", () => {
       id: "claude-opus-5-5[1m]",
       name: "claude-opus-5-5",
       variants: { low: { effort: "low" }, medium: { effort: "medium" }, high: { effort: "high" }, xhigh: { effort: "xhigh" }, max: { effort: "max" } },
+      limit: { context: 1_000_000, output: 32_000 },
     });
     // A row named for a Claude Code alias sends its vendor id, as on Claude Code.
     const haiku = opencode2ClaudeConfig("haiku") as unknown as Config;

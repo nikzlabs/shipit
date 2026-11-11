@@ -3,8 +3,20 @@ import path from "node:path";
 import type { ServiceRouting, OpenAIAccountRouting, AnthropicAccountRouting } from "./types/agent-types.js";
 import { SHIPIT_PROVIDER_ID, claudeModelArg, scrubHarnessEnvCredentials } from "./spawn-routing.js";
 import { HARNESSES } from "./catalogue/harnesses.js";
-import { apiModelIdFor, visionSupportFor } from "./catalogue/index.js";
+import { apiModelIdFor, contextWindowFor, modelIdentityFor, visionSupportFor } from "./catalogue/index.js";
+import type { ModelSelection } from "./catalogue/types.js";
 import type { OpenCodeHarnessId } from "./opencode-harness.js";
+
+// OpenCode 2's output limit for a model it has no window for; restated so a declared window leaves it unchanged.
+const OPENCODE2_DEFAULT_OUTPUT_TOKENS = 32_000;
+
+// OpenCode 2 assumes 200K for a model it has no window for and compacts near 170K,
+// whatever the model takes. It ignores a limit without `output`.
+function opencode2ClaudeLimit(selection: ModelSelection): { context: number; output: number } | undefined {
+  if (modelIdentityFor(selection)?.family !== "claude") return undefined;
+  const context = contextWindowFor(selection, "opencode2");
+  return context && context > 0 ? { context, output: OPENCODE2_DEFAULT_OUTPUT_TOKENS } : undefined;
+}
 
 function reasoningLevels(harness: OpenCodeHarnessId): readonly string[] {
   return (HARNESSES.find((h) => h.id === harness)?.capabilities.reasoning?.options ?? []).map((o) => o.value);
@@ -58,6 +70,7 @@ export function opencodeProviderConfig(
   }
   const selection = { serviceId: routing.serviceId, billingMode: routing.billingMode, modelId };
   const modalities = visionSupportFor(selection) === "no" ? TEXT_ONLY_MODALITIES : IMAGE_MODALITIES;
+  const limit = harness === "opencode2" ? opencode2ClaudeLimit(selection) : undefined;
   return {
     [SHIPIT_PROVIDER_ID]: {
       name: routing.serviceName,
@@ -68,7 +81,7 @@ export function opencodeProviderConfig(
       },
       // The key stays the row id, which OpenCode reports back; `id` is what it sends.
       models: {
-        [modelId]: { id: apiModelIdFor(selection) ?? modelId, name: modelId, variants, modalities },
+        [modelId]: { id: apiModelIdFor(selection) ?? modelId, name: modelId, variants, modalities, ...(limit ? { limit } : {}) },
       },
     },
   };
@@ -101,6 +114,7 @@ const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 // given. It is the only enabled provider, so a credential another route left behind serves nothing.
 export function opencode2ClaudeConfig(modelId: string): Record<string, unknown> {
   const providerId = OPENCODE2_CLAUDE_PROVIDER_ID;
+  const limit = opencode2ClaudeLimit({ serviceId: "anthropic", billingMode: "sub", modelId });
   return {
     enabled_providers: [providerId],
     model: `${providerId}/${modelId}`,
@@ -112,6 +126,7 @@ export function opencode2ClaudeConfig(modelId: string): Record<string, unknown> 
             id: claudeModelArg(modelId),
             name: modelId,
             variants: Object.fromEntries(CLAUDE_EFFORTS.map((level) => [level, { effort: level }])),
+            ...(limit ? { limit } : {}),
           },
         },
       },
