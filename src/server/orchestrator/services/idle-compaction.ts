@@ -3,6 +3,7 @@
 // deadline; the deadlines are re-derived from the usage rows at boot.
 import type { AgentId } from "../../shared/types.js";
 import type { ModelFamily } from "../../shared/catalogue/model-identity.js";
+import type { ModelSelection } from "../../shared/catalogue/types.js";
 import { modelIdentityFor } from "../../shared/catalogue/index.js";
 import { getAgentCapabilities } from "../../shared/agent-registry.js";
 import { GLOBAL_SETTINGS } from "../../shared/settings-catalogue/global-settings.js";
@@ -39,6 +40,8 @@ interface HarnessCacheFacts {
   excluded?: string;
   /** The lifetime of the Anthropic cache it gets by setting no ttl of its own. */
   anthropicDefaultMinutes?: number;
+  /** On the Anthropic subscription, where the `claude` CLI makes its model calls (docs/340). */
+  anthropicSubscriptionMinutes?: number;
 }
 
 // The probes and sources of plan.md, piece 1 and "Verify first".
@@ -52,7 +55,8 @@ const HARNESS_CACHE: Readonly<Record<AgentId, HarnessCacheFacts>> = {
   // 99.1% of the previous input from the cache in a new process. It sends Anthropic
   // `cacheControl: {type: "ephemeral"}` with no ttl.
   opencode: { anthropicDefaultMinutes: 5 },
-  opencode2: { excluded: "OpenCode 2's cache across processes is not probed" },
+  // Warm in a new process, 1-hour writes on the subscription, no ttl on a key ("Verify first" 1c).
+  opencode2: { anthropicDefaultMinutes: 5, anthropicSubscriptionMinutes: 60 },
   // req 15 — no probe has shown a new Grok process reading the previous one's cache.
   grok: { excluded: "Grok's cache across processes is not probed (req 15)" },
   antigravity: {},
@@ -67,10 +71,13 @@ export function cacheLifetimeMinutes(input: {
   agentId: AgentId;
   family: ModelFamily | undefined;
   observed: CacheTtl | undefined;
+  selection?: Pick<ModelSelection, "serviceId" | "billingMode"> | undefined;
 }): number {
   if (input.observed) return input.observed === "1h" ? 60 : 5;
-  const anthropicDefault = HARNESS_CACHE[input.agentId].anthropicDefaultMinutes;
-  if (input.family === "claude" && anthropicDefault !== undefined) return anthropicDefault;
+  const facts = HARNESS_CACHE[input.agentId];
+  const onSubscription = input.selection?.serviceId === "anthropic" && input.selection.billingMode === "sub";
+  if (onSubscription && facts.anthropicSubscriptionMinutes !== undefined) return facts.anthropicSubscriptionMinutes;
+  if (input.family === "claude" && facts.anthropicDefaultMinutes !== undefined) return facts.anthropicDefaultMinutes;
   // Kimi's documented default; no harness sets `prompt_cache_options`.
   if (input.family === "kimi") return 5;
   // "At least 30 minutes after the latest write or reuse", GPT-5.6 and later.
@@ -257,6 +264,7 @@ export class IdleCompaction {
       agentId,
       family: selection ? modelIdentityFor(selection)?.family : undefined,
       observed: this.deps.usageManager.observedCacheTtl(sessionId, turn.credentialRouteId, anchor),
+      selection,
     });
     if (lifetime < IDLE_COMPACTION_MIN_LIFETIME_MINUTES) return null;
     if (!this.contextLargeEnough(sessionId)) return null;

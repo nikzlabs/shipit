@@ -185,5 +185,7 @@ blocking. The OpenCode 1 removal was reviewed separately.
 ## Known limits
 
 - OpenCode 1 cannot use a Claude subscription (req 2).
-- Idle compaction still skips OpenCode 2 (its cache across processes is
-  unprobed), which is the safe default.
+- In a home where the `claude` CLI has never run, the second turn misses the
+  cache once: the CLI's own system prompt changes after its first request
+  (docs/333 plan, "Verify first" 1c). Idle compaction covers this route with
+  the CLI's one-hour cache.

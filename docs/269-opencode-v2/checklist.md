@@ -95,8 +95,8 @@ OpenCode 2 specifics are in [plan.md](./plan.md); the requirements are in
 - [ ] Real-account ChatGPT check (token accepted, the v2 route config, its
       model ids) — needs the user's account
 - [ ] One dogfood turn per auth mode; `shipit agent run` both directions
-- [ ] Probe whether a new process reads the previous turn's prompt cache;
-      until then idle compaction skips OpenCode 2
+- [x] Probe whether a new process reads the previous turn's prompt cache
+      (warm on 2.2.5; idle compaction now covers OpenCode 2, docs/333)
 
 **11 — Live steering (req 6, planning#707)**
 - [x] Probe `delivery: "steer"` on 2.2.5: busy tool step, busy final step,
