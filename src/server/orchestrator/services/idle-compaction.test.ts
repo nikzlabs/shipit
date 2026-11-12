@@ -174,6 +174,15 @@ describe("cacheLifetimeMinutes (req 1, 9, 10, 11)", () => {
     expect(cacheLifetimeMinutes({ agentId: "codex", family: "gpt", observed: undefined })).toBe(30);
   });
 
+  it("gives OpenCode 2 the CLI's 1-hour cache on the Anthropic subscription, and 5 minutes on a key", () => {
+    const sub = { serviceId: "anthropic", billingMode: "sub" } as const;
+    const key = { serviceId: "anthropic", billingMode: "key" } as const;
+    expect(cacheLifetimeMinutes({ agentId: "opencode2", family: "claude", observed: undefined, selection: sub })).toBe(60);
+    expect(cacheLifetimeMinutes({ agentId: "opencode2", family: "claude", observed: undefined, selection: key })).toBe(5);
+    expect(cacheLifetimeMinutes({ agentId: "opencode2", family: "gpt", observed: undefined })).toBe(30);
+    expect(cacheLifetimeMinutes({ agentId: "opencode", family: "claude", observed: undefined, selection: sub })).toBe(5);
+  });
+
   it("assumes 30 minutes where nothing is known (req 10)", () => {
     for (const family of ["glm", "deepseek", "grok", "qwen", undefined] as const) {
       expect(cacheLifetimeMinutes({ agentId: "codex", family, observed: undefined })).toBe(30);
@@ -187,6 +196,7 @@ describe("idleCompactionExclusion", () => {
     expect(idleCompactionExclusion("grok")).toContain("req 15");
     expect(idleCompactionExclusion("antigravity")).not.toBeNull();
     expect(idleCompactionExclusion("opencode")).toBeNull();
+    expect(idleCompactionExclusion("opencode2")).toBeNull();
     expect(idleCompactionExclusion("claude")).toBeNull();
     expect(idleCompactionExclusion("codex")).toBeNull();
   });
@@ -278,6 +288,31 @@ describe("arming the deadline (req 1, 6, 11)", () => {
     });
     anthropic.turn({ ttl: null });
     expect(anthropic.idle.isWaiting(SESSION)).toBe(false);
+  });
+
+  it("arms OpenCode 2 at 54 minutes on the Claude subscription and 27 on OpenAI, not on an Anthropic key", () => {
+    vi.useFakeTimers();
+    const sub = setup({
+      agentId: "opencode2", session: { model: "claude-sonnet-5-5", serviceId: "anthropic", billingMode: "sub" },
+    });
+    sub.turn({ ttl: null, anchorAgo: 0 });
+    const subFire = vi.spyOn(sub.idle, "fire");
+    vi.advanceTimersByTime(54 * MINUTE - 1_000);
+    expect(subFire).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(2_000);
+    expect(subFire).toHaveBeenCalledWith(SESSION);
+
+    const openai = setup({ agentId: "opencode2", session: { model: "gpt-6-luna", serviceId: "openai", billingMode: "sub" } });
+    openai.turn({ ttl: null, anchorAgo: 0 });
+    const openaiFire = vi.spyOn(openai.idle, "fire");
+    vi.advanceTimersByTime(27 * MINUTE + 1_000);
+    expect(openaiFire).toHaveBeenCalledWith(SESSION);
+
+    const key = setup({
+      agentId: "opencode2", session: { model: "claude-sonnet-5-5", serviceId: "anthropic", billingMode: "key" },
+    });
+    key.turn({ ttl: null });
+    expect(key.idle.isWaiting(SESSION)).toBe(false);
   });
 
   it("is replaced by the next turn's reading, and dropped by a small one", () => {

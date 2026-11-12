@@ -1,7 +1,7 @@
 ---
 issue: planning#699
 title: Compact an idle session before its prompt cache expires
-description: ShipIt compacts a large, idle session's context shortly before its prompt cache expires — on Claude, Codex and (after a prompt fix) OpenCode — because the Claude CLI's own idle compaction never runs under ShipIt.
+description: ShipIt compacts a large, idle session's context shortly before its prompt cache expires — on Claude, Codex, OpenCode (after a prompt fix) and OpenCode 2 — because the Claude CLI's own idle compaction never runs under ShipIt.
 ---
 
 # 333 — Idle compaction (requirements)

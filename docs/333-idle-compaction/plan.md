@@ -57,6 +57,8 @@ compaction at all:
 instruction-file path per prompt, and its control probe was warm — "Verify
 first" 1b.
 
+**OpenCode 2 is in** (req 9) since its probe was warm — "Verify first" 1c.
+
 The per-harness facts — excluded, the Anthropic default a harness gets by
 setting no ttl — are one table,
 `HARNESS_CACHE`, keyed by harness id: a lint rule forbids comparing harness ids
@@ -82,6 +84,8 @@ Otherwise three rules, in order:
    | Model provider | Lifetime | Source |
    |---|---|---|
    | Anthropic, through OpenCode | 5 | OpenCode 1.18.34 sends `cacheControl: {type: "ephemeral"}` with no `ttl`: Anthropic's 5-minute default |
+   | Anthropic, through OpenCode 2 on an API key | 5 | OpenCode 2.2.5 sends `cache_control: {type: "ephemeral"}` with no `ttl` |
+   | Anthropic subscription, through OpenCode 2 | 60 | The `claude` CLI makes the calls (docs/340); every write in the probe was `ephemeral_1h`. Keyed by the session's service and billing mode (`anthropicSubscriptionMinutes`), not the model's vendor |
    | Kimi | 5 | Kimi documents a 5-minute default; no harness sets `prompt_cache_options` |
    | OpenAI | 30 | "at least 30 minutes after the latest write or reuse" on GPT-5.6 and later. Unverified on the ChatGPT backend; req 10 gives the same number |
 
@@ -582,6 +586,37 @@ read 3,584); B, resumed after a scratch commit, 20,423 (cache read 20,224 —
 table and commands are in PR #3239. OpenCode then takes the ordinary rules:
 on an OpenAI model 30 minutes, on an Anthropic model the 5-minute default, so
 no deadline (req 11).
+
+### 1c. Across processes on OpenCode 2 — warm
+
+Probed on 2026-11-12 with OpenCode 2.2.5 through ShipIt's own
+`Opencode2Adapter` (the scratch harness is not committed). Every ShipIt turn
+starts a new `opencode2 serve` and `run`, so every resumed turn is a new
+process. Turns: A new; B resumed after a file changed in the workspace; C
+resumed again; D the compaction run (`compact: true`), which is what an idle
+compaction sends; E a turn after it. The system prompt was this repo's
+`CLAUDE.md` with a nonce.
+
+| Route (model) | A written | B read | C read | D (`/compact`) read / written |
+|---|---|---|---|---|
+| DeepSeek API key (`deepseek-flash`), through a recording proxy | 18,820 | 18,816 of 18,963 | 18,816 of 19,043 | 18,944 of 19,616 |
+| Anthropic subscription (`claude-haiku-5-5`, `claude-agent`), a home the CLI had used | 25,588 | 30,143 of 30,484 | 30,480 of 30,506 | 30,502 / 850 |
+
+The proxy showed the request bytes themselves stable: A's and B's tools were
+equal and their messages shared all but the last character of A's.
+
+**A fresh home is cold once.** In a home where the `claude` CLI had never run,
+B read only 4,872 tokens and wrote 25,610, and C was warm again. The CLI's own
+system prompt gained a paragraph from its second request on, and moving the
+file change to before C changed nothing. It is the CLI's, not OpenCode's, and
+costs the second turn of the home's first session one cache write.
+
+**Cache lifetime.** On an Anthropic API key OpenCode 2 sends `{type:
+"ephemeral"}` with no `ttl` (a request captured by a local fake server), so 5
+minutes and no deadline (req 11). On the subscription the CLI wrote only
+1-hour entries, so 60. On OpenAI it sends the OpenCode session id as
+`prompt_cache_key` and no retention, so OpenAI's 30 minutes; the ChatGPT
+account route itself was not probed.
 
 ### 2. `cache_creation` reaches ShipIt on stream-json — true
 

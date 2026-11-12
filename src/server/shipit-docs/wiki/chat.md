@@ -377,8 +377,9 @@ ways it happens:
   not read the whole conversation again at full price. Read it with
   `shipit settings get advanced.idleCompaction`. It also runs while you wait for
   the user's answer to a question or a plan, which stays open. It skips a done
-  session, a cache that lives under 30 minutes (Claude on an API key, or a
-  Claude model through OpenCode), Grok and OpenCode 2 sessions, and a session whose next turn
+  session, a cache that lives under 30 minutes (Claude on an API key, a Claude
+  model through OpenCode, or one through OpenCode 2 on an API key — OpenCode 2
+  on the Claude subscription has the one-hour cache), Grok sessions, and a session whose next turn
   would run on another account than its last one, because a cache belongs to
   the account. When ShipIt has stopped the session's container — a ShipIt
   update does that to idle sessions — it starts the container for the

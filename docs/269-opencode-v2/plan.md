@@ -499,9 +499,10 @@ ChatGPT backend, which refused the token, and the adapter raised
 and both: with both, `opencode` reports 1.19.0 and `opencode2` reports 2.1.1.
 
 Not yet verified: the real-account ChatGPT turn, a dogfood turn per auth mode,
-`shipit agent run` in both directions, the depth-0 review probe, and whether a
-new process reads the previous turn's prompt cache. Until that last one is
-probed, idle compaction skips OpenCode 2.
+`shipit agent run` in both directions, and the depth-0 review probe. A new
+process reads the previous turn's prompt cache (probed 2026-11-12 on 2.2.5,
+[docs/333 plan, "Verify first" 1c](../333-idle-compaction/plan.md#1c-across-processes-on-opencode-2--warm)),
+so idle compaction covers OpenCode 2.
 
 ## Live steering (req 6, planning#707)
 
