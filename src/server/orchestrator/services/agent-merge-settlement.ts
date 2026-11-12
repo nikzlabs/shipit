@@ -16,7 +16,8 @@ export interface AgentMergeSettlementDeps {
 }
 
 export type SettlementOutcome =
-  | { result: "settled"; merged: true }
+  // ownSession is false when the session had moved to another pull request and was left alone.
+  | { result: "settled"; merged: true; ownSession: boolean }
   | { result: "not-merged" }
   | { result: "deferred"; reason: string };
 
@@ -148,7 +149,7 @@ export async function settleAgentMerge(
     persistNoticeUnattached(deps.chatHistoryManager, claim.sessionId, message, "info");
   });
 
-  return { result: "settled", merged: true };
+  return { result: "settled", merged: true, ownSession: true };
 }
 
 // Use the claim's repository after a session moves; do not promote its new PR.
@@ -198,7 +199,7 @@ async function settleWithoutSession(
       "info",
     );
   });
-  return { result: "settled", merged: true };
+  return { result: "settled", merged: true, ownSession: false };
 }
 
 export async function reconcileAgentMergeClaims(
@@ -253,6 +254,6 @@ export function captureTurn(
   return { runner, epoch: runner.turnEpoch ?? 0 };
 }
 
-function isSameTurn(active: TurnToken, claimed: TurnToken | null | undefined): boolean {
+export function isSameTurn(active: TurnToken, claimed: TurnToken | null | undefined): boolean {
   return claimed?.runner === active.runner && claimed.epoch === active.epoch;
 }

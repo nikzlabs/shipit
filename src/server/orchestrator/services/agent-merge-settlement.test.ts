@@ -110,7 +110,7 @@ describe("settleAgentMerge", () => {
     const p = poller();
     const out = await settleAgentMerge(deps({ prStatusPoller: p }), claim, { witnessed: true });
 
-    expect(out).toEqual({ result: "settled", merged: true });
+    expect(out).toEqual({ result: "settled", merged: true, ownSession: true });
     expect(p.promoteMergedPrByNumber).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: SESSION, owner: "acme", repo: "shipit", prNumber: 7 }),
     );
@@ -159,7 +159,7 @@ describe("settleAgentMerge", () => {
     const p = poller();
     const out = await settleAgentMerge(deps({ prStatusPoller: p }), claim, { witnessed: true });
 
-    expect(out).toEqual({ result: "settled", merged: true });
+    expect(out).toEqual({ result: "settled", merged: true, ownSession: false });
     expect(p.promoted).toEqual([]);
     const text = notices().join("\n");
     expect(text).toContain("#7 in acme/shipit");
@@ -225,7 +225,7 @@ describe("settleAgentMerge", () => {
       deps({ prStatusPoller: poller(facts({ head_sha: null })) }),
       claim, { witnessed: true },
     );
-    expect(out).toEqual({ result: "settled", merged: true });
+    expect(out).toEqual({ result: "settled", merged: true, ownSession: true });
   });
 
   it("never downgrades a `settling` claim to not-merged", async () => {
@@ -279,7 +279,7 @@ describe("settleAgentMerge", () => {
       claim, { witnessed: true, turn: captureTurn(reg, SESSION) },
     );
 
-    expect(out).toEqual({ result: "settled", merged: true });
+    expect(out).toEqual({ result: "settled", merged: true, ownSession: true });
   });
 
   it("re-asks whether it is safe to settle, after the caller's own await", async () => {
@@ -299,7 +299,7 @@ describe("settleAgentMerge", () => {
     sessions.setRemoteUrl(SESSION, "https://github.com/acme/other.git");
     const p = poller();
     const out = await settleAgentMerge(deps({ prStatusPoller: p }), claim, { witnessed: true });
-    expect(out).toEqual({ result: "settled", merged: true });
+    expect(out).toEqual({ result: "settled", merged: true, ownSession: false });
     expect(p.readPrByNumber).toHaveBeenCalledWith("acme", "shipit", 7);
     expect(p.promoted).toEqual([]);
   });

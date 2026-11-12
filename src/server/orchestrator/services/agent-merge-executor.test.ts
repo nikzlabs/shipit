@@ -1017,6 +1017,50 @@ describe("runOneRequest — a merge and a turn are mutually exclusive (req 6)", 
     expect(runner.queueLength).toBe(0);
   });
 
+  it("moves the branch inside the hold, before the message that waited starts (docs/288 req 9)", async () => {
+    const runner = fakeRunner();
+    const seen: { held: boolean; dispatched: number }[] = [];
+    const resetAfterMerge = vi.fn(async (_id: string, _pr: number) => {
+      seen.push({ held: runner.mergeHold, dispatched: runner.dispatched.length });
+    });
+    const gh = github({ onMerge: () => { runner.queueLength = 1; } });
+
+    const out = await runOneRequest(
+      deps({ githubAuthManager: gh, runnerRegistry: registry(runner), resetAfterMerge }),
+      armed(),
+    );
+
+    expect(out).toEqual({ result: "merged" });
+    expect(resetAfterMerge).toHaveBeenCalledWith(SESSION, 7);
+    expect(seen).toEqual([{ held: true, dispatched: 0 }]);
+    expect(runner.dispatched).toHaveLength(1);
+  });
+
+  it("does not move the branch of a session that has moved to another pull request", async () => {
+    const resetAfterMerge = vi.fn(async () => {});
+    // It moves while GitHub merges: before that, the executor cancels the request instead.
+    const gh = github({ onMerge: () => { sessions.recordPrProvenance(SESSION, 9, REPO_ID); } });
+
+    const out = await runOneRequest(deps({ githubAuthManager: gh, resetAfterMerge }), armed());
+
+    expect(out).toEqual({ result: "merged" });
+    expect(resetAfterMerge).not.toHaveBeenCalled();
+  });
+
+  it("still reports the merge when moving the branch throws", async () => {
+    const runner = fakeRunner();
+    const resetAfterMerge = vi.fn(async () => { throw new Error("git broke"); });
+
+    const out = await runOneRequest(
+      deps({ runnerRegistry: registry(runner), resetAfterMerge }),
+      armed(),
+    );
+
+    expect(out).toEqual({ result: "merged" });
+    expect(runner.mergeHold).toBe(false);
+    expect(claims.get(SESSION)).toBeNull();
+  });
+
   it("releases the hold when something after the merge throws", async () => {
     const runner = fakeRunner();
     const p = poller();

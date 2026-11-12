@@ -484,10 +484,10 @@ its card, its reset eligibility — requires the session's current `pr_repo_key`
 **and** `pr_number` to still equal the row's. If either has moved on, the merge
 is still recorded against the row and the session is left alone.
 
-**A shippable branch (req 10).** After the merge the branch sits on the merged
-tip, so the post-turn auto-push is refused as stacked on it. With `merged_at`
-settled, the merge result tells the agent to run `shipit branch reset-to-base`
-— docs/239's own wording. That is the agent's step, so no user action is needed.
+**A shippable branch (req 10, 22).** After the merge the branch sits on the
+merged tip, so the post-turn auto-push would be refused as stacked on it. With
+`merged_at` settled, the merge command now moves the branch itself — see
+§6.
 
 **A user's own auto-merge is untouched** — different record, different loop, and
 the repository grant does not govern it.
@@ -499,6 +499,115 @@ naming what it permits: this session's own pull request, checks green, branch
 protection still enforced by GitHub. It goes in an "Agent permissions" section
 inside the existing Project Settings surface, not a new tab: one toggle does not
 justify an otherwise empty navigation category.
+
+## 6. Moving the branch after the merge (req 10, 11, 22)
+
+Before this, a successful merge answered only `Merged PR #N`, and
+`/shipit-docs/github.md` told the agent to run `shipit branch reset-to-base`
+next. An agent that read the answer and not the page carried on on the merged
+tip, and its next commits were stranded: refused by the auto-push and by
+`gh pr create`. The command now does the reset itself.
+
+**Where.** In the merge route (`api-routes-github.ts`, the
+`/pr/:number/merge` handler), after `agentMergePullRequest` reports success
+**and** this request's own settlement promoted the merge onto this session.
+`settleAgentMerge` now says which: its `settled` outcome carries
+`ownSession`, false when the session had moved to another pull request
+(`settleWithoutSession`). The route sets its flag only from that outcome —
+never from `success`, which also covers an already-merged pull request, and
+never from `onMerged`'s early `settled` for a claim something else resolved.
+Not inside `settleAgentMerge` itself: that is shared with crash recovery, which
+runs much later and records a merge the process did not witness — that path
+keeps the next-message reset (docs/218).
+
+**What runs.** The same flow as `shipit branch reset-to-base`, moved out of the
+`/branch/reset-to-base` route into one function both call
+(`runExplicitBranchReset` in `branch-reset-flow.ts`): the guarded
+`resetBranchToBaseExplicit`, `onWorkspaceRewritten`, the persisted
+`BranchUpdatedCard`, `reset_eligible: false`, and the docs/216 re-arm. So the
+safety rules are the explicit reset's, unchanged: clean tree, the session's own
+branch, no rebase or merge in progress, and a `HEAD` contained in the base or
+equal to `mergedHeadSha`. `--force` is never used. At this point `HEAD` is the
+commit that merged, because the command flushed and then merged exactly that
+commit; the only realistic refusal is a tree something else dirtied (a
+subagent, a background command, the user's terminal).
+
+**A reset that moved the branch but could not push.** `resetBranchToBaseExplicit`
+resets locally, then force-pushes; when the push fails it returns `refused`
+although the tree already moved. Its refused outcome now carries
+`movedLocally` — so does a throw after the hard reset, such as a failed LFS
+restore — and `runExplicitBranchReset` runs `onWorkspaceRewritten` for it too.
+The re-arm and the card stay with a complete reset, because the remote still
+names the merged commit. A retry used to stop at "already at base" and never
+push; it now pushes again when the remote branch holds only shipped work (it is
+`mergedHeadSha`, or contained in the base), leased on the exact tip it checked,
+and refuses — rather than reporting "already at base" — over a remote branch
+that carries commits the base lacks, unless the user's `--force --reason`
+override was given. A movedLocally outcome also leaves the
+next turn its agent notice, saying the push still has to be retried. This
+fixes the `reset-to-base` route as well, which had these gaps.
+
+**Order, and a bounded wait.** `onMerged` settles through
+`promoteMergedPrByNumber`, which starts the merge handling (`markMerged`, the
+docs/266 notice, the self-merge wake) without waiting for it. The reset first
+awaits `prStatusPoller.awaitMergeHandling(sessionId)`, which is set
+synchronously inside the promotion, so `merged_at` and the reset anchor exist
+when the gate reads them. The docs/287 concern about `awaitMergeHandling` (§4,
+Settlement) was about a verification that had *not* promoted; here the
+promotion has happened, so the handling exists to wait on. The wait is capped
+at 30 seconds, as the poller's contract asks; past it the merge is reported as
+not yet recorded.
+
+**Only inside the turn that merged.** The route's own GitHub awaits can outlive
+its turn — the user can stop the turn while the request is in flight — and a
+reset then could run beside the post-turn commit or a new turn. So the reset
+runs only while the captured `turn` is still the session's active turn
+(`captureTurn`, the same identity settlement checks), and for its duration it
+sets `runner.mergeHold`, which every turn-admission site already refuses
+(docs/288), plus the post-turn lease so the runner is not reclaimed, releasing
+both — and the queue — in a `finally`. The turn is checked on entry and again
+right before the reset, after the waits for the merge handling and the safety
+check; a turn that has ended gets no reset, and the next message's docs/218
+reset still applies. What is left is the reset's own fetch: a turn stopped
+inside it has nothing for the post-turn commit to take, because the merge
+committed everything and the agent was blocked on this command, and the
+reset re-checks the clean tree after the fetch.
+
+**Mid-turn is acceptable here.** docs/282 refuses to reset mid-turn because
+there the merge happens without the agent knowing. Here the agent chose the
+moment and is blocked on this command, and running `shipit branch
+reset-to-base` itself would rewrite the same files at the same point in the
+turn. The answer tells it that files may have changed.
+
+**No setting.** The reset does not consult `advanced.autoResetMergedBranch`:
+req 22 is unqualified, and that switch governs the next-message reset of a
+merge the agent did not make.
+
+**The answer.** One of:
+
+| Outcome | The command's answer |
+|---|---|
+| reset | `Merged PR #N.` + the branch moved to `origin/<base>` (from → to), files may have changed, open the next PR from here |
+| already at base | `Merged PR #N.` + the branch already matches `origin/<base>` |
+| refused or incomplete | `Merged PR #N.` + "Moving this branch to the latest base did not complete:" + the reset's own reason and remedy |
+| turn ended | `Merged PR #N.` + the branch was not moved because the turn ended; run `shipit branch reset-to-base` |
+| merge not recorded in time | the existing deferred answer (wait, then run the reset) |
+
+The merge itself is never reported as failed because the reset did not happen:
+the exit code stays 0.
+
+**The docs/295 compaction offer.** The re-arm ends the merged state, so the
+next message offers neither "Start from the latest base" nor the compaction
+beside it (docs/295 req 3 ties the second to the first). That was already the
+case whenever the agent ran `shipit branch reset-to-base` itself, as
+`/shipit-docs/github.md` told it to; within a turn the agent continues in, no
+compaction could run anyway.
+
+**What does not change.** A merge from the card's button or on GitHub keeps the
+reset at the next message (docs/218), with its control. A sandbox `gh pr merge`
+is not recorded at merge time (no claim, no `onMerged`), so it also keeps the
+next-message reset; req 22 is met for repo-bound sessions only.
+`gh pr merge --auto` is docs/288 req 9.
 
 ## Key files
 
@@ -525,6 +634,7 @@ justify an otherwise empty navigation category.
 | `src/server/orchestrator/api-routes-github.ts` | gate, ownership, settlement, notice |
 | `src/client/components/ProjectSettings.tsx` | Agent permissions section + toggle |
 | `src/server/shipit-docs/github.md` | agent-facing text: the grant, what may be merged, the commit-and-push step, and the guardrails |
+| `src/server/orchestrator/branch-reset-flow.ts` | `runExplicitBranchReset()` (shared by `shipit branch reset-to-base` and both agent merges) and the after-merge reset with its answer (§6) |
 
 ## Tests
 
@@ -561,10 +671,22 @@ justify an otherwise empty navigation category.
   activation; and it does not settle while that session has an active turn.
 - The container-route snapshot must not gain the grant route.
 - Each new guard proved red on its own before the fix.
+- `branch-reset-flow.test.ts` (§6) — with a fake git manager: a settled
+  merge moves the branch and the answer says so; a dirty tree, an ended turn,
+  and a merge not recorded in time each leave the branch where it is with the
+  matching answer; the reset waits for the merge handling before it reads
+  `merged_at`; it holds turn admission while it runs; a reset whose push failed
+  still runs the rewrite bookkeeping.
+- `integration_tests/agent-driven-pr.test.ts` — a merge through the route moves
+  the session's branch to `origin/main` with real local git (fetch and push are
+  stubbed there, so the remote heal is covered by `pre-turn-reset.test.ts`); a
+  merge whose turn ended before GitHub answered leaves the branch alone.
 
 ## What is built, and what is not
 
-All seventeen requirements are implemented.
+All seventeen original requirements are implemented. Requirement 22 (§6) is
+implemented for repo-bound sessions; a sandbox merge keeps the next-message
+reset.
 
 Two deliberate deviations from this document, both narrowing:
 

@@ -588,19 +588,29 @@ function buildAgentPrefix(prNumber: number | undefined, base: string): string {
   );
 }
 
+/** Who moved the branch: the user from the UI, or ShipIt after the agent's own merge. */
+export type ResetActor = "user" | "agent-merge" | "auto-merge";
+
 export function buildManualResetAgentNotice(opts: {
   base: string;
   fromSha?: string;
   toSha?: string;
   prNumber?: number;
+  by?: ResetActor;
 }): string {
   const shas = opts.fromSha && opts.toSha
     ? ` (was ${opts.fromSha.slice(0, 7)} → now ${opts.toSha.slice(0, 7)})`
     : "";
   const pr = opts.prNumber ? ` (#${opts.prNumber})` : "";
+  const target = `the latest origin/${opts.base}${shas}`;
+  const what = opts.by === "auto-merge"
+    ? `While you were idle, ShipIt merged your pull request${pr}, as you asked with `
+      + `\`gh pr merge --auto\`, and then reset this branch to ${target}.`
+    : opts.by === "agent-merge"
+      ? `After your \`gh pr merge\`, ShipIt reset this branch to ${target}.`
+      : `While you were idle, the user reset this branch to ${target} from the ShipIt UI.`;
   return (
-    `[System] While you were idle, the user reset this branch to the latest `
-    + `origin/${opts.base}${shas} from the ShipIt UI. It no longer contains the commits `
+    `[System] ${what} It no longer contains the commits `
     + `from the merged pull request${pr} and starts from current code. Your working tree `
     + `was rewritten from outside the session: files you read earlier in this conversation `
     + `may have changed, so re-read before editing, and do not re-apply or recreate `
@@ -611,6 +621,8 @@ export function buildManualResetAgentNotice(opts: {
 export interface ExplicitResetOutcome {
   outcome: "reset" | "already-at-base" | "refused";
   reason?: string;
+  /** Refused after the local reset: the tree moved, but the remote still names the old commit. */
+  movedLocally?: boolean;
   base?: string;
   fromSha?: string;
   toSha?: string;
@@ -719,6 +731,41 @@ function resolveResetBase(session: SessionInfo, prStatus: PrStatusSummary | null
   return session.mergedAt ? undefined : session.previousMergedPr?.baseBranch;
 }
 
+/**
+ * A reset whose force-push failed left the remote on the merged commit while HEAD is
+ * already the base, so a retry lands on "already at base". Push again — but only over
+ * a remote branch that holds nothing unshipped. Returns the refusal text, or null.
+ */
+async function healRemoteAfterEarlierReset(
+  session: SessionInfo,
+  git: GitManager,
+  base: string,
+  head: string,
+  forced: boolean,
+): Promise<string | null> {
+  const branch = await git.currentBranchOrNull();
+  if (!branch) return null;
+  const remote = await git.getRefHash(`origin/${branch}`);
+  if (!remote || remote === head) return null;
+  const anchor = session.mergedHeadSha ?? session.previousMergedPr?.mergedHeadSha;
+  // --force is the user's override of exactly this check: nothing beyond the merged PR.
+  if (!forced && remote !== anchor && !(await git.isAncestor(remote, `origin/${base}`))) {
+    return `This branch already matches origin/${base} here, but the remote branch '${branch}' `
+      + `(${remote.slice(0, 7)}) carries commits that are not in the base, so ShipIt did not `
+      + "overwrite it. Ask the user what those commits are before doing anything else.";
+  }
+  try {
+    // Lease on the tip that passed the check, not on whatever the remote holds by now.
+    await git.forcePushWithLease("origin", branch, remote, { allowRewind: true });
+    return null;
+  } catch (err) {
+    return `This branch already matches origin/${base}, but the remote branch could not be updated `
+      + `to match (${err instanceof Error ? err.message : String(err)}). Later pushes would be `
+      + "rejected as non-fast-forward: run `shipit branch reset-to-base` again to retry the push, "
+      + "and do not continue until it succeeds.";
+  }
+}
+
 export async function resetBranchToBaseExplicit(
   deps: ResetEligibleSignalDeps,
   sessionId: string,
@@ -728,6 +775,7 @@ export async function resetBranchToBaseExplicit(
   },
 ): Promise<ExplicitResetOutcome> {
   const force = opts?.force;
+  let moved: { base: string; fromSha: string; toSha: string } | null = null;
   try {
     const session = deps.getSession(sessionId);
     if (!session) return refuse(sessionId, "no-session", "Session not found.");
@@ -762,6 +810,8 @@ export async function resetBranchToBaseExplicit(
     const head = await git.getHeadHash();
     const baseTip = await git.getRefHash(`origin/${base}`);
     if (head && baseTip && head === baseTip) {
+      const healFailure = await healRemoteAfterEarlierReset(session, git, base, head, Boolean(force));
+      if (healFailure) return refuse(sessionId, "remote-heal-failed", healFailure);
       return { outcome: "already-at-base", base, ...(head ? { toSha: head } : {}) };
     }
 
@@ -781,6 +831,7 @@ export async function resetBranchToBaseExplicit(
     }
 
     const { from, to } = await git.resetHardToRemoteBase(base);
+    moved = { base, fromSha: from, toSha: to };
 
     await restoreLfsAfterTreeRewrite(sessionDir, `Reset onto ${base}`, (message) =>
       console.warn(`[branch-reset] ${message}`),
@@ -791,13 +842,20 @@ export async function resetBranchToBaseExplicit(
     try {
       await git.forcePush("origin", undefined, { allowRewind: true });
     } catch (err) {
-      return refuse(
-        sessionId,
-        "remote-heal-failed",
-        `The branch was reset locally to origin/${base}, but the remote branch could not be `
-        + `updated to match (${err instanceof Error ? err.message : String(err)}). Later pushes `
-        + "would be rejected as non-fast-forward, so stop here rather than continuing.",
-      );
+      return {
+        ...refuse(
+          sessionId,
+          "remote-heal-failed",
+          `The branch was reset locally to origin/${base}, but the remote branch could not be `
+          + `updated to match (${err instanceof Error ? err.message : String(err)}). Later pushes `
+          + "would be rejected as non-fast-forward: run `shipit branch reset-to-base` again to retry "
+          + "the push, and do not continue until it succeeds.",
+        ),
+        movedLocally: true,
+        base,
+        fromSha: from,
+        toSha: to,
+      };
     }
 
     clearResetSkipEpisode(sessionId);
@@ -810,11 +868,13 @@ export async function resetBranchToBaseExplicit(
       ...(force ? { forced: true, forceReason: force.reason } : {}),
     };
   } catch (err) {
-    return refuse(
+    const refused = refuse(
       sessionId,
       "error",
       `The reset could not be completed: ${err instanceof Error ? err.message : String(err)}`,
     );
+    // A throw after the hard reset still leaves a rewritten tree.
+    return moved ? { ...refused, movedLocally: true, ...moved } : refused;
   } finally {
     handWorkspaceBackToWorker(sessionDir);
   }
