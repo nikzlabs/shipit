@@ -476,9 +476,10 @@ answer. Every outcome leaves one transcript entry:
 merge but the settlement read right after it fails, the claim stays `settling`
 and the hold is released; reconciliation records the merge later, without the
 hold, and does not reset — a reset there could run beside a turn, the hazard
-`docs/282-merge-race-at-turn-admission` describes. In that case req 9 is not
-met: the branch moves at the next message (docs/218), or by the wake turn's
-`shipit branch reset-to-base`, as before this change.
+`docs/282-merge-race-at-turn-admission` describes. The branch then moves at the
+next message (docs/218), or by the wake turn's `shipit branch reset-to-base`,
+as before this change. The user chose to keep this gap rather than retry the
+recording inside the hold (req 9's exception, 2026-11-12).
 
 The self-merge wake still tells the agent to run `shipit branch reset-to-base`
 first. The wake is dispatched during the merge handling, before this reset

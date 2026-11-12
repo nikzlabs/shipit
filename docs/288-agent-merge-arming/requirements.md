@@ -38,7 +38,8 @@ part of it.
 9. When ShipIt performs a merge for a request, it then moves the session's
    branch to the latest base, before any turn starts — including a turn that
    was waiting for the merge. It moves the branch only when no work would be
-   lost.
+   lost. The one exception: when ShipIt cannot record the merge right after
+   performing it, the branch moves at the next message instead.
 
 ## Open questions
 
@@ -78,3 +79,11 @@ None.
   the branch afterwards is not destructive work behind its back. ShipIt merges
   only while the session is idle and holds turns off until the merge ends
   (req 6), so nothing can be changing the files at that moment. (req 9)
+- 2026-11-12 — When GitHub accepts the merge but ShipIt cannot read it back
+  right after, the merge is recorded later, outside the merge hold, so the
+  branch is not moved before the next turn. Should ShipIt retry the recording
+  inside the hold (about 30 seconds, delaying a waiting turn), or keep this
+  rare case as a gap? An independent review held that the gap fails req 9.
+  **Answer: keep it.** The branch then moves at the next message
+  (`docs/218-auto-reset-merged-branch-on-continue`), or when the wake turn runs
+  `shipit branch reset-to-base`. (req 9, last sentence)
