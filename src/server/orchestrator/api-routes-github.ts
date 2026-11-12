@@ -47,6 +47,7 @@ import { getErrorMessage } from "./validation.js";
 import { guardMergeSync } from "./services/branch-sync.js";
 import { mergeFlushRefusal } from "./services/merge-gate.js";
 import { captureTurn, settleAgentMerge, type TurnToken } from "./services/agent-merge-settlement.js";
+import { resetBranchAfterDirectMerge } from "./branch-reset-flow.js";
 import { parseGitHubRemote, repoId } from "./git-utils.js";
 import { mergeMethodFor } from "./agent-merge-claims.js";
 import { resolvePrTarget, gitCredentialAllowed, mergeDisposition, agentMergeOwnership } from "./pr-target.js";
@@ -1182,6 +1183,8 @@ export async function registerGitHubRoutes(
         : null;
       let turn: TurnToken | null = null;
       let settlementHeld = false;
+      // Set only by this request's own settlement onto this session (docs/287 §6).
+      let resetDue = false;
       try {
       if (repoBound) {
         let currentBranch: string | null;
@@ -1340,6 +1343,7 @@ export async function registerGitHubRoutes(
                   const outcome = await settleAgentMerge(
                     claimDeps, { ...claim, state: "settling" }, { witnessed: true, turn },
                   );
+                  if (outcome.result === "settled" && outcome.ownSession) resetDue = true;
                   return outcome.result === "settled" ? "settled" : "deferred";
                 } catch (err) {
                   console.error(`[agent-merge] recording the merge for ${request.params.id} failed:`, err);
@@ -1355,7 +1359,19 @@ export async function registerGitHubRoutes(
             }
             : {}),
         });
-        return result;
+        if (!resetDue || !result.success) return result;
+        const resetNote = await resetBranchAfterDirectMerge(
+          {
+            sessionManager,
+            createGitManager,
+            runnerRegistry: deps.runnerRegistry,
+            chatHistoryManager: deps.chatHistoryManager,
+            ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
+            sseBroadcast: deps.sseBroadcast,
+          },
+          { sessionId: request.params.id, sessionDir: dir, turn },
+        );
+        return { ...result, message: `${result.message}. ${resetNote}` };
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

@@ -316,6 +316,13 @@ which would hold disk for the unbounded duration of human review.
 `shipit branch reset-to-base` — an **explicit mode over the existing docs/218 reset
 core**, not a new service. Reuse its gate, fetch, re-gate, reset and live-tip leased push.
 
+> **Later:** when the agent merged the pull request itself (`gh pr merge`, or
+> `--auto`), ShipIt now runs this same reset right after the merge
+> (`docs/287-agent-merge-per-repo` §6, `docs/288-agent-merge-arming` req 9), so
+> the wake turn's `shipit branch reset-to-base` usually answers "already at base".
+> The rule above — no destructive git behind the agent's back — still governs a
+> merge the user makes.
+
 Six things the mode must change or add:
 
 - **Ignore `getAutoResetMergedBranch()`.** A command the agent deliberately invoked must

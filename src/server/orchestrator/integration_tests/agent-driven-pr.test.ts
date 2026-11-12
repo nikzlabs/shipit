@@ -1098,6 +1098,48 @@ describe("repo-aware PR brokering (docs/211)", () => {
   );
 
   it(
+    "moves the session's branch to the latest base in the same merge command (docs/287 req 22)",
+    { timeout: 20_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      const git = (cmd: string) => execSync(cmd, {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      fs.writeFileSync(path.join(sessionDir, "feature.txt"), "shipped\n");
+      git("git add feature.txt");
+      git("git -c user.name=t -c user.email=t@t commit -q -m feature");
+      const head = git("git rev-parse HEAD");
+      // Fetch and push are stubbed here, so the remote-tracking refs stand in for GitHub:
+      // the branch is published, and the base gained the merge as a commit on top of it.
+      git(`git update-ref refs/remotes/origin/shipit/test-feature ${head}`);
+      const mergeSha = git("git -c user.name=t -c user.email=t@t commit-tree HEAD^{tree} -p HEAD -m merged");
+      git(`git update-ref refs/remotes/origin/main ${mergeSha}`);
+
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      githubAuth.setPullRequestByNumber(7, {
+        url: "https://github.com/test-user/test-repo/pull/7",
+        number: 7, base: "main", title: "T", body: "", state: "closed",
+        merged_at: "2026-09-04T12:00:00Z", merge_commit_sha: mergeSha,
+        head_sha: head, head_ref: "shipit/test-feature", additions: 1, deletions: 0,
+      });
+
+      const res = await withLiveTurn(sessionId, () => app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/7/merge`,
+        payload: { cwd: "/workspace" },
+      }));
+
+      expect(res.json()).toMatchObject({ success: true });
+      expect(res.json().message).toMatch(/^Merged PR #7\. ShipIt then moved this branch to the latest origin\/main/);
+      expect(git("git rev-parse --abbrev-ref HEAD")).toBe("shipit/test-feature");
+      expect(git("git rev-parse HEAD")).toBe(mergeSha);
+    },
+  );
+
+  it(
     "reports the merge but not a clean success when settlement cannot finish",
     { timeout: 15_000 },
     async () => {
@@ -1680,7 +1722,9 @@ describe("repo-aware PR brokering (docs/211)", () => {
         githubAuth.setOnMergeAttempt(null);
       }
 
-      expect(res.json()).toMatchObject({ success: true, message: "Merged PR #7" });
+      expect(res.json()).toMatchObject({ success: true });
+      // docs/287 §6: the turn that merged has ended, so the branch is left alone.
+      expect(res.json().message).toMatch(/^Merged PR #7\. This branch was not moved.*turn that ran the merge has ended/);
       expect(chatHistoryManager.load(sessionId).map((m) => m.text).join("\n"))
         .toContain("Merged pull request #7");
       expect(new AgentMergeClaimStore(dbManager).get(sessionId)).toBeNull();

@@ -201,3 +201,9 @@ Built on `docs/287-agent-merge-per-repo`, shipped.
 - [x] `npm run lint:dev` and `npm run typecheck` green
 - [x] Three independent cold reviews — 26 findings in total, every one verified
       at the source and fixed; each fix proved red on its own
+
+## The branch moves inside the hold (req 9)
+
+- [x] `resetAfterMerge` dependency called from `settle()` inside the hold, wired in `bootstrap-managers.ts`
+- [x] Transcript record for each outcome, and the agent notice worded for ShipIt's merge
+- [x] Executor test: the reset runs before the queued turn is released

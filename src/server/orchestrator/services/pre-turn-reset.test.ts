@@ -71,6 +71,7 @@ function makeGit(over: Partial<Record<keyof GitManager, unknown>> = {}): GitMana
     fetch: vi.fn().mockResolvedValue(undefined),
     resetHardToRemoteBase: vi.fn().mockResolvedValue({ from: MERGED_SHA, to: BASE_TIP }),
     forcePush: vi.fn().mockResolvedValue("Force pushed to origin/shipit/fix-login"),
+    forcePushWithLease: vi.fn().mockResolvedValue("Force pushed to origin/shipit/fix-login"),
     ...over,
   } as unknown as GitManager;
 }
@@ -1177,6 +1178,47 @@ describe("resetBranchToBaseExplicit (docs/239)", () => {
     expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
   });
 
+  it("pushes again on a retry after an earlier reset's push failed", async () => {
+    // HEAD is the base already; the remote branch still names the merged commit.
+    const refs: Record<string, string> = { "origin/main": BASE_TIP, "origin/shipit/fix-login": MERGED_SHA };
+    const git = gitWith({
+      getHeadHash: vi.fn().mockResolvedValue(BASE_TIP),
+      getRefHash: vi.fn((ref: string) => Promise.resolve(refs[ref] ?? null)),
+    });
+    const result = await resetBranchToBaseExplicit(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+    expect(result.outcome).toBe("already-at-base");
+    // Leased on the tip that passed the check.
+    expect(git.forcePushWithLease).toHaveBeenCalledWith(
+      "origin", "shipit/fix-login", MERGED_SHA, { allowRewind: true },
+    );
+  });
+
+  it("does not push over a remote branch that holds commits that never shipped", async () => {
+    const refs: Record<string, string> = { "origin/main": BASE_TIP, "origin/shipit/fix-login": "c0ffee" };
+    const git = gitWith({
+      getHeadHash: vi.fn().mockResolvedValue(BASE_TIP),
+      getRefHash: vi.fn((ref: string) => Promise.resolve(refs[ref] ?? null)),
+      isAncestor: vi.fn().mockResolvedValue(false),
+    });
+    const result = await resetBranchToBaseExplicit(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+    expect(result).toMatchObject({ outcome: "refused" });
+    expect(result.reason).toContain("carries commits that are not in the base");
+    expect(git.forcePushWithLease).not.toHaveBeenCalled();
+
+    // The CLI's refusal guidance names --force as the user's override; it must work here too.
+    const forced = await resetBranchToBaseExplicit(
+      makeDeps({ createGitManager: () => git }), "s1", "/ws", { force: { reason: "user said so" } },
+    );
+    expect(forced.outcome).toBe("already-at-base");
+    expect(git.forcePushWithLease).toHaveBeenCalledWith("origin", "shipit/fix-login", "c0ffee", { allowRewind: true });
+  });
+
+  it("says the tree moved when restoring LFS files throws after the reset", async () => {
+    vi.mocked(restoreLfsAfterTreeRewrite).mockRejectedValueOnce(new Error("lfs broke"));
+    const result = await resetBranchToBaseExplicit(makeDeps({ createGitManager: () => gitWith() }), "s1", "/ws");
+    expect(result).toMatchObject({ outcome: "refused", movedLocally: true, base: "main", toSha: BASE_TIP });
+  });
+
   it("still reports already-at-base when a docs/218 reset already cleared mergedHeadSha", async () => {
     const session = makeSession();
     delete session.mergedHeadSha;
@@ -1280,6 +1322,8 @@ describe("resetBranchToBaseExplicit (docs/239)", () => {
     );
     expect(result.outcome).toBe("refused");
     expect(result.reason).toMatch(/stale info/);
+    // The tree already moved: callers must still run the rewrite bookkeeping.
+    expect(result).toMatchObject({ movedLocally: true, base: "main" });
   });
 
   it("hands workspace ownership back to the worker on EVERY path", async () => {

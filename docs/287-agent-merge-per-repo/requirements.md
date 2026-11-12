@@ -44,7 +44,8 @@ but cannot land it. This feature moves the permission to the **repository**.
 10. After the agent merges its own pull request, the session can open the next
     pull request without help from the user.
 11. After an agent merge, the pull request card and the session state are the
-    same as after a merge from the card's own merge button.
+    same as after a merge from the card's own merge button, except that the
+    session's branch has already moved to the latest base (req 22).
 12. The permission for sandbox sessions does not change. A sandbox session has
     no repository record, so it keeps its own per-session grant.
 13. Ops sessions cannot merge. Their behaviour does not change.
@@ -57,6 +58,13 @@ but cannot land it. This feature moves the permission to the **repository**.
 17. When the checks for those new commits are not complete, the merge command
     refuses. The refusal says that the push started the checks again, and that
     the agent can merge once they pass. The command does not wait by itself.
+22. Right after the agent merges its own pull request, the same merge command
+    moves the session's branch to the latest base, so the agent's next change
+    starts from current code without a separate step. It moves the branch only
+    when no work would be lost.
+
+Requirements 18–21 were moved to `docs/288-agent-merge-arming` (see the
+2026-09-03 answer below), so their numbers are not reused.
 
 **"Merge it when the checks pass" is a separate feature**, in
 `docs/288-agent-merge-arming`, which has since shipped: a repo-bound `--auto`
@@ -125,3 +133,16 @@ None.
   merge; ShipIt must handle that refusal correctly. The early-registration wait
   is best effort already: checks register gradually, so a merge can see "1/1"
   before the full set has started. (req 7)
+- 2026-11-12 — After the agent's own `gh pr merge`, should ShipIt move the
+  branch to the latest base by itself, or keep telling the agent to run
+  `shipit branch reset-to-base`? **Answer: move it in the merge command.** The
+  user's reasoning: in this mode one session ships many pull requests, and
+  asking the agent to run the reset is the same reset with an extra step, more
+  time and more tokens; nobody found a case where the agent would want to keep
+  the merged branch. The rule in `docs/239-self-merge-wake` — no destructive git
+  behind the agent's back — is about a merge that happens on its own, while the
+  agent may be doing something else, including changing git. Here the agent
+  chooses the moment, waits for the command, and ShipIt has just committed all
+  earlier work. A merge the user makes (the card's button, GitHub) keeps the
+  reset at the next message (`docs/218-auto-reset-merged-branch-on-continue`).
+  (req 11, 22)

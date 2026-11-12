@@ -151,3 +151,10 @@ Implements [plan.md](./plan.md) against [requirements.md](./requirements.md).
       settlement fake performs the promotion decision instead of standing in for
       its result, the turn race is reproduced inside the simulated round trip,
       and the promotion guard is tested on the real poller
+
+## Moving the branch after the merge (req 22, §6)
+
+- [x] `runExplicitBranchReset()` in `branch-reset-flow.ts`, used by the `/branch/reset-to-base` route
+- [x] The merge route resets after a settled merge and puts the outcome in its answer
+- [x] `branch-reset-flow.test.ts` (fake git), plus an end-to-end merge in `integration_tests/agent-driven-pr.test.ts`
+- [x] `/shipit-docs/github.md` and the wiki say the merge moves the branch

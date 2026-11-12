@@ -500,21 +500,29 @@ it always has.
 
 #### After your PR merges
 
-Your branch now sits on the merged tip, so the next auto-push is refused as
-stacked on it and `gh pr create` opens nothing. Before any further work:
+In a repo-bound session, the merge command also **moves your branch to the
+latest base** once ShipIt has recorded the merge, so you can build the next
+change straight away. Read its answer:
 
-```bash
-shipit branch reset-to-base
-```
+- `Merged PR #N. ShipIt then moved this branch to the latest origin/<base>…` —
+  done. The files changed under you: re-read any file before editing it, and do
+  not re-apply anything from the merged pull request. Open the next pull request
+  with `gh pr create` as usual.
+- `Merged PR #N.` followed by a reason the branch was **not** moved (an
+  uncommitted file, the turn ended, the reset did not complete) — the branch is
+  still on the merged commit, so the next auto-push is refused and
+  `gh pr create` opens nothing. Clear the reason, then run
+  `shipit branch reset-to-base`. Never reset by hand.
+- It says it could not finish recording the merge, or reports the pull request
+  as **already merged** — the session's state may not show the merge yet. Wait
+  a moment, then run `shipit branch reset-to-base`. ShipIt retries the
+  recording by itself; you do not have to.
 
-Then continue. This is the same step a merge-wake turn begins with — see
-"Waiting for a PR to merge" above.
-
-Read the merge command's own answer first. A plain `Merged PR #N` means ShipIt
-has finished recording the merge and the reset is ready. If it instead says it
-could not finish recording, or reports the pull request as **already merged**,
-the session's state may not show the merge yet — wait a moment and run the reset
-then. ShipIt retries the recording by itself; you do not have to.
+A merge ShipIt performs for `gh pr merge --auto` moves the branch the same way,
+before the next turn starts; that turn is told so. A merge-wake turn still
+begins with `shipit branch reset-to-base`, which then answers that the branch
+is already at the base. In a **Sandbox** session the merge does not move the
+branch: run `shipit branch reset-to-base` yourself before more work.
 
 ### Workflow runs
 

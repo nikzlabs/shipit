@@ -12,12 +12,8 @@ const { emitChatCard, emitNoticePostTurn } = vi.hoisted(() => ({
 
 vi.mock("./chat-card-persistence.js", () => ({ emitChatCard, emitNoticePostTurn }));
 
-import {
-  presentExplicitResetSuccess,
-  recordManualResetAgentNotice,
-  registerGitRoutes,
-  reportSyncFailure,
-} from "./api-routes-git.js";
+import { registerGitRoutes, reportSyncFailure } from "./api-routes-git.js";
+import { presentExplicitResetSuccess, recordManualResetAgentNotice } from "./branch-reset-flow.js";
 import { markSyncFailureExplained } from "./services/rebase-driver.js";
 
 const prStatus: PrStatusSummary = {

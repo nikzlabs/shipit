@@ -1,9 +1,7 @@
-import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { BranchAutoResetCard, PrStatusSummary, WsServerMessage } from "../shared/types.js";
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
-import { emitChatCard, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { emitNoticePostTurn } from "./chat-card-persistence.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { gitRemoteCredentialResolver } from "./services/github.js";
 import type { ChatHistoryManager } from "./chat-history.js";
@@ -35,50 +33,10 @@ import {
 } from "./services/index.js";
 import { deliverRebaseFollowup } from "./services/rebase-followup.js";
 import { indexLockStateOf } from "./services/stale-index-lock.js";
-import { detectAndReArmResetSession } from "./services/pr-rearm.js";
-import {
-  buildManualResetAgentNotice,
-  resetBranchToBaseExplicit,
-  type ExplicitResetOutcome,
-} from "./services/pre-turn-reset.js";
+import { runExplicitBranchReset } from "./branch-reset-flow.js";
 import { getErrorMessage } from "./validation.js";
 import { restoreLfsAfterTreeRewrite } from "./git-lfs.js";
 import { onWorkspaceRewritten } from "./workspace-rewrite.js";
-
-interface ExplicitResetPresentationDeps {
-  runner: SessionRunnerInterface | undefined;
-  chatHistoryManager: ChatHistoryManager;
-  sessionId: string;
-  prStatus: PrStatusSummary | null | undefined;
-  // reArm clears the live PR snapshot; retain its identity for the reset card.
-  fallbackPr?: { prNumber: number; prUrl: string } | undefined;
-  outcome: ExplicitResetOutcome;
-  reArmResetSession: () => Promise<void>;
-}
-
-export function recordManualResetAgentNotice(deps: {
-  setPendingAgentNotice: (sessionId: string, notice: string) => void;
-  runner: SessionRunnerInterface | undefined;
-  sessionId: string;
-  outcome: ExplicitResetOutcome;
-  prNumber?: number;
-}): void {
-  if (deps.outcome.outcome !== "reset" || !deps.outcome.base) return;
-  if (deps.runner?.running) return;
-  try {
-    deps.setPendingAgentNotice(
-      deps.sessionId,
-      buildManualResetAgentNotice({
-        base: deps.outcome.base,
-        fromSha: deps.outcome.fromSha,
-        toSha: deps.outcome.toSha,
-        prNumber: deps.prNumber,
-      }),
-    );
-  } catch (err) {
-    console.error("[reset-to-base] recording the agent notice failed:", getErrorMessage(err));
-  }
-}
 
 // Pass the push callback through: postTurnCommit can throw after creating it.
 // The driver must coordinate it with the sync's force-push even on failure.
@@ -111,42 +69,6 @@ async function savePendingWorkForSync(
     },
   );
   return { commitHash };
-}
-
-export async function presentExplicitResetSuccess(
-  deps: ExplicitResetPresentationDeps,
-): Promise<void> {
-  if (deps.outcome.outcome === "refused") return;
-
-  deps.runner?.emitMessage({
-    type: "reset_eligible",
-    sessionId: deps.sessionId,
-    eligible: false,
-  });
-  await deps.reArmResetSession();
-
-  const pr = deps.prStatus ?? deps.fallbackPr;
-  if (deps.outcome.outcome !== "reset" || !deps.runner || !pr
-    || !deps.outcome.base || !deps.outcome.fromSha || !deps.outcome.toSha) return;
-
-  const card: BranchAutoResetCard = {
-    cardId: `branch-reset-${randomUUID()}`,
-    base: deps.outcome.base,
-    prNumber: pr.prNumber,
-    prUrl: pr.prUrl,
-    fromSha: deps.outcome.fromSha,
-    toSha: deps.outcome.toSha,
-    createdAt: new Date().toISOString(),
-    ...(deps.outcome.forced
-      ? { forced: true, ...(deps.outcome.forceReason ? { forceReason: deps.outcome.forceReason } : {}) }
-      : {}),
-  };
-  emitChatCard(
-    deps.runner,
-    { type: "branch_auto_reset_card", sessionId: deps.sessionId, card },
-    { role: "assistant", text: "", branchAutoReset: card },
-    { chatHistoryManager: deps.chatHistoryManager, sessionId: deps.sessionId },
-  );
 }
 
 export async function reportSyncFailure(deps: {
@@ -200,7 +122,6 @@ export async function registerGitRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       const sessionId = request.params.id;
-      const prStatus = sessionManager.getPrStatus(sessionId);
       const force = request.body?.force === true;
       const reason = typeof request.body?.reason === "string" ? request.body.reason.trim() : "";
       if (force && !reason) {
@@ -212,53 +133,17 @@ export async function registerGitRoutes(
         });
         return;
       }
-      const outcome = await resetBranchToBaseExplicit(
+      const outcome = await runExplicitBranchReset(
         {
-          getSession: (id: string) => sessionManager.get(id),
-          getPrStatus: (id: string) => sessionManager.getPrStatus(id),
+          sessionManager,
           createGitManager,
+          runnerRegistry: deps.runnerRegistry,
+          chatHistoryManager: deps.chatHistoryManager,
+          ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
+          sseBroadcast: deps.sseBroadcast,
         },
-        sessionId,
-        dir,
-        ...(force ? [{ force: { reason } }] as const : []),
+        { sessionId, sessionDir: dir, ...(force ? { force: { reason } } : {}) },
       );
-      const previous = sessionManager.get(sessionId)?.previousMergedPr;
-
-      if (outcome.outcome === "reset") {
-        onWorkspaceRewritten(deps.runnerRegistry.get(sessionId), "reset-to-base");
-      }
-
-      recordManualResetAgentNotice({
-        setPendingAgentNotice: (id, notice) => sessionManager.setPendingAgentNotice(id, notice),
-        runner: deps.runnerRegistry.get(sessionId),
-        sessionId,
-        outcome,
-        prNumber: prStatus?.prNumber ?? previous?.number,
-      });
-
-      await presentExplicitResetSuccess({
-        runner: deps.runnerRegistry.get(sessionId),
-        chatHistoryManager: deps.chatHistoryManager,
-        sessionId,
-        prStatus,
-        fallbackPr: previous ? { prNumber: previous.number, prUrl: previous.url } : undefined,
-        outcome,
-        reArmResetSession: async () => {
-          if (!deps.prStatusPoller) return;
-          await detectAndReArmResetSession({
-            deps: {
-              sessionManager,
-              prStatusPoller: deps.prStatusPoller,
-              createGitManager,
-              sseBroadcast: deps.sseBroadcast,
-            },
-            sessionId,
-            sessionDir: dir,
-            emit: (message: WsServerMessage) => deps.runnerRegistry.get(sessionId)?.emitMessage(message),
-            skipFetch: true,
-          });
-        },
-      });
       return outcome;
     },
   );

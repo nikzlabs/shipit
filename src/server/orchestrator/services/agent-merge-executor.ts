@@ -14,7 +14,7 @@ import { mergeDisposition } from "../pr-target.js";
 import {
   describeBackgroundWork, githubRefusalClearsByItself, readMergeObservation,
 } from "./merge-gate.js";
-import { settleAgentMerge, reconcileAgentMergeClaims } from "./agent-merge-settlement.js";
+import { settleAgentMerge, reconcileAgentMergeClaims, type SettlementOutcome } from "./agent-merge-settlement.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { unprobedAfterRestart } from "../restart-turn-reattach.js";
 
@@ -26,6 +26,8 @@ export interface AgentMergeExecutorDeps {
   githubAuthManager: GitHubAuthManager;
   prStatusPoller?: PrStatusPoller;
   runnerRegistry?: SessionRunnerRegistry;
+  /** docs/288 req 9 — moves the branch to the latest base; called inside the merge hold. */
+  resetAfterMerge?: (sessionId: string, prNumber: number) => Promise<void>;
 }
 
 export type RequestOutcome =
@@ -171,7 +173,9 @@ export async function runOneRequest(
   }
 
   if (observation.prState === "MERGED") {
-    return (await settle(deps, claim, false)) ? { result: "merged" } : { result: "waiting", reason: "settling" };
+    return (await settle(deps, claim, false))?.result === "settled"
+      ? { result: "merged" }
+      : { result: "waiting", reason: "settling" };
   }
   if (observation.prState !== "OPEN") {
     return end(
@@ -316,7 +320,17 @@ async function performMerge(
       return { result: "ended", reason: attempt.message };
     }
 
-    return (await settle(deps, claim, true)) ? { result: "merged" } : { result: "waiting", reason: "settling" };
+    const settled = await settle(deps, claim, true);
+    if (settled?.result !== "settled") return { result: "waiting", reason: "settling" };
+    // Before the finally releases the hold, so a waiting turn starts on the moved branch.
+    if (settled.ownSession && deps.resetAfterMerge) {
+      try {
+        await deps.resetAfterMerge(claim.sessionId, claim.prNumber);
+      } catch (err) {
+        console.error(`[agent-merge] resetting the branch after merging for ${claim.sessionId} failed:`, err);
+      }
+    }
+    return { result: "merged" };
   } finally {
     deps.claims.clearMergeInFlight(claim.sessionId);
     // Release the original lease, then any hold inherited by a newly created runner.
@@ -331,20 +345,21 @@ async function performMerge(
   }
 }
 
+// Null when another settler holds the session; an outcome without ownSession when it was resolved elsewhere.
 async function settle(
   deps: AgentMergeExecutorDeps,
   claim: AgentMergeClaim,
   witnessed: boolean,
-): Promise<boolean> {
+): Promise<SettlementOutcome | null> {
   // Before the guard: a settling row is the evidence no later open read may discard.
   if (witnessed) deps.claims.markSettling(claim.sessionId, claim.expectedSha);
   // The row leaves `pending` below, where a reconciliation would also settle it.
-  if (!deps.claims.beginSettlement(claim.sessionId)) return false;
+  if (!deps.claims.beginSettlement(claim.sessionId)) return null;
   try {
     // Promote even unwitnessed merges so reconciliation can finish a failed settlement.
     deps.claims.beginMerging(claim);
     const live = deps.claims.get(claim.sessionId);
-    if (live?.expectedSha !== claim.expectedSha) return true;
+    if (live?.expectedSha !== claim.expectedSha) return { result: "settled", merged: true, ownSession: false };
     const outcome = await settleAgentMerge(
       {
         claims: deps.claims,
@@ -361,7 +376,7 @@ async function settle(
         stillSafeToSettle: () => isIdle(deps, claim.sessionId, { underHold: witnessed }),
       },
     );
-    return outcome.result === "settled";
+    return outcome;
   } finally {
     deps.claims.endSettlement(claim.sessionId);
   }
