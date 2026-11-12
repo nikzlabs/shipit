@@ -84,7 +84,7 @@ Otherwise three rules, in order:
    | Model provider | Lifetime | Source |
    |---|---|---|
    | Anthropic, through OpenCode | 5 | OpenCode 1.18.34 sends `cacheControl: {type: "ephemeral"}` with no `ttl`: Anthropic's 5-minute default |
-   | Anthropic, through OpenCode 2 on an API key | 5 | OpenCode 2.2.5 sends `cache_control: {type: "ephemeral"}` with no `ttl` |
+   | Anthropic, through OpenCode 2 on an API key or a gateway | 5 | OpenCode 2.2.5 sends `cache_control: {type: "ephemeral"}` with no `ttl` to Anthropic, and no marker at all to OpenRouter's chat completions, where nothing is cached |
    | Anthropic subscription, through OpenCode 2 | 60 | The `claude` CLI makes the calls (docs/340); every write in the probe was `ephemeral_1h`. Keyed by the session's service and billing mode (`anthropicSubscriptionMinutes`), not the model's vendor |
    | Kimi | 5 | Kimi documents a 5-minute default; no harness sets `prompt_cache_options` |
    | OpenAI | 30 | "at least 30 minutes after the latest write or reuse" on GPT-5.6 and later. Unverified on the ChatGPT backend; req 10 gives the same number |
@@ -609,7 +609,10 @@ equal and their messages shared all but the last character of A's.
 B read only 4,872 tokens and wrote 25,610, and C was warm again. The CLI's own
 system prompt gained a paragraph from its second request on, and moving the
 file change to before C changed nothing. It is the CLI's, not OpenCode's, and
-costs the second turn of the home's first session one cache write.
+costs the home's second model request one cache write. When that request is
+an idle compaction (a first turn of one request that reached 200K), the
+compaction writes the context again; the user's next message would have done
+the same without it, so no special case handles it.
 
 **Cache lifetime.** On an Anthropic API key OpenCode 2 sends `{type:
 "ephemeral"}` with no `ttl` (a request captured by a local fake server), so 5

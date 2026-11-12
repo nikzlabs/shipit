@@ -55,9 +55,7 @@ const HARNESS_CACHE: Readonly<Record<AgentId, HarnessCacheFacts>> = {
   // 99.1% of the previous input from the cache in a new process. It sends Anthropic
   // `cacheControl: {type: "ephemeral"}` with no ttl.
   opencode: { anthropicDefaultMinutes: 5 },
-  // OpenCode 2.2.5, each turn a new process: on DeepSeek the resume read 18,816 of 18,820 tokens
-  // and `/compact` 18,944 of 19,616 from the cache; on the subscription `/compact` read 30,502
-  // and wrote 850, all 1-hour writes. On an API key it sends `{type: "ephemeral"}` with no ttl.
+  // Warm in a new process, 1-hour writes on the subscription, no ttl on a key ("Verify first" 1c).
   opencode2: { anthropicDefaultMinutes: 5, anthropicSubscriptionMinutes: 60 },
   // req 15 — no probe has shown a new Grok process reading the previous one's cache.
   grok: { excluded: "Grok's cache across processes is not probed (req 15)" },
