@@ -7,3 +7,6 @@
 - [x] Stop, a new message and the setting turned off cancel a waiting continuation
 - [x] Tests for both harnesses, the manager, the executor and Stop
 - [x] Wiki: troubleshooting
+- [x] Waiting continuation on the session row (`transientRetryAt`) and broadcast on change
+- [x] Cancel route by session id, no runner needed
+- [x] Strip above the message box with a countdown and Cancel

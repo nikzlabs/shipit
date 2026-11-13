@@ -163,6 +163,11 @@ export interface SessionInfo {
   runStoppedAt?: string;
   lastTurnOutcome?: LastTurnOutcome;
   /**
+   * docs/342-transient-provider-retry req 9 — an automatic continuation after a temporary
+   * provider error waits until this time. Derived from `quota_resume`, never stored.
+   */
+  transientRetryAt?: string;
+  /**
    * Set on runs only, for the "needs you" view (reqs 21, 31): the last turn
    * ended on a question (docs/322), and the status card's manual-step count.
    */

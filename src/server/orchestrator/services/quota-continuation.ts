@@ -76,6 +76,8 @@ export interface QuotaContinuationDeps extends WakeSessionDeps {
   chatHistoryManager: { append(sessionId: string, message: PersistedMessage): unknown };
   /** docs/342-transient-provider-retry req 1 — `advanced.retryTransientProviderErrors`. */
   transientRetryEnabled?: () => boolean;
+  /** Req 9 — a waiting continuation began, moved or ended; the chat shows it from the session row. */
+  onTransientRetryChanged?: (sessionId: string) => void;
 }
 
 /** What a wake's owner tells the manager when every credential refused that wake for quota. */
@@ -115,7 +117,7 @@ export class QuotaContinuationManager {
     const session = this.deps.sessionManager.get(args.sessionId);
     if (!session || isArchived(session)) return { continues: false };
 
-    this.deps.sessionManager.setQuotaResume(args.sessionId, {
+    this.setResume(args.sessionId, {
       agentId: args.agentId,
       cause: args.cause ?? "quota",
       lastUsedAt: session.lastUsedAt,
@@ -165,7 +167,7 @@ export class QuotaContinuationManager {
       return;
     }
     const notBefore = new Date(Date.now() + delay);
-    this.deps.sessionManager.setQuotaResume(args.sessionId, {
+    this.setResume(args.sessionId, {
       agentId: args.agentId,
       cause: "transient",
       lastUsedAt: session.lastUsedAt,
@@ -191,7 +193,7 @@ export class QuotaContinuationManager {
   cancelTransientRetry(sessionId: string): boolean {
     this.clearTransientTimer(sessionId);
     if (this.deps.sessionManager.getQuotaResume(sessionId)?.cause !== "transient") return false;
-    this.deps.sessionManager.setQuotaResume(sessionId, null);
+    this.setResume(sessionId, null);
     console.log(`[transient] the user stopped ${sessionId}; its automatic continuation is cancelled`);
     return true;
   }
@@ -254,18 +256,18 @@ export class QuotaContinuationManager {
     if (!resume) return undefined;
     const session = this.deps.sessionManager.get(sessionId);
     if (!session || isArchived(session)) {
-      this.deps.sessionManager.setQuotaResume(sessionId, null);
+      this.setResume(sessionId, null);
       return undefined;
     }
     // Any later turn — a user message, another wake — supersedes this one, also one that no
     // credential could run: what the wake was for is parked, and rides the turn that runs.
     if (session.lastUsedAt !== resume.lastUsedAt) {
-      this.deps.sessionManager.setQuotaResume(sessionId, null);
+      this.setResume(sessionId, null);
       return undefined;
     }
     // Turning the setting off cancels what waits (req 1).
     if (resume.cause === "transient" && this.deps.transientRetryEnabled?.() !== true) {
-      this.deps.sessionManager.setQuotaResume(sessionId, null);
+      this.setResume(sessionId, null);
       return undefined;
     }
     return { session, resume };
@@ -276,7 +278,7 @@ export class QuotaContinuationManager {
     if (!session || isArchived(session)) return;
     const refusals = (prior?.quotaRefusals ?? 0) + 1;
     if (refusals >= MAX_QUOTA_REFUSALS) {
-      this.deps.sessionManager.setQuotaResume(wake.sessionId, null);
+      this.setResume(wake.sessionId, null);
       console.warn(`[quota] no credential could run ${wake.sessionId} ${refusals} times; ShipIt stops waiting`);
       this.notify(
         wake.sessionId,
@@ -287,7 +289,7 @@ export class QuotaContinuationManager {
       return;
     }
     const until = new Date(quotaWaitUntil(wake.resetsAt, refusals, Date.now()));
-    this.deps.sessionManager.setQuotaResume(wake.sessionId, {
+    this.setResume(wake.sessionId, {
       agentId: session.agentId ?? this.deps.defaultAgentId,
       cause: prior?.cause ?? "wake",
       lastUsedAt: session.lastUsedAt,
@@ -366,7 +368,7 @@ export class QuotaContinuationManager {
     next: SessionQuotaResume | null,
   ): void {
     const current = this.deps.sessionManager.getQuotaResume(sessionId);
-    if (current && sameResume(current, resume)) this.deps.sessionManager.setQuotaResume(sessionId, next);
+    if (current && sameResume(current, resume)) this.setResume(sessionId, next);
   }
 
   private notify(sessionId: string, text: string, level: "info" | "warn"): void {
@@ -402,6 +404,17 @@ export class QuotaContinuationManager {
       },
       exclude.length > 0 ? { exclude } : {},
     ).ok;
+  }
+
+  private setResume(sessionId: string, next: SessionQuotaResume | null): void {
+    const before = this.deps.sessionManager.getQuotaResume(sessionId);
+    this.deps.sessionManager.setQuotaResume(sessionId, next);
+    if (before?.cause !== "transient" && next?.cause !== "transient") return;
+    try {
+      this.deps.onTransientRetryChanged?.(sessionId);
+    } catch (err) {
+      console.error(`[transient] announcing the continuation change of ${sessionId} failed:`, err);
+    }
   }
 
   private armTransientTimer(sessionId: string, delay: number): void {

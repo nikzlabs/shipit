@@ -221,6 +221,19 @@ export async function registerAgentRoutes(
     },
   );
 
+  // docs/342-transient-provider-retry reqs 9-11 — the chat's cancel for a waiting
+  // continuation. No turn runs then, so it needs no runner.
+  app.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/agent/transient-retry/cancel",
+    async (request, reply) => {
+      if (!deps.sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      reply.send({ cancelled: deps.quotaContinuation?.cancelTransientRetry(request.params.id) ?? false });
+    },
+  );
+
   app.get<{ Params: { id: string } }>(
     "/api/sessions/:id/agent/roles",
     { config: { containerAccessible: true } },

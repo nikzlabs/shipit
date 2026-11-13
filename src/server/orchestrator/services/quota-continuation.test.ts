@@ -850,6 +850,29 @@ describe("a temporary provider error (docs/342-transient-provider-retry)", () =>
     manager.stop();
   });
 
+  it("tells the chat each time a waiting continuation begins or ends (req 9)", async () => {
+    const { h, manager: unused } = setup();
+    unused.stop();
+    const changed = vi.fn();
+    (h.deps as { onTransientRetryChanged?: (id: string) => void }).onTransientRetryChanged = changed;
+    const manager = new QuotaContinuationManager(h.deps);
+
+    manager.recordTransientProviderError({ sessionId: "s1", agentId: "claude", kind: "overloaded" });
+    expect(changed).toHaveBeenCalledTimes(1);
+    manager.cancelTransientRetry("s1");
+    expect(changed).toHaveBeenCalledTimes(2);
+
+    manager.recordTransientProviderError({ sessionId: "s1", agentId: "claude", kind: "overloaded" });
+    await vi.advanceTimersByTimeAsync(TRANSIENT_RETRY_DELAYS_MS[0]!);
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    expect(changed).toHaveBeenCalledTimes(4);
+
+    // A quota continuation is not this one.
+    h.standDown(manager);
+    expect(changed).toHaveBeenCalledTimes(4);
+    manager.stop();
+  });
+
   it("survives a restart: a new manager continues what the old one recorded", async () => {
     const { h, manager, fail } = setup();
     fail();

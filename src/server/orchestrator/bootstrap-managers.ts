@@ -850,6 +850,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     providerAccountManager,
     containerManager,
     transientRetryEnabled: () => credentialStore.getRetryTransientProviderErrors(),
+    onTransientRetryChanged: () => sseBroadcast("session_list", { sessions: sessionManager.list() }),
     restoreWorkspace: (sessionId: string) =>
       restoreSessionWorkspace(
         sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sessionId,

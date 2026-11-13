@@ -100,6 +100,7 @@ interface SessionRow {
   run_stopped_at: string | null;
   last_turn_outcome: string | null;
   schedule_notes_grants: string | null;
+  quota_resume: string | null;
 }
 
 const LAST_TURN_OUTCOMES: readonly LastTurnOutcome[] = ["ok", "errored", "quota-refused"];
@@ -492,6 +493,11 @@ export class SessionManager {
     if (row.run_stopped_at) info.runStoppedAt = row.run_stopped_at;
     const outcome = LAST_TURN_OUTCOMES.find((o) => o === row.last_turn_outcome);
     if (outcome) info.lastTurnOutcome = outcome;
+    const resume = parseQuotaResume(row.quota_resume);
+    // A newer turn supersedes the entry at once, though the manager drops it only at its sweep.
+    if (resume?.cause === "transient" && resume.notBefore && resume.lastUsedAt === row.last_used_at) {
+      info.transientRetryAt = resume.notBefore;
+    }
     const grants = parseStringList(row.schedule_notes_grants);
     if (grants.length > 0) info.scheduleNotesGrants = grants;
     return info;

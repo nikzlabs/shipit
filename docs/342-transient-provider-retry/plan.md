@@ -84,6 +84,28 @@ a new `cause: "transient"` on that entry rather than a new subsystem.
   nothing, so Stop during an automatic attempt ends the chain. Turning the setting off
   drops a waiting entry at the next sweep.
 
+## Showing and cancelling a waiting continuation (reqs 9–11)
+
+No turn runs while a continuation waits, so the chat's Stop button is not there.
+
+- **State**: `SessionInfo.transientRetryAt` (`shared/types/domain-types/session.ts`) is
+  derived in `SessionManager.listRowFromRow` from `quota_resume` — a `transient` entry's
+  `notBefore`, and only while the entry's `lastUsedAt` still equals the row's, the same
+  supersession rule the sweep applies, so a newer turn hides it at once. It is never
+  stored on its own.
+- **Push**: every manager write of the entry goes through `setResume`, which calls
+  `onTransientRetryChanged` when the old or new entry is `transient`; bootstrap wires
+  that to a `session_list` broadcast. A turn's start already broadcasts the list.
+- **Control**: `client/components/TransientRetryNotice.tsx`, a sibling of
+  `MessageInput` in `App.tsx` with `RepoTrustNotice`'s card treatment, shows "ShipIt
+  will ask the agent to continue in N s" with a **Cancel** button, and hides while a
+  turn runs. Placed by the input rather than on the transcript notice, because a
+  notice is a persisted row that outlives the wait and would need the same live state
+  to know whether its button still applies.
+- **Cancel**: `POST /api/sessions/:id/agent/transient-retry/cancel`
+  (`api-routes-agent.ts`) calls `cancelTransientRetry` by session id, so it needs no
+  runner or container (req 10). Browser-only: not `containerAccessible`.
+
 ## Setting (req 1)
 
 `advanced.retryTransientProviderErrors` in `shared/settings-catalogue/global-settings.ts`
@@ -109,3 +131,5 @@ a new `cause: "transient"` on that entry rather than a new subsystem.
 - `src/server/orchestrator/services/quota-continuation.ts`
 - `src/server/orchestrator/services/agent-interrupt.ts`
 - `src/server/orchestrator/prompts/transient-error-continuation-wake.md`
+- `src/server/orchestrator/api-routes-agent.ts` (the cancel route)
+- `src/client/components/TransientRetryNotice.tsx`

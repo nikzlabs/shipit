@@ -28,6 +28,12 @@ worked; signing in again never did.
    marking, no account failover.
 7. The commit, lease and post-turn ordering that any new turn needs is kept.
 8. A real 401 still goes to auth recovery.
+9. While an automatic continuation waits, the chat of that session shows that it waits
+   and when it will run, with a control that cancels it.
+10. That control works whether or not the session has a running container or agent
+    process.
+11. After the user cancels, that continuation does not run, and the chat stops showing
+    it as waiting.
 
 ## Open questions
 
@@ -36,3 +42,7 @@ worked; signing in again never did.
 - 2026-11-13 — Should the number of attempts be a setting too? The request made it
   optional. Decided in the implementing session: no; the schedule is fixed at three
   attempts (req 5), which keeps the setting a single switch. A later request can add it.
+- 2026-11-13 — The chat shows no Stop control while a continuation waits, because no
+  turn runs then. The user approved adding "a small way to cancel a waiting continuation
+  from the transcript notice or the input area" that works without a runner (reqs 9–11);
+  the placement was left to the implementer.
