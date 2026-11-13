@@ -95,11 +95,10 @@ export function isProviderEdgeBlock(error: OpencodeEvent["error"]): boolean {
 
 function edgeBlockMessage(claudeRoute: boolean): string {
   return claudeRoute
-    ? "The provider's edge blocked this request: Cloudflare at api.anthropic.com answered with a 403 block page, "
-      + "so this turn stopped. Signing in again will not help — your Claude login is fine. "
-      + "A Claude Code session on the same account still works."
+    ? "Anthropic's edge blocked this request: Cloudflare at api.anthropic.com answered with a 403 block page, "
+      + "so this turn stopped. Signing in again will not help. Sending your message again later usually works."
     : "The provider's edge blocked this request: its Cloudflare front answered with a 403 block page, "
-      + "so this turn stopped. Signing in again will not help.";
+      + "so this turn stopped. Signing in again will not help. Sending your message again later usually works.";
 }
 
 interface TurnPlan {

@@ -1021,7 +1021,7 @@ describe("Opencode2Adapter — Claude route (docs/340)", () => {
     const notice = notices[0];
     expect(notice).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("Cloudflare at api.anthropic.com") as unknown }] });
     expect(JSON.stringify(notice)).toContain("Signing in again will not help");
-    expect(JSON.stringify(notice)).toContain("A Claude Code session on the same account still works");
+    expect(JSON.stringify(notice)).toContain("Sending your message again later usually works");
     const result = h.events.find((e) => e.type === "agent_result");
     expect(result).toMatchObject({ status: "error", error: expect.stringContaining("Cloudflare") as unknown });
     expect(JSON.stringify(result)).not.toContain("<html");
