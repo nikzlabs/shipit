@@ -161,6 +161,8 @@ export function useServerEvents(): void {
       const data = JSON.parse(e.data as string) as { sessions: SessionListRow[] };
       const store = useSessionStore.getState();
       store.setSessions(data.sessions);
+      // Later on the same stream than any event, so these rows are current, also after a reconnect.
+      store.forgetTransientRetries(data.sessions.map((s) => s.id));
       // This list has no archived rows, and All sessions has its own copy of every row.
       if (store.allSessionsDialogOpen) void store.fetchAllSessions();
     });
@@ -179,6 +181,11 @@ export function useServerEvents(): void {
       useSessionStore.getState().setSessions((prev) =>
         prev.map((s) => s.id === data.session.id ? data.session : s),
       );
+    });
+
+    es.addEventListener("session_transient_retry", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { sessionId: string; transientRetryAt: string | null };
+      useSessionStore.getState().setTransientRetryAt(data.sessionId, data.transientRetryAt ?? undefined);
     });
 
     es.addEventListener("session_agent_started", (e: MessageEvent) => {
@@ -839,6 +846,15 @@ export function useServerEvents(): void {
       if (!hasConnectedRef.current) {
         hasConnectedRef.current = true;
         return;
+      }
+      // docs/342-transient-provider-retry — an event missed while away; rows past the sidebar's
+      // cap come only from All sessions, so that is read again too.
+      const sessionStore = useSessionStore.getState();
+      if (Object.keys(sessionStore.transientRetries).length > 0) {
+        useSessionStore.setState({ transientRetries: {} });
+        void sessionStore.fetchAllSessions().catch((err: unknown) => {
+          console.error("[sse] refreshing All sessions after a reconnect failed:", err);
+        });
       }
       void refreshGlobalSettings().catch((err: unknown) => {
         console.error("[settings] refresh after reconnecting failed:", err);

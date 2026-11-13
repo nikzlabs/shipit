@@ -22,8 +22,13 @@ export function waitText(msLeft: number): string {
   return rest === 0 ? `in ${minutes} min` : `in ${minutes} min ${rest} s`;
 }
 
-export function TransientRetryNotice({ sessionId }: { sessionId: string | null | undefined }) {
-  const retryAt = useSessionStore((s) => s.sessions.find((row) => row.id === sessionId)?.transientRetryAt);
+/**
+ * `rowRetryAt` is the displayed session's row as loaded (App's `bannerSession`); a later
+ * `session_transient_retry` event overrides it.
+ */
+export function TransientRetryNotice({ sessionId, rowRetryAt }: { sessionId: string; rowRetryAt: string | undefined }) {
+  const fromEvent = useSessionStore((s) => s.transientRetries[sessionId]);
+  const retryAt = fromEvent === undefined ? rowRetryAt : (fromEvent ?? undefined);
   const { post } = useApi();
   const [now, setNow] = useState(() => Date.now());
   const [cancelling, setCancelling] = useState(false);
@@ -35,12 +40,14 @@ export function TransientRetryNotice({ sessionId }: { sessionId: string | null |
     return () => clearInterval(timer);
   }, [retryAt]);
 
-  if (!sessionId || !retryAt) return null;
+  if (!retryAt) return null;
 
   const cancel = async () => {
     setCancelling(true);
     try {
       await post(`/api/sessions/${encodeURIComponent(sessionId)}/agent/transient-retry/cancel`);
+      // Either way nothing waits now; the broadcast would say the same, if it arrives.
+      useSessionStore.getState().setTransientRetryAt(sessionId, undefined);
     } catch {
       useUiStore.getState().setToast({ message: "The automatic continuation could not be cancelled. Try again." });
     } finally {

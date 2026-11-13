@@ -850,7 +850,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     providerAccountManager,
     containerManager,
     transientRetryEnabled: () => credentialStore.getRetryTransientProviderErrors(),
-    onTransientRetryChanged: () => sseBroadcast("session_list", { sessions: sessionManager.list() }),
+    // One row, patched in both of the client's lists: an open session can be past the sidebar's cap.
+    onTransientRetryChanged: (id) => sseBroadcast("session_transient_retry", {
+      sessionId: id,
+      transientRetryAt: sessionManager.get(id)?.transientRetryAt ?? null,
+    }),
     restoreWorkspace: (sessionId: string) =>
       restoreSessionWorkspace(
         sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sessionId,

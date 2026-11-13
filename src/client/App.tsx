@@ -1771,7 +1771,10 @@ export default function App() {
       {agentMessagingBlocked && (!showHomeScreen || showNewSessionView) && (
         <RepoTrustNotice repoUrl={currentRepoUrl} />
       )}
-      {!isLoading && !showHomeScreen && <TransientRetryNotice sessionId={sessionId} />}
+      {/* The URL's session, and only once the store agrees: mid-switch they differ. */}
+      {!isLoading && !showHomeScreen && wsSessionId && wsSessionId === sessionId && (
+        <TransientRetryNotice sessionId={wsSessionId} rowRetryAt={bannerSession?.transientRetryAt} />
+      )}
       {(showHarnessOnboarding || !showHomeScreen || showNewSessionView) && (
         <MessageInput
           onSend={handleSend}
