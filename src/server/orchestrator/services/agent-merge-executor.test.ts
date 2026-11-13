@@ -1,4 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+vi.mock("../session-worker-uid.js", async (importOriginal) => ({
+  ...await importOriginal<Record<string, unknown>>(),
+  handWorkspaceBackToWorker: vi.fn(),
+}));
 import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
@@ -16,6 +21,8 @@ import { finalizeTurnRows, persistTurnInProgress } from "../chat-card-persistenc
 import { unprobedAfterRestart } from "../restart-turn-reattach.js";
 import type { MergeAttempt } from "../github-auth-prs.js";
 import type { TerminalPrFacts } from "../github-auth-prs.js";
+import type { GitManager } from "../../shared/git.js";
+import { applyPreTurnReset, type PreTurnResetRunner } from "../pre-turn-reset-hook.js";
 
 const SESSION = "s1";
 const REMOTE = "https://github.com/acme/shipit.git";
@@ -115,7 +122,30 @@ function poller(opts: { grace?: boolean } = {}) {
     }),
     readPrByNumber: vi.fn(async () => facts()),
     awaitCiGraceDecision: vi.fn(async () => opts.grace === true),
+    awaitMergeHandling: vi.fn(async () => {}),
   } as unknown as PrStatusPoller;
+}
+
+const BRANCH = "shipit/feature";
+const BASE_TIP = "sha-base-tip";
+
+// Records the merge on the session the way the real poller's promotion does.
+function recordingPoller() {
+  const p = poller();
+  (p.promoteMergedPrByNumber as unknown as { mockImplementation: (f: () => Promise<unknown>) => void })
+    .mockImplementation(async () => {
+      sessions.setBranch(SESSION, BRANCH);
+      sessions.markMerged(SESSION);
+      sessions.setMergedHeadSha(SESSION, HEAD);
+      sessions.setPrStatus(SESSION, {
+        sessionId: SESSION, prNumber: 7, prUrl: "https://github.com/acme/shipit/pull/7",
+        prTitle: "A pull request", prBody: "", prState: "merged", baseBranch: "main", headBranch: BRANCH,
+        insertions: 1, deletions: 0, checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
+        mergeable: "unknown", reviewDecision: "none", autoMergeEnabled: false,
+      });
+      return { pr: facts(), promoted: true };
+    });
+  return p;
 }
 
 function fakeRunner(over: Partial<{ running: boolean; agentBusy: boolean; queueLength: number }> = {}) {
@@ -1017,48 +1047,110 @@ describe("runOneRequest — a merge and a turn are mutually exclusive (req 6)", 
     expect(runner.queueLength).toBe(0);
   });
 
-  it("moves the branch inside the hold, before the message that waited starts (docs/288 req 9)", async () => {
+  it("leaves the branch and mergedAt alone, and says the next turn moves it (docs/288 req 9)", async () => {
     const runner = fakeRunner();
-    const seen: { held: boolean; dispatched: number }[] = [];
-    const resetAfterMerge = vi.fn(async (_id: string, _pr: number) => {
-      seen.push({ held: runner.mergeHold, dispatched: runner.dispatched.length });
-    });
     const gh = github({ onMerge: () => { runner.queueLength = 1; } });
 
     const out = await runOneRequest(
-      deps({ githubAuthManager: gh, runnerRegistry: registry(runner), resetAfterMerge }),
+      deps({ githubAuthManager: gh, runnerRegistry: registry(runner), prStatusPoller: recordingPoller() }),
       armed(),
     );
 
     expect(out).toEqual({ result: "merged" });
-    expect(resetAfterMerge).toHaveBeenCalledWith(SESSION, 7);
-    expect(seen).toEqual([{ held: true, dispatched: 0 }]);
+    // The sidebar reads mergedAt; the next turn's reset reads mergedHeadSha.
+    expect(sessions.get(SESSION)).toMatchObject({ mergedHeadSha: HEAD });
+    expect(sessions.get(SESSION)?.mergedAt).toBeTruthy();
+    expect(sessions.get(SESSION)?.pendingAgentNotice).toBeUndefined();
+    expect(notices()).toContain(
+      `Merged pull request #7 at ${HEAD.slice(0, 8)}. The branch stays on the merged commit for now; `
+      + "the next turn moves it to the latest base when that is safe and the “start from the latest base” "
+      + "setting is on.",
+    );
+    // The message that waited under the hold is released to the turn path, which runs the pre-turn reset.
     expect(runner.dispatched).toHaveLength(1);
   });
 
-  it("does not move the branch of a session that has moved to another pull request", async () => {
-    const resetAfterMerge = vi.fn(async () => {});
-    // It moves while GitHub merges: before that, the executor cancels the request instead.
-    const gh = github({ onMerge: () => { sessions.recordPrProvenance(SESSION, 9, REPO_ID); } });
-
-    const out = await runOneRequest(deps({ githubAuthManager: gh, resetAfterMerge }), armed());
-
-    expect(out).toEqual({ result: "merged" });
-    expect(resetAfterMerge).not.toHaveBeenCalled();
-  });
-
-  it("still reports the merge when moving the branch throws", async () => {
+  it("holds the waiting message until the merge cleanup has finished (docs/288 req 9)", async () => {
     const runner = fakeRunner();
-    const resetAfterMerge = vi.fn(async () => { throw new Error("git broke"); });
+    const p = recordingPoller();
+    let finish!: () => void;
+    let dispatchedDuringCleanup = -1;
+    (p.awaitMergeHandling as unknown as { mockImplementation: (f: () => Promise<void>) => void })
+      .mockImplementation(() => new Promise<void>((resolve) => {
+        dispatchedDuringCleanup = runner.dispatched.length;
+        finish = resolve;
+      }));
+    const gh = github({ onMerge: () => { runner.queueLength = 1; } });
 
-    const out = await runOneRequest(
-      deps({ runnerRegistry: registry(runner), resetAfterMerge }),
+    const pending = runOneRequest(
+      deps({ githubAuthManager: gh, runnerRegistry: registry(runner), prStatusPoller: p }),
       armed(),
     );
+    await vi.waitFor(() => { expect(dispatchedDuringCleanup).toBe(0); });
+    expect(runner.mergeHold).toBe(true);
+    finish();
 
-    expect(out).toEqual({ result: "merged" });
+    expect(await pending).toEqual({ result: "merged" });
     expect(runner.mergeHold).toBe(false);
-    expect(claims.get(SESSION)).toBeNull();
+    expect(runner.dispatched).toHaveLength(1);
+  });
+
+  it("the next turn moves the branch and re-arms the session (docs/288 req 9)", async () => {
+    const poll = recordingPoller();
+    await runOneRequest(deps({ runnerRegistry: registry(fakeRunner()), prStatusPoller: poll }), armed());
+    expect(sessions.get(SESSION)?.mergedAt).toBeTruthy();
+
+    let head = HEAD;
+    const resetHardToRemoteBase = vi.fn(async () => { head = BASE_TIP; return { from: HEAD, to: BASE_TIP }; });
+    const git = {
+      isClean: vi.fn(async () => true),
+      currentBranchOrNull: vi.fn(async () => BRANCH),
+      isRebaseInProgress: vi.fn(async () => false),
+      isMergeOrSequencerInProgress: vi.fn(async () => false),
+      getHeadHash: vi.fn(async () => head),
+      getRefHash: vi.fn(async () => BASE_TIP),
+      isAncestor: vi.fn(async () => false),
+      fetch: vi.fn(async () => {}),
+      resetHardToRemoteBase,
+      forcePush: vi.fn(async () => "ok"),
+      headIsAtBase: vi.fn(async () => head === BASE_TIP),
+    } as unknown as GitManager;
+    const reArm = vi.fn();
+    const turnRunner = {
+      emitMessage: vi.fn(),
+      running: false,
+      chatMessageGroups: [],
+      recordedCards: [],
+      steeredMessages: [],
+      getTurnEventBuffer: () => [],
+      lastPersistedBufferIndex: 0,
+      reevaluateWorkspaceConfig: vi.fn(),
+      notifyWorkspaceRewritten: vi.fn(),
+    } as unknown as PreTurnResetRunner;
+
+    const result = await applyPreTurnReset({
+      deps: {
+        sessionManager: sessions,
+        prStatusPoller: {
+          getStatus: (id: string) => sessions.getPrStatus(id),
+          reArm,
+          forceVerifySessionPrState: vi.fn(async () => {}),
+          awaitMergeHandling: vi.fn(async () => {}),
+        } as unknown as PrStatusPoller,
+        createGitManager: () => git,
+        sseBroadcast: vi.fn(),
+        chatHistoryManager,
+        getAutoResetMergedBranch: () => true,
+      },
+      runner: turnRunner,
+      sessionId: SESSION,
+      sessionDir: "/ws",
+    });
+
+    expect(resetHardToRemoteBase).toHaveBeenCalledWith("main");
+    expect(result.agentPrefix).toContain("was merged into main");
+    expect(sessions.get(SESSION)?.mergedAt).toBeFalsy();
+    expect(reArm).toHaveBeenCalledWith(SESSION, 7);
   });
 
   it("releases the hold when something after the merge throws", async () => {

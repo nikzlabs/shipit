@@ -607,7 +607,7 @@ compaction could run anyway.
 reset at the next message (docs/218), with its control. A sandbox `gh pr merge`
 is not recorded at merge time (no claim, no `onMerged`), so it also keeps the
 next-message reset; req 22 is met for repo-bound sessions only.
-`gh pr merge --auto` is docs/288 req 9.
+`gh pr merge --auto` is docs/288 req 9: it leaves the branch for the next turn.
 
 ## Key files
 

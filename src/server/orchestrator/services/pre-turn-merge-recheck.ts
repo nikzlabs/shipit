@@ -27,7 +27,8 @@ export async function recheckMergeBeforeTurn(
 ): Promise<MergeRecheckOutcome> {
   try {
     const session = deps.getSession(sessionId);
-    if (!session || session.mergedAt || !session.branch || !session.remoteUrl) return "unchanged";
+    if (session?.mergedAt) return await mergeHandlingOutcome(deps, sessionId, opts.timeoutMs);
+    if (!session?.branch || !session.remoteUrl) return "unchanged";
 
     if (deps.getPrStatus(sessionId)?.prState !== "open") return "unchanged";
 
@@ -76,6 +77,25 @@ export async function recheckMergeBeforeTurn(
       err,
     );
     return "unchanged";
+  }
+}
+
+// A merge recorded moments ago (an --auto merge, docs/288 req 9) may still be deleting the head branch.
+async function mergeHandlingOutcome(
+  deps: PreTurnMergeRecheckDeps,
+  sessionId: string,
+  timeoutMs: number | undefined,
+): Promise<MergeRecheckOutcome> {
+  try {
+    await withTimeout(deps.awaitMergeHandling(sessionId), timeoutMs ?? MERGE_RECHECK_TIMEOUT_MS, sessionId);
+    return "unchanged";
+  } catch (err) {
+    console.warn(
+      `[pre-turn-reset] ${sessionId} is merged but its bookkeeping is still running — skipping the `
+        + "branch reset for this turn rather than racing the in-flight head-branch delete:",
+      err,
+    );
+    return "unsettled";
   }
 }
 

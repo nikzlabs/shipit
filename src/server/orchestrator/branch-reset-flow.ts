@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
 import type { BranchAutoResetCard, PrStatusSummary } from "../shared/types.js";
 import type { GitManager } from "../shared/git.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-runner.js";
-import { emitChatCard, persistNoticeUnattached } from "./chat-card-persistence.js";
+import { emitChatCard } from "./chat-card-persistence.js";
 import { detectAndReArmResetSession } from "./services/pr-rearm.js";
 import {
   buildManualResetAgentNotice,
@@ -170,14 +169,13 @@ export const MERGE_HANDLING_WAIT_MS = 30_000;
 
 export type AfterMergeReset =
   | { kind: "done"; outcome: ExplicitResetOutcome }
-  // announced: the docs/266 merge-time notice already named this blocker.
-  | { kind: "blocked"; reason: string; announced: boolean }
+  | { kind: "blocked"; reason: string }
   | { kind: "refused"; reason: string; movedLocally: boolean }
   | { kind: "not-recorded" }
   | { kind: "turn-ended" };
 
 // The poller asks callers to bound this wait; the handling also delivers the self-merge wake.
-async function mergeHandlingSettled(
+export async function mergeHandlingSettled(
   poller: PrStatusPoller | undefined,
   sessionId: string,
   timeoutMs: number,
@@ -231,7 +229,6 @@ export async function resetBranchAfterAgentMerge(
       kind: "blocked",
       reason: eligibility.blocker?.detail
         ?? `ShipIt could not check whether the reset is safe (${eligibility.error ?? "unknown error"})`,
-      announced: eligibility.blocker !== null,
     };
   }
   if (args.stillOwned && !args.stillOwned()) return { kind: "turn-ended" };
@@ -310,86 +307,5 @@ export async function resetBranchAfterDirectMerge(
       runner.mergeHold = false;
       releaseQueuedTurn(runner);
     }
-  }
-}
-
-/** docs/288-agent-merge-arming req 9: runs inside the executor's merge hold. */
-export async function resetBranchAfterAutoMerge(
-  deps: BranchResetFlowDeps,
-  args: { sessionId: string; prNumber: number; mergeHandlingWaitMs?: number },
-): Promise<void> {
-  const { sessionId, prNumber } = args;
-  const runner = deps.runnerRegistry?.get(sessionId);
-  const sessionDir = runner?.sessionDir ?? deps.sessionManager.get(sessionId)?.workspaceDir;
-  const note = (text: string, level: "info" | "warn") =>
-    persistNoticeUnattached(deps.chatHistoryManager, sessionId, text, level);
-  const remedy = "The agent can move it with `shipit branch reset-to-base`.";
-
-  if (!sessionDir || !fs.existsSync(sessionDir)) {
-    console.log(`[agent-merge] no workspace on disk for ${sessionId}; the branch reset is left to a later turn`);
-    note(
-      `Pull request #${prNumber} merged. This branch was left on the merged commit, because the `
-      + `session's files are not on disk right now. ${remedy}`,
-      "info",
-    );
-    return;
-  }
-
-  let reset: AfterMergeReset;
-  try {
-    reset = await resetBranchAfterAgentMerge(deps, {
-      sessionId,
-      sessionDir,
-      by: "auto-merge",
-      ...(args.mergeHandlingWaitMs !== undefined ? { mergeHandlingWaitMs: args.mergeHandlingWaitMs } : {}),
-    });
-  } catch (err) {
-    console.error(`[agent-merge] resetting the branch after the merge failed for ${sessionId}:`, err);
-    note(
-      `Pull request #${prNumber} merged, but ShipIt could not finish moving this branch to the latest `
-      + `base (${getErrorMessage(err)}), so it may or may not have moved. ${remedy}`,
-      "warn",
-    );
-    return;
-  }
-  switch (reset.kind) {
-    case "done": {
-      const { outcome } = reset;
-      const base = `origin/${outcome.base ?? "<base>"}`;
-      if (outcome.outcome === "already-at-base") {
-        note(`Pull request #${prNumber} merged. This branch already matches ${base}.`, "info");
-      } else if (!runner) {
-        // With a runner, the branch-updated card is the record.
-        note(`Pull request #${prNumber} merged, and ShipIt moved this branch to the latest ${base}.`, "info");
-      }
-      return;
-    }
-    case "blocked":
-      console.log(`[agent-merge] branch reset after the merge of ${sessionId} blocked: ${reset.reason}`);
-      if (!reset.announced) {
-        note(
-          `Pull request #${prNumber} merged, but this branch was left on the merged commit: `
-          + `${reset.reason}. ${remedy}`,
-          "warn",
-        );
-      }
-      return;
-    case "refused":
-      note(
-        `Pull request #${prNumber} merged, but moving this branch to the latest base did not `
-        + `complete: ${reset.reason}`,
-        "warn",
-      );
-      return;
-    case "not-recorded":
-      note(
-        `Pull request #${prNumber} merged, but ShipIt could not finish recording it in time, so this `
-        + `branch was left on the merged commit. ${remedy}`,
-        "info",
-      );
-      break;
-    case "turn-ended":
-      // Only the direct merge passes stillOwned.
-      break;
   }
 }

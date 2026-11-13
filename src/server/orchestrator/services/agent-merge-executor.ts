@@ -17,6 +17,7 @@ import {
 import { settleAgentMerge, reconcileAgentMergeClaims, type SettlementOutcome } from "./agent-merge-settlement.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { unprobedAfterRestart } from "../restart-turn-reattach.js";
+import { MERGE_HANDLING_WAIT_MS, mergeHandlingSettled } from "../branch-reset-flow.js";
 
 export interface AgentMergeExecutorDeps {
   claims: AgentMergeClaimStore;
@@ -26,8 +27,6 @@ export interface AgentMergeExecutorDeps {
   githubAuthManager: GitHubAuthManager;
   prStatusPoller?: PrStatusPoller;
   runnerRegistry?: SessionRunnerRegistry;
-  /** docs/288 req 9 — moves the branch to the latest base; called inside the merge hold. */
-  resetAfterMerge?: (sessionId: string, prNumber: number) => Promise<void>;
 }
 
 export type RequestOutcome =
@@ -322,13 +321,10 @@ async function performMerge(
 
     const settled = await settle(deps, claim, true);
     if (settled?.result !== "settled") return { result: "waiting", reason: "settling" };
-    // Before the finally releases the hold, so a waiting turn starts on the moved branch.
-    if (settled.ownSession && deps.resetAfterMerge) {
-      try {
-        await deps.resetAfterMerge(claim.sessionId, claim.prNumber);
-      } catch (err) {
-        console.error(`[agent-merge] resetting the branch after merging for ${claim.sessionId} failed:`, err);
-      }
+    // The branch is left for the next turn's reset (docs/288 req 9). Hold that turn until the
+    // merge cleanup has deleted the remote branch, or its reset would race the delete.
+    if (settled.ownSession && !(await mergeHandlingSettled(deps.prStatusPoller, claim.sessionId, MERGE_HANDLING_WAIT_MS))) {
+      console.warn(`[agent-merge] merge cleanup for ${claim.sessionId} did not finish in time; releasing the hold`);
     }
     return { result: "merged" };
   } finally {

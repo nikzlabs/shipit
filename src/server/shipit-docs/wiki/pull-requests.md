@@ -265,9 +265,10 @@ the normal way to land a turn's own work, because the command commits and pushes
 your pending changes first, and that push restarts CI. Even then you may merge
 only the pull request ShipIt opened for your session, every check GitHub reports
 must pass, and branch protection and required reviews still apply. After your
-own merge, ShipIt moves the session's branch to the latest base by itself —
-inside the merge command, or for `--auto` before the next turn starts — so one
-session can ship one pull request after another; a merge the user makes moves
+own direct merge, ShipIt moves the session's branch to the latest base by itself,
+inside the merge command, so one session can ship one pull request after
+another; after an `--auto` merge the session stays merged and the branch moves
+when the next turn starts; a merge the user makes moves
 the branch only at their next message, through "Start from the latest base". In
 a sandbox session the equivalent grant is **"Allow merging PRs"**, chosen when
 the sandbox is created, and there the branch is not moved for you. Ops sessions

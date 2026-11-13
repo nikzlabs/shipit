@@ -6,7 +6,6 @@ import { AgentMergeClaimStore } from "./agent-merge-claims.js";
 import { SettingsProposalStore } from "./settings-proposal-store.js";
 import { reconcileAgentMergeClaims } from "./services/agent-merge-settlement.js";
 import { AgentMergeExecutor } from "./services/agent-merge-executor.js";
-import { resetBranchAfterAutoMerge } from "./branch-reset-flow.js";
 import { serviceForLoginIntegration } from "../shared/catalogue/index.js";
 import path from "node:path";
 import { createDockerClient } from "./docker-client.js";
@@ -1270,10 +1269,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     githubAuthManager,
     prStatusPoller,
     runnerRegistry,
-    resetAfterMerge: (sessionId, prNumber) => resetBranchAfterAutoMerge(
-      { sessionManager, createGitManager, runnerRegistry, chatHistoryManager, prStatusPoller, sseBroadcast },
-      { sessionId, prNumber },
-    ),
   });
   agentMergeExecutor.start();
 

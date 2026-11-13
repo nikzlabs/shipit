@@ -146,6 +146,15 @@ describe("recheckMergeBeforeTurn — states that must not cost a round-trip", ()
     expect(h.verifyPrState).not.toHaveBeenCalled();
   });
 
+  it("waits out the merge bookkeeping of a session already merged, and skips the reset while it runs", async () => {
+    const h = makeHarness({
+      session: makeSession({ mergedAt: "2026-08-22 19:32:02" }),
+      awaitMergeHandling: () => new Promise<void>(() => {}),
+    });
+    await expect(run(h, 10)).resolves.toBe("unsettled");
+    expect(h.verifyPrState).not.toHaveBeenCalled();
+  });
+
   it("skips a session with no observed pull request", async () => {
     const h = makeHarness({ prStatus: null });
     await expect(run(h)).resolves.toBe("unchanged");

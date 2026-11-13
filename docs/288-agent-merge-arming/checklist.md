@@ -202,8 +202,9 @@ Built on `docs/287-agent-merge-per-repo`, shipped.
 - [x] Three independent cold reviews — 26 findings in total, every one verified
       at the source and fixed; each fix proved red on its own
 
-## The branch moves inside the hold (req 9)
+## The branch waits for the next turn (req 9)
 
-- [x] `resetAfterMerge` dependency called from `settle()` inside the hold, wired in `bootstrap-managers.ts`
-- [x] Transcript record for each outcome, and the agent notice worded for ShipIt's merge
-- [x] Executor test: the reset runs before the queued turn is released
+- [x] Executor no longer resets after an `--auto` merge; `resetBranchAfterAutoMerge` and its wiring removed
+- [x] The `--auto` merge notice says the branch moves when the next turn starts
+- [x] The merge hold lasts until the merge cleanup (remote branch delete) ends, so the next turn's reset cannot race it
+- [x] Executor tests: `mergedAt` and `mergedHeadSha` stay after the merge, and the next turn's pre-turn reset moves the branch and re-arms

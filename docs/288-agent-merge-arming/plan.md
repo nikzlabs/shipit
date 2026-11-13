@@ -425,66 +425,51 @@ own (req 6, last sentence). Both run in a `finally`, **after** the durable state
 change, so a crash in between leaves a row reconciliation resolves rather than a
 queue released against a hold that still exists.
 
-### The branch moves inside the hold (req 9)
+### The branch waits for the next turn (req 9)
 
-The same reset as the direct merge (`docs/287-agent-merge-per-repo` §6, one
-shared function in `branch-reset-flow.ts`), called from the executor's
-`settle()` once a **witnessed** settlement returns `settled`. `settle()` runs
-inside `performMerge`'s `try`, so the reset runs while `mergeHold` and the
-post-turn lease are still held, and before the `finally` calls
-`releaseQueuedTurn()`. That ordering is what req 9 asks for: a message the user
-sent during the merge, or the docs/239 self-merge wake (which
-`handleSelfMerge` dispatches during the merge handling and which
-`dispatchOnRunner` queues under the hold, verified at `session-runner.ts:396`),
-starts only after the branch has moved.
+The executor does not move the branch. Moving it re-arms the session
+(`detectAndReArmResetSession` → `clearMerged`), and a cleared `mergedAt` takes
+the session out of the sidebar's merged state (`rowPrState` in
+`SessionItem.tsx`), so an `--auto` merge that was the session's last act would
+stop reading as done seconds after it landed. That is the reason for the
+2026-11-13 reversal in `requirements.md`.
 
-The executor takes it as an injected `resetAfterMerge(sessionId)` dependency,
-wired in `bootstrap-managers.ts`, rather than importing the reset flow: the
-executor has no `createGitManager` or SSE broadcast of its own. A throw is
-logged and swallowed — the merge happened, and the request must still settle.
+What runs instead is the reset every merge already gets: the docs/218 pre-turn
+reset, `applyPreTurnReset` in `pre-turn-reset-hook.ts`, at the start of the next
+turn. It needs only what the merge detection records — `mergedAt`,
+`mergedHeadSha` and the merged PR snapshot, written by the poller's
+`promoteMergedPrByNumber` during settlement — and no executor state. The turns
+that matter all reach it, because every turn, dispatched or typed, goes through
+the turn executor's `preTurnReset` (verified at
+`runner-registry-factory.ts:preTurnReset`):
 
-`settle()` now returns the settlement outcome rather than a boolean, so the
-reset runs only for `settled` with `ownSession` — the merge was promoted onto
-this session, not recorded for a session that has moved to another pull
-request.
+- a message queued under the merge hold, released by `releaseQueuedTurn()` in
+  `performMerge`'s `finally`;
+- the docs/239 self-merge wake, which also tells the agent to run
+  `shipit branch reset-to-base` first (that answers "already at base" when the
+  pre-turn reset has run).
 
-**Where the record goes.** No agent is running, so nobody reads a command
-answer. Every outcome leaves one transcript entry:
+The pre-turn reset follows `advanced.autoResetMergedBranch`, the composer's
+per-message choice and its own safety checks, as for a merge the user makes.
 
-- **moved** — the persisted `BranchUpdatedCard`, as for `shipit branch
-  reset-to-base`; and a pending agent notice (`setPendingAgentNotice`), worded
-  for this case ("ShipIt merged your pull request as you asked with
-  `gh pr merge --auto`, then reset this branch…"), which the next turn reads.
-  With no runner there is nowhere to emit a card, so an `info` notice carries
-  the same facts.
-- **blocked before the reset** — nothing new: the docs/266 merge-time notice,
-  written during the merge handling this awaited, already says why the branch
-  stayed. The exception is a safety check that itself failed: that notice has
-  no blocker to name, so this path writes a `warn` notice.
-- **refused after the fetch, incomplete (moved but not pushed), or failed** — a
-  `warn` notice with the reason, naming `shipit branch reset-to-base` as the
-  way to move it. A throw part-way (the re-arm, the card) gets the same, saying
-  the branch may or may not have moved.
-- **no workspace on disk** (an evicted clone), or **the merge not recorded in
-  time** — an `info` notice that the branch was left on the merged commit, with
-  the same remedy.
+**The hold lasts until the merge cleanup ends.** Promotion starts the poller's
+merge handling (`onMergeDetected`: `mergedAt` is written first, then the remote
+head branch is deleted) without awaiting it. A turn released at that point sees
+`mergedAt`, so `recheckMergeBeforeTurn` returns `unchanged` without waiting, and
+its reset's push could race the delete. So after a witnessed settlement for this
+session, `performMerge` waits for that handling (`mergeHandlingSettled`, bounded
+by `MERGE_HANDLING_WAIT_MS`) before its `finally` releases the hold. On timeout
+it logs and releases anyway, and the turn's own recheck covers the rest: for a
+session already merged, `recheckMergeBeforeTurn` waits (bounded) for any merge
+handling still running and answers `unsettled` if it has not ended, so that
+turn skips the reset and a later one does it.
 
-**No setting.** As for the direct merge (`docs/287-agent-merge-per-repo` §6),
-`advanced.autoResetMergedBranch` is not consulted.
-
-**A known gap: a merge whose recording is deferred.** When GitHub accepts the
-merge but the settlement read right after it fails, the claim stays `settling`
-and the hold is released; reconciliation records the merge later, without the
-hold, and does not reset — a reset there could run beside a turn, the hazard
-`docs/282-merge-race-at-turn-admission` describes. The branch then moves at the
-next message (docs/218), or by the wake turn's `shipit branch reset-to-base`,
-as before this change. The user chose to keep this gap rather than retry the
-recording inside the hold (req 9's exception, 2026-11-12).
-
-The self-merge wake still tells the agent to run `shipit branch reset-to-base`
-first. The wake is dispatched during the merge handling, before this reset
-runs, so its text cannot know the outcome; after a reset the command answers
-"already at base" — or moves the branch again if the base advanced meanwhile.
+**Where the record goes.** The settlement's merge notice for an `--auto` claim
+(`settleAgentMerge`), witnessed or recovered, adds that the branch stays on the
+merged commit and the next turn moves it when that is safe and the setting is
+on. The direct merge's notice is unchanged: its reset runs inside the
+merging turn (`docs/287-agent-merge-per-repo` §6, req 22), where no next turn
+would help.
 
 ### A request that waits on a session that is not idle says so (req 8)
 
