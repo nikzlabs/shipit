@@ -60,6 +60,7 @@ import { RocketLaunch } from "./components/RocketLaunch.js";
 import { PreviewFrame } from "./components/PreviewFrame.js";
 import { RepoTrustBanner } from "./components/RepoTrustBanner.js";
 import { RepoTrustNotice } from "./components/RepoTrustNotice.js";
+import { TransientRetryNotice } from "./components/TransientRetryNotice.js";
 import {
   usePreviewErrors,
   type PreviewError,
@@ -1769,6 +1770,10 @@ export default function App() {
       )}
       {agentMessagingBlocked && (!showHomeScreen || showNewSessionView) && (
         <RepoTrustNotice repoUrl={currentRepoUrl} />
+      )}
+      {/* The URL's session, and only once the store agrees: mid-switch they differ. */}
+      {!isLoading && !showHomeScreen && wsSessionId && wsSessionId === sessionId && (
+        <TransientRetryNotice sessionId={wsSessionId} rowRetryAt={bannerSession?.transientRetryAt} />
       )}
       {(showHarnessOnboarding || !showHomeScreen || showNewSessionView) && (
         <MessageInput

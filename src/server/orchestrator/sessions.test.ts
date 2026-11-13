@@ -2128,4 +2128,42 @@ describe("docs/239-self-merge-wake — a self-watch stored by older code moves t
     expect(dbManager.db.prepare("SELECT merge_watch FROM sessions WHERE id = 'corrupt'").get())
       .toEqual({ merge_watch: '{"kind":"self"' });
   });
+
+  describe("docs/342-transient-provider-retry req 9: transientRetryAt", () => {
+    const AT = "2026-11-13T10:00:30.000Z";
+    function waiting(mgr: SessionManager, cause: "transient" | "quota", lastUsedAt?: string): void {
+      mgr.track("sess-1");
+      mgr.setQuotaResume("sess-1", {
+        agentId: "claude",
+        cause,
+        lastUsedAt: lastUsedAt ?? mgr.get("sess-1")!.lastUsedAt,
+        wakeAttempts: 0,
+        notBefore: AT,
+        transientRetry: 1,
+      });
+    }
+
+    it("is on the row and the list while a continuation waits", () => {
+      const mgr = new SessionManager(dbManager);
+      waiting(mgr, "transient");
+      expect(mgr.get("sess-1")!.transientRetryAt).toBe(AT);
+      expect(mgr.list().find((r) => r.id === "sess-1")!.transientRetryAt).toBe(AT);
+    });
+
+    it("is gone once a newer turn has started, before the manager drops the entry", () => {
+      const mgr = new SessionManager(dbManager);
+      waiting(mgr, "transient", "2020-01-01T00:00:00.000Z");
+      expect(mgr.get("sess-1")!.transientRetryAt).toBeUndefined();
+    });
+
+    it("is not set for a quota continuation, or once cleared", () => {
+      const mgr = new SessionManager(dbManager);
+      waiting(mgr, "quota");
+      expect(mgr.get("sess-1")!.transientRetryAt).toBeUndefined();
+      waiting(mgr, "transient");
+      mgr.setQuotaResume("sess-1", null);
+      expect(mgr.get("sess-1")!.transientRetryAt).toBeUndefined();
+    });
+  });
 });
+

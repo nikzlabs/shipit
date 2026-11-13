@@ -154,8 +154,9 @@ the provider's own text. Three shapes:
   advanced.retryTransientProviderErrors`; off by default), ShipIt does that by
   itself: a **notice** says when, and the agent is asked to continue where it
   stopped — the user's message is never sent again — up to three times, after
-  30 seconds, 2 minutes and 5 minutes. The user's own message cancels a waiting
-  attempt, and Stop ends the retries. When it is off and this keeps happening,
+  30 seconds, 2 minutes and 5 minutes. While an attempt waits, a strip above
+  the message box says when it runs and has a **Cancel** button; the user's own
+  message cancels it too, and Stop ends the retries. When it is off and this keeps happening,
   propose turning it on.
 - **Anything else** — the error text is the provider's. Read it before
   retrying.

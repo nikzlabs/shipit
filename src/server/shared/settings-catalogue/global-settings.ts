@@ -117,8 +117,9 @@ export const GLOBAL_SETTINGS = {
       "When a model call fails with a temporary provider error — a Cloudflare block page, an "
       + "overloaded model, or a 5xx server error — and that stops the agent, ShipIt asks the agent "
       + "to continue where it stopped, in the same conversation, after 30 seconds, 2 minutes and "
-      + "5 minutes, then gives up. The transcript shows each attempt. Your next message cancels a "
-      + "waiting attempt, and Stop ends the retries. The message you sent is never sent again.",
+      + "5 minutes, then gives up. The transcript shows each attempt, and a waiting attempt shows "
+      + "above the message box with a Cancel button; your next message cancels it too, and Stop "
+      + "ends the retries. The message you sent is never sent again.",
     type: bool({ default: false }),
     store: { kind: "credential-store", field: "retryTransientProviderErrors" },
     wire: "retryTransientProviderErrors",

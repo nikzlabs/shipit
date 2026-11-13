@@ -231,6 +231,14 @@ interface SessionState {
   setPinned: (sessionId: string, pinned: boolean) => Promise<void>;
 
   setKeepPreviewRunning: (sessionId: string, enabled: boolean) => Promise<void>;
+  /**
+   * docs/342-transient-provider-retry req 9 — the server's `session_transient_retry`, newest
+   * first: no list fetch or cached row can overwrite it. Absent until the first event.
+   */
+  transientRetries: Record<string, string | null>;
+  setTransientRetryAt: (sessionId: string, at: string | undefined) => void;
+  /** A `session_list` carries these rows as they are now; their row value applies again. */
+  forgetTransientRetries: (sessionIds: readonly string[]) => void;
 
   setMuted: (sessionId: string, muted: boolean) => Promise<void>;
 
@@ -396,6 +404,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   rewindRecoveries: {},
   turnUsage: initialTurnUsage,
   allSessions: [] as SessionListRow[],
+  transientRetries: {},
   allSessionsDialogOpen: false,
   allSessionsDialogRepoUrl: undefined,
 
@@ -572,6 +581,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.error("[session-store] Pin toggle failed:", err);
       patch(prev);          
     }
+  },
+
+  setTransientRetryAt: (sessionId, at) =>
+    set((state) => ({ transientRetries: { ...state.transientRetries, [sessionId]: at ?? null } })),
+
+  forgetTransientRetries: (sessionIds) => {
+    const current = get().transientRetries;
+    if (!sessionIds.some((id) => id in current)) return;
+    const drop = new Set(sessionIds);
+    set({ transientRetries: Object.fromEntries(Object.entries(current).filter(([id]) => !drop.has(id))) });
   },
 
   setKeepPreviewRunning: async (sessionId, enabled) => {

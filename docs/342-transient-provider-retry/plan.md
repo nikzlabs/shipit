@@ -84,6 +84,39 @@ a new `cause: "transient"` on that entry rather than a new subsystem.
   nothing, so Stop during an automatic attempt ends the chain. Turning the setting off
   drops a waiting entry at the next sweep.
 
+## Showing and cancelling a waiting continuation (reqs 9–11)
+
+No turn runs while a continuation waits, so the chat's Stop button is not there.
+
+- **State**: `SessionInfo.transientRetryAt` (`shared/types/domain-types/session.ts`) is
+  derived in `SessionManager.listRowFromRow` from `quota_resume` — a `transient` entry's
+  `notBefore`, and only while the entry's `lastUsedAt` still equals the row's, the same
+  supersession rule the sweep applies, so a newer turn hides it at once. It is never
+  stored on its own.
+- **Push**: every manager write of the entry goes through `setResume`, which calls
+  `onTransientRetryChanged` when the old or new entry is `transient`; bootstrap wires
+  that to a `session_transient_retry` SSE event carrying the session's derived value.
+  The client keeps it in a per-session map (`transientRetries`) that overrides the row,
+  so neither a list fetch that started earlier nor a cached run-history row can bring
+  back a wait that ended. The row still gives the value at page load, and each
+  `session_list` drops the map entries of the sessions it carries — it comes later on
+  the same stream, so those rows are current. On an SSE reconnect with entries in the
+  map, the client clears it and reads All sessions again, so a session past the
+  sidebar's cap is current too after a missed event. A turn's start
+  already broadcasts the list.
+- **Control**: `client/components/TransientRetryNotice.tsx`, a sibling of
+  `MessageInput` in `App.tsx` with `RepoTrustNotice`'s card treatment, shows "ShipIt
+  will ask the agent to continue in N s" with a **Cancel** button, and hides while a
+  turn runs. It reads the displayed (URL) session's row through App's `bannerSession`
+  (sidebar list, else All sessions), and renders only once the store's session agrees
+  with the URL, so a switch never shows another session's wait. After Cancel answers,
+  the client clears the session's entry itself rather than wait for the event. Placed by the input rather than on the transcript notice, because a
+  notice is a persisted row that outlives the wait and would need the same live state
+  to know whether its button still applies.
+- **Cancel**: `POST /api/sessions/:id/agent/transient-retry/cancel`
+  (`api-routes-agent.ts`) calls `cancelTransientRetry` by session id, so it needs no
+  runner or container (req 10). Browser-only: not `containerAccessible`.
+
 ## Setting (req 1)
 
 `advanced.retryTransientProviderErrors` in `shared/settings-catalogue/global-settings.ts`
@@ -109,3 +142,5 @@ a new `cause: "transient"` on that entry rather than a new subsystem.
 - `src/server/orchestrator/services/quota-continuation.ts`
 - `src/server/orchestrator/services/agent-interrupt.ts`
 - `src/server/orchestrator/prompts/transient-error-continuation-wake.md`
+- `src/server/orchestrator/api-routes-agent.ts` (the cancel route)
+- `src/client/components/TransientRetryNotice.tsx`
