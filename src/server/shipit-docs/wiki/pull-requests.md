@@ -291,7 +291,10 @@ reports it, and its end normally starts a new turn. When a request has waited
 two minutes on a session that is not idle with no turn running, or ten minutes
 on a turn that still runs, the transcript gets one notice that names what holds
 it — that notice is the answer when the user asks why a pull request with green
-checks has not merged. A sandbox session
+checks has not merged. A request that ends without a merge reaches you as well,
+through this session's inbox, and starts a turn if the session is idle. A rebase
+ShipIt makes itself — automatic conflict resolution, or the user's Sync — moves
+the request to the rebased commit instead of cancelling it. A sandbox session
 is different: there `--auto` hands the merge to GitHub, which does not wait for
 the session.
 

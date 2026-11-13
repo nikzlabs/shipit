@@ -43,6 +43,9 @@ import {
   MAX_AUTO_RESOLVE_ATTEMPTS,
 } from "../auto-conflict-resolve-manager.js";
 import { takeSessionHold, type SessionHold } from "../session-hold.js";
+import { DatabaseManager } from "../../shared/database.js";
+import { SessionManager as RealSessionManager } from "../sessions.js";
+import { AgentMergeClaimStore } from "../agent-merge-claims.js";
 
 vi.mock("../session-worker-uid.js", async (importOriginal) => {
   // eslint-disable-next-line no-restricted-syntax -- vitest's importOriginal generic requires an inline import() type
@@ -4568,5 +4571,146 @@ describe("rebase-driver: the conflict-resolution turn is an ordinary turn", () =
 
     agent.finish({ resolve: true });
     await expect(flow).resolves.toMatchObject({ status: "conflicts_resolved" });
+  });
+});
+
+describe("docs/343-agent-merge-cancel-notice: a pending merge request follows ShipIt's own rebase", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+  let dbManager: DatabaseManager;
+  let claims: AgentMergeClaimStore;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-merge-claim-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+    dbManager = new DatabaseManager(":memory:");
+    new RealSessionManager(dbManager).track("s1", "A session");
+    claims = new AgentMergeClaimStore(dbManager);
+  });
+
+  afterEach(() => {
+    dbManager.close();
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function arm(expectedSha: string): void {
+    claims.arm({ sessionId: "s1", repoId: "github:acme/shipit", prNumber: 7, expectedSha, method: "squash" });
+  }
+
+  function flowDeps(
+    workDir: string,
+    git: GitManager,
+    captured: { role: string; text: string }[],
+    opts: { authenticated?: boolean } = {},
+  ): Parameters<typeof runRebaseFlow>[0] {
+    return {
+      git,
+      githubAuthManager: makeStubAuth(opts.authenticated ?? true),
+      runner: new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" }),
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory(captured),
+      agentFactory: () => new FakeRebaseAgent((cwd) => {
+        fs.writeFileSync(path.join(cwd, "shared.txt"), "merged result\n");
+        return "Resolved shared.txt.";
+      }) as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+      agentMergeClaims: claims,
+    };
+  }
+
+  const head = (dir: string, ref = "HEAD"): string =>
+    execSync(`git rev-parse ${ref}`, { cwd: dir, encoding: "utf-8" }).trim();
+
+  it("moves the request to the commit a clean rebase pushed, and says so (req 3)", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const before = head(workDir);
+    arm(before);
+    const captured: { role: string; text: string }[] = [];
+
+    const result = await runFlow(flowDeps(workDir, git, captured), "main");
+
+    expect(result.status).toBe("rebased");
+    const pushed = head(bareDir, "feature");
+    expect(pushed).not.toBe(before);
+    expect(claims.get("s1")).toMatchObject({ expectedSha: pushed, state: "pending" });
+    expect(captured.map((m) => m.text).join(" ")).toContain("now targets the rebased commit");
+  });
+
+  it("tells the conflict-resolution turn about the armed merge, and moves it after the push (req 3, req 6)", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const before = head(workDir);
+    arm(before);
+    const captured: { role: string; text: string }[] = [];
+
+    const result = await runFlow(flowDeps(workDir, git, captured), "main");
+
+    expect(result.status).toBe("conflicts_resolved");
+    const prompt = captured.find((m) => m.role === "user")?.text ?? "";
+    expect(prompt).toContain(`pull request #7 is armed at ${before.slice(0, 8)}`);
+    expect(claims.get("s1")).toMatchObject({ expectedSha: head(bareDir, "feature") });
+  });
+
+  it("leaves a request armed at another commit for the executor to cancel", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const older = head(workDir, "HEAD~1");
+    arm(older);
+
+    await runFlow(flowDeps(workDir, git, []), "main");
+
+    expect(claims.get("s1")).toMatchObject({ expectedSha: older });
+  });
+
+  it("does not overwrite, or move the request over, a push someone else made after the arm", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const before = head(workDir);
+    arm(before);
+    const other = path.join(tmpDir, "other-clone");
+    fs.mkdirSync(other);
+    execSync(`git clone ${bareDir} . && git checkout feature`, { cwd: other, stdio: "pipe" });
+    fs.writeFileSync(path.join(other, "theirs.txt"), "theirs\n");
+    execSync("git add -A && git commit -m 'Their push' && git push", { cwd: other, stdio: "pipe" });
+    const theirs = head(other);
+
+    const result = await runFlow(flowDeps(workDir, git, []), "main");
+
+    expect(result).toMatchObject({ forcePushed: false });
+    expect(head(bareDir, "feature")).toBe(theirs);
+    expect(claims.get("s1")).toMatchObject({ expectedSha: before });
+  });
+
+  it("does not move the request when the rebase was not pushed", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const before = head(workDir);
+    arm(before);
+
+    const result = await runFlow(flowDeps(workDir, git, [], { authenticated: false }), "main");
+
+    expect(result).toMatchObject({ status: "rebased", forcePushed: false });
+    expect(claims.get("s1")).toMatchObject({ expectedSha: before });
+  });
+
+  it("says nothing about a merge when none is armed", () => {
+    const prompt = buildRebaseConflictPrompt("main", [{ path: "single.ts", content: "" }]);
+    expect(prompt).not.toContain("is armed at");
   });
 });

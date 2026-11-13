@@ -387,6 +387,7 @@ export async function registerGitRoutes(
             recordSyncCard: true,
             userStarted: true,
             prStatusPoller: deps.prStatusPoller,
+            agentMergeClaims: deps.agentMergeClaims,
             // Use runner.sessionDir exactly: the driver shares a mutex keyed by this string.
             commitPendingWork: (deferPushArm) => savePendingWorkForSync({
               deps,

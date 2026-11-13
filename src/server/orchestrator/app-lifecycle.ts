@@ -1,5 +1,6 @@
 import { initLocalBlock, assertLoopbackOnlyWithoutBlock } from "./local-block.js";
 import type { LoginIntegrationId } from "../shared/catalogue/types.js";
+import type { AgentMergeClaimStore } from "./agent-merge-claims.js";
 import {
   credentialHarnessForLogin,
   loginIntegrationForService,
@@ -833,6 +834,8 @@ export interface PrPollerDeps {
   agentFactory?: (agentId: AgentId) => AgentProcess;
   /** The process-lived scheduler, so the poller can heal a branch left ahead. */
   autoPushScheduler?: AutoPushScheduler;
+  /** docs/343-agent-merge-cancel-notice — an auto-resolve rebase moves a pending merge request with it. */
+  agentMergeClaims?: AgentMergeClaimStore;
 }
 
 export function createPrStatusPoller(
@@ -843,7 +846,7 @@ export function createPrStatusPoller(
     runnerRegistry, defaultAgentId, createRepoGit, getBareCacheDir, pruneSessionVolumes,
     onRepoMainAdvanced, containerManager, mergeWatchManager,
     createGitManager, chatHistoryManager, usageManager, credentialStore,
-    drainQueueForSession, agentFactory, autoPushScheduler,
+    drainQueueForSession, agentFactory, autoPushScheduler, agentMergeClaims,
   } = pollerDeps;
 
   // The constructor needs a callback that later reads the constructed poller.
@@ -886,6 +889,7 @@ export function createPrStatusPoller(
           ...(agentFactory ? { agentFactory } : {}),
           ...(drainQueueForSession ? { drainQueue: () => drainQueueForSession(sessionId) } : {}),
           ...(opts?.byUser ? { userStarted: true } : {}),
+          ...(agentMergeClaims ? { agentMergeClaims } : {}),
         },
         baseBranch,
       );

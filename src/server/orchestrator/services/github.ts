@@ -408,8 +408,9 @@ export async function agentMergePullRequest(
     const lines = [
       `ShipIt will merge PR #${opts.number} at ${decision.sha.slice(0, 8)} once its checks pass `
       + "and this session is idle. It merges that exact commit — pushing again cancels the "
-      + "request, and so does withdrawing the repository's merge permission. The result appears "
-      + "in this session's transcript.",
+      + "request, and so does withdrawing the repository's merge permission. A rebase ShipIt "
+      + "makes itself moves the request to the rebased commit. The result appears in this "
+      + "session's transcript, and a request that ends without a merge also reaches your inbox.",
       "Idle means all of: no turn is running, no background command or sub-agent is still "
       + "running, no message is queued, and ShipIt has no work of its own in progress on the "
       + "branch. So end this turn. Do not wait for the merge in it, and do not start a background "

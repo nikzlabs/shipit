@@ -10,6 +10,7 @@ import {
 } from "../../shared/settings-catalogue/index.js";
 import type { ApplyOutcome } from "../../shared/settings-catalogue/index.js";
 import type { AgentMergeClaimStore } from "../agent-merge-claims.js";
+import { storeAgentMergeEnded, tellAgentMergeEnded } from "./agent-merge-agent-notice.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import { buildSystemNotice } from "../chat-card-persistence.js";
 import type { CredentialStore } from "../credential-store.js";
@@ -629,19 +630,20 @@ export interface RepoSettingsWriteResult {
 function cancelAgentMergeRequests(deps: RepoSettingsApplyDeps, id: string): void {
   if (!id || !deps.agentMergeClaims) return;
   // Persist inside the cancellation transaction; broadcast only after commit.
-  const pending: { sessionId: string; ws: WsServerMessage }[] = [];
-  deps.agentMergeClaims.cancelPendingForRepo(id, (claim) => {
-    const { ws, persisted } = buildSystemNotice(
-      claim.sessionId,
-      `Cancelled the merge request for pull request #${claim.prNumber}: agent merging was turned off `
-      + "for this repository. Nothing was merged.",
-      "info",
-    );
+  const pending: { sessionId: string; ws: WsServerMessage; told: boolean }[] = [];
+  const claims = deps.agentMergeClaims;
+  claims.cancelPendingForRepo(id, (claim) => {
+    const message = `Cancelled the merge request for pull request #${claim.prNumber}: agent merging was `
+      + "turned off for this repository. Nothing was merged.";
+    const { ws, persisted } = buildSystemNotice(claim.sessionId, message, "info");
     deps.chatHistoryManager.append(claim.sessionId, persisted);
-    pending.push({ sessionId: claim.sessionId, ws });
+    // docs/343-agent-merge-cancel-notice — stored in the same transaction, told after it.
+    const told = storeAgentMergeEnded(claims, claim.sessionId, claim.prNumber, message);
+    pending.push({ sessionId: claim.sessionId, ws, told });
   });
-  for (const { sessionId, ws } of pending) {
+  for (const { sessionId, ws, told } of pending) {
     deps.runnerRegistry?.get(sessionId)?.emitMessage(ws);
+    if (told) tellAgentMergeEnded(claims, sessionId);
   }
 }
 

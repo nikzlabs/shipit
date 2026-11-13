@@ -6,6 +6,7 @@ import type { AgentMergeClaim, AgentMergeClaimStore } from "../agent-merge-claim
 import { mergeRecordId } from "../agent-merge-claims.js";
 import { persistNoticeUnattached } from "../chat-card-persistence.js";
 import { ownerRepoFromRepoId, repoId } from "../git-utils.js";
+import { storeAgentMergeEnded, tellAgentMergeEnded } from "./agent-merge-agent-notice.js";
 
 export interface AgentMergeSettlementDeps {
   claims: AgentMergeClaimStore;
@@ -21,14 +22,26 @@ export type SettlementOutcome =
   | { result: "not-merged" }
   | { result: "deferred"; reason: string };
 
-// Direct merges return a command reply; automatic requests need a persisted result.
-function noticeForRequest(
+/**
+ * Direct merges return a command reply; automatic requests need a persisted result, which the
+ * agent is told too (docs/343-agent-merge-cancel-notice). Recorded in the delete's transaction, so
+ * a write that throws keeps the row for the next reconciliation.
+ */
+function releaseNotMerged(
   deps: AgentMergeSettlementDeps,
   claim: AgentMergeClaim,
   message: string,
 ): void {
-  if (claim.origin !== "auto") return;
-  persistNoticeUnattached(deps.chatHistoryManager, claim.sessionId, message, "warn");
+  if (claim.origin !== "auto") {
+    deps.claims.release(claim.sessionId, claim.expectedSha);
+    return;
+  }
+  let stored = false;
+  const released = deps.claims.releaseAfterRecording(claim.sessionId, claim.expectedSha, () => {
+    persistNoticeUnattached(deps.chatHistoryManager, claim.sessionId, message, "warn");
+    stored = storeAgentMergeEnded(deps.claims, claim.sessionId, claim.prNumber, message);
+  });
+  if (released && stored) tellAgentMergeEnded(deps.claims, claim.sessionId);
 }
 
 function sessionStillOwns(deps: AgentMergeSettlementDeps, claim: AgentMergeClaim): boolean {
@@ -113,12 +126,11 @@ export async function settleAgentMerge(
     if (live.state === "settling") {
       return { result: "deferred", reason: "the pull request does not read as merged yet" };
     }
-    noticeForRequest(
+    releaseNotMerged(
       deps, claim,
       `ShipIt checked, and pull request #${claim.prNumber} did not merge at `
       + `${claim.expectedSha.slice(0, 8)}. Nothing was merged; ask again to retry.`,
     );
-    deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "not-merged" };
   }
 
@@ -127,13 +139,12 @@ export async function settleAgentMerge(
       `[agent-merge] ${mergeRecordId(claim)} — PR #${claim.prNumber} merged at `
       + `${facts.head_sha ?? "an unknown commit"}, not the claimed commit. Recording nothing.`,
     );
-    noticeForRequest(
+    releaseNotMerged(
       deps, claim,
       `Pull request #${claim.prNumber} merged at a different commit than the `
       + `${claim.expectedSha.slice(0, 8)} this session asked ShipIt to merge. Nothing this session `
       + "asked for was merged.",
     );
-    deps.claims.release(claim.sessionId, claim.expectedSha);
     return { result: "not-merged" };
   }
 
@@ -181,12 +192,11 @@ async function settleWithoutSession(
         `[agent-merge] ${recordId} — the session's pull request moved on, and the claimed commit is `
         + "not merged. Nothing to record.",
       );
-      noticeForRequest(
+      releaseNotMerged(
         deps, claim,
         `ShipIt checked, and the commit this session asked to merge (${claim.expectedSha.slice(0, 8)}) `
         + `is not merged in pull request #${claim.prNumber}. Nothing was merged.`,
       );
-      deps.claims.release(claim.sessionId, claim.expectedSha);
       return { result: "not-merged" };
     }
   }
