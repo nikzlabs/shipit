@@ -15,13 +15,17 @@ is merged into this one.
 `src/server/shared/provider-errors.ts` holds both checks:
 
 - `textIndicatesProviderEdgeBlock(text, status?)` — #3351's rule, moved here so both
-  harnesses share it: the block page's title, or a 403 beside Cloudflare/HTML. A known
-  status other than 403 is never a block.
-- `transientProviderErrorKind(text)` — `edge-block`, `overloaded` or `server-error`, from
-  Claude Code's `API Error: 5xx` / `Repeated 529` wording, Anthropic's
-  `api_error`/`overloaded_error` body, or OpenCode 2's bare message ("Overloaded",
-  "Bad Gateway", …). It is read only on the error text of a failed turn, and a 401,
-  a JSON 403 and a 400 are not matches.
+  harnesses share it: the block page's title, or a 403 beside Cloudflare. A known status
+  other than 403 is never a block. With a known 403, HTML alone counts (#3351's
+  behaviour for OpenCode 2); without a status, the text must name Cloudflare, so a 403
+  HTML sign-in page still reaches auth recovery.
+- `transientProviderErrorKind(text)` — `edge-block`, `overloaded` or `server-error`. It
+  is anchored at the START of the error text, because a failed Claude result can carry
+  the model's prose (`error_max_turns`), and prose that quotes "API Error: 500" must not
+  schedule a continuation. It matches Claude Code's `API Error: <status>` lead (also
+  after "Failed to authenticate."), the OpenCode 2 block-page notice from #3351, an
+  Anthropic error body on its own, or OpenCode 2's bare message ("Overloaded",
+  "Bad Gateway", …). A 401, a JSON 403 and a 400 are not matches.
 
 Claude Code (`session/agents/claude/process.ts`): the CLI codes a 403
 `authentication_failed` and words it "Failed to authenticate", so the result and the
@@ -32,7 +36,10 @@ errored result. This holds whether the setting is on or off.
 
 OpenCode 2 (`session/agents/opencode2/adapter.ts`, from #3351): `isProviderEdgeBlock`
 now calls the shared helper. Its result carries #3351's notice, which classifies as
-`edge-block`.
+`edge-block`. An error event with a 5xx status gets the result text
+`API Error: <status> <message>`, because the stream keeps only the message and a
+provider's 5xx message can be anything ("upstream connect error"). A 5xx is never
+read as an auth failure.
 
 ## The continuation (req 4, 5, 6, 7)
 
@@ -59,7 +66,16 @@ a new `cause: "transient"` on that entry rather than a new subsystem.
   `transient-provider-retry:<n>:<uuid>`, the pattern `stopped-background-jobs` uses. When
   that turn fails again, the executor reports its delivery id and the next attempt is
   `n + 1`; any other turn counts from 1. The worker keeps the delivery id with the
-  process, so the count survives an orchestrator restart.
+  process, so the count survives an orchestrator restart. A continuation that every
+  credential refuses for quota keeps its `transientRetry` through the docs/306 quota
+  wait, so the cap still holds.
+- **The dispatched no-result retry** (`dispatched-turn.ts` `onNoResultExit`) is left as
+  it is: it sends the prompt again only when the attempt produced no work at all, so no
+  tool call ran. With partial work it raises an adapter error whose text starts with
+  ShipIt's own summary, so the executor also classifies each stderr line as it arrives.
+  When the error text itself does not classify, it uses the LAST stderr line, and only
+  if it is a provider error and no agent event came after it — an earlier 503 the CLI
+  recovered from does not count.
 - **Prompt**: `prompts/transient-error-continuation-wake.md` starts with
   `[ShipIt] The last model call failed with a temporary provider error` and tells the
   agent not to repeat tool calls that already ran.

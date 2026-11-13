@@ -20,6 +20,7 @@ describe("transientProviderErrorKind", () => {
     ["a 503", "API Error: 503 Service Unavailable", "server-error"],
     ["OpenCode 2's bare overload", "Overloaded", "overloaded"],
     ["OpenCode 2's bare 502", "Bad Gateway", "server-error"],
+    ["OpenCode 2's 5xx with its status", "API Error: 503 upstream connect error", "server-error"],
   ])("%s", (_label, text, kind) => {
     expect(transientProviderErrorKind(text)).toBe(kind);
   });
@@ -31,6 +32,9 @@ describe("transientProviderErrorKind", () => {
     ["a JSON 403", 'API Error: 403 {"type":"error","error":{"type":"permission_error"}}'],
     ["prose about a server error", "The app returns an internal server error on /login, so I fixed the handler."],
     ["a quota refusal", "Claude AI usage limit reached|1793141022"],
+    ["prose that quotes a 5xx", "I stopped: the app's /health returned API Error: 500 again."],
+    ["prose about Cloudflare", "Cloudflare answered 403 for the preview, so I changed the tunnel config."],
+    ["a 403 HTML page that is not Cloudflare's", "API Error: 403 <html><title>Sign in</title></html>"],
     ["nothing", undefined],
   ])("%s is not one", (_label, text) => {
     expect(transientProviderErrorKind(text)).toBeNull();
@@ -42,8 +46,10 @@ describe("textIndicatesProviderEdgeBlock", () => {
     expect(textIndicatesProviderEdgeBlock("Attention Required! | Cloudflare", 401)).toBe(false);
   });
 
-  it("needs Cloudflare or HTML beside a 403", () => {
+  it("needs Cloudflare beside a 403 of unknown status, and Cloudflare or HTML beside a known one", () => {
     expect(textIndicatesProviderEdgeBlock("API Error: 403 Forbidden")).toBe(false);
+    expect(textIndicatesProviderEdgeBlock("API Error: 403 <html><title>Sign in</title></html>")).toBe(false);
+    expect(textIndicatesProviderEdgeBlock("API Error: 403 <html>blocked by Cloudflare</html>")).toBe(true);
     expect(textIndicatesProviderEdgeBlock("Forbidden", 403)).toBe(false);
     expect(textIndicatesProviderEdgeBlock("<html>no</html>", 403)).toBe(true);
   });

@@ -609,7 +609,7 @@ export interface SystemTurnDeps {
     agentId: AgentId;
     kind: TransientProviderErrorKind;
     deliveryId?: string | undefined;
-  }) => { retries: boolean };
+  }) => void;
   /**
    * docs/235-agent-self-wake-liveness §9 — these jobs still ran when a one-shot turn's
    * process ended. Runs last in that turn's terminal sequence, because it can start a turn.

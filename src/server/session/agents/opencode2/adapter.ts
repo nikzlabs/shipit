@@ -88,6 +88,11 @@ export function isProviderEdgeBlock(error: OpencodeEvent["error"]): boolean {
   return textIndicatesProviderEdgeBlock(text, error.status ?? error.data?.statusCode);
 }
 
+function isServerErrorStatus(error: OpencodeEvent["error"]): boolean {
+  const status = error?.status ?? error?.data?.statusCode;
+  return status !== undefined && status >= 500 && status <= 599;
+}
+
 function edgeBlockMessage(claudeRoute: boolean): string {
   return claudeRoute
     ? "Anthropic's edge blocked this request: Cloudflare at api.anthropic.com answered with a 403 block page, "
@@ -774,6 +779,10 @@ export class Opencode2Adapter
           this.emit("event", { type: "agent_assistant", content: [{ type: "text", text: `\n\n${notice}` }], synthetic: true });
         }
         this.accumulator.errorMessage = notice;
+      } else if (isServerErrorStatus(event.error)) {
+        // docs/342-transient-provider-retry — the result keeps the status, which the message can lack.
+        const status = event.error?.status ?? event.error?.data?.statusCode;
+        this.accumulator.errorMessage = `API Error: ${status} ${this.accumulator.errorMessage ?? ""}`.trimEnd();
       } else if (this.usingAccount && (event.error?.status === 401 || event.error?.type === "provider.auth")) {
         this.emit("auth_required");
       }

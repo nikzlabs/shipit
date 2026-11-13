@@ -700,7 +700,7 @@ describe("a temporary provider error (docs/342-transient-provider-retry)", () =>
   it("does nothing while the setting is off", async () => {
     const { h, manager, fail } = setup(false);
 
-    expect(fail()).toEqual({ retries: false });
+    fail();
     await vi.advanceTimersByTimeAsync(10 * 60_000);
 
     expect(h.resumes.has("s1")).toBe(false);
@@ -712,7 +712,7 @@ describe("a temporary provider error (docs/342-transient-provider-retry)", () =>
   it("continues the same session with the continuation prompt after the first wait", async () => {
     const { h, manager, fail } = setup();
 
-    expect(fail("user-turn")).toEqual({ retries: true });
+    fail("user-turn");
     expect(h.notices).toEqual([
       { text: expect.stringContaining("continue in 30 seconds (attempt 1 of 3)") as unknown, level: "info" },
     ]);
@@ -734,7 +734,7 @@ describe("a temporary provider error (docs/342-transient-provider-retry)", () =>
     const { h, manager, fail } = setup();
     let deliveryId: string | undefined;
     for (const [i, delay] of TRANSIENT_RETRY_DELAYS_MS.entries()) {
-      expect(fail(deliveryId)).toEqual({ retries: true });
+      fail(deliveryId);
       expect(h.resumes.get("s1")).toContain(new Date(Date.now() + delay).toISOString());
       await vi.advanceTimersByTimeAsync(delay);
       expect(h.dispatch).toHaveBeenCalledTimes(i + 1);
@@ -743,7 +743,7 @@ describe("a temporary provider error (docs/342-transient-provider-retry)", () =>
     }
 
     // The third continuation failed too: no fourth.
-    expect(fail(deliveryId)).toEqual({ retries: false });
+    fail(deliveryId);
     await vi.advanceTimersByTimeAsync(60 * 60_000);
     expect(h.dispatch).toHaveBeenCalledTimes(3);
     expect(h.resumes.has("s1")).toBe(false);
@@ -821,6 +821,32 @@ describe("a temporary provider error (docs/342-transient-provider-retry)", () =>
     h.runner.agentBusy = false;
     await manager.sweep();
     expect(h.dispatch).toHaveBeenCalledTimes(1);
+    manager.stop();
+  });
+
+  it("keeps the attempt when a continuation is refused for quota, so the cap still holds", async () => {
+    const { h, manager, fail } = setup();
+    fail("transient-provider-retry:2:x");
+    let settle!: (outcome: TurnOutcome) => void;
+    h.dispatch.mockImplementationOnce((...args: unknown[]) => {
+      const prepared = args[0] as { onTurnComplete?: (outcome: TurnOutcome) => void };
+      settle = (outcome) => prepared.onTurnComplete?.(outcome);
+      return { admitted: "started", settled: new Promise(() => {}) };
+    });
+    await vi.advanceTimersByTimeAsync(TRANSIENT_RETRY_DELAYS_MS[2]!);
+    expect(transientRetryOf(dispatched(h, 0).deliveryId)).toBe(3);
+
+    // The third continuation is refused for quota; the session waits for the stated reset.
+    settle(turnQuotaRefused([new Date(Date.now() + 60 * 60_000).toISOString()]));
+    expect(JSON.parse(h.resumes.get("s1")!)).toMatchObject({ cause: "transient", transientRetry: 3 });
+    await vi.advanceTimersByTimeAsync(2 * 60 * 60_000);
+    expect(h.dispatch).toHaveBeenCalledTimes(2);
+    const again = dispatched(h, 1).deliveryId;
+    expect(transientRetryOf(again)).toBe(3);
+
+    // And when that one fails again, ShipIt stops.
+    fail(again);
+    expect(h.notices.at(-1)!.text).toContain("so it stops trying");
     manager.stop();
   });
 

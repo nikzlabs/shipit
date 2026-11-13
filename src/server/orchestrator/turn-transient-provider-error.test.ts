@@ -55,10 +55,10 @@ describe("a temporary provider error ends a turn (docs/342-transient-provider-re
     fs.rmSync(repoDir, { recursive: true, force: true });
   });
 
-  function harness(opts: { record?: boolean } = {}) {
+  function harness() {
     const agents: FakeAgent[] = [];
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
-    const recordTransientProviderError = vi.fn(() => ({ retries: true }));
+    const recordTransientProviderError = vi.fn();
     const ensureAgentTokenFresh = vi.fn().mockResolvedValue(true);
     const onAgentAuthRequired = vi.fn();
     const deps: SystemTurnDeps = {
@@ -70,7 +70,7 @@ describe("a temporary provider error ends a turn (docs/342-transient-provider-re
       autoCommit: async () => ({ committed: false, parentHash: null }) as never,
       scheduleAutoPush: vi.fn(),
       ensureAgentTokenFresh,
-      ...(opts.record === false ? {} : { recordTransientProviderError }),
+      recordTransientProviderError,
       listenerDeps: {
         sessionManager: {
           setAgentSessionId: vi.fn(),
@@ -149,6 +149,61 @@ describe("a temporary provider error ends a turn (docs/342-transient-provider-re
     await waitFor(() => !h.runner.running, "turn settled");
 
     expect(h.recordTransientProviderError).toHaveBeenCalledWith(expect.objectContaining({ kind: "server-error" }));
+    h.runner.dispose({ force: true });
+  });
+
+  it("reads the provider's stderr line when a process with partial work dies without a result", async () => {
+    const h = harness();
+    const first = makeFakeAgent();
+
+    await h.start(first);
+    first.emit("log", "stderr", "API Error: 503 Service Unavailable");
+    // dispatched-turn.ts's wording for that exit: its summary first, the stderr detail after.
+    first.emit("error", new Error("The agent stopped before finishing (exit 1). The work so far is preserved (API Error: 503 Service Unavailable)"));
+    await waitFor(() => !h.runner.running, "turn settled");
+
+    expect(h.recordTransientProviderError).toHaveBeenCalledWith(expect.objectContaining({ kind: "server-error" }));
+    h.runner.dispose({ force: true });
+  });
+
+  it("does not report such an exit when the provider error was followed by more work", async () => {
+    const h = harness();
+    const first = makeFakeAgent();
+
+    await h.start(first);
+    first.emit("log", "stderr", "API Error: 503 Service Unavailable");
+    first.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Retried; carrying on." }] });
+    first.emit("error", new Error("The agent stopped before finishing (exit 1). The work so far is preserved"));
+    await waitFor(() => !h.runner.running, "turn settled");
+
+    expect(h.recordTransientProviderError).not.toHaveBeenCalled();
+    h.runner.dispose({ force: true });
+  });
+
+  it("does not report such an exit when a later stderr line names another failure", async () => {
+    const h = harness();
+    const first = makeFakeAgent();
+
+    await h.start(first);
+    // One chunk, as a streaming CLI forwards it.
+    first.emit("log", "stderr", "API Error: 503 Service Unavailable\nError: ENOSPC: no space left on device\n");
+    first.emit("error", new Error("The agent stopped before finishing (exit 1). The work so far is preserved"));
+    await waitFor(() => !h.runner.running, "turn settled");
+
+    expect(h.recordTransientProviderError).not.toHaveBeenCalled();
+    h.runner.dispose({ force: true });
+  });
+
+  it("does not report such an exit when no provider error was seen", async () => {
+    const h = harness();
+    const first = makeFakeAgent();
+
+    await h.start(first);
+    first.emit("log", "stderr", "Error: ENOSPC: no space left on device");
+    first.emit("error", new Error("The agent stopped before finishing (exit 1). The work so far is preserved"));
+    await waitFor(() => !h.runner.running, "turn settled");
+
+    expect(h.recordTransientProviderError).not.toHaveBeenCalled();
     h.runner.dispose({ force: true });
   });
 

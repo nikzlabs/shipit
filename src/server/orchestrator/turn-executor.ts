@@ -1170,7 +1170,10 @@ export async function executeAgentTurn(
       if (!(quota && continuationPending)) {
         recordTurnEnd(quota ? "quota-refused" : "errored", lastAgentError?.message);
       }
-      if (!quota) noteTransientProviderError(lastAgentError?.message);
+      if (!quota) {
+        const message = lastAgentError?.message;
+        noteTransientProviderError(transientProviderErrorKind(message) ? message : stderrProviderError);
+      }
       settleTurnFacts();
       holdPostTurn();
       try {
@@ -1270,7 +1273,17 @@ export async function executeAgentTurn(
   agent.on("auth_required", () => { sawAuthRequired = true; });
 
   const stderrTail = createAgentStderrTail();
-  agent.on("log", (source: string, text: string) => { stderrTail.record(source, text); });
+  // docs/342-transient-provider-retry — a process that dies without a result wraps this line in a
+  // summary. Only the last stderr line counts, and only with no progress after it.
+  let stderrProviderError: string | undefined;
+  agent.on("log", (source: string, text: string) => {
+    stderrTail.record(source, text);
+    if (!source.endsWith("stderr")) return;
+    // A streaming CLI's chunk can hold several lines.
+    const last = text.split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
+    if (last !== undefined) stderrProviderError = transientProviderErrorKind(last) ? last : undefined;
+  });
+  agent.on("event", () => { stderrProviderError = undefined; });
 
   // docs/235-agent-self-wake-liveness §9 — a one-shot CLI stops the jobs that still run about
   // 5 s after its result, then exits. A job that ends in that window gets a turn of the CLI's

@@ -1030,6 +1030,29 @@ describe("Opencode2Adapter — Claude route (docs/340)", () => {
     expect(transientProviderErrorKind((result as { error?: string }).error)).toBe("edge-block");
   });
 
+  it("keeps a 5xx status on the result, which the provider's message can lack", async () => {
+    provisionClaudeLogin();
+    const h = start(makeAdapter(), { ...PARAMS, model: "claude-opus-5-5", serviceRouting: CLAUDE_ROUTING });
+    let auth = 0;
+    h.adapter.on("auth_required", () => { auth++; });
+    await announce(h);
+    h.client().emitStdout([
+      ...TOOL_TURN.slice(0, 4),
+      JSON.stringify({
+        type: "error",
+        timestamp: 1793141022332,
+        sessionID: SESSION,
+        error: { type: "provider.api", message: "upstream connect error", status: 503 },
+      }),
+    ]);
+    h.client().emit("close", 1, null);
+    await h.done;
+    expect(auth).toBe(0);
+    const result = h.events.find((e) => e.type === "agent_result");
+    expect(result).toMatchObject({ status: "error", error: "API Error: 503 upstream connect error" });
+    expect(transientProviderErrorKind((result as { error?: string }).error)).toBe("server-error");
+  });
+
   it("reports an overloaded model as a temporary error, not a sign-in problem", async () => {
     provisionClaudeLogin();
     const h = start(makeAdapter(), { ...PARAMS, model: "claude-opus-5-5", serviceRouting: CLAUDE_ROUTING });

@@ -146,10 +146,10 @@ export class QuotaContinuationManager {
     kind: TransientProviderErrorKind;
     /** The ended turn's delivery id: a continuation's own failure counts on from it. */
     deliveryId?: string | undefined;
-  }): { retries: boolean } {
-    if (this.deps.transientRetryEnabled?.() !== true) return { retries: false };
+  }): void {
+    if (this.deps.transientRetryEnabled?.() !== true) return;
     const session = this.deps.sessionManager.get(args.sessionId);
-    if (!session || isArchived(session)) return { retries: false };
+    if (!session || isArchived(session)) return;
     const retry = transientRetryOf(args.deliveryId) + 1;
     const what = TRANSIENT_ERROR_WORDS[args.kind];
     const delay = TRANSIENT_RETRY_DELAYS_MS[retry - 1];
@@ -162,7 +162,7 @@ export class QuotaContinuationManager {
         + "automatically, so it stops trying. Send a message to continue.",
         "warn",
       );
-      return { retries: false };
+      return;
     }
     const notBefore = new Date(Date.now() + delay);
     this.deps.sessionManager.setQuotaResume(args.sessionId, {
@@ -185,7 +185,6 @@ export class QuotaContinuationManager {
       + `(attempt ${retry} of ${TRANSIENT_RETRY_DELAYS_MS.length}). Send a message to continue now instead.`,
       "info",
     );
-    return { retries: true };
   }
 
   /** docs/342-transient-provider-retry req 4 — the user's Stop. True when a continuation was waiting. */
@@ -295,6 +294,8 @@ export class QuotaContinuationManager {
       wakeAttempts: 0,
       notBefore: until.toISOString(),
       quotaRefusals: refusals,
+      // A continuation refused for quota stays the same attempt, so the cap still holds.
+      ...(prior?.transientRetry !== undefined ? { transientRetry: prior.transientRetry } : {}),
     });
     this.ensureSweepLoop();
     console.log(

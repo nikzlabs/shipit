@@ -467,7 +467,7 @@ export function createRunnerRegistry(
             agentId: AgentId;
             kind: TransientProviderErrorKind;
             deliveryId?: string | undefined;
-          }) => getQuotaContinuation()?.recordTransientProviderError(args) ?? { retries: false },
+          }) => { getQuotaContinuation()?.recordTransientProviderError(args); },
         } : {}),
         ...(runRequestedRestart ? { runRequestedRestart } : {}),
         ...(runRequestedCompaction ? { runRequestedCompaction } : {}),

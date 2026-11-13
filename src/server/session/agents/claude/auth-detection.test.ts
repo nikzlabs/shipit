@@ -192,6 +192,8 @@ describe("a Cloudflare 403 block page is not an auth failure", () => {
   it("in text", () => {
     expect(textIndicatesAuthFailure(TEXT)).toBe(false);
     expect(textIndicatesAuthFailure("API Error: 403 <!DOCTYPE html><html><title>Attention Required! | Cloudflare</title>")).toBe(false);
+    // The CLI's error code beside the text, as a stderr line or a result can carry it.
+    expect(textIndicatesAuthFailure(`authentication_failed: ${TEXT}`)).toBe(false);
   });
 
   it("on the CLI's api-error assistant message", () => {
@@ -212,6 +214,10 @@ describe("a Cloudflare 403 block page is not an auth failure", () => {
       session_id: "s1",
       result: TEXT,
     })).toBe(false);
+  });
+
+  it("while a 403 HTML page that does not name Cloudflare still is", () => {
+    expect(textIndicatesAuthFailure("Failed to authenticate. API Error: 403 <html><title>Sign in</title></html>")).toBe(true);
   });
 
   it("while a real 401 still is", () => {
