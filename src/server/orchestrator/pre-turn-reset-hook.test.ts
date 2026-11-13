@@ -106,7 +106,7 @@ function makeHarness(over: {
       setMergeContinueDeclined: vi.fn(),
       appendPendingAgentNotice: (_sid: string, notice: string) => { parkedNotices.push(notice); },
     },
-    prStatusPoller: { getStatus: () => prStatus ?? null, reArm: vi.fn() },
+    prStatusPoller: { getStatus: () => prStatus ?? null, reArm: vi.fn(), awaitMergeHandling: async () => {} },
     createGitManager: () => over.git ?? makeGit(),
     sseBroadcast: vi.fn(),
     chatHistoryManager: {

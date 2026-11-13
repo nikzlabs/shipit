@@ -589,7 +589,7 @@ function buildAgentPrefix(prNumber: number | undefined, base: string): string {
 }
 
 /** Who moved the branch: the user from the UI, or ShipIt after the agent's own merge. */
-export type ResetActor = "user" | "agent-merge" | "auto-merge";
+export type ResetActor = "user" | "agent-merge";
 
 export function buildManualResetAgentNotice(opts: {
   base: string;
@@ -603,12 +603,9 @@ export function buildManualResetAgentNotice(opts: {
     : "";
   const pr = opts.prNumber ? ` (#${opts.prNumber})` : "";
   const target = `the latest origin/${opts.base}${shas}`;
-  const what = opts.by === "auto-merge"
-    ? `While you were idle, ShipIt merged your pull request${pr}, as you asked with `
-      + `\`gh pr merge --auto\`, and then reset this branch to ${target}.`
-    : opts.by === "agent-merge"
-      ? `After your \`gh pr merge\`, ShipIt reset this branch to ${target}.`
-      : `While you were idle, the user reset this branch to ${target} from the ShipIt UI.`;
+  const what = opts.by === "agent-merge"
+    ? `After your \`gh pr merge\`, ShipIt reset this branch to ${target}.`
+    : `While you were idle, the user reset this branch to ${target} from the ShipIt UI.`;
   return (
     `[System] ${what} It no longer contains the commits `
     + `from the merged pull request${pr} and starts from current code. Your working tree `

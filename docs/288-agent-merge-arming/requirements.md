@@ -35,11 +35,10 @@ part of it.
    that means: in the answer to the request, in the transcript while a request
    waits, and in the agent's documentation for the command. The transcript says
    so also when the session is not idle because a turn still runs.
-9. When ShipIt performs a merge for a request, it then moves the session's
-   branch to the latest base, before any turn starts — including a turn that
-   was waiting for the merge. It moves the branch only when no work would be
-   lost. The one exception: when ShipIt cannot record the merge right after
-   performing it, the branch moves at the next message instead.
+9. When ShipIt performs a merge for a request, it does not move the session's
+   branch, and the session stays merged. The branch moves to the latest base
+   only when a next turn starts — including a turn that was waiting for the
+   merge. The transcript says so when the merge is recorded.
 
 ## Open questions
 
@@ -87,3 +86,13 @@ None.
   **Answer: keep it.** The branch then moves at the next message
   (`docs/218-auto-reset-merged-branch-on-continue`), or when the wake turn runs
   `shipit branch reset-to-base`. (req 9, last sentence)
+- 2026-11-13 — The 2026-11-12 answer above (move the branch right after the
+  merge) is **reversed**. Moving the branch re-arms the session, which clears
+  its merged state, so a session whose last act was `gh pr merge --auto` no
+  longer showed as merged in the sidebar a few seconds after its pull request
+  merged. A session that merges and stops must stay merged. An agent with more
+  work after the merge asks to be woken with `shipit session notify-on-merge
+  --self`, and that turn moves the branch, as does any next message. **Answer:
+  the request merges and leaves the branch alone; the next turn moves it.**
+  (req 9) The second 2026-11-12 question no longer applies: every merge now
+  waits for the next turn, recorded late or not.

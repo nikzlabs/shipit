@@ -139,11 +139,16 @@ export async function settleAgentMerge(
 
   if (!read.promoted) return { result: "deferred", reason: "a turn started on this session" };
 
-  const message = witnessed
+  const merged = witnessed
     ? `Merged pull request #${claim.prNumber} at ${claim.expectedSha.slice(0, 8)}.`
     // Recovery proves the commit merged, but not who merged it.
     : `The commit this session asked to merge (${claim.expectedSha.slice(0, 8)}) is now merged as `
       + `pull request #${claim.prNumber}.`;
+  // docs/288-agent-merge-arming req 9: an --auto merge leaves the branch for the next turn's reset.
+  const message = claim.origin === "auto"
+    ? `${merged} The branch stays on the merged commit for now; the next turn moves it to the `
+      + "latest base when that is safe and the “start from the latest base” setting is on."
+    : merged;
 
   deps.claims.releaseAfterRecording(claim.sessionId, claim.expectedSha, () => {
     persistNoticeUnattached(deps.chatHistoryManager, claim.sessionId, message, "info");

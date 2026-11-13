@@ -518,11 +518,14 @@ change straight away. Read its answer:
   a moment, then run `shipit branch reset-to-base`. ShipIt retries the
   recording by itself; you do not have to.
 
-A merge ShipIt performs for `gh pr merge --auto` moves the branch the same way,
-before the next turn starts; that turn is told so. A merge-wake turn still
-begins with `shipit branch reset-to-base`, which then answers that the branch
-is already at the base. In a **Sandbox** session the merge does not move the
-branch: run `shipit branch reset-to-base` yourself before more work.
+A merge ShipIt performs for `gh pr merge --auto` does **not** move the branch:
+the session stays merged, and the branch moves to the latest base when the next
+turn starts — the same reset as after any merge, with the same setting and
+safety checks. If you have more work after the merge, run
+`shipit session notify-on-merge --self` and end the turn; the merge-wake turn
+begins with `shipit branch reset-to-base`, which moves the branch if the next
+turn's own reset has not already. In a **Sandbox** session the merge does not
+move the branch: run `shipit branch reset-to-base` yourself before more work.
 
 ### Workflow runs
 

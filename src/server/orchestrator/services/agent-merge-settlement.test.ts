@@ -449,6 +449,21 @@ describe("settleAgentMerge — docs/288 requests", () => {
     return { ...claim, state: "merging" as const };
   }
 
+  it("says the branch waits for the next turn, witnessed or recovered (req 9)", async () => {
+    await settleAgentMerge(deps(), armOne(), { witnessed: true });
+    await settleAgentMerge(deps(), armOne(), { witnessed: false });
+
+    const waits = notices().filter((t) => t.includes("the next turn moves it to the latest base"));
+    expect(waits).toHaveLength(2);
+    expect(waits[0]).toContain("Merged pull request #7");
+    expect(waits[1]).toContain("is now merged as pull request #7");
+  });
+
+  it("does not say so for a direct merge, whose command moves the branch itself", async () => {
+    await settleAgentMerge(deps(), claimOne(), { witnessed: true });
+    expect(notices().join("\n")).not.toContain("next turn");
+  });
+
   it("tells the agent when a checked attempt turns out not to have merged", async () => {
     const claim = armOne();
     const out = await settleAgentMerge(
