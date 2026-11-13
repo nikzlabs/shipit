@@ -32,6 +32,7 @@ import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnEnd, TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import type { QuotaContinuationManager, StandDownCause } from "./services/quota-continuation.js";
+import type { TransientProviderErrorKind } from "../shared/provider-errors.js";
 import type { RequestedRestartTurn } from "./services/agent-restart-request.js";
 import {
   applyShipitConfigChange,
@@ -461,6 +462,12 @@ export function createRunnerRegistry(
           continueAfterStandDown: async (sessionId: string) => {
             await getQuotaContinuation()?.continueNow(sessionId);
           },
+          recordTransientProviderError: (args: {
+            sessionId: string;
+            agentId: AgentId;
+            kind: TransientProviderErrorKind;
+            deliveryId?: string | undefined;
+          }) => { getQuotaContinuation()?.recordTransientProviderError(args); },
         } : {}),
         ...(runRequestedRestart ? { runRequestedRestart } : {}),
         ...(runRequestedCompaction ? { runRequestedCompaction } : {}),

@@ -9,6 +9,7 @@ import { stripAnsi } from "../../../shared/strip-ansi.js";
 import type { AgentHomeResolver } from "../../../shared/agent-home.js";
 import { resolveAgentHome } from "../../../shared/agent-home.js";
 import { CLAUDE_TOOLS_OFF_ARGS } from "../../../shared/agent-tools-off.js";
+import { textIndicatesProviderEdgeBlock } from "../../../shared/provider-errors.js";
 
 // Environment credentials override disk login; unscoped routes still need them.
 export function scrubEnvAuthForScopedHome(env: Record<string, string>, scopedHome: string | undefined): void {
@@ -36,7 +37,9 @@ const AUTH_ERROR_PATTERNS = [
   "invalid x-api-key",
 ];
 
+// The CLI words a Cloudflare 403 block page "Failed to authenticate" (docs/342-transient-provider-retry).
 export function textIndicatesAuthFailure(text: string): boolean {
+  if (textIndicatesProviderEdgeBlock(text)) return false;
   const lc = text.toLowerCase();
   return AUTH_ERROR_PATTERNS.some((p) => lc.includes(p));
 }
@@ -60,10 +63,11 @@ export function resultEventIndicatesAuthFailure(event: ClaudeEvent): boolean {
 // Require the synthetic error flag so model prose cannot trigger auth recovery.
 export function assistantEventIndicatesAuthFailure(event: ClaudeEvent): boolean {
   if (event.type !== "assistant" || event.is_api_error_message !== true) return false;
+  const texts = event.message.content.flatMap((block) => (block.type === "text" ? [block.text] : []));
+  // The CLI codes a 403 `authentication_failed` whatever its body says.
+  if (texts.some((text) => textIndicatesProviderEdgeBlock(text))) return false;
   if (typeof event.error === "string" && textIndicatesAuthFailure(event.error)) return true;
-  return event.message.content.some(
-    (block) => block.type === "text" && textIndicatesAuthFailure(block.text),
-  );
+  return texts.some((text) => textIndicatesAuthFailure(text));
 }
 
 // Swallow both auth frames; the caller raises once per turn to prevent duplicate retries.
@@ -732,6 +736,7 @@ export class StreamingClaudeProcess extends EventEmitter {
   }
 
   private checkAuthMessages(text: string): void {
+    if (textIndicatesProviderEdgeBlock(text)) return;
     const lc = text.toLowerCase();
     if (
       lc.includes("not authenticated") ||

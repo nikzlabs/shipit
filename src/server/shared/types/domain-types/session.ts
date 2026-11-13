@@ -308,8 +308,13 @@ export interface SessionMergeWatch {
  */
 export interface SessionQuotaResume {
   agentId: AgentId;
-  /** What the continuation turn is told: a turn that a quota limit or a renewed sign-in cut short, or a wake that never ran. */
-  cause: "quota" | "auth" | "wake";
+  /**
+   * What the continuation turn is told: a turn that a quota limit, a renewed sign-in or a
+   * temporary provider error (docs/342-transient-provider-retry) cut short, or a wake that never ran.
+   */
+  cause: "quota" | "auth" | "wake" | "transient";
+  /** docs/342-transient-provider-retry — which automatic continuation in a row this wake is, from 1. */
+  transientRetry?: number;
   /** Every turn start stamps lastUsedAt; a change means another turn may have taken the session on. */
   lastUsedAt: string;
   wakeAttempts: number;

@@ -849,6 +849,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     credentialStore,
     providerAccountManager,
     containerManager,
+    transientRetryEnabled: () => credentialStore.getRetryTransientProviderErrors(),
     restoreWorkspace: (sessionId: string) =>
       restoreSessionWorkspace(
         sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sessionId,
@@ -1209,6 +1210,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     interruptTurn: (sessionId) => interruptAgentTurn({
       sessionManager,
       broadcastLog: (source, text) => broadcastLog(sessionId, source, text),
+      cancelTransientRetry: (id) => quotaContinuationRef.ref?.cancelTransientRetry(id) ?? false,
       postInterruptCommitDeps: {
         sessionManager,
         chatHistoryManager,

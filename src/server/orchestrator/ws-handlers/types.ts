@@ -131,7 +131,10 @@ export interface AppCtx {
   /** docs/324-agent-requested-compaction — likewise. */
   runRequestedCompaction?: (turn: RequestedRestartTurn) => Promise<void>;
   /** docs/306-quota-continuation — likewise: a resident CLI starts its own turns here too. */
-  quotaContinuation?: Pick<QuotaContinuationManager, "recordStandDown" | "continueNow">;
+  quotaContinuation?: Pick<
+    QuotaContinuationManager,
+    "recordStandDown" | "continueNow" | "recordTransientProviderError" | "cancelTransientRetry"
+  >;
   /** docs/235-agent-self-wake-liveness §9 — likewise, for a one-shot turn the user typed. */
   reportStoppedBackgroundJobs?: SystemTurnDeps["reportStoppedBackgroundJobs"];
 

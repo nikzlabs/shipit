@@ -90,6 +90,7 @@ import { denyAbandonedPermissionCards } from "./permission-cards.js";
 import { TURN_COMPLETED, resultIsTheAgentsOwn, turnDropped, turnErrored, turnInterrupted, turnNoResult, turnQuotaRefused, type EmptyTurnReason, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { transientProviderErrorKind } from "../shared/provider-errors.js";
 
 export interface TurnInput {
   agentId: AgentId;
@@ -973,6 +974,23 @@ export async function executeAgentTurn(
     );
   };
 
+  // docs/342-transient-provider-retry — never the auth path: this only records a later continuation.
+  let transientErrorNoted = false;
+  const noteTransientProviderError = (errorText: string | undefined): void => {
+    if (transientErrorNoted || maintenanceTurn || input.compact === true || sawAuthRequired) return;
+    if (!turnIsCurrent() || (runner && (runner.wasInterrupted || stoppedByUser(runner)))) return;
+    // A queued message continues the session anyway, and would cancel the continuation.
+    if ((runner?.queueLength ?? 0) > 0) return;
+    const kind = transientProviderErrorKind(errorText);
+    if (!kind || !deps.recordTransientProviderError) return;
+    transientErrorNoted = true;
+    try {
+      deps.recordTransientProviderError({ sessionId, agentId, kind, deliveryId: input.deliveryId });
+    } catch (err) {
+      console.error(`[turn] recording the temporary provider error of ${sessionId} failed:`, err);
+    }
+  };
+
   const runContinuation = async (): Promise<void> => {
     if (!continuationPending) return;
     continuationPending = false;
@@ -1152,6 +1170,10 @@ export async function executeAgentTurn(
       if (!(quota && continuationPending)) {
         recordTurnEnd(quota ? "quota-refused" : "errored", lastAgentError?.message);
       }
+      if (!quota) {
+        const message = lastAgentError?.message;
+        noteTransientProviderError(transientProviderErrorKind(message) ? message : stderrProviderError);
+      }
       settleTurnFacts();
       holdPostTurn();
       try {
@@ -1251,7 +1273,17 @@ export async function executeAgentTurn(
   agent.on("auth_required", () => { sawAuthRequired = true; });
 
   const stderrTail = createAgentStderrTail();
-  agent.on("log", (source: string, text: string) => { stderrTail.record(source, text); });
+  // docs/342-transient-provider-retry — a process that dies without a result wraps this line in a
+  // summary. Only the last stderr line counts, and only with no progress after it.
+  let stderrProviderError: string | undefined;
+  agent.on("log", (source: string, text: string) => {
+    stderrTail.record(source, text);
+    if (!source.endsWith("stderr")) return;
+    // A streaming CLI's chunk can hold several lines.
+    const last = text.split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
+    if (last !== undefined) stderrProviderError = transientProviderErrorKind(last) ? last : undefined;
+  });
+  agent.on("event", () => { stderrProviderError = undefined; });
 
   // docs/235-agent-self-wake-liveness §9 — a one-shot CLI stops the jobs that still run about
   // 5 s after its result, then exits. A job that ends in that window gets a turn of the CLI's
@@ -1745,6 +1777,7 @@ export async function executeAgentTurn(
       empty = settlesThisTurn ? emptyTurnReason(event) : null;
       recordTurnEnd(resultIsTheAgentsOwn(event) ? "ok" : "errored", event.error, empty ?? undefined);
       if (empty) tellEmptyTurn(empty, event);
+      else if (!resultIsTheAgentsOwn(event)) noteTransientProviderError(event.error);
     }
     // Anything riding this prompt is delivered here, and must not be delivered
     // in `settleTurn`: a turn can settle without its prompt having been read, and

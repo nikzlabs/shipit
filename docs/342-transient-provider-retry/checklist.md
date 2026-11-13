@@ -1,0 +1,9 @@
+- [x] Shared classifier for edge block, overloaded and 5xx
+- [x] Claude Code: a Cloudflare 403 is not an auth failure
+- [x] OpenCode 2: reuse #3351's classification through the shared helper
+- [x] Setting `advanced.retryTransientProviderErrors`, default off
+- [x] Executor reports the error on the result and adapter-error paths
+- [x] Manager: delayed continuation, backoff, cap, notices, restart-safe count
+- [x] Stop, a new message and the setting turned off cancel a waiting continuation
+- [x] Tests for both harnesses, the manager, the executor and Stop
+- [x] Wiki: troubleshooting
