@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import { Opencode2Adapter } from "./adapter.js";
+import { Opencode2Adapter, isProviderEdgeBlock } from "./adapter.js";
 import type { AgentEvent, AgentRunParams } from "../agent-process.js";
 import type { ServiceRouting } from "../../../shared/types/agent-types.js";
 import { opencode2Roots } from "../../../shared/opencode-harness.js";
@@ -39,6 +39,22 @@ const TOOL_TURN = [
 const ERROR_401 = [
   `{"type":"step_start","timestamp":1793141022318,"sessionID":"${SESSION}","part":{"id":"prt_1","sessionID":"${SESSION}","messageID":"msg_1","type":"step-start"}}`,
   `{"type":"error","timestamp":1793141022332,"sessionID":"${SESSION}","error":{"type":"provider.auth","message":"Incorrect API key provided (mock)","status":401,"response":{"body":"{}"}}}`,
+];
+// Shape of the 2026-11-13 incident: the tool result's follow-up call met Cloudflare's block page.
+const CLOUDFLARE_PAGE = "<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head><body>blocked</body></html>";
+const ERROR_CLOUDFLARE_403 = [
+  ...TOOL_TURN.slice(0, 4),
+  JSON.stringify({
+    type: "error",
+    timestamp: 1793141022332,
+    sessionID: SESSION,
+    error: {
+      type: "provider.auth",
+      message: "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare",
+      status: 403,
+      response: { body: CLOUDFLARE_PAGE },
+    },
+  }),
 ];
 // The server's message list for the same tool turn, newest first.
 const MESSAGES = {
@@ -986,5 +1002,42 @@ describe("Opencode2Adapter — Claude route (docs/340)", () => {
     h.client().emit("close", 1, null);
     await h.done;
     expect(auth).toBe(1);
+    expect(h.events.some((e) => e.type === "agent_assistant" && e.synthetic)).toBe(false);
+  });
+
+  it("shows a Cloudflare 403 block in the chat and does not ask for sign-in", async () => {
+    provisionClaudeLogin();
+    const h = start(makeAdapter(), { ...PARAMS, model: "claude-opus-5-5", serviceRouting: CLAUDE_ROUTING });
+    let auth = 0;
+    h.adapter.on("auth_required", () => { auth++; });
+    await announce(h);
+    // Reported twice, shown once.
+    h.client().emitStdout([...ERROR_CLOUDFLARE_403, ERROR_CLOUDFLARE_403[ERROR_CLOUDFLARE_403.length - 1]]);
+    h.client().emit("close", 1, null);
+    await h.done;
+    expect(auth).toBe(0);
+    const notices = h.events.filter((e) => e.type === "agent_assistant" && e.synthetic);
+    expect(notices).toHaveLength(1);
+    const notice = notices[0];
+    expect(notice).toMatchObject({ content: [{ type: "text", text: expect.stringContaining("Cloudflare at api.anthropic.com") as unknown }] });
+    expect(JSON.stringify(notice)).toContain("Signing in again will not help");
+    expect(JSON.stringify(notice)).toContain("A Claude Code session on the same account still works");
+    const result = h.events.find((e) => e.type === "agent_result");
+    expect(result).toMatchObject({ status: "error", error: expect.stringContaining("Cloudflare") as unknown });
+    expect(JSON.stringify(result)).not.toContain("<html");
+  });
+});
+
+describe("isProviderEdgeBlock", () => {
+  it.each([
+    ["the CLI's message alone", { message: "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare" }, true],
+    ["a 403 with an HTML body", { status: 403, message: "Forbidden", response: { body: "<!DOCTYPE html><html>no</html>" } }, true],
+    ["a v1 403 naming Cloudflare", { name: "APIError", data: { statusCode: 403, message: "blocked by Cloudflare" } }, true],
+    ["a real 401", { type: "provider.auth", status: 401, message: "Incorrect API key provided" }, false],
+    ["a 401 that carries the block page's title", { type: "provider.auth", status: 401, message: "Attention Required! | Cloudflare" }, false],
+    ["a JSON 403", { status: 403, message: "permission_error", response: { body: "{\"type\":\"error\"}" } }, false],
+    ["no error", undefined, false],
+  ])("%s", (_label, error, expected) => {
+    expect(isProviderEdgeBlock(error)).toBe(expected);
   });
 });

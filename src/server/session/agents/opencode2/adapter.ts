@@ -75,6 +75,33 @@ const BACKGROUND_POLL_FAILURES = 5;
 const TURN_TOOLS: Readonly<Record<string, boolean>> = { question: false, websearch: false };
 const TOOLS_OFF: Readonly<Record<string, boolean>> = { "*": false };
 
+const EDGE_BLOCK_PAGE = /attention required!?\s*\|\s*cloudflare/i;
+const EDGE_BLOCK_MARKER = /cloudflare|<!doctype html|<html[\s>]/i;
+
+/**
+ * A provider's CDN refusing the request (an HTML block page, not an API error).
+ * OpenCode 2 can type it `provider.auth`, but no sign-in fixes it.
+ */
+export function isProviderEdgeBlock(error: OpencodeEvent["error"]): boolean {
+  if (!error) return false;
+  const status = error.status ?? error.data?.statusCode;
+  if (status !== undefined && status !== 403) return false;
+  const text = [error.message, error.data?.message, error.name, error.response?.body]
+    .filter((s): s is string => typeof s === "string")
+    .join("\n");
+  if (EDGE_BLOCK_PAGE.test(text)) return true;
+  return (status === 403 || /\b403\b/.test(text)) && EDGE_BLOCK_MARKER.test(text);
+}
+
+function edgeBlockMessage(claudeRoute: boolean): string {
+  return claudeRoute
+    ? "The provider's edge blocked this request: Cloudflare at api.anthropic.com answered with a 403 block page, "
+      + "so this turn stopped. Signing in again will not help — your Claude login is fine. "
+      + "A Claude Code session on the same account still works."
+    : "The provider's edge blocked this request: its Cloudflare front answered with a 403 block page, "
+      + "so this turn stopped. Signing in again will not help.";
+}
+
 interface TurnPlan {
   args: string[];
   env: Record<string, string>;
@@ -129,6 +156,8 @@ export class Opencode2Adapter
   private stdinFailure: NodeJS.ErrnoException | null = null;
   private pendingMcpServers: Record<string, unknown> = {};
   private usingAccount = false;
+  private usingClaude = false;
+  private edgeBlockShown = false;
   private subscriptionLimits: OpenCodeSubscriptionLimits | undefined;
   private accountWatcher: fs.FSWatcher | null = null;
   private accountResyncTimer: NodeJS.Timeout | null = null;
@@ -185,7 +214,9 @@ export class Opencode2Adapter
       return;
     }
     this.accumulator = new OpencodeTurnAccumulator();
-    this.usingAccount = isOpenCodeAccountRouting(params.serviceRouting) || isOpenCodeClaudeRouting(params.serviceRouting);
+    this.usingClaude = isOpenCodeClaudeRouting(params.serviceRouting);
+    this.edgeBlockShown = false;
+    this.usingAccount = isOpenCodeAccountRouting(params.serviceRouting) || this.usingClaude;
     this.emittedInit = false;
     this.stallReason = null;
     this.stopped = false;
@@ -740,10 +771,18 @@ export class Opencode2Adapter
     if (event.type === "step_start") this.steering.noteStep();
 
     if (event.type === "error") {
-      if (this.usingAccount && (event.error?.status === 401 || event.error?.type === "provider.auth")) {
+      this.emit("log", "server", `OpenCode 2 error: ${this.accumulator.errorMessage ?? "unknown"}`);
+      if (isProviderEdgeBlock(event.error)) {
+        const notice = edgeBlockMessage(this.usingClaude);
+        // The result carries the notice too, not the raw block page.
+        if (!this.edgeBlockShown) {
+          this.edgeBlockShown = true;
+          this.emit("event", { type: "agent_assistant", content: [{ type: "text", text: `\n\n${notice}` }], synthetic: true });
+        }
+        this.accumulator.errorMessage = notice;
+      } else if (this.usingAccount && (event.error?.status === 401 || event.error?.type === "provider.auth")) {
         this.emit("auth_required");
       }
-      this.emit("log", "server", `OpenCode 2 error: ${this.accumulator.errorMessage ?? "unknown"}`);
       // 2.1.1 exits right after an error line; the grace only bounds a future hang.
       if (!this.errorKillTimer && this.proc) {
         this.errorKillTimer = setTimeout(() => {
