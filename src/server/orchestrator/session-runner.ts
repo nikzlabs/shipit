@@ -16,6 +16,7 @@ import type { InboxNotice } from "./services/session-inbox-notice.js";
 import type { RoleStandingInstructions } from "./services/session-role.js";
 import type { RequestedRestartTurn } from "./services/agent-restart-request.js";
 import type { StandDownCause } from "./services/quota-continuation.js";
+import type { TransientProviderErrorKind } from "../shared/provider-errors.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { UnreadableWorkspace, CommitHookFailure } from "../shared/git.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
@@ -599,6 +600,16 @@ export interface SystemTurnDeps {
   }) => { continues: boolean };
   /** Start the continuation turn. Runs after the stood-down turn's terminal sequence. */
   continueAfterStandDown?: (sessionId: string) => Promise<void>;
+  /**
+   * docs/342-transient-provider-retry — a temporary provider error ended this turn. With the
+   * setting on, a continuation turn follows after a wait; it never touches a credential.
+   */
+  recordTransientProviderError?: (args: {
+    sessionId: string;
+    agentId: AgentId;
+    kind: TransientProviderErrorKind;
+    deliveryId?: string | undefined;
+  }) => { retries: boolean };
   /**
    * docs/235-agent-self-wake-liveness §9 — these jobs still ran when a one-shot turn's
    * process ended. Runs last in that turn's terminal sequence, because it can start a turn.

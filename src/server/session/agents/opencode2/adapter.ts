@@ -59,6 +59,7 @@ import { Opencode2Steering } from "./steering.js";
 import { Opencode2ToolStarts, type Opencode2ToolStart } from "./tool-starts.js";
 import { backgroundSubagentSession, messageRunEvents, subagentNotice, subagentSession } from "./background-subagents.js";
 import { Opencode2SubagentWork } from "./subagent-work.js";
+import { textIndicatesProviderEdgeBlock } from "../../../shared/provider-errors.js";
 
 const HARNESS = HARNESSES.find((h) => h.id === "opencode2");
 
@@ -75,22 +76,16 @@ const BACKGROUND_POLL_FAILURES = 5;
 const TURN_TOOLS: Readonly<Record<string, boolean>> = { question: false, websearch: false };
 const TOOLS_OFF: Readonly<Record<string, boolean>> = { "*": false };
 
-const EDGE_BLOCK_PAGE = /attention required!?\s*\|\s*cloudflare/i;
-const EDGE_BLOCK_MARKER = /cloudflare|<!doctype html|<html[\s>]/i;
-
 /**
  * A provider's CDN refusing the request (an HTML block page, not an API error).
  * OpenCode 2 can type it `provider.auth`, but no sign-in fixes it.
  */
 export function isProviderEdgeBlock(error: OpencodeEvent["error"]): boolean {
   if (!error) return false;
-  const status = error.status ?? error.data?.statusCode;
-  if (status !== undefined && status !== 403) return false;
   const text = [error.message, error.data?.message, error.name, error.response?.body]
     .filter((s): s is string => typeof s === "string")
     .join("\n");
-  if (EDGE_BLOCK_PAGE.test(text)) return true;
-  return (status === 403 || /\b403\b/.test(text)) && EDGE_BLOCK_MARKER.test(text);
+  return textIndicatesProviderEdgeBlock(text, error.status ?? error.data?.statusCode);
 }
 
 function edgeBlockMessage(claudeRoute: boolean): string {

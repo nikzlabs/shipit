@@ -3,7 +3,10 @@
 // continuation turn instead — now if another credential is free, later when a bench ends.
 // docs/306-quota-continuation. A sign-in ShipIt renewed under such a turn stops it the same
 // way, and is continued the same way (docs/140-live-steering Phase 6.13). So is an automatic
-// wake that every credential refused for quota, at the reset the providers stated.
+// wake that every credential refused for quota, at the reset the providers stated. And, when
+// the user turned it on, a turn that a temporary provider error ended (docs/342-transient-provider-retry).
+
+import { randomUUID } from "node:crypto";
 
 import type { AgentId, SessionInfo, SessionQuotaResume } from "../../shared/types.js";
 import type { PersistedMessage } from "../chat-history.js";
@@ -15,6 +18,7 @@ import { loadPrompt } from "../load-prompt.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { MAX_QUOTA_REFUSALS, formatUtc, quotaWaitUntil } from "../quota-wait.js";
 import type { TurnOutcome } from "../turn-settlement.js";
+import type { TransientProviderErrorKind } from "../../shared/provider-errors.js";
 
 /** Selects what the continuation turn is told; routing and timing never read it. */
 export type StandDownCause = SessionQuotaResume["cause"];
@@ -32,7 +36,34 @@ const CONTINUATIONS: Record<StandDownCause, { text: string; activity: string }> 
     text: loadPrompt(import.meta.url, "../prompts/refused-wake-continuation.md"),
     activity: "Continuing after a quota limit…",
   },
+  transient: {
+    text: loadPrompt(import.meta.url, "../prompts/transient-error-continuation-wake.md"),
+    activity: "Continuing after a temporary provider error…",
+  },
 };
+
+/** docs/342-transient-provider-retry req 4 — one wait per automatic continuation; then ShipIt stops. */
+export const TRANSIENT_RETRY_DELAYS_MS: readonly number[] = [30_000, 120_000, 300_000];
+
+// Names a continuation's own turn and its place in the row, also after a restart.
+const TRANSIENT_DELIVERY_PREFIX = "transient-provider-retry:";
+
+/** Which continuation in a row the turn with this delivery id was; 0 for any other turn. */
+export function transientRetryOf(deliveryId: string | undefined): number {
+  if (!deliveryId?.startsWith(TRANSIENT_DELIVERY_PREFIX)) return 0;
+  const n = Number.parseInt(deliveryId.slice(TRANSIENT_DELIVERY_PREFIX.length), 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+const TRANSIENT_ERROR_WORDS: Record<TransientProviderErrorKind, string> = {
+  "edge-block": "the provider's Cloudflare edge answered with a 403 block page",
+  overloaded: "the model was overloaded",
+  "server-error": "the provider answered with a server error",
+};
+
+function waitWords(ms: number): string {
+  return ms < 60_000 ? `${Math.round(ms / 1000)} seconds` : `${Math.round(ms / 60_000)} minutes`;
+}
 
 // Polling resolution only: eligibility is the router's answer, on the docs/260 refusal clocks.
 const STALL_SWEEP_MS = 60_000;
@@ -43,6 +74,8 @@ const MAX_WAKE_ATTEMPTS = 3;
 export interface QuotaContinuationDeps extends WakeSessionDeps {
   providerAccountManager?: ProviderAccountManager | undefined;
   chatHistoryManager: { append(sessionId: string, message: PersistedMessage): unknown };
+  /** docs/342-transient-provider-retry req 1 — `advanced.retryTransientProviderErrors`. */
+  transientRetryEnabled?: () => boolean;
 }
 
 /** What a wake's owner tells the manager when every credential refused that wake for quota. */
@@ -58,6 +91,8 @@ export class QuotaContinuationManager {
   private sweepInFlight = false;
   // Covers a wake's preparation, before a turn holds the session.
   private readonly waking = new Set<string>();
+  // One per session waiting on a temporary error, at its own deadline; the sweep is the restart fallback.
+  private readonly transientTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly deps: QuotaContinuationDeps) {}
 
@@ -101,6 +136,68 @@ export class QuotaContinuationManager {
   }
 
   /**
+   * docs/342-transient-provider-retry — a temporary provider error ended a turn of this session.
+   * With the setting on, records a continuation after the next wait and tells the user; past
+   * the last wait, tells the user ShipIt stopped. Never touches a credential (req 5).
+   */
+  recordTransientProviderError(args: {
+    sessionId: string;
+    agentId: AgentId;
+    kind: TransientProviderErrorKind;
+    /** The ended turn's delivery id: a continuation's own failure counts on from it. */
+    deliveryId?: string | undefined;
+  }): { retries: boolean } {
+    if (this.deps.transientRetryEnabled?.() !== true) return { retries: false };
+    const session = this.deps.sessionManager.get(args.sessionId);
+    if (!session || isArchived(session)) return { retries: false };
+    const retry = transientRetryOf(args.deliveryId) + 1;
+    const what = TRANSIENT_ERROR_WORDS[args.kind];
+    const delay = TRANSIENT_RETRY_DELAYS_MS[retry - 1];
+    if (delay === undefined) {
+      const tries = TRANSIENT_RETRY_DELAYS_MS.length;
+      console.warn(`[transient] ${args.sessionId} failed again after ${tries} automatic continuations; ShipIt stops`);
+      this.notify(
+        args.sessionId,
+        `The agent stopped again because ${what}. ShipIt already continued it ${tries} times `
+        + "automatically, so it stops trying. Send a message to continue.",
+        "warn",
+      );
+      return { retries: false };
+    }
+    const notBefore = new Date(Date.now() + delay);
+    this.deps.sessionManager.setQuotaResume(args.sessionId, {
+      agentId: args.agentId,
+      cause: "transient",
+      lastUsedAt: session.lastUsedAt,
+      wakeAttempts: 0,
+      notBefore: notBefore.toISOString(),
+      transientRetry: retry,
+    });
+    this.ensureSweepLoop();
+    this.armTransientTimer(args.sessionId, delay);
+    console.log(
+      `[transient] ${args.kind} ended a turn of ${args.sessionId}; continuation ${retry}/`
+      + `${TRANSIENT_RETRY_DELAYS_MS.length} at ${notBefore.toISOString()}`,
+    );
+    this.notify(
+      args.sessionId,
+      `The agent stopped because ${what}. ShipIt will ask it to continue in ${waitWords(delay)} `
+      + `(attempt ${retry} of ${TRANSIENT_RETRY_DELAYS_MS.length}). Send a message to continue now instead.`,
+      "info",
+    );
+    return { retries: true };
+  }
+
+  /** docs/342-transient-provider-retry req 4 — the user's Stop. True when a continuation was waiting. */
+  cancelTransientRetry(sessionId: string): boolean {
+    this.clearTransientTimer(sessionId);
+    if (this.deps.sessionManager.getQuotaResume(sessionId)?.cause !== "transient") return false;
+    this.deps.sessionManager.setQuotaResume(sessionId, null);
+    console.log(`[transient] the user stopped ${sessionId}; its automatic continuation is cancelled`);
+    return true;
+  }
+
+  /**
    * An automatic wake ended without running: every credential refused it for quota. The owner
    * has parked what the wake was for, and the session resumes at the earliest stated reset —
    * not at the router's re-probe, which a weekly limit would turn into a wake every half hour.
@@ -123,6 +220,7 @@ export class QuotaContinuationManager {
   }
 
   stop(): void {
+    for (const sessionId of [...this.transientTimers.keys()]) this.clearTransientTimer(sessionId);
     if (!this.sweepTimer) return;
     clearInterval(this.sweepTimer);
     this.sweepTimer = null;
@@ -163,6 +261,11 @@ export class QuotaContinuationManager {
     // Any later turn — a user message, another wake — supersedes this one, also one that no
     // credential could run: what the wake was for is parked, and rides the turn that runs.
     if (session.lastUsedAt !== resume.lastUsedAt) {
+      this.deps.sessionManager.setQuotaResume(sessionId, null);
+      return undefined;
+    }
+    // Turning the setting off cancels what waits (req 1).
+    if (resume.cause === "transient" && this.deps.transientRetryEnabled?.() !== true) {
       this.deps.sessionManager.setQuotaResume(sessionId, null);
       return undefined;
     }
@@ -218,6 +321,9 @@ export class QuotaContinuationManager {
     try {
       const handle = await wakeSessionWithTurn(this.deps, session, {
         ...CONTINUATIONS[resume.cause],
+        ...(resume.cause === "transient"
+          ? { deliveryId: `${TRANSIENT_DELIVERY_PREFIX}${resume.transientRetry ?? 1}:${randomUUID()}` }
+          : {}),
         startOrRefuse: { automatic: true },
         stillWanted: () => this.isCurrent(session.id, resume),
         onSettled: (outcome: TurnOutcome) => {
@@ -295,6 +401,25 @@ export class QuotaContinuationManager {
       },
       exclude.length > 0 ? { exclude } : {},
     ).ok;
+  }
+
+  private armTransientTimer(sessionId: string, delay: number): void {
+    this.clearTransientTimer(sessionId);
+    const timer = setTimeout(() => {
+      this.transientTimers.delete(sessionId);
+      void this.sweep().catch((err: unknown) => {
+        console.error("[transient] the continuation sweep errored:", err);
+      });
+    }, delay);
+    timer.unref?.();
+    this.transientTimers.set(sessionId, timer);
+  }
+
+  private clearTransientTimer(sessionId: string): void {
+    const timer = this.transientTimers.get(sessionId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.transientTimers.delete(sessionId);
   }
 
   private ensureSweepLoop(): void {

@@ -791,6 +791,7 @@ async function composeAndRunAgentTurn(
     ...(continuation ? {
       recordStandDown: (args) => continuation.recordStandDown(args),
       continueAfterStandDown: async (sessionId) => { await continuation.continueNow(sessionId); },
+      recordTransientProviderError: (args) => continuation.recordTransientProviderError(args),
     } : {}),
     ...(ctx.reportStoppedBackgroundJobs
       ? { reportStoppedBackgroundJobs: ctx.reportStoppedBackgroundJobs }

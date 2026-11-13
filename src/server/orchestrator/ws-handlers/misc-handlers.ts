@@ -56,6 +56,9 @@ export function handleInterruptAgent(ctx: ConnectionCtx & RunnerCtx & AppCtx): v
   const result = interruptAgentTurn({
     sessionManager: ctx.sessionManager,
     broadcastLog: ctx.broadcastLog,
+    ...(ctx.quotaContinuation
+      ? { cancelTransientRetry: (id: string) => ctx.quotaContinuation?.cancelTransientRetry(id) ?? false }
+      : {}),
     postInterruptCommitDeps: {
       sessionManager: ctx.sessionManager,
       chatHistoryManager: ctx.chatHistoryManager,

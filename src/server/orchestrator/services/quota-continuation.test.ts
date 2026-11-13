@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { QuotaContinuationManager } from "./quota-continuation.js";
+import { QuotaContinuationManager, TRANSIENT_RETRY_DELAYS_MS, transientRetryOf } from "./quota-continuation.js";
 import type { QuotaContinuationDeps } from "./quota-continuation.js";
 import type { CredentialRoute, SessionInfo, SessionQuotaResume } from "../../shared/types.js";
 import type { ModelSelection } from "../../shared/catalogue/types.js";
@@ -676,5 +676,165 @@ describe("quota continuation", () => {
     expect(h.resumes.has("s1")).toBe(true);
 
     manager.stop();
+  });
+});
+
+describe("a temporary provider error (docs/342-transient-provider-retry)", () => {
+  const T0 = Date.parse("2026-11-13T10:00:00.000Z");
+  const dispatched = (h: ReturnType<typeof makeHarness>, call: number) =>
+    h.dispatch.mock.calls[call]![0] as { text: string; deliveryId?: string; automatic?: boolean };
+
+  function setup(enabled = true) {
+    vi.useFakeTimers({ now: T0 });
+    const h = makeHarness();
+    const setting = { enabled };
+    (h.deps as { transientRetryEnabled?: () => boolean }).transientRetryEnabled = () => setting.enabled;
+    const manager = new QuotaContinuationManager(h.deps);
+    const fail = (deliveryId?: string) =>
+      manager.recordTransientProviderError({ sessionId: "s1", agentId: "claude", kind: "edge-block", deliveryId });
+    return { h, manager, setting, fail };
+  }
+
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("does nothing while the setting is off", async () => {
+    const { h, manager, fail } = setup(false);
+
+    expect(fail()).toEqual({ retries: false });
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+    expect(h.resumes.has("s1")).toBe(false);
+    expect(h.dispatch).not.toHaveBeenCalled();
+    expect(h.notices).toEqual([]);
+    manager.stop();
+  });
+
+  it("continues the same session with the continuation prompt after the first wait", async () => {
+    const { h, manager, fail } = setup();
+
+    expect(fail("user-turn")).toEqual({ retries: true });
+    expect(h.notices).toEqual([
+      { text: expect.stringContaining("continue in 30 seconds (attempt 1 of 3)") as unknown, level: "info" },
+    ]);
+    await vi.advanceTimersByTimeAsync(TRANSIENT_RETRY_DELAYS_MS[0]! - 1);
+    expect(h.dispatch).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    const wake = dispatched(h, 0);
+    // A short ShipIt prompt, never the user's message again.
+    expect(wake.text).toMatch(/^\[ShipIt\] The last model call failed with a temporary provider error/);
+    expect(wake.automatic).toBe(true);
+    expect(transientRetryOf(wake.deliveryId)).toBe(1);
+    expect(h.resumes.has("s1")).toBe(false);
+    manager.stop();
+  });
+
+  it("backs off 30 s, 2 min, 5 min across continuations that fail again, then stops", async () => {
+    const { h, manager, fail } = setup();
+    let deliveryId: string | undefined;
+    for (const [i, delay] of TRANSIENT_RETRY_DELAYS_MS.entries()) {
+      expect(fail(deliveryId)).toEqual({ retries: true });
+      expect(h.resumes.get("s1")).toContain(new Date(Date.now() + delay).toISOString());
+      await vi.advanceTimersByTimeAsync(delay);
+      expect(h.dispatch).toHaveBeenCalledTimes(i + 1);
+      deliveryId = dispatched(h, i).deliveryId;
+      expect(transientRetryOf(deliveryId)).toBe(i + 1);
+    }
+
+    // The third continuation failed too: no fourth.
+    expect(fail(deliveryId)).toEqual({ retries: false });
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(h.dispatch).toHaveBeenCalledTimes(3);
+    expect(h.resumes.has("s1")).toBe(false);
+    expect(h.notices.map((n) => n.text)).toEqual([
+      expect.stringContaining("in 30 seconds (attempt 1 of 3)"),
+      expect.stringContaining("in 2 minutes (attempt 2 of 3)"),
+      expect.stringContaining("in 5 minutes (attempt 3 of 3)"),
+      expect.stringContaining("continued it 3 times automatically, so it stops trying"),
+    ]);
+    manager.stop();
+  });
+
+  it("starts the count again for a turn the user started", async () => {
+    const { h, manager, fail } = setup();
+    fail(`transient-provider-retry:3:x`);
+    fail("a-user-turn");
+
+    expect(h.notices.at(-1)!.text).toContain("attempt 1 of 3");
+    manager.stop();
+  });
+
+  it("is cancelled by a message the user sends meanwhile", async () => {
+    const { h, manager, fail } = setup();
+    fail();
+    h.session.value = { ...h.session.value!, lastUsedAt: "2026-11-13T10:00:10.000Z" };
+
+    await vi.advanceTimersByTimeAsync(TRANSIENT_RETRY_DELAYS_MS[0]!);
+
+    expect(h.dispatch).not.toHaveBeenCalled();
+    expect(h.resumes.has("s1")).toBe(false);
+    manager.stop();
+  });
+
+  it("is cancelled by Stop", async () => {
+    const { h, manager, fail } = setup();
+    fail();
+
+    expect(manager.cancelTransientRetry("s1")).toBe(true);
+    await vi.advanceTimersByTimeAsync(TRANSIENT_RETRY_DELAYS_MS[0]!);
+
+    expect(h.dispatch).not.toHaveBeenCalled();
+    expect(manager.cancelTransientRetry("s1")).toBe(false);
+    manager.stop();
+  });
+
+  it("leaves a quota continuation alone on Stop", () => {
+    const { h, manager } = setup();
+    h.standDown(manager);
+
+    expect(manager.cancelTransientRetry("s1")).toBe(false);
+    expect(h.resumes.has("s1")).toBe(true);
+    manager.stop();
+  });
+
+  it("is cancelled by turning the setting off", async () => {
+    const { h, manager, setting, fail } = setup();
+    fail();
+    setting.enabled = false;
+
+    await vi.advanceTimersByTimeAsync(TRANSIENT_RETRY_DELAYS_MS[0]!);
+
+    expect(h.dispatch).not.toHaveBeenCalled();
+    expect(h.resumes.has("s1")).toBe(false);
+    manager.stop();
+  });
+
+  it("waits while the failed turn's post-turn work is still in flight", async () => {
+    const { h, manager, fail } = setup();
+    fail();
+    h.runner.agentBusy = true;
+
+    await vi.advanceTimersByTimeAsync(TRANSIENT_RETRY_DELAYS_MS[0]!);
+    expect(h.dispatch).not.toHaveBeenCalled();
+
+    h.runner.agentBusy = false;
+    await manager.sweep();
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    manager.stop();
+  });
+
+  it("survives a restart: a new manager continues what the old one recorded", async () => {
+    const { h, manager, fail } = setup();
+    fail();
+    manager.stop();
+
+    const next = new QuotaContinuationManager(h.deps);
+    next.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    expect(transientRetryOf(dispatched(h, 0).deliveryId)).toBe(1);
+    next.stop();
   });
 });

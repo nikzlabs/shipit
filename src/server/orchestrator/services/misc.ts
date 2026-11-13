@@ -86,6 +86,7 @@ export async function getBootstrapData(deps: {
         enableSubAgents: true,
         agentCompaction: false,
         idleCompaction: false,
+        retryTransientProviderErrors: false,
         sessionStatusCard: false,
         sessionGpu: false,
         voiceDeliveryMode: "native",

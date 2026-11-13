@@ -145,6 +145,18 @@ the provider's own text. Three shapes:
   account that is not working, **Reconnect** for one that is (a deliberate
   re-login), and **Replace secret** for a pasted credential. Name the menu, the
   row and the item; the sign-in itself is theirs.
+- **A temporary provider error** — a Cloudflare *Attention Required* 403 block
+  page, an overloaded model (529), or a 5xx server error. It often hits the
+  call right after a tool result. It is not a sign-in problem, and signing in
+  again does not help; the session's next message usually works, because it
+  continues the same conversation. With the user's setting *Continue
+  automatically after a temporary provider error* on (`shipit settings get
+  advanced.retryTransientProviderErrors`; off by default), ShipIt does that by
+  itself: a **notice** says when, and the agent is asked to continue where it
+  stopped — the user's message is never sent again — up to three times, after
+  30 seconds, 2 minutes and 5 minutes. The user's own message cancels a waiting
+  attempt, and Stop ends the retries. When it is off and this keeps happening,
+  propose turning it on.
 - **Anything else** — the error text is the provider's. Read it before
   retrying.
 

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { Opencode2Adapter, isProviderEdgeBlock } from "./adapter.js";
+import { transientProviderErrorKind } from "../../../shared/provider-errors.js";
 import type { AgentEvent, AgentRunParams } from "../agent-process.js";
 import type { ServiceRouting } from "../../../shared/types/agent-types.js";
 import { opencode2Roots } from "../../../shared/opencode-harness.js";
@@ -1025,6 +1026,31 @@ describe("Opencode2Adapter — Claude route (docs/340)", () => {
     const result = h.events.find((e) => e.type === "agent_result");
     expect(result).toMatchObject({ status: "error", error: expect.stringContaining("Cloudflare") as unknown });
     expect(JSON.stringify(result)).not.toContain("<html");
+    // docs/342-transient-provider-retry — the turn executor reads this as a temporary error.
+    expect(transientProviderErrorKind((result as { error?: string }).error)).toBe("edge-block");
+  });
+
+  it("reports an overloaded model as a temporary error, not a sign-in problem", async () => {
+    provisionClaudeLogin();
+    const h = start(makeAdapter(), { ...PARAMS, model: "claude-opus-5-5", serviceRouting: CLAUDE_ROUTING });
+    let auth = 0;
+    h.adapter.on("auth_required", () => { auth++; });
+    await announce(h);
+    h.client().emitStdout([
+      ...TOOL_TURN.slice(0, 4),
+      JSON.stringify({
+        type: "error",
+        timestamp: 1793141022332,
+        sessionID: SESSION,
+        error: { type: "provider.api", message: "Overloaded", status: 529 },
+      }),
+    ]);
+    h.client().emit("close", 1, null);
+    await h.done;
+    expect(auth).toBe(0);
+    const result = h.events.find((e) => e.type === "agent_result");
+    expect(result).toMatchObject({ status: "error" });
+    expect(transientProviderErrorKind((result as { error?: string }).error)).toBe("overloaded");
   });
 });
 

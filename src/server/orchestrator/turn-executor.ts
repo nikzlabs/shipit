@@ -90,6 +90,7 @@ import { denyAbandonedPermissionCards } from "./permission-cards.js";
 import { TURN_COMPLETED, resultIsTheAgentsOwn, turnDropped, turnErrored, turnInterrupted, turnNoResult, turnQuotaRefused, type EmptyTurnReason, type NoticeDelivery, type PromptRepark, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
+import { transientProviderErrorKind } from "../shared/provider-errors.js";
 
 export interface TurnInput {
   agentId: AgentId;
@@ -973,6 +974,23 @@ export async function executeAgentTurn(
     );
   };
 
+  // docs/342-transient-provider-retry — never the auth path: this only records a later continuation.
+  let transientErrorNoted = false;
+  const noteTransientProviderError = (errorText: string | undefined): void => {
+    if (transientErrorNoted || maintenanceTurn || input.compact === true || sawAuthRequired) return;
+    if (!turnIsCurrent() || (runner && (runner.wasInterrupted || stoppedByUser(runner)))) return;
+    // A queued message continues the session anyway, and would cancel the continuation.
+    if ((runner?.queueLength ?? 0) > 0) return;
+    const kind = transientProviderErrorKind(errorText);
+    if (!kind || !deps.recordTransientProviderError) return;
+    transientErrorNoted = true;
+    try {
+      deps.recordTransientProviderError({ sessionId, agentId, kind, deliveryId: input.deliveryId });
+    } catch (err) {
+      console.error(`[turn] recording the temporary provider error of ${sessionId} failed:`, err);
+    }
+  };
+
   const runContinuation = async (): Promise<void> => {
     if (!continuationPending) return;
     continuationPending = false;
@@ -1152,6 +1170,7 @@ export async function executeAgentTurn(
       if (!(quota && continuationPending)) {
         recordTurnEnd(quota ? "quota-refused" : "errored", lastAgentError?.message);
       }
+      if (!quota) noteTransientProviderError(lastAgentError?.message);
       settleTurnFacts();
       holdPostTurn();
       try {
@@ -1745,6 +1764,7 @@ export async function executeAgentTurn(
       empty = settlesThisTurn ? emptyTurnReason(event) : null;
       recordTurnEnd(resultIsTheAgentsOwn(event) ? "ok" : "errored", event.error, empty ?? undefined);
       if (empty) tellEmptyTurn(empty, event);
+      else if (!resultIsTheAgentsOwn(event)) noteTransientProviderError(event.error);
     }
     // Anything riding this prompt is delivered here, and must not be delivered
     // in `settleTurn`: a turn can settle without its prompt having been read, and

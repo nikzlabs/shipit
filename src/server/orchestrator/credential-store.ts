@@ -916,6 +916,10 @@ export class CredentialStore {
     return this.getDeclaredSetting("advanced.idleCompaction");
   }
 
+  getRetryTransientProviderErrors(): boolean {
+    return this.getDeclaredSetting("advanced.retryTransientProviderErrors");
+  }
+
   setSessionStatusCard(enabled: boolean): void {
     this.setDeclaredSetting("advanced.sessionStatusCard", enabled);
   }

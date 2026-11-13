@@ -256,6 +256,39 @@ describe("ClaudeProcess", () => {
       expect(events).toEqual([]);
     });
 
+    // docs/342-transient-provider-retry — the 2026-11-13 incident: the turn sees the error.
+    it("passes a Cloudflare 403 block page through as an error, not as auth_required", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const events: { type: string }[] = [];
+      let authRequiredCount = 0;
+      claude.on("event", (e) => events.push(e));
+      claude.on("auth_required", () => { authRequiredCount += 1; });
+
+      claude.run({ prompt: "test" });
+      const text = "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare";
+      mockProc.simulateData(
+        `${JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "text", text }] },
+          error: "authentication_failed",
+          is_api_error_message: true,
+        })}\n${JSON.stringify({
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          terminal_reason: "api_error",
+          session_id: "abc",
+          result: text,
+        })}\n`,
+      );
+
+      expect(authRequiredCount).toBe(0);
+      expect(events.map((e) => e.type)).toEqual(["assistant", "result"]);
+    });
+
     it("raises auth_required again on a later turn of a resident streaming process", () => {
       const mockProc = createMockChildProcess();
       mockChildSpawn.mockReturnValue(mockProc as any);

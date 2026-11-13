@@ -183,3 +183,39 @@ describe("resultEventIsError", () => {
     expect(resultEventIsError(CLI_AUTH_FAILURE_ASSISTANT)).toBe(false);
   });
 });
+
+// docs/342-transient-provider-retry — the 2026-11-13 incident's shape: the CLI codes the
+// 403 `authentication_failed` and words it "Failed to authenticate".
+describe("a Cloudflare 403 block page is not an auth failure", () => {
+  const TEXT = "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare";
+
+  it("in text", () => {
+    expect(textIndicatesAuthFailure(TEXT)).toBe(false);
+    expect(textIndicatesAuthFailure("API Error: 403 <!DOCTYPE html><html><title>Attention Required! | Cloudflare</title>")).toBe(false);
+  });
+
+  it("on the CLI's api-error assistant message", () => {
+    expect(assistantEventIndicatesAuthFailure({
+      type: "assistant",
+      message: { content: [{ type: "text", text: TEXT }] },
+      error: "authentication_failed",
+      is_api_error_message: true,
+    })).toBe(false);
+  });
+
+  it("on the result", () => {
+    expect(resultEventIndicatesAuthFailure({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      terminal_reason: "api_error",
+      session_id: "s1",
+      result: TEXT,
+    })).toBe(false);
+  });
+
+  it("while a real 401 still is", () => {
+    expect(textIndicatesAuthFailure("Failed to authenticate. API Error: 401 Invalid authentication credentials")).toBe(true);
+    expect(assistantEventIndicatesAuthFailure(CLI_AUTH_FAILURE_ASSISTANT)).toBe(true);
+  });
+});

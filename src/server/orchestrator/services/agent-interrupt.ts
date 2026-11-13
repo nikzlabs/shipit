@@ -10,6 +10,8 @@ export interface AgentInterruptDeps {
   sessionManager: Pick<SessionManager, "dropPendingCompactionNote">;
   broadcastLog: (source: LogSource, text: string) => void;
   postInterruptCommitDeps: PostInterruptCommitDeps;
+  /** docs/342-transient-provider-retry req 4 — true when an automatic continuation was waiting. */
+  cancelTransientRetry?: (sessionId: string) => boolean;
 }
 
 /** `queue`: no turn or agent was there to stop, and the queue was emptied. */
@@ -25,6 +27,7 @@ export function interruptAgentTurn(deps: AgentInterruptDeps, runner: SessionRunn
   stopCompactionContinuation(deps.sessionManager, runner);
   // Also with no turn to stop: a hold can keep a queue while nothing runs.
   const emptied = returnQueueOnStop(runner);
+  const retryCancelled = deps.cancelTransientRetry?.(runner.sessionId) ?? false;
   // The turn has not submitted its prompt, and may not have an agent yet: it ends itself.
   if (runner.running && requestStopDuringSetup(runner)) {
     runner.wasInterrupted = true;
@@ -35,7 +38,7 @@ export function interruptAgentTurn(deps: AgentInterruptDeps, runner: SessionRunn
   }
   const agent = runner.getAgent();
   if (!agent) {
-    if (!emptied) return "nothing";
+    if (!emptied && !retryCancelled) return "nothing";
     runner.emitMessage({ type: "agent_interrupted", sessionId: runner.sessionId });
     return "queue";
   }
