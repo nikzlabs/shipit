@@ -56,6 +56,7 @@ export interface OpencodeEvent {
     type?: string;
     message?: string;
     status?: number;
+    response?: { body?: string };
   };
 }
 
