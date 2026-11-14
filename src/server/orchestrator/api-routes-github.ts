@@ -1185,6 +1185,16 @@ export async function registerGitHubRoutes(
       let settlementHeld = false;
       // Set only by this request's own settlement onto this session (docs/287 §6).
       let resetDue = false;
+      // docs/343-agent-merge-cancel-notice — a pending `--auto` request this direct merge replaced.
+      const displaced: { claim: { prNumber: number; expectedSha: string } | null } = { claim: null };
+      // Every answer that is not a merge says so, including an error thrown after the replacement.
+      const withDisplaced = (message: string): string => {
+        const replaced = displaced.claim;
+        if (!replaced) return message;
+        return `${message} This replaced your \`--auto\` request for pull request `
+          + `#${replaced.prNumber} at ${replaced.expectedSha.slice(0, 8)}, which is no longer armed. `
+          + `Run \`gh pr merge ${replaced.prNumber} --auto\` again if it should still merge.`;
+      };
       try {
       if (repoBound) {
         let currentBranch: string | null;
@@ -1296,6 +1306,7 @@ export async function registerGitHubRoutes(
                 }
                 // Held until the request resolves: the turn can end before GitHub answers.
                 settlementHeld = claimDeps.claims.beginSettlement(request.params.id);
+                const prior = claimDeps.claims.get(request.params.id);
                 if (!settlementHeld || !claimDeps.claims.claim({
                   sessionId: request.params.id,
                   repoId: claimRepoId,
@@ -1307,6 +1318,7 @@ export async function registerGitHubRoutes(
                     + "ShipIt will not start a second one over it. It resolves that attempt at the end "
                     + "of the turn; try again after that.";
                 }
+                if (prior?.state === "pending" && prior.origin === "auto") displaced.claim = prior;
                 return null;
               },
               onArm: (expectedSha: string) => {
@@ -1359,6 +1371,7 @@ export async function registerGitHubRoutes(
             }
             : {}),
         });
+        if (!result.success) return { ...result, message: withDisplaced(result.message) };
         if (!resetDue || !result.success) return result;
         const resetNote = await resetBranchAfterDirectMerge(
           {
@@ -1374,10 +1387,10 @@ export async function registerGitHubRoutes(
         return { ...result, message: `${result.message}. ${resetNote}` };
       } catch (err) {
         if (err instanceof ServiceError) {
-          reply.code(err.statusCode).send({ error: err.message });
+          reply.code(err.statusCode).send({ error: withDisplaced(err.message) });
           return;
         }
-        return { success: false, message: `Merge failed: ${getErrorMessage(err)}` };
+        return { success: false, message: withDisplaced(`Merge failed: ${getErrorMessage(err)}`) };
       } finally {
         if (settlementHeld) claimDeps?.claims.endSettlement(request.params.id);
       }

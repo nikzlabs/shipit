@@ -12,6 +12,7 @@ import { StubAuthManager, StubGitHubAuthManager, createTestCredentialStore, crea
 import { DatabaseManager } from "../../shared/database.js";
 import { AgentMergeClaimStore } from "../agent-merge-claims.js";
 import { ChatHistoryManager } from "../chat-history.js";
+import { SessionInboxStore } from "../session-inbox-store.js";
 
 let tmpDir: string;
 let app: FastifyInstance;
@@ -356,6 +357,33 @@ describe("PATCH /api/repos/:url (agent-merge grant, docs/287)", () => {
     expect(emitted.some((m) => m.type === "system_notice"
       && ((m as { message?: string }).message ?? "").includes("agent merging was turned off")))
       .toBe(true);
+  });
+
+  it("tells the agent too, through its inbox (docs/343-agent-merge-cancel-notice req 4)", async () => {
+    repoStore.add(url);
+    // The app's own store: the inbox is attached to it at startup.
+    const claims = (app as unknown as { agentMergeClaims: AgentMergeClaimStore }).agentMergeClaims;
+    sessionManager.track("s4", "A session");
+    claims.arm({
+      sessionId: "s4", repoId: "github:owner/repo", prNumber: 11, expectedSha: "sha4", method: "merge",
+    });
+
+    await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: { allowAgentMerge: true },
+    });
+    await app.inject({
+      method: "PATCH",
+      url: `/api/repos/${encodeURIComponent(url)}`,
+      payload: { allowAgentMerge: false },
+    });
+
+    expect(claims.get("s4")).toBeNull();
+    const unread = new SessionInboxStore(dbManager).unread("s4");
+    expect(unread).toHaveLength(1);
+    expect(unread[0]?.body).toContain("pull request #11");
+    expect(unread[0]?.body).toContain("agent merging was turned off");
   });
 
   it("leaves a merge already under way alone", async () => {

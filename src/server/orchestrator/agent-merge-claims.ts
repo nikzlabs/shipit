@@ -1,5 +1,6 @@
 /** Written before the merge call: a failed response does not prove GitHub rejected it. */
 import type { DatabaseManager } from "../shared/database.js";
+import type { SessionInbox } from "./services/session-inbox.js";
 
 /** Only pending requests can be replaced; later states may represent a completed merge. */
 export type AgentMergeClaimState = "pending" | "merging" | "settling";
@@ -56,6 +57,13 @@ export class AgentMergeClaimStore {
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
+  }
+
+  /** docs/343-agent-merge-cancel-notice — held here because every path that ends a request has the store. */
+  agentInbox: Pick<SessionInbox, "add" | "tell"> | undefined;
+
+  setAgentInbox(inbox: Pick<SessionInbox, "add" | "tell">): void {
+    this.agentInbox = inbox;
   }
 
   // Revoke unsent calls without deleting rows that may be evidence of a merge.
@@ -176,6 +184,19 @@ export class AgentMergeClaimStore {
     return res.changes > 0;
   }
 
+  /** docs/343-agent-merge-cancel-notice req 3 — only for a commit ShipIt itself pushed over `fromSha`. */
+  retarget(sessionId: string, fromSha: string, toSha: string): AgentMergeClaim | null {
+    let moved: AgentMergeClaim | null = null;
+    this.db.transaction(() => {
+      const res = this.db.prepare(
+        `UPDATE agent_merge_claims SET expected_sha = ?
+         WHERE session_id = ? AND expected_sha = ? AND state = 'pending' AND origin = 'auto'`,
+      ).run(toSha, sessionId, fromSha);
+      if (res.changes > 0) moved = this.get(sessionId);
+    })();
+    return moved;
+  }
+
   cancelPendingForRepo(repoId: string, record?: (claim: AgentMergeClaim) => void): AgentMergeClaim[] {
     let cancelled: AgentMergeClaim[] = [];
     this.db.transaction(() => {
@@ -231,11 +252,18 @@ export class AgentMergeClaimStore {
     return res.changes > 0;
   }
 
-  releaseUnmerged(sessionId: string, expectedSha: string): boolean {
-    const res = this.db.prepare(
-      "DELETE FROM agent_merge_claims WHERE session_id = ? AND expected_sha = ? AND state = 'merging'",
-    ).run(sessionId, expectedSha);
-    return res.changes > 0;
+  /** With `record`, deletes and records atomically; record must be synchronous and do no external I/O. */
+  releaseUnmerged(sessionId: string, expectedSha: string, record?: () => void): boolean {
+    let released = false;
+    this.db.transaction(() => {
+      const res = this.db.prepare(
+        "DELETE FROM agent_merge_claims WHERE session_id = ? AND expected_sha = ? AND state = 'merging'",
+      ).run(sessionId, expectedSha);
+      if (res.changes === 0) return;
+      record?.();
+      released = true;
+    })();
+    return released;
   }
 
   /** Record and delete atomically; record must be synchronous and do no external I/O. */

@@ -47,6 +47,7 @@ import {
 } from "../auto-conflict-resolve-manager.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { onWorkspaceRewritten } from "../workspace-rewrite.js";
+import type { AgentMergeClaimStore } from "../agent-merge-claims.js";
 import {
   closeFollowupWindow,
   deliverRebaseFollowup,
@@ -83,6 +84,8 @@ export interface RebaseDriverDeps {
   commitPendingWork?: (
     deferPushArm: (arm: () => void) => void,
   ) => Promise<{ commitHash: string | null }>;
+  /** docs/343-agent-merge-cancel-notice — a pending merge request follows the commit this flow pushes. */
+  agentMergeClaims?: Pick<AgentMergeClaimStore, "get" | "retarget"> | undefined;
 }
 
 export interface RebasePrStatusPoller {
@@ -102,11 +105,26 @@ export type RebaseFlowOutcome =
   }
   | { status: "aborted"; reason: string };
 
+/** A pending `gh pr merge --auto` request armed at the commit the rebase started from. */
+export interface ArmedMerge {
+  prNumber: number;
+  sha: string;
+}
+
 export function buildRebaseConflictPrompt(
   baseBranch: string,
   conflicts: RebaseConflictFile[],
+  armedMerge: ArmedMerge | null = null,
 ): string {
   const fileList = conflicts.map((c) => `- \`${c.path}\``).join("\n");
+  const armed = armedMerge
+    ? [
+      "",
+      `A merge of pull request #${armedMerge.prNumber} is armed at ${armedMerge.sha.slice(0, 8)}. When ShipIt`,
+      "pushes the rebased branch, it moves that request to the rebased commit and merges it once the",
+      "checks pass on it, so you do not need to arm it again.",
+    ]
+    : [];
   return [
     `Rebasing onto \`${baseBranch}\` — ${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"} to resolve:`,
     fileList,
@@ -126,7 +144,47 @@ export function buildRebaseConflictPrompt(
     "",
     "ShipIt gives that note back to you as a turn once the rebase concludes. Arm nothing if the",
     "resolved files are the whole job.",
+    ...armed,
   ].join("\n");
+}
+
+function armedMergeAt(deps: RebaseDriverDeps, sha: string | null): ArmedMerge | null {
+  if (!sha || !deps.agentMergeClaims) return null;
+  try {
+    const claim = deps.agentMergeClaims.get(deps.runner.sessionId);
+    if (claim?.state !== "pending" || claim.origin !== "auto" || claim.expectedSha !== sha) return null;
+    return { prNumber: claim.prNumber, sha };
+  } catch (err) {
+    console.error("[rebase] reading the armed merge request failed:", getErrorMessage(err));
+    return null;
+  }
+}
+
+/**
+ * docs/343-agent-merge-cancel-notice req 3 — the push was leased on the armed commit, so it
+ * replaced exactly that commit and no one else's. Runs under the flow's session hold, which keeps
+ * the executor from reading the pushed head against the old commit.
+ */
+function followArmedMerge(deps: RebaseDriverDeps, armed: ArmedMerge, to: string | null): void {
+  if (!to || to === armed.sha || !deps.agentMergeClaims) return;
+  try {
+    const moved = deps.agentMergeClaims.retarget(deps.runner.sessionId, armed.sha, to);
+    if (!moved) return;
+    console.log(
+      `[rebase] ${deps.runner.sessionId}: moved the merge request for PR #${moved.prNumber} `
+      + `from ${armed.sha.slice(0, 8)} to ${to.slice(0, 8)}`,
+    );
+    emitNoticePostTurn(
+      (m) => deps.runner.emitMessage(m),
+      deps.chatHistoryManager,
+      deps.runner.sessionId,
+      `ShipIt rebased this branch, so the merge request for pull request #${moved.prNumber} now `
+      + `targets the rebased commit ${to.slice(0, 8)}. It merges once the checks pass on that commit.`,
+      "info",
+    );
+  } catch (err) {
+    console.error("[rebase] moving the merge request to the rebased commit failed:", getErrorMessage(err));
+  }
 }
 
 interface LocalBaseMove {
@@ -570,11 +628,13 @@ export async function runRebaseFlow(
       // outrun POST_TURN_HOLD_MAX_MS on a large repo.
       hold.take();
       reevaluateSessionAfterRewrite(runner);
-      const pushOutcome = await tryForcePush(deps, baseBranch);
+      const armed = armedMergeAt(deps, headBefore);
+      const pushOutcome = await tryForcePush(deps, baseBranch, armed?.sha);
       const forcePushed = pushOutcome === "pushed";
       published = forcePushed;
       pushProhibited = pushOutcome === "refused";
       const headAfter = await git.getHeadHash();
+      if (armed && forcePushed) followArmedMerge(deps, armed, headAfter);
       emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, baseMove, forcePushed });
       if (recordSync) {
         recordAgentNotice(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, forcePushed, resolvedConflicts: false });
@@ -608,7 +668,7 @@ export async function runRebaseFlow(
       // Reconcile git and worktree ownership before the worker edits conflict files.
       handWorkspaceBackToWorker(runner.sessionDir);
 
-      const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
+      const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts, armedMergeAt(deps, headBefore));
       try {
         const step = await runRebaseResolutionTurn(deps, prompt, hold, sessionHold);
         // docs/322 — the next resolution prompt would land on the agent's question.
@@ -656,11 +716,13 @@ export async function runRebaseFlow(
     rebaseConcluded = true;
     hold.take();
     reevaluateSessionAfterRewrite(runner);
-    const resolvedPushOutcome = await tryForcePush(deps, baseBranch);
+    const armed = armedMergeAt(deps, headBefore);
+    const resolvedPushOutcome = await tryForcePush(deps, baseBranch, armed?.sha);
     const forcePushed = resolvedPushOutcome === "pushed";
     published = forcePushed;
     pushProhibited = resolvedPushOutcome === "refused";
     const headAfterResolve = await git.getHeadHash();
+    if (armed && forcePushed) followArmedMerge(deps, armed, headAfterResolve);
     emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfterResolve, baseMove, forcePushed });
     if (recordSync) {
       recordAgentNotice(deps, { baseBranch, headFrom: headBefore, headTo: headAfterResolve, forcePushed, resolvedConflicts: true });

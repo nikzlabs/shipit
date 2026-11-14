@@ -874,6 +874,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     probeLiveWork: (sessionId) => workerHasLiveWork(containerManager, sessionId),
   });
   sessionInboxRef.ref = sessionInbox;
+  agentMergeClaims.setAgentInbox(sessionInbox);
 
   const mergeWatchManager = new MergeWatchManager({
     sessionManager,
@@ -904,6 +905,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     credentialStore,
     drainQueueForSession,
     autoPushScheduler,
+    agentMergeClaims,
     ...(agentFactory ? { agentFactory } : {}),
   });
   prStatusPollerRef.ref = prStatusPoller;

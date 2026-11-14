@@ -441,6 +441,12 @@ what restarted CI.
 - **Pushing again cancels the request**, and ShipIt says so in the transcript.
   That is deliberate: the new commit is not the one you asked to merge. Call
   `--auto` again to arm the new one.
+- **A rebase ShipIt makes itself does not cancel it.** When ShipIt rebases the
+  branch onto its base — resolving conflicts automatically, or a Sync the user
+  starts — and force-pushes the result, the request moves to the rebased commit
+  and merges once the checks pass on that commit. The transcript says so, and a
+  conflict-resolution turn is told the merge is armed. Any other push still
+  cancels it.
 - **The user turning the repository's permission off cancels it too**, with a
   notice. So does the pull request being closed, becoming a draft, needing a
   review, or its checks failing — each says which.
@@ -454,6 +460,10 @@ what restarted CI.
 - **The result always appears in this session's transcript**, whether it merged
   or the request ended. Do not poll for it and do not call `--auto` repeatedly to
   check; a second call only re-arms the same request.
+- **A request that ends without a merge is also told to you**, as a `[ShipIt]`
+  message in this session's inbox, with the reason. If the session is idle,
+  ShipIt starts a turn so you can act on it — fix CI, mark the pull request
+  ready, or arm the merge again. Read it with `shipit session inbox`.
 - **A merge and a turn never overlap: ShipIt merges only while the session is
   idle.** Idle means all of these: no turn is running, no background command
   and no sub-agent consult is still running, ShipIt has no work of its own in

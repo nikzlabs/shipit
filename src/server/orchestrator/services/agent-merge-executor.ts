@@ -18,6 +18,7 @@ import { settleAgentMerge, reconcileAgentMergeClaims, type SettlementOutcome } f
 import { releaseQueuedTurn } from "../queue-drain.js";
 import { unprobedAfterRestart } from "../restart-turn-reattach.js";
 import { MERGE_HANDLING_WAIT_MS, mergeHandlingSettled } from "../branch-reset-flow.js";
+import { storeAgentMergeEnded, tellAgentMergeEnded } from "./agent-merge-agent-notice.js";
 
 export interface AgentMergeExecutorDeps {
   claims: AgentMergeClaimStore;
@@ -163,6 +164,9 @@ export async function runOneRequest(
   unreadableCounts.delete(unreadableKey(claim));
 
   if (observation.headRefOid !== claim.expectedSha) {
+    // A rebase that took the session during the read moves the request when it pushes (docs/343-agent-merge-cancel-notice req 3).
+    const moving = idleBlocker(deps, claim.sessionId);
+    if (moving) return { result: "waiting", reason: `the branch moved while ${moving.why}` };
     return end(
       deps, claim,
       `Cancelled the merge request for pull request #${claim.prNumber}: the branch has moved past `
@@ -264,13 +268,9 @@ async function performMerge(
     }
 
     if (!isStillGranted(deps, claim)) {
-      deps.claims.releaseUnmerged(claim.sessionId, claim.expectedSha);
-      notify(
-        deps, claim,
-        `The permission to merge in ${target.owner}/${target.repo} was withdrawn, so ShipIt did not `
-        + `merge pull request #${claim.prNumber}.`,
-        "info",
-      );
+      const message = `The permission to merge in ${target.owner}/${target.repo} was withdrawn, so ShipIt `
+        + `did not merge pull request #${claim.prNumber}.`;
+      releaseUnmerged(deps, claim, message, "info");
       return { result: "ended", reason: "the permission was withdrawn" };
     }
 
@@ -310,12 +310,8 @@ async function performMerge(
       return { result: "ended", reason: "indeterminate" };
     }
     if (attempt.outcome === "refused") {
-      deps.claims.releaseUnmerged(claim.sessionId, claim.expectedSha);
-      notify(
-        deps, claim,
-        `Did not merge pull request #${claim.prNumber}: ${attempt.message}`,
-        "warn",
-      );
+      const message = `Did not merge pull request #${claim.prNumber}: ${attempt.message}`;
+      releaseUnmerged(deps, claim, message, "warn");
       return { result: "ended", reason: attempt.message };
     }
 
@@ -363,7 +359,7 @@ async function settle(
         chatHistoryManager: deps.chatHistoryManager,
         ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
         ...(deps.runnerRegistry ? { runnerRegistry: deps.runnerRegistry } : {}),
-      },
+          },
       live,
       {
         witnessed,
@@ -385,13 +381,33 @@ function end(
 ): RequestOutcome {
   unreadableCounts.delete(unreadableKey(claim));
   notYetRefusals.delete(claim.sessionId);
-  // Delete only pending claims, in the same transaction that persists the notice.
+  // Delete only pending claims, in the same transaction that persists both notices.
   const notice = splitNotice(deps, claim, message);
-  if (!deps.claims.releasePending(claim, notice.persist)) {
+  let stored = false;
+  if (!deps.claims.releasePending(claim, () => {
+    notice.persist();
+    stored = storeAgentMergeEnded(deps.claims, claim.sessionId, claim.prNumber, message);
+  })) {
     return { result: "waiting", reason: "the request was resolved by something else" };
   }
   notice.announce();
+  if (stored) tellAgentMergeEnded(deps.claims, claim.sessionId);
   return { result: "ended", reason: message };
+}
+
+// A store that throws keeps the attempt's row, which reconciliation settles and reports.
+function releaseUnmerged(
+  deps: AgentMergeExecutorDeps,
+  claim: AgentMergeClaim,
+  message: string,
+  level: "info" | "warn",
+): void {
+  let stored = false;
+  deps.claims.releaseUnmerged(claim.sessionId, claim.expectedSha, () => {
+    stored = storeAgentMergeEnded(deps.claims, claim.sessionId, claim.prNumber, message);
+  });
+  notify(deps, claim, message, level);
+  if (stored) tellAgentMergeEnded(deps.claims, claim.sessionId);
 }
 
 function isStillGranted(deps: AgentMergeExecutorDeps, claim: AgentMergeClaim): boolean {

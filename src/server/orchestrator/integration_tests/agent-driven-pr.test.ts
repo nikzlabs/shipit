@@ -1559,6 +1559,41 @@ describe("repo-aware PR brokering (docs/211)", () => {
     },
   );
 
+  it.each([
+    ["refused", () => { githubAuth.setMergeAttempt({ outcome: "refused", message: "PR is not mergeable" }); }],
+    ["threw", () => { githubAuth.setOnMergeAttempt(async () => { throw new Error("network down"); }); }],
+  ])(
+    "says so when a direct merge that %s replaced an armed --auto request (docs/343-agent-merge-cancel-notice req 1)",
+    { timeout: 15_000 },
+    async (_name, failMerge) => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+      repoStore.setAllowAgentMerge(REPO, true);
+      sessionManager.recordPrProvenance(sessionId, 7, "github:test-user/test-repo");
+      const head = execSync("git rev-parse HEAD", {
+        cwd: sessionDir, env: { ...process.env, HOME: tmpDir },
+      }).toString().trim();
+      new AgentMergeClaimStore(dbManager).arm({
+        sessionId, repoId: "github:test-user/test-repo", prNumber: 7, expectedSha: head, method: "squash",
+      });
+      githubAuth.setMergeGateResult({ headRefOid: head, rollupState: "SUCCESS" });
+      failMerge();
+
+      const res = await withLiveTurn(sessionId, () => app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/7/merge`,
+        payload: {},
+      }));
+      githubAuth.setOnMergeAttempt(null);
+
+      expect(res.json()).toMatchObject({
+        success: false,
+        message: expect.stringContaining(`request for pull request #7 at ${head.slice(0, 8)}, which is no longer armed`),
+      });
+      expect(new AgentMergeClaimStore(dbManager).get(sessionId)?.origin ?? "direct").toBe("direct");
+    },
+  );
+
   it(
     "revoking the grant closes the door again",
     { timeout: 15_000 },
