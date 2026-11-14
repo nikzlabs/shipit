@@ -433,7 +433,15 @@ Decisions made during the build:
   own; its finished messages are fed through the same path as `run`'s lines,
   and the turn ends on the next `idle` message once no subagent is left. A
   turn that ends any other way (stop, error, stall) marks the remaining ones
-  *stopped*. Background **shell** commands still end with the turn; waiting
+  *stopped*. A **resumed** child (`subagent` with an earlier call's
+  `sessionID`) keeps its session id, so the adapter keeps one entry per
+  launch, with the `messageID` that made it. A report retires the oldest
+  launch of its child whose message comes before the report in the turn's
+  list (a launch that fell out of the listed window counts as older, and is
+  taken as done once a later listed launch of its child reports). The first
+  run's report then cannot close the resumed launch and end
+  the turn while the child still works (seen in production 2026-11-14), and
+  each report lands on the card of the launch it answers. Background **shell** commands still end with the turn; waiting
   for them would hold a dev server's turn open until the stall limit, so the
   agent is told instead (`agents/opencode2/system-prompt.md`). The shared
   prompt says a background command needs no wait "unless ShipIt tells you
@@ -451,7 +459,12 @@ Decisions made during the build:
   done or another part follows it. The child gets one last read when its
   call returns (foreground) or its report arrives (background), and every
   child before the turn's result. A call whose progress event was missed is
-  still read once, from the child id in its result's metadata. Child reads
+  still read once, from the child id in its result's metadata. A call that
+  resumes a child is added to the child's entry, which keeps what was already
+  shown. A resume adds a user message to the child session, so each message
+  goes under the call whose prompt it follows: the first run's last steps stay
+  on the first card even when one read sees both runs, and the first call's
+  late "done" no longer ends the resumed one. Child reads
   write no server log line, so they do not feed the stall check either.
 - **Compaction.** The run that compacts starts the server, then `POST
   /api/session/{id}/model` (compaction otherwise runs on the session's last

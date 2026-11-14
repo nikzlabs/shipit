@@ -61,7 +61,7 @@ describe("Opencode2SubagentWork", () => {
     expect(h.events[4]).toMatchObject({ content: [{ name: "Bash", input: { command: "sleep 8 && echo two" } }] });
 
     h.set([{ id: "msg_idle", type: "idle" }, STEP_2_DONE, STEP_1, USER]);
-    h.work.finish("ses_child");
+    h.work.finish("ses_child", "call_parent");
     await h.work.close();
     expect(summary(h.events).slice(5)).toEqual(["tool_result:call_two@call_parent"]);
     expect(h.events[5]).toMatchObject({ content: [{ content: "two\n" }] });
@@ -71,7 +71,7 @@ describe("Opencode2SubagentWork", () => {
     const h = harness();
     h.set([STEP_1, USER]);
     h.work.track("ses_child", "call_parent");
-    h.work.finish("ses_child");
+    h.work.finish("ses_child", "call_parent");
     await h.work.close();
     expect(h.events).toHaveLength(3);
     const reads = vi.mocked(h.fetchFn).mock.calls.length;
@@ -126,11 +126,58 @@ describe("Opencode2SubagentWork", () => {
     expect(events.every((e) => (e as { parentToolUseId?: string }).parentToolUseId === "call_next")).toBe(true);
   });
 
+  it.each([
+    ["still followed", false],
+    ["already read to the end", true],
+  ])("posts a resumed child's new work under the resuming call when the first call is %s", async (_label, retired) => {
+    const h = harness();
+    h.set([STEP_1, USER]);
+    h.work.track("ses_child", "call_parent");
+    if (retired) h.work.finish("ses_child", "call_parent");
+    await vi.waitFor(() => expect(h.events).toHaveLength(3));
+    if (retired) await new Promise((r) => setTimeout(r, 10));
+    h.set([STEP_2_DONE, { id: "msg_u2", type: "user", text: "Resume." }, STEP_1, USER]);
+    h.work.track("ses_child", "call_resume");
+    // The first launch's late progress and retirement must not take the resumed one over.
+    h.work.track("ses_child", "call_parent");
+    h.work.finish("ses_child", "call_parent");
+    await new Promise((r) => setTimeout(r, 10));
+    await h.work.close();
+    expect(summary(h.events).slice(3)).toEqual(["text:Now the slow one.@call_resume", "tool_use:call_two@call_resume", "tool_result:call_two@call_resume"]);
+  });
+
+  it("posts each run's work under its own call when a read sees both", async () => {
+    const h = harness();
+    h.set([STEP_1, USER]);
+    h.work.track("ses_child", "call_parent");
+    await vi.waitFor(() => expect(h.events).toHaveLength(3));
+    // The first run's last step was not read yet when the resume came.
+    const TAIL = { id: "msg_1b", type: "assistant", time: { completed: 3 }, content: [{ type: "text", text: "First run tail." }] };
+    h.work.track("ses_child", "call_resume");
+    h.set([STEP_2_DONE, { id: "msg_u2", type: "user", text: "Resume." }, TAIL, STEP_1, USER]);
+    await h.work.close();
+    expect(summary(h.events).slice(3)).toEqual([
+      "text:First run tail.@call_parent",
+      "text:Now the slow one.@call_resume", "tool_use:call_two@call_resume", "tool_result:call_two@call_resume",
+    ]);
+  });
+
+  it("posts a resumed run's work under the resuming call when the child is first read after the resume", async () => {
+    let shown = false;
+    const h = harness((callId) => shown || callId !== "call_resume");
+    h.work.track("ses_child", "call_parent");
+    h.work.track("ses_child", "call_resume");
+    h.set([STEP_2_DONE, { id: "msg_u2", type: "user", text: "Resume." }, STEP_1, USER]);
+    shown = true;
+    await h.work.close();
+    expect(summary(h.events)).toEqual(["text:Now the slow one.@call_resume", "tool_use:call_two@call_resume", "tool_result:call_two@call_resume"]);
+  });
+
   it("does not post a finished child's work again when a late progress event names it", async () => {
     const h = harness();
     h.set([STEP_1, USER]);
     h.work.track("ses_child", "call_parent");
-    h.work.finish("ses_child");
+    h.work.finish("ses_child", "call_parent");
     await vi.waitFor(() => expect(h.events).toHaveLength(3));
     await new Promise((r) => setTimeout(r, 10));
     h.work.track("ses_child", "call_parent");

@@ -8,7 +8,10 @@ import { opencode2ToolResultEvent, opencode2ToolUseEvent } from "./opencode2-too
 import { readMessagesAfter, type FetchFn, type Opencode2Server } from "./server.js";
 
 interface Child {
-  callId: string;
+  /** The call that launched the child, then each call that resumed it, in order. */
+  calls: string[];
+  /** The call whose work follows `boundaryId`; each later user message starts the next one's. */
+  base: number;
   shownText: Set<string>;
   startedCalls: Set<string>;
   finishedCalls: Set<string>;
@@ -23,6 +26,8 @@ export class Opencode2SubagentWork {
   private children = new Map<string, Child>();
   // Read to the end: a late progress event for one must not post its work again.
   private done = new Set<string>();
+  // Children read to the end, kept so a resume in the same turn continues from them.
+  private retired = new Map<string, Child>();
   private loop: Promise<void> | null = null;
   private stopped = false;
   private failureLogged = false;
@@ -43,22 +48,31 @@ export class Opencode2SubagentWork {
     this.server = server;
     this.children = new Map();
     this.done = new Set();
+    this.retired = new Map();
     this.loop = null;
     this.stopped = false;
     this.failureLogged = false;
   }
 
+  /** A call that resumes a child (same child session) is added to it, not tracked anew. */
   track(childSessionId: string, callId: string): void {
-    if (this.stopped || !this.server || this.children.has(childSessionId) || this.done.has(`${childSessionId}\0${callId}`)) return;
-    this.children.set(childSessionId, {
-      callId, shownText: new Set(), startedCalls: new Set(), finishedCalls: new Set(), finished: false,
+    if (this.stopped || !this.server || this.done.has(`${childSessionId}\0${callId}`)) return;
+    const tracked = this.children.get(childSessionId);
+    if (tracked) {
+      if (!tracked.calls.includes(callId)) Object.assign(tracked, { calls: [...tracked.calls, callId], finished: false });
+      return;
+    }
+    const earlier = this.retired.get(childSessionId);
+    this.retired.delete(childSessionId);
+    this.children.set(childSessionId, earlier ? { ...earlier, calls: [...earlier.calls, callId], finished: false } : {
+      calls: [callId], base: 0, shownText: new Set(), startedCalls: new Set(), finishedCalls: new Set(), finished: false,
     });
     this.loop ??= this.run(this.generation);
   }
 
-  finish(childSessionId: string): void {
+  finish(childSessionId: string, callId: string): void {
     const child = this.children.get(childSessionId);
-    if (child) child.finished = true;
+    if (child?.calls.at(-1) === callId) child.finished = true;
   }
 
   /** Reads every child once more while the server is up, then stops. */
@@ -81,12 +95,14 @@ export class Opencode2SubagentWork {
   private async run(generation: number): Promise<void> {
     while (this.live(generation) && this.children.size > 0) {
       for (const [sessionId, child] of [...this.children]) {
-        const wasFinished = child.finished;
-        if (this.callShown(child.callId)) await this.read(sessionId, child, generation);
+        const { finished: wasFinished, calls } = child;
+        if (calls.every((callId) => this.callShown(callId))) await this.read(sessionId, child, generation);
         if (!this.live(generation)) return;
-        if (wasFinished) {
+        // A resume during the read added a call, so the child is not done.
+        if (wasFinished && child.calls === calls) {
           this.children.delete(sessionId);
-          this.done.add(`${sessionId}\0${child.callId}`);
+          this.retired.set(sessionId, child);
+          for (const callId of calls) this.done.add(`${sessionId}\0${callId}`);
         }
       }
       if (this.children.size === 0 || !this.live(generation)) break;
@@ -98,11 +114,16 @@ export class Opencode2SubagentWork {
   private async read(sessionId: string, child: Child, generation: number): Promise<void> {
     const server = this.server;
     if (!server) return;
+    // A call added during the read has its prompt after the boundary this read fixes.
+    const latest = child.calls.length - 1;
     let messages;
     try {
       const read = await readMessagesAfter(server, sessionId, this.fetchFn, child.boundaryId);
       messages = read.messages;
-      child.boundaryId ??= read.boundaryId;
+      if (child.boundaryId === undefined) {
+        child.boundaryId = read.boundaryId;
+        child.base = latest;
+      }
     } catch (err) {
       if (!this.failureLogged && this.live(generation)) {
         this.failureLogged = true;
@@ -111,8 +132,11 @@ export class Opencode2SubagentWork {
       return;
     }
     if (!this.live(generation)) return;
+    let run = child.base;
     for (const message of messages) {
+      if (message.type === "user") run++;
       if (message.type !== "assistant" || !message.id) continue;
+      const callId = child.calls[Math.min(run, child.calls.length - 1)];
       const parts = message.content ?? [];
       const done = message.time?.completed !== undefined;
       parts.forEach((part, index) => {
@@ -121,7 +145,7 @@ export class Opencode2SubagentWork {
           // Text is whole once its message is done or another part follows it.
           if (!part.text?.trim() || child.shownText.has(key) || (!done && index === parts.length - 1)) return;
           child.shownText.add(key);
-          this.emit({ type: "agent_assistant", content: [{ type: "text", text: part.text }], parentToolUseId: child.callId });
+          this.emit({ type: "agent_assistant", content: [{ type: "text", text: part.text }], parentToolUseId: callId });
           return;
         }
         const tool = listedToolPart(part);
@@ -133,11 +157,11 @@ export class Opencode2SubagentWork {
           const input = typeof tool.state?.input === "object" && tool.state.input !== null
             ? (tool.state.input as Record<string, unknown>)
             : {};
-          this.emit(opencode2ToolUseEvent(tool.id, tool.tool ?? "unknown", input, child.callId));
+          this.emit(opencode2ToolUseEvent(tool.id, tool.tool ?? "unknown", input, callId));
         }
         if (status === "completed" || status === "error") {
           child.finishedCalls.add(tool.id);
-          this.emit(opencode2ToolResultEvent(tool.id, tool, child.callId));
+          this.emit(opencode2ToolResultEvent(tool.id, tool, callId));
         }
       });
     }

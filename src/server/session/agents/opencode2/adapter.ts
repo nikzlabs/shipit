@@ -52,12 +52,19 @@ import {
   waitForMcpServers,
   waitForServerUrl,
   type FetchFn,
+  type Opencode2Message,
   type Opencode2Server,
 } from "./server.js";
 import { Opencode2Account, type Opencode2AccountTarget } from "./account.js";
 import { Opencode2Steering } from "./steering.js";
 import { Opencode2ToolStarts, type Opencode2ToolStart } from "./tool-starts.js";
-import { backgroundSubagentSession, messageRunEvents, subagentNotice, subagentSession } from "./background-subagents.js";
+import {
+  backgroundSubagentSession,
+  messageRunEvents,
+  subagentNotice,
+  subagentSession,
+  type SubagentNotice,
+} from "./background-subagents.js";
 import { Opencode2SubagentWork } from "./subagent-work.js";
 import { textIndicatesProviderEdgeBlock } from "../../../shared/provider-errors.js";
 
@@ -99,6 +106,12 @@ function edgeBlockMessage(claudeRoute: boolean): string {
       + "so this turn stopped. Signing in again will not help. Sending your message again later usually works."
     : "The provider's edge blocked this request: its Cloudflare front answered with a 403 block page, "
       + "so this turn stopped. Signing in again will not help. Sending your message again later usually works.";
+}
+
+interface BackgroundCall {
+  callId: string;
+  /** The parent's assistant message that made the call. */
+  messageId?: string;
 }
 
 interface TurnPlan {
@@ -166,8 +179,9 @@ export class Opencode2Adapter
   // Calls whose `tool_use` went out when they started; their completion adds only the result.
   private startedCalls = new Set<string>();
   private finishedCalls = new Set<string>();
-  // Background subagents still running: child session id -> the launching call's id.
-  private backgroundCalls = new Map<string, string>();
+  // Background subagents still running, per child session, oldest launch first: a resumed
+  // child has one entry per launch.
+  private backgroundCalls = new Map<string, BackgroundCall[]>();
   // Assistant messages this turn has shown, from `run` or from following it.
   private shownMessages = new Set<string>();
   private turnResult: AgentEvent | null = null;
@@ -528,14 +542,14 @@ export class Opencode2Adapter
         await new Promise((resolve) => setTimeout(resolve, this.backgroundPollMs));
         continue;
       }
-      for (const message of messages) {
+      for (const [index, message] of messages.entries()) {
         const id = message.id;
         if (!id || seen.has(id)) continue;
         // Later messages wait, so the transcript keeps the session's order.
         if (message.type === "assistant" && message.time?.completed === undefined) break;
         seen.add(id);
         const notice = subagentNotice(message);
-        if (notice) this.retireBackground(notice.childSessionId, notice.status, notice.report);
+        if (notice) this.retireReported(notice, messages, index);
         else if (message.type === "assistant" && !this.shownMessages.has(id)) {
           this.armWatchdog();
           for (const event of messageRunEvents(sessionId, message)) this.handleEvent(event);
@@ -546,17 +560,40 @@ export class Opencode2Adapter
     }
   }
 
-  private retireBackground(childSessionId: string, status: "completed" | "failed" | "stopped", summary?: string): void {
-    const toolUseId = this.backgroundCalls.get(childSessionId);
-    if (!toolUseId) return;
-    this.backgroundCalls.delete(childSessionId);
-    this.subagentWork.finish(childSessionId);
-    this.emit("event", { type: "agent_self_wake", taskId: childSessionId, toolUseId, status, ...(summary !== undefined ? { summary } : {}) });
+  /**
+   * A report belongs to the oldest launch of its child made before it: a resumed child
+   * reuses its session id, and its earlier run's report must not close the new launch.
+   */
+  private retireReported(notice: SubagentNotice, messages: readonly Opencode2Message[], noticeIndex: number): void {
+    const calls = this.backgroundCalls.get(notice.childSessionId) ?? [];
+    const launchIndex = (c: BackgroundCall) => (c.messageId === undefined ? -1 : messages.findIndex((m) => m.id === c.messageId));
+    // A launch that fell out of the listed window is older than every listed one: the oldest
+    // listed launch is matched first, else the newest unlisted one.
+    const before = calls.filter((c) => launchIndex(c) < noticeIndex);
+    const unlisted = before.filter((c) => launchIndex(c) < 0);
+    const call = before.find((c) => launchIndex(c) >= 0) ?? unlisted.at(-1);
+    if (!call) return;
+    // The other unlisted launches ran earlier and their reports fell out with them: taken as
+    // done rather than holding the turn to the stall limit.
+    for (const older of unlisted) if (older !== call) this.retireBackground(notice.childSessionId, older, "completed");
+    this.retireBackground(notice.childSessionId, call, notice.status, notice.report);
+  }
+
+  private retireBackground(childSessionId: string, call: BackgroundCall, status: "completed" | "failed" | "stopped", summary?: string): void {
+    const calls = this.backgroundCalls.get(childSessionId) ?? [];
+    const rest = calls.filter((c) => c !== call);
+    if (rest.length === calls.length) return;
+    if (rest.length > 0) this.backgroundCalls.set(childSessionId, rest);
+    else this.backgroundCalls.delete(childSessionId);
+    this.subagentWork.finish(childSessionId, call.callId);
+    this.emit("event", { type: "agent_self_wake", taskId: childSessionId, toolUseId: call.callId, status, ...(summary !== undefined ? { summary } : {}) });
   }
 
   // The server goes with the turn, and every subagent on it.
   private retireUnfinishedBackground(): void {
-    for (const childSessionId of [...this.backgroundCalls.keys()]) this.retireBackground(childSessionId, "stopped");
+    for (const [childSessionId, calls] of [...this.backgroundCalls]) {
+      for (const call of calls) this.retireBackground(childSessionId, call, "stopped");
+    }
   }
 
   private async runCompaction(params: AgentRunParams, handle: Opencode2Server): Promise<number> {
@@ -807,17 +844,22 @@ export class Opencode2Adapter
       case "tool_use": {
         // A completed call. Its `tool_use` went out at the start when the server reported one;
         // otherwise both halves go out together. 2.x dropped `callID`: `part.id` is the call id.
-        const part = event.part as OpencodeToolPart & { id?: string };
+        const part = event.part as OpencodeToolPart & { id?: string; messageID?: string };
         const callId = part.callID ?? part.id ?? `opencode2-call-${Date.now()}`;
         const started = this.startedCalls.has(callId);
         this.finishedCalls.add(callId);
         const child = backgroundSubagentSession(part);
-        if (child) this.backgroundCalls.set(child, callId);
+        if (child) {
+          const calls = this.backgroundCalls.get(child) ?? [];
+          if (!calls.some((c) => c.callId === callId)) {
+            this.backgroundCalls.set(child, [...calls, { callId, ...(part.messageID ? { messageId: part.messageID } : {}) }]);
+          }
+        }
         // Also tracked here in case the progress event that names the child never arrived.
         const ran = subagentSession(part);
         if (ran && !this.stopped) {
           this.subagentWork.track(ran, callId);
-          if (!child) this.subagentWork.finish(ran);
+          if (!child) this.subagentWork.finish(ran, callId);
         }
         const result = opencode2ToolResultEvent(callId, part);
         if (started) return [result];
