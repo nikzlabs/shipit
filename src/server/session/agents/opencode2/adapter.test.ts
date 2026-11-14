@@ -684,6 +684,72 @@ describe("Opencode2Adapter — background subagents", () => {
     expect(h.events.filter((e) => e.type === "agent_assistant" && e.content.some((b) => b.type === "text" && b.text === "launched"))).toHaveLength(1);
   });
 
+  const RESUME_LAUNCH = JSON.stringify({
+    type: "tool_use", timestamp: 6, sessionID: SESSION,
+    part: {
+      sessionID: SESSION, messageID: "msg_r", type: "tool", id: "call_resume", tool: "subagent",
+      state: {
+        status: "completed",
+        input: { agent: "general", description: "Probe again", prompt: "again", sessionID: CHILD, background: true },
+        output: ACK, title: "subagent",
+        metadata: { metadata: { sessionID: CHILD, status: "running" }, content: [{ type: "text", text: ACK }] },
+      },
+    },
+  });
+  const RESUMED = {
+    id: "msg_r", type: "assistant", finish: "stop", time: { completed: 7 }, tokens: tokens(130),
+    content: [{ type: "tool", id: "call_resume", name: "subagent", state: { status: "completed", input: {}, content: [{ type: "text", text: ACK }], metadata: { sessionID: CHILD, status: "running" } } }],
+  };
+  const SECOND_NOTICE = {
+    ...NOTICE, id: "msg_note2",
+    text: `<subagent sessionID="${CHILD}" state="completed" description="Probe again">\nDONE-AGAIN\n</subagent>`,
+  };
+
+  it("keeps the turn open for a resumed subagent until its new report, not its first one, arrives", async () => {
+    // The first report came in while `run` was up; the parent then resumed the same child.
+    const atExit = [{ id: "msg_idle2", type: "idle", outcome: "succeeded" }, RESUMED, NOTICE, ...AT_EXIT];
+    let messages: unknown[] = atExit;
+    const h = start(makeAdapter({ messages: (url: string) => ({ data: url.includes(CHILD) ? [] : messages, cursor: {} }) }), PARAMS);
+    await announce(h);
+    h.client().emitStdout([...LAUNCH, RESUME_LAUNCH]);
+    h.client().emit("close", 0, null);
+
+    const wakes = () => h.events.filter((e) => e.type === "agent_self_wake");
+    await vi.waitFor(() => expect(wakes()).toHaveLength(1));
+    expect(wakes()[0]).toMatchObject({ toolUseId: "call_bg", summary: "DONE-PROBE" });
+    await vi.waitFor(() => expect(h.requests.filter((r) => r.url.includes("/message?")).length).toBeGreaterThan(3));
+    expect(h.events.some((e) => e.type === "agent_result")).toBe(false);
+    expect(vi.mocked(killProcessTree)).not.toHaveBeenCalled();
+
+    messages = [{ id: "msg_idle3", type: "idle", outcome: "succeeded" }, REPLY, SECOND_NOTICE, ...atExit];
+    expect(await h.done).toBe(0);
+    expect(wakes()).toHaveLength(2);
+    expect(wakes()[1]).toEqual({
+      type: "agent_self_wake", taskId: CHILD, toolUseId: "call_resume", status: "completed", summary: "DONE-AGAIN",
+    });
+  });
+
+  it.each([
+    ["the first launch and its report", [RESUMED]],
+    ["both launches and the first report", []],
+  ])("takes a resumed child's first launch as done when %s fell out of the listed turn", async (_label, listed) => {
+    const atExit = [{ id: "msg_idle2", type: "idle", outcome: "succeeded" }, ...listed];
+    let messages: unknown[] = atExit;
+    const h = start(makeAdapter({ messages: (url: string) => ({ data: url.includes(CHILD) ? [] : messages, cursor: {} }) }), PARAMS);
+    await announce(h);
+    h.client().emitStdout([...LAUNCH, RESUME_LAUNCH]);
+    h.client().emit("close", 0, null);
+    await vi.waitFor(() => expect(h.requests.filter((r) => r.url.includes("/message?")).length).toBeGreaterThan(1));
+    expect(h.events.some((e) => e.type === "agent_self_wake")).toBe(false);
+
+    messages = [{ id: "msg_idle3", type: "idle", outcome: "succeeded" }, REPLY, SECOND_NOTICE, ...atExit];
+    expect(await h.done).toBe(0);
+    expect(h.events.filter((e) => e.type === "agent_self_wake")).toEqual([
+      { type: "agent_self_wake", taskId: CHILD, toolUseId: "call_bg", status: "completed" },
+      { type: "agent_self_wake", taskId: CHILD, toolUseId: "call_resume", status: "completed", summary: "DONE-AGAIN" },
+    ]);
+  });
+
   it("shows a reply the parent finished before the first look, and rides out a failed one", async () => {
     let calls = 0;
     const messages = (url: string): unknown => {

@@ -226,6 +226,53 @@ describe("Integration: a finished background subagent's card", () => {
     client.close();
   });
 
+  it("keeps an OpenCode 2 subagent resumed in the background running until its second report, each report on its own card", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    const sessionId = client.sessionId;
+
+    client.send({ type: "send_message", text: "Look into the number seven" });
+    await waitForClaude(() => lastClaude);
+    lastClaude.initSession("bg-oc2-resume");
+    await client.receiveType("session_started");
+
+    const RESUME_ID = "prt_resume";
+    const SECOND_REPORT = "## Follow-up\n\nSeven is also prime.";
+    const note = "The subagent is working in the background (sessionID: ses_child1). You will be notified automatically when it finishes.";
+    const launch = (id: string, description: string) => {
+      lastClaude.emit("event", {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id, name: "Agent", input: { description, subagent_type: "general", background: true } }] },
+      });
+      lastClaude.emit("event", { type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: note }] } });
+    };
+    const messages = async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/sessions/${sessionId}/history`);
+      return (await res.json() as { messages: ChatMessage[] }).messages;
+    };
+    const result = async (id: string) =>
+      (await messages()).flatMap((m) => (m as { toolResults?: ToolResultEntry[] }).toolResults ?? []).find((r) => r.toolUseId === id);
+
+    launch(TOOL_ID, "Count the files");
+    lastClaude.emit("event", { type: "agent_self_wake", taskId: "ses_child1", toolUseId: TOOL_ID, status: "completed", summary: REPORT });
+    launch(RESUME_ID, "Count them again");
+    await settle();
+
+    const runs = deriveSubagentRuns(await messages(), { turnRunning: true });
+    expect(runs.map((r) => r.status)).toEqual(["done", "running"]);
+    expect(parseSubagentReport((await result(TOOL_ID))!.content).text).toBe(REPORT);
+    expect(isBackgroundLaunchAck(parseSubagentReport((await result(RESUME_ID))!.content).text)).toBe(true);
+
+    lastClaude.emit("event", { type: "agent_self_wake", taskId: "ses_child1", toolUseId: RESUME_ID, status: "completed", summary: SECOND_REPORT });
+    lastClaude.finish("bg-oc2-resume");
+    await settle(250);
+
+    expect(deriveSubagentRuns(await messages(), { turnRunning: false }).map((r) => r.status)).toEqual(["done", "done"]);
+    expect(parseSubagentReport((await result(TOOL_ID))!.content).text).toBe(REPORT);
+    expect(parseSubagentReport((await result(RESUME_ID))!.content).text).toBe(SECOND_REPORT);
+    client.close();
+  });
+
   it("marks a failed background subagent's result as an error", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
