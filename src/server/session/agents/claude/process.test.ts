@@ -689,6 +689,31 @@ describe("ClaudeProcess", () => {
         .SHIPIT_SESSION_STATUS_CARD).toBeUndefined();
     });
 
+    it("sets CLAUDE_CODE_DISABLE_AUTO_MEMORY when memory is turned off, in both spawn modes", () => {
+      const envOf = (i: number) => (mockChildSpawn.mock.calls[i][2] as { env: Record<string, string> }).env;
+      const prev = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
+      delete process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
+      try {
+        mockChildSpawn.mockImplementation(() => createMockChildProcess() as any);
+        new ClaudeProcess().run({ prompt: "test", autoMemory: false });
+        new StreamingClaudeProcess().run({ prompt: "test", autoMemory: false });
+        new ClaudeProcess().run({ prompt: "test" });
+        new StreamingClaudeProcess().run({ prompt: "test" });
+        expect(envOf(0).CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+        expect(envOf(1).CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+        expect(envOf(2).CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
+        expect(envOf(3).CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
+
+        // A deployment's own opt-out is left alone while the setting is on.
+        process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
+        new ClaudeProcess().run({ prompt: "test" });
+        expect(envOf(4).CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+      } finally {
+        if (prev === undefined) delete process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
+        else process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = prev;
+      }
+    });
+
     it("planning#267 — sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 when guardDestructiveGit is true", () => {
       const mockProc = createMockChildProcess();
       mockChildSpawn.mockReturnValue(mockProc as any);

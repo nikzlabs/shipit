@@ -49,6 +49,7 @@ import {
 } from "../resident-spawn-guard.js";
 import { desiredSpawnIdentity, residentRouteNeedsRelease } from "../service-routing.js";
 import { codeModeFor, withCodeMode } from "../code-mode.js";
+import { autoMemoryFor, withAutoMemory } from "../claude-memory.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
 import { takeRoleStandingInstructions } from "../services/session-role.js";
 import { dependencyGapAgentPrefix } from "../dependency-staleness.js";
@@ -487,9 +488,12 @@ async function composeAndRunAgentTurn(
   if (useStreaming && capturedSessionId) {
     releaseResidentOnSpawnChange(
       runner,
-      withCodeMode(
-        desiredSpawnIdentity(ctx.sessionManager, capturedSessionId, agentId),
-        codeModeFor(agentId, ctx.credentialStore),
+      withAutoMemory(
+        withCodeMode(
+          desiredSpawnIdentity(ctx.sessionManager, capturedSessionId, agentId),
+          codeModeFor(agentId, ctx.credentialStore),
+        ),
+        autoMemoryFor(agentId, ctx.credentialStore),
       ),
     );
     releaseResidentOnPendingRewind(runner, ctx.sessionManager.get(capturedSessionId)?.agentResumeAt);

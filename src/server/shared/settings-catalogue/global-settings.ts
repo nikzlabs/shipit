@@ -127,6 +127,25 @@ export const GLOBAL_SETTINGS = {
     propose: { kind: "yes" },
   }),
 
+  "advanced.claudeMemory": defineSetting({
+    key: "advanced.claudeMemory",
+    tab: "advanced",
+    section: "Agent",
+    scope: "global",
+    label: "Claude Code memory",
+    description:
+      "Lets Claude Code keep its own memory: notes it writes about you and the project and "
+      + "reads again in later conversations. Off, Claude Code neither reads nor writes that "
+      + "memory; the notes already written stay on disk. A session picks up the change at its "
+      + "next turn, and every Claude Code run ShipIt starts for it follows the setting. Other "
+      + "agents are not affected.",
+    type: bool({ default: true }),
+    store: { kind: "credential-store", field: "claudeMemory" },
+    wire: "claudeMemory",
+    emits: plain(),
+    propose: { kind: "yes" },
+  }),
+
   "advanced.liveSteering": defineSetting({
     key: "advanced.liveSteering",
     tab: "advanced",

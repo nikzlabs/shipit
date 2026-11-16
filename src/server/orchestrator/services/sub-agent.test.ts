@@ -101,6 +101,7 @@ function makeDeps(opts: {
   eligibleModels?: { serviceId: string; serviceName: string; billingMode: string; modelId: string; label: string }[];
   credentialsDir?: string;
   containerRunner?: boolean;
+  claudeMemory?: boolean;
 }) {
   const session: FakeSession | null =
     opts.session === undefined ? { id: "s1", agentId: "claude", agentPinned: true } : opts.session;
@@ -170,6 +171,7 @@ function makeDeps(opts: {
     } as never,
     credentialStore: {
       getEnableSubAgents: () => opts.enableSubAgents ?? true,
+      getDeclaredSetting: (key: string) => (key === "advanced.claudeMemory" ? opts.claudeMemory ?? true : undefined),
       getCredentialRoute: (routeId: string) =>
         credentialRouteRows.find((r) => r.id === routeId)
         ?? (routeId.startsWith("acct-") ? { id: routeId, serviceId: "openai" } : undefined),
@@ -879,6 +881,26 @@ describe("runSubAgent — happy path", () => {
         model: "claude-opus-5",
         attribution: expect.objectContaining({ serviceId: "anthropic", billingMode: "key" }),
       }));
+  });
+
+  it("turns Claude Code memory off in a Claude spawn while the setting is off", async () => {
+    const spawnArg = async (claudeMemory: boolean) => {
+      const { deps, runner } = makeDeps({
+        claudeMemory,
+        credentialRoutes: [{
+          id: "anthropic-key", serviceId: "anthropic", billingMode: "key", via: "string",
+          status: "ready", priority: 0, isPrimary: true, label: "test", createdAt: 0, updatedAt: 0,
+        }],
+      });
+      await runSubAgent(deps, "s1", {
+        target: explicit("claude", { serviceId: "anthropic", billingMode: "key", modelId: "claude-opus-5" }),
+        prompt: "review",
+        depth: 0,
+      });
+      return (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } }).mock.calls[0][0];
+    };
+    expect((await spawnArg(false)).autoMemory).toBe(false);
+    expect("autoMemory" in (await spawnArg(true))).toBe(false);
   });
 
   it("forwards a carried-back rate-limit snapshot into the sub-agent's limits provider", async () => {

@@ -53,6 +53,7 @@ import { commitSubAgentWork } from "./sub-agent-commit.js";
 import type { ConsultResultDeliveryRequest } from "./consult-result-delivery.js";
 import type { GitManager } from "../../shared/git.js";
 import { ServiceError } from "./types.js";
+import { autoMemoryFor } from "../claude-memory.js";
 
 // The value of the limit on unfinished child sessions (docs/144-cross-agent-review req 2).
 export const MAX_SUB_AGENT_RUNS_IN_PROGRESS = positiveIntEnv(
@@ -443,6 +444,7 @@ async function runSubAgentInSlot(
         model: spawnModel,
         ...(subServiceRouting !== undefined ? { serviceRouting: subServiceRouting } : {}),
         ...(session.kind === "sandbox" ? { sandbox: true } : {}),
+        ...(autoMemoryFor(subAgentId, deps.credentialStore) === false ? { autoMemory: false } : {}),
       });
     };
     let result = await spawn();
