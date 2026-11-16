@@ -652,6 +652,8 @@ export interface SystemTurnDeps {
   statusCardEnabled?: () => boolean;
   /** docs/341-code-mode-setting req 6 — the value a resident must have been spawned with. */
   codeModeFor?: (agentId: AgentId) => boolean | undefined;
+  /** The Claude Code memory value a resident must have been spawned with. */
+  autoMemoryFor?: (agentId: AgentId) => boolean | undefined;
   /**
    * docs/303 req 35 — the stored card, rendered for the turn's prompt, or "" when the
    * setting is off or no card is stored. The gate and the read live in the wiring, so a
@@ -1028,6 +1030,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
       ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
       ...(req.sandbox ? { sandbox: true } : {}),
+      ...(req.autoMemory === false ? { autoMemory: false } : {}),
     };
     const handle = runAgentToCompletion(agent, runOpts, Date.now());
     this._subAgentHandles.set(handle, req.agentId);

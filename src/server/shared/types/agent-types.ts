@@ -496,6 +496,8 @@ export interface AgentRunParams {
   toolsOff?: boolean;
   /** docs/341-code-mode-setting — undefined leaves the CLI's own default. */
   codeMode?: boolean;
+  /** Claude Code's auto memory; false turns it off, undefined leaves the CLI's default. */
+  autoMemory?: boolean;
 }
 
 export interface AgentMcpBridge {

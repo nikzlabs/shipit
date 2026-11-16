@@ -11,6 +11,7 @@ import {
 import { serviceRoutingForSelection } from "./service-routing.js";
 import { recordStatusCardSpawn } from "./session-status-spawn-record.js";
 import { codeModeFor } from "./code-mode.js";
+import { autoMemoryFor } from "./claude-memory.js";
 import { recordServiceMcpSpawn, type SessionServiceMcp } from "./service-mcp.js";
 import { boundStoredReplay } from "./services/replay.js";
 
@@ -92,6 +93,7 @@ export async function buildAgentRunParams(
     && deps.githubAuthManager.authenticated;
   const sessionStatusCard = deps.credentialStore.getSessionStatusCard();
   const codeMode = codeModeFor(agentId, deps.credentialStore);
+  const autoMemory = autoMemoryFor(agentId, deps.credentialStore);
   // Only a spawning turn builds run params, so this is the value the process
   // about to start will hold until it is retired.
   recordStatusCardSpawn(sessionId, sessionStatusCard);
@@ -125,6 +127,7 @@ export async function buildAgentRunParams(
     ...(sessionStatusCard ? { sessionStatusCard: true } : {}),
     ...(compact && !compactsNothing ? { compact: true } : {}),
     ...(codeMode !== undefined ? { codeMode } : {}),
+    ...(autoMemory !== undefined ? { autoMemory } : {}),
   };
   const prepare = getPrepareRunParams(deps.runParamsPreps, agentId);
   return prepare(baseParams, {

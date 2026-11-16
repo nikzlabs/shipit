@@ -8,6 +8,7 @@ import {
 } from "./resident-spawn-guard.js";
 import { desiredSpawnIdentity } from "./service-routing.js";
 import { withCodeMode } from "./code-mode.js";
+import { withAutoMemory } from "./claude-memory.js";
 import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { resolveFileAttachments, resolveUploadRefs, formatFileContext, imageAttachmentRefusal } from "./validation.js";
 import { modelSelectionOf } from "./session-agent-env.js";
@@ -425,9 +426,12 @@ async function runDispatchedTurnInner(
     }
     releaseResidentOnSpawnChange(
       runner,
-      withCodeMode(
-        desiredSpawnIdentity(deps.listenerDeps.sessionManager, runner.sessionId, agentId),
-        deps.codeModeFor?.(agentId),
+      withAutoMemory(
+        withCodeMode(
+          desiredSpawnIdentity(deps.listenerDeps.sessionManager, runner.sessionId, agentId),
+          deps.codeModeFor?.(agentId),
+        ),
+        deps.autoMemoryFor?.(agentId),
       ),
     );
     releaseResidentOnPendingRewind(runner, deps.listenerDeps.sessionManager.get(runner.sessionId)?.agentResumeAt);

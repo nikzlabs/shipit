@@ -1,5 +1,6 @@
 import { readSessionAccountMarker, readSessionResidentRoute } from "./session-credentials.js";
 import { codeModeFor } from "./code-mode.js";
+import { autoMemoryFor } from "./claude-memory.js";
 import { releaseQueuedTurn } from "./queue-drain.js";
 import type { GitManager } from "../shared/git.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
@@ -488,6 +489,7 @@ export function createRunnerRegistry(
           ),
         statusCardEnabled: () => credentialStore?.getSessionStatusCard() ?? false,
         codeModeFor: (agentId) => codeModeFor(agentId, credentialStore),
+        autoMemoryFor: (agentId) => autoMemoryFor(agentId, credentialStore),
         sessionStatusContext: (sessionId) =>
           credentialStore
             ? sessionStatusTurnContext({ sessionManager, credentialStore }, sessionId)

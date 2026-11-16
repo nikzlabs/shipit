@@ -138,6 +138,7 @@ describe("the record covers the settings the converted tabs generate", () => {
       "advanced.agentCompaction",
       "advanced.idleCompaction",
       "advanced.retryTransientProviderErrors",
+      "advanced.claudeMemory",
       "advanced.liveSteering",
       "advanced.codeMode.opencode2",
       "advanced.codeMode.codex",

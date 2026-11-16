@@ -34,6 +34,7 @@ function buildDeps(opts: {
   spawn?: (...args: never[]) => Promise<SubAgentRunResult>;
   noRunner?: boolean;
   running?: boolean;
+  claudeMemory?: boolean;
 }) {
   const h: Harness = { emitted: [], appended: [], replaced: [], recorded: [] };
   const runner = {
@@ -52,6 +53,7 @@ function buildDeps(opts: {
   const deps = {
     credentialStore: {
       getNonTurnModel: () => undefined,
+      getDeclaredSetting: (key: string) => (key === "advanced.claudeMemory" ? opts.claudeMemory ?? true : undefined),
       listCredentialRoutes: (serviceId?: string, billingMode?: string) =>
         routes.filter(
           (r) =>
@@ -128,6 +130,18 @@ describe("makeNonTurnGenerateText", () => {
     expect(req.agentId).toBe("claude");
     expect(req.model).toBe("glm-5.3[1m]");
     expect(req.serviceRouting).toBeTruthy();
+    expect("autoMemory" in req).toBe(false);
+  });
+
+  it("turns Claude Code memory off in the spawn while the setting is off", async () => {
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const spawn = vi.fn(async () => OK_RESULT);
+    const { deps } = buildDeps({ spawn, claudeMemory: false });
+    const generate = makeNonTurnGenerateText({ ...(deps as object), fallback: async () => "unused" } as never);
+
+    await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
+
+    expect((spawn.mock.calls as unknown as [{ autoMemory?: boolean }][])[0][0].autoMemory).toBe(false);
   });
 
   it("records a usage row with the run's own attribution", async () => {

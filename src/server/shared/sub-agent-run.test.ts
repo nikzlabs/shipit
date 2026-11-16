@@ -572,6 +572,12 @@ describe("buildSubAgentRunParams", () => {
     expect("sandbox" in params).toBe(false);
   });
 
+  it("carries Claude Code memory turned off, and omits it otherwise", async () => {
+    const { buildSubAgentRunParams } = await import("./sub-agent-run.js");
+    expect(buildSubAgentRunParams({ prompt: "p", cwd: "/workspace", model: "m", autoMemory: false }).autoMemory).toBe(false);
+    expect("autoMemory" in buildSubAgentRunParams({ prompt: "p", cwd: "/workspace", model: "m" })).toBe(false);
+  });
+
   it("carries a sandbox parent's flag, which exempts the spawn from the branch-block hook", async () => {
     const { buildSubAgentRunParams } = await import("./sub-agent-run.js");
     expect(buildSubAgentRunParams({ prompt: "p", cwd: "/workspace", model: "m", sandbox: true }).sandbox).toBe(true);

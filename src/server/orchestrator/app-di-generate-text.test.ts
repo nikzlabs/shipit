@@ -48,6 +48,23 @@ function recorder() {
 }
 
 describe("makeInProcessGenerateText", () => {
+  it("turns Claude Code memory off in the run while the setting is off", async () => {
+    const runs: { autoMemory?: boolean }[] = [];
+    const agent = fakeAgent([TEXT_EVENT, RESULT_EVENT]);
+    const run = agent.run.bind(agent);
+    agent.run = (params) => { runs.push(params); run(params); };
+    const generate = makeInProcessGenerateText({
+      agentFactory: () => agent,
+      defaultAgentId: "claude",
+      usageManager: recorder().usageManager,
+      credentialStore: { getDeclaredSetting: (() => false) as never },
+    });
+
+    await generate("p", "/ws");
+
+    expect(runs[0]!.autoMemory).toBe(false);
+  });
+
   it("degrades to empty text with no in-process agent, and records nothing", async () => {
     const { rows, usageManager } = recorder();
     const generate = makeInProcessGenerateText({

@@ -77,6 +77,7 @@ export async function getBootstrapData(deps: {
         agentSystemInstructions: "",
         autoCreatePr: false,
         liveSteering: true,
+        claudeMemory: true,
         codeModeOpencode2: true,
         codeModeCodex: false,
         codeModeOpencode: false,
