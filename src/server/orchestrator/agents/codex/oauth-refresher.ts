@@ -92,16 +92,25 @@ function stripLogDecoration(text: string): string {
 }
 
 // Only the token host's answer to the refresh counts: a 401 from the model API is not a rejected grant.
-export function classifyCodexRefreshOutput(output: string): CodexRefreshRefusal {
+// Since CLI 0.166 the refresh line names no code; `accountCleared` (an `account/read` answer without
+// an account) is then the CLI's own verdict that the refusal lasts (docs/154).
+export function classifyCodexRefreshOutput(output: string, accountCleared = false): CodexRefreshRefusal {
   let rateLimited = false;
+  let unnamedStatus: string | undefined;
   for (const line of stripLogDecoration(output).split(/\r?\n/)) {
     const lc = line.toLowerCase();
     if (!lc.includes("failed to refresh token")) continue;
-    const status = /status=(\d{3})\b/.exec(line)?.[1] ?? /refresh token: (\d{3}) /.exec(line)?.[1];
+    const statusField = /status=(\d{3})\b/.exec(line)?.[1];
+    const status = statusField ?? /refresh token: (\d{3}) /.exec(line)?.[1];
     const code = /error_code: Some\("([^"]*)"\)/.exec(line)?.[1] ?? REJECTION_MESSAGES.find(([phrase]) => lc.includes(phrase))?.[1];
     if (code !== undefined && GRANT_REJECTION_CODES.has(code)) return { kind: "rejected", code };
     if (status === "429") rateLimited = true;
+    if (statusField?.startsWith("4") && statusField !== "429" && code === undefined && !line.includes("detail=")) {
+      unnamedStatus = statusField;
+    }
   }
+  // Not a definite revocation: the tick waits for a session's late rotation, as for a reused grant.
+  if (unnamedStatus !== undefined && accountCleared) return { kind: "rejected", code: `token_host_${unnamedStatus}` };
   return rateLimited ? { kind: "rate_limited" } : { kind: "none" };
 }
 
@@ -150,6 +159,8 @@ interface RefreshRun {
   timedOut: boolean;
   // The exit code or signal. Null when the CLI did not start, or did not end within the grace.
   exit: string | null;
+  // The `account/read` answer had `account: null`.
+  accountCleared: boolean;
 }
 
 interface AccountState {
@@ -363,7 +374,7 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
       return this.handleSuccess(accountId, before, after, "rotated");
     }
 
-    const refusal = classifyCodexRefreshOutput(run.output);
+    const refusal = classifyCodexRefreshOutput(run.output, run.accountCleared);
     if (refusal.kind === "rejected") {
       // Before the source check: a session's rotation can reach the source during the wait.
       if (!DEFINITE_REVOCATION_CODES.has(refusal.code)) await this.waitForLateRotation();
@@ -530,13 +541,16 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
         child = this.deps.spawn("codex", [...CODEX_REFRESH_COMMAND], opts);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        resolve({ output: `[spawn-failed] ${msg}`, durationMs: performance.now() - startedAt, timedOut: false, exit: null });
+        resolve({
+          output: `[spawn-failed] ${msg}`, durationMs: performance.now() - startedAt, timedOut: false, exit: null, accountCleared: false,
+        });
         return;
       }
 
       let stderr = "";
       let pending = "";
       let rpcError = "";
+      let accountCleared = false;
       let replied = false;
       let timedOut = false;
       let killed = false;
@@ -552,6 +566,7 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
           durationMs: performance.now() - startedAt,
           timedOut: killed,
           exit,
+          accountCleared,
         });
       };
       const arm = (ms: number, onFire: () => void): void => {
@@ -580,7 +595,7 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
           return;
         }
         if (typeof parsed !== "object" || parsed === null) return;
-        const message = parsed as { id?: unknown; method?: unknown; error?: { code?: unknown } };
+        const message = parsed as { id?: unknown; method?: unknown; error?: { code?: unknown }; result?: unknown };
         // A request from the server has an id of its own numbering.
         if (typeof message.method === "string") return;
         if (message.id === INITIALIZE_ID) {
@@ -595,6 +610,8 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
           const code = typeof message.error.code === "number" ? String(message.error.code) : "unknown";
           rpcError = `[rpc-error] account/read failed with code ${code}`;
         }
+        const result = message.result;
+        accountCleared = typeof result === "object" && result !== null && (result as { account?: unknown }).account === null;
         // The CLI ends when its input ends.
         try {
           child.stdin?.end();
@@ -605,7 +622,7 @@ export class CodexOAuthRefresher extends EventEmitter<CodexOAuthRefresherEvents>
       // A CLI that ends early leaves a broken pipe; the close reports it.
       child.stdin?.on("error", () => {});
       child.stderr?.on("data", (d: Buffer) => { stderr += d.toString("utf8"); });
-      // The answers carry the account's email: only their ids are read, and none of them is kept.
+      // The answers carry the account's email: only their ids and whether an account is present are read, and none is kept.
       child.stdout?.on("data", (d: Buffer) => {
         pending += d.toString("utf8");
         let newline = pending.indexOf("\n");

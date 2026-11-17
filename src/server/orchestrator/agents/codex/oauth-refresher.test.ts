@@ -131,6 +131,15 @@ function refusalLine(status: string, code: string | null, stamp = "2026-10-11T17
     + `TokenErrorDetail { error_code: ${code ? `Some("${code}")` : "None"}, error_message: Some("probe"), .. }\n`;
 }
 
+// What Codex CLI 0.167.0 and 0.169.0 write for any refused refresh: the status, and no detail.
+function bareRefusalLine(status: string, stamp = "2026-11-17T08:40:41.915962Z"): string {
+  const dim = "\x1b[2m";
+  const off = "\x1b[0m";
+  return `${dim}${stamp}${off} \x1b[31mERROR${off} ${dim}codex_login::auth::manager${off}${dim}:${off} `
+    + `Failed to refresh token \x1b[3mstatus${off}${dim}=${off}${status}\n`;
+}
+
+const BARE_401 = bareRefusalLine("401 Unauthorized");
 const REUSED = refusalLine("401 Unauthorized", "refresh_token_reused");
 const INVALIDATED = refusalLine("401 Unauthorized", "refresh_token_invalidated");
 const EXPIRED = refusalLine("401 Unauthorized", "refresh_token_expired");
@@ -170,6 +179,8 @@ interface SpawnEffect {
   // The CLI ends before it answers `initialize`.
   exitsBeforeInit?: boolean;
   rpcError?: string;
+  // The answer has `account: null`, as CLI 0.167.0 answers after a refusal it judges lasting.
+  accountCleared?: boolean;
   // The CLI ends without an answer.
   noReply?: boolean;
   // The CLI neither answers nor ends.
@@ -259,7 +270,9 @@ function makeFakeSpawn(): FakeSpawnHandle {
       say(
         effect.rpcError
           ? { id: 1, error: { code: -32601, message: effect.rpcError } }
-          : { id: 1, result: { account: { type: "chatgpt", email: ACCOUNT_EMAIL, planType: "pro" } } },
+          : effect.accountCleared
+            ? { id: 1, result: { account: null, requiresOpenaiAuth: true, workspaceRouting: null } }
+            : { id: 1, result: { account: { type: "chatgpt", email: ACCOUNT_EMAIL, planType: "pro" } } },
       );
     };
     stdin.write = (line: string): boolean => {
@@ -361,9 +374,42 @@ describe("classifyCodexRefreshOutput", () => {
       .toEqual({ kind: "rejected", code: "invalid_grant" });
   });
 
-  it("does not read a 401 that is not about the grant as a rejected grant", () => {
+  it("does not read a 401 that names a code other than a grant's as a rejected grant", () => {
     expect(classifyCodexRefreshOutput(refusalLine("401 Unauthorized", "invalid_client"))).toEqual({ kind: "none" });
     expect(classifyCodexRefreshOutput(refusalLine("401 Unauthorized", null))).toEqual({ kind: "none" });
+  });
+
+  it("reads a refresh line without detail, as CLI 0.167.0 writes it, as rejected when the answer has no account", () => {
+    expect(classifyCodexRefreshOutput(BARE_401, true)).toEqual({ kind: "rejected", code: "token_host_401" });
+    expect(classifyCodexRefreshOutput(bareRefusalLine("400 Bad Request"), true)).toEqual({ kind: "rejected", code: "token_host_400" });
+    expect(classifyCodexRefreshOutput("ERROR codex_login::auth::manager: Failed to refresh token status=401 Unauthorized\n", true))
+      .toEqual({ kind: "rejected", code: "token_host_401" });
+    // The models call's 404 comes first or last, as it happens.
+    const models = "ERROR codex_models_manager::manager: failed to refresh available models: unexpected status 404 Not Found\n";
+    expect(classifyCodexRefreshOutput(`${models}${BARE_401}`, true)).toEqual({ kind: "rejected", code: "token_host_401" });
+    expect(classifyCodexRefreshOutput(`${BARE_401}${models}`, true)).toEqual({ kind: "rejected", code: "token_host_401" });
+  });
+
+  it("does not read a refresh line without detail as rejected when the answer kept the account", () => {
+    // CLI 0.167.0 keeps the account after a 400 `invalid_request`, and clears it after a 400 `invalid_grant`.
+    expect(classifyCodexRefreshOutput(bareRefusalLine("400 Bad Request"))).toEqual({ kind: "none" });
+    expect(classifyCodexRefreshOutput(BARE_401)).toEqual({ kind: "none" });
+  });
+
+  it("does not read an empty account as rejected without a 4xx refresh line that names no code", () => {
+    expect(classifyCodexRefreshOutput(refusalLine("401 Unauthorized", "invalid_client"), true)).toEqual({ kind: "none" });
+    expect(classifyCodexRefreshOutput(refusalLine("401 Unauthorized", null), true)).toEqual({ kind: "none" });
+    expect(classifyCodexRefreshOutput(bareRefusalLine("429 Too Many Requests"), true)).toEqual({ kind: "rate_limited" });
+    expect(classifyCodexRefreshOutput(bareRefusalLine("500 Internal Server Error"), true)).toEqual({ kind: "none" });
+    expect(classifyCodexRefreshOutput(
+      "ERROR codex_core::client: unexpected status 401 Unauthorized, url: https://chatgpt.com/backend-api/codex/responses\n", true,
+    )).toEqual({ kind: "none" });
+    expect(classifyCodexRefreshOutput("", true)).toEqual({ kind: "none" });
+  });
+
+  it("prefers a code that the output names to a line without detail", () => {
+    expect(classifyCodexRefreshOutput(`${BARE_401}${INVALIDATED}`, true))
+      .toEqual({ kind: "rejected", code: "refresh_token_invalidated" });
   });
 
   it("reads the messages that the CLI prints outside app-server", () => {
@@ -926,6 +972,51 @@ describe("CodexOAuthRefresher", () => {
       expect(result!.outcome).toBe("noop");
       expect(rig.sseCalls.find((c) => c.event === "agent_auth_failed")).toBeUndefined();
       expect(rig.refresher._inspectForTest("codex-default").hasTimer).toBe(true);
+    });
+
+    it("reports a bare 401 with an empty account as revoked once, after it waited for a session's late rotation", async () => {
+      const rig = marginRig({ lateRotationWaitMs: 300 });
+      rig.spawnHandle.effects = [{ stderr: BARE_401, accountCleared: true }];
+
+      const started = Date.now();
+      const [result] = await rig.refresher.refreshNow("codex-default");
+      const [again] = await rig.refresher.refreshNow("codex-default");
+
+      expect(Date.now() - started).toBeGreaterThanOrEqual(300);
+      expect(result!.outcome).toBe("revoked");
+      expect(result!.reason).toBe("token_host_401");
+      expect(again!.outcome).toBe("revoked");
+      expect(rig.spawnHandle.invocations).toHaveLength(1);
+      expect(rig.sseCalls).toContainEqual({
+        event: "agent_auth_failed",
+        data: { loginId: "openai-chatgpt", accountId: "codex-default", reason: "revoked" },
+      });
+    });
+
+    it("does not report a bare 400 as revoked when the answer kept the account", async () => {
+      const rig = marginRig();
+      rig.spawnHandle.effects = [{ stderr: bareRefusalLine("400 Bad Request") }];
+
+      const [result] = await rig.refresher.refreshNow("codex-default");
+
+      expect(result!.outcome).toBe("unknown_failure");
+      expect(rig.sseCalls.find((c) => c.event === "agent_auth_failed")).toBeUndefined();
+    });
+
+    it("harvests a session rotation that is written after a bare 401", async () => {
+      const rig = marginRig({ lateRotationWaitMs: 300 });
+      rig.spawnHandle.effects = [{
+        stderr: BARE_401,
+        accountCleared: true,
+        onRefresh: () => {
+          setTimeout(() => writeSessionAuth(rig.rootDir, "sess-a", { freshness: NOW + 10 * DAY, accountId: "codex-default" }), 50);
+        },
+      }];
+
+      const [result] = await rig.refresher.refreshNow("codex-default");
+
+      expect(result!.outcome).toBe("harvested_session");
+      expect(rig.sseCalls.find((c) => c.event === "agent_auth_failed")).toBeUndefined();
     });
 
     it("does not wait for a session when the server says the grant itself is invalid", async () => {

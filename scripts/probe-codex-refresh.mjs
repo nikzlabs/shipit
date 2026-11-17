@@ -93,6 +93,8 @@ function startRecorder() {
       refuse(429, { error: { message: "Rate limit reached", type: "rate_limit_error", code: "rate_limit_exceeded" } });
     } else if (recorder.tokenAnswer === "server_error") {
       refuse(500, { error: { message: "Internal error", type: "server_error" } });
+    } else if (recorder.tokenAnswer.startsWith("400:")) {
+      refuse(400, { error: recorder.tokenAnswer.slice("400:".length), error_description: "probe refusal" });
     } else {
       refuse(401, { error: { message: "probe refusal", type: "invalid_request_error", param: null, code: recorder.tokenAnswer } });
     }
@@ -351,6 +353,14 @@ async function main() {
         `(c) ${code}: the refresher reports the rejected grant after one request`,
         `outcome=${refused.outcome} token requests=${refused.tokenRequests.length}`);
       check(holds(refused.home, "ORIGINAL"), `(c) ${code}: the CLI leaves the account's file as it was`);
+    }
+
+    // (c) A 400 is a rejected grant only for `invalid_grant`. Since 0.167.0 only the CLI's answer tells them apart.
+    for (const [answer, expected] of [["400:invalid_grant", "revoked"], ["400:invalid_request", "unknown_failure"]]) {
+      const refused = await refresh(recorder, `c-${answer.replace(":", "-")}`, { msLeft: 45 * 60_000, tokenAnswer: answer });
+      check(refused.outcome === expected && refused.tokenRequests.length === 1 && holds(refused.home, "ORIGINAL"),
+        `(c) an HTTP 400 ${answer.slice("400:".length)}: ${expected}, one request, the file as it was`,
+        `outcome=${refused.outcome} token requests=${refused.tokenRequests.length}`);
     }
 
     // (d) A failure that can pass is not a rejected grant, and the CLI does not repeat the request.
