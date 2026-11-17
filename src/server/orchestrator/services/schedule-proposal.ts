@@ -5,11 +5,25 @@ import type {
   ScheduleProposalCard,
   ScheduleProposalValue,
   ScheduleTiming,
+  SessionInfo,
   SessionStartParams,
   SessionStartSpec,
   SessionStartTarget,
 } from "../../shared/types.js";
 import { normalizeCapabilities } from "../../shared/types.js";
+import type { AgentId } from "../../shared/types/agent-types.js";
+import type { BillingMode } from "../../shared/catalogue/index.js";
+import { agentIdForModel, getAgentCapabilities } from "../../shared/agent-registry.js";
+import {
+  catalogueEntriesForHarness,
+  catalogueModelIdsForHarness,
+  harnessSupportsMode,
+  nativeServiceForHarness,
+  resolveRetiredModelId,
+  retirementSuccessor,
+  sameSelection,
+  selectionHonoursEffort,
+} from "../../shared/catalogue/index.js";
 import { START_PARAM_LABELS, type StartParamNames } from "../../shared/session-start-labels.js";
 import { parseSessionStartSpec } from "../../shared/session-start-spec.js";
 import { describeGrants, describeTarget, describeTiming, formatWhen } from "../../shared/schedule-describe.js";
@@ -152,7 +166,73 @@ interface BuiltProposal {
 
 const REQUIRED_FOR_CREATE = ["name", "when", "target", "prompt"] as const;
 
-function buildCreate(deps: ScheduleProposalDeps, given: ProposedSchedule): BuiltProposal {
+const SELECTION_FIELDS = ["model", "serviceId", "billingMode"] as const;
+type Selection = Pick<SessionStartParams, (typeof SELECTION_FIELDS)[number]>;
+
+/** As the spec reader will read it: trimmed. */
+const text = (value: unknown) => (typeof value === "string" ? value.trim() : undefined);
+
+/** Whether the harness can run the model on that service and billing mode, credentials aside. */
+function harnessRuns(harness: AgentId, { model, serviceId, billingMode }: Selection): boolean {
+  if (!model) return false;
+  if (!serviceId || !billingMode) return catalogueModelIdsForHarness(harness).includes(model);
+  const selection = { serviceId, billingMode, modelId: model };
+  return harnessSupportsMode(harness, serviceId, billingMode)
+    && catalogueEntriesForHarness(harness).some((entry) => sameSelection(entry.selection, selection));
+}
+
+/** The session's selection with a retired model moved to its successor, as its next turn would. */
+function currentSelection(harness: AgentId, session: SessionInfo): Selection {
+  const { model, serviceId, billingMode } = session;
+  if (!model) return {};
+  const successor = serviceId && billingMode
+    ? retirementSuccessor(harness, { serviceId, billingMode, modelId: model })
+    : resolveRetiredModelId(harness, model, nativeServiceForHarness(harness));
+  if (successor) return { model: successor.modelId, serviceId: successor.serviceId, billingMode: successor.billingMode };
+  return { model, ...(serviceId ? { serviceId } : {}), ...(billingMode ? { billingMode } : {}) };
+}
+
+/**
+ * docs/324-scheduled-sessions req 35 — a new schedule takes the proposing session's harness, model
+ * and reasoning for every key the YAML leaves out (`null` counts as given). What would not run
+ * together with the YAML's own values is left out rather than refused.
+ */
+function inheritedSelection(session: SessionInfo, given: Record<string, unknown> = {}): SessionStartParams {
+  const harness = session.agentId;
+  const named = (key: keyof SessionStartParams) => key in given;
+  // A role replaces the whole selection; another harness has its own models and levels.
+  if (!harness || text(given.role) !== undefined || (named("agent") && text(given.agent) !== harness)) return {};
+  const namedModel = text(given.model);
+  const runsNamedModel = !namedModel
+    || (getAgentCapabilities(harness)?.models ?? []).includes(namedModel)
+    || agentIdForModel(namedModel) === undefined;
+  if (!runsNamedModel) return {};
+
+  const inherited: SessionStartParams = named("agent") ? {} : { agent: harness };
+  const own = currentSelection(harness, session);
+  if (!(named("model") && given.model === null)) {
+    const pick = (key: keyof Selection) => (named(key) ? text(given[key]) : own[key]);
+    const combined = { model: pick("model"), serviceId: pick("serviceId"), billingMode: pick("billingMode") } as Selection;
+    if (harnessRuns(harness, combined)) {
+      for (const key of SELECTION_FIELDS) {
+        if (!named(key) && own[key] !== undefined) Object.assign(inherited, { [key]: own[key] });
+      }
+    }
+  }
+
+  const level = session.reasoningEffort;
+  if (level && !named("reasoning")) {
+    const final = (key: keyof Selection) => inherited[key] ?? text(given[key]);
+    const [model, serviceId, billingMode] = [final("model"), final("serviceId"), final("billingMode")];
+    const selection = model && serviceId && billingMode
+      ? { serviceId, billingMode: billingMode as BillingMode, modelId: model }
+      : undefined;
+    if (selectionHonoursEffort(harness, selection, level)) inherited.reasoning = level;
+  }
+  return inherited;
+}
+
+function buildCreate(deps: ScheduleProposalDeps, session: SessionInfo, given: ProposedSchedule): BuiltProposal {
   const missing = REQUIRED_FOR_CREATE.filter((field) =>
     field === "when" ? given.timing === undefined : given[field] === undefined);
   if (missing.length > 0) {
@@ -167,7 +247,7 @@ function buildCreate(deps: ScheduleProposalDeps, given: ProposedSchedule): Built
   checkScheduleTiming(timing, timeZone ?? LATEST_TIME_ZONE);
   const spec = readScheduleSpec({
     target: withTarget(undefined, given.target!),
-    params: withParams({}, given.params),
+    params: withParams(inheritedSelection(session, given.params), given.params),
     prompt: given.prompt,
   }, deps);
   const enabled = given.enabled ?? true;
@@ -277,9 +357,10 @@ export function proposeSchedule(
   sessionId: string,
   input: { id?: string | undefined; text: string },
 ): ScheduleProposalCard {
-  if (!deps.sessionManager.get(sessionId)) throw new ServiceError(404, "Session not found");
+  const session = deps.sessionManager.get(sessionId);
+  if (!session) throw new ServiceError(404, "Session not found");
   const given = parseScheduleProposal(input.text);
-  const built = input.id ? buildUpdate(deps, input.id, given) : buildCreate(deps, given);
+  const built = input.id ? buildUpdate(deps, input.id, given) : buildCreate(deps, session, given);
 
   const runner = deps.getRunnerRegistry()?.get(sessionId);
   if (!runner) throw new ServiceError(409, "This session is not running, so a card cannot be posted to it.");

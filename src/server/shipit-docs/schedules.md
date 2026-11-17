@@ -65,6 +65,14 @@ enabled: true                    # optional; false proposes it paused
 
 A new schedule needs `name`, `when`, `target` and `prompt`.
 
+**A new schedule runs on this session's harness and model by default.** For
+each of `agent`, `model`, `serviceId`, `billingMode` and `reasoning` that
+`params` leaves out, ShipIt fills in this session's value, and the card shows
+it. Name a key to choose something else; `null` leaves it unset (`model: null`
+keeps this session's harness with the user's default model). Naming a `role`,
+another harness, or a model this harness cannot run takes none of them. A
+change (`--id`) never takes them.
+
 ### Session-start parameters
 
 | Key | Value |

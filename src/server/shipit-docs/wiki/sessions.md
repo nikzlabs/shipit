@@ -457,7 +457,9 @@ like in any other session.
 control. When the user asks for something to happen regularly, or once at a
 later time, propose the schedule with `shipit schedule propose`
 (`/shipit-docs/schedules.md`); it is
-saved only when the user presses **Confirm** on the card. A change — another
+saved only when the user presses **Confirm** on the card. A new schedule runs
+on the harness and model of the session that proposed it, unless the proposal
+names other ones; the card shows which. A change — another
 time, another prompt, a pause — is a proposal too. `shipit schedule list` says
 what each schedule is now.
 

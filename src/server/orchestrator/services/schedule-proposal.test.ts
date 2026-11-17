@@ -42,6 +42,7 @@ let queued: string[];
 let announced: number;
 let roles: string[];
 let runnerAttached: boolean;
+let sessions: SessionManager;
 
 function fakeRunner(): SessionRunnerInterface {
   return {
@@ -57,7 +58,7 @@ function fakeRunner(): SessionRunnerInterface {
 
 beforeEach(() => {
   db = new DatabaseManager(":memory:");
-  const sessions = new SessionManager(db);
+  sessions = new SessionManager(db);
   sessions.track(SESSION, "A session");
   sessions.track("sess-2", "Another session");
   history = new ChatHistoryManager(db);
@@ -177,6 +178,84 @@ describe("proposeSchedule — a new schedule", () => {
       .toThrow(/"permissionMode" has a value it cannot take/);
     expect(emitted).toEqual([]);
     expect(db.db.prepare("SELECT COUNT(*) AS n FROM schedule_proposals").get()).toEqual({ n: 0 });
+  });
+
+  describe("the proposing session's harness and model", () => {
+    const UNNAMED = `name: Nightly\nwhen: daily 02:30\ntarget: sandbox\nprompt: Tidy up.\n`;
+
+    beforeEach(() => {
+      sessions.setAgentId(SESSION, "claude");
+      sessions.setModelSelection(SESSION, { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" });
+      sessions.setReasoning(SESSION, "high");
+    });
+
+    it("are the default for a new schedule, shown on the card", () => {
+      const card = proposeSchedule(deps, SESSION, { text: UNNAMED });
+      const record = proposals.get(card.cardId)?.proposal;
+      expect(record?.kind === "create" && record.spec.params).toEqual({
+        agent: "claude",
+        model: "claude-opus-5",
+        serviceId: "anthropic",
+        billingMode: "sub",
+        reasoning: "high",
+      });
+      expect(card.values.map((v) => v.label)).toEqual(
+        expect.arrayContaining(["Harness", "Model", "Service", "Billing", "Reasoning"]),
+      );
+    });
+
+    const paramsOf = (params: string) => {
+      const card = proposeSchedule(deps, SESSION, { text: `${UNNAMED}params: ${params}\n` });
+      const record = proposals.get(card.cardId)?.proposal;
+      return record?.kind === "create" ? record.spec.params : undefined;
+    };
+
+    it("fill in only the keys the proposal leaves out", () => {
+      expect(paramsOf("{ reasoning: low }")).toMatchObject({ model: "claude-opus-5", reasoning: "low" });
+      expect(paramsOf("{ model: claude-sonnet-5 }")).toEqual({
+        agent: "claude", model: "claude-sonnet-5", serviceId: "anthropic", billingMode: "sub", reasoning: "high",
+      });
+      expect(paramsOf("{ billingMode: key }")).toMatchObject({ model: "claude-opus-5", serviceId: "anthropic", billingMode: "key" });
+    });
+
+    it("keep the harness when the proposal sets the model to null", () => {
+      expect(paramsOf("{ model: null }")).toEqual({ agent: "claude", reasoning: "high" });
+    });
+
+    it("are not used with a role, another harness, or a model this harness cannot run", () => {
+      expect(paramsOf("{ role: triage }")).toEqual({ role: "triage" });
+      expect(paramsOf("{ agent: codex }")).toEqual({ agent: "codex" });
+      expect(paramsOf("{ model: gpt-6.1-sol }")).toEqual({ model: "gpt-6.1-sol" });
+      expect(paramsOf("{ role: null }")).toMatchObject({ agent: "claude", model: "claude-opus-5" });
+      expect(paramsOf("{ agent: ' claude ' }")).toMatchObject({ agent: "claude", model: "claude-opus-5" });
+    });
+
+    it("do not pair the model with a service this harness cannot use", () => {
+      expect(paramsOf("{ serviceId: opencode, billingMode: key }")).toEqual({
+        agent: "claude", serviceId: "opencode", billingMode: "key", reasoning: "high",
+      });
+    });
+
+    it("move a retired model to its successor", () => {
+      sessions.setModelSelection(SESSION, { serviceId: "anthropic", billingMode: "sub", modelId: "claude-fable-5" });
+      expect(paramsOf("{}")).toMatchObject({ model: "claude-fable-5-1", serviceId: "anthropic", billingMode: "sub" });
+    });
+
+    it("leave out a reasoning level the model does not have", () => {
+      sessions.setAgentId(SESSION, "codex");
+      sessions.setModelSelection(SESSION, { serviceId: "openai", billingMode: "sub", modelId: "gpt-6-sol" });
+      sessions.setReasoning(SESSION, "none");
+      expect(paramsOf("{}")).toMatchObject({ model: "gpt-6-sol", reasoning: "none" });
+      expect(paramsOf("{ model: gpt-6.1-sol }")).toEqual({
+        agent: "codex", model: "gpt-6.1-sol", serviceId: "openai", billingMode: "sub",
+      });
+    });
+
+    it("are not used on a change to an existing schedule", () => {
+      const schedule = existingSchedule();
+      const card = proposeSchedule(deps, SESSION, { id: schedule.id, text: "when: weekdays 10:00\n" });
+      expect(card.values).toEqual([{ label: "When", before: "Every day at 09:00", after: "Weekdays at 10:00" }]);
+    });
   });
 
   it("cannot post a card to a session with no runner", () => {

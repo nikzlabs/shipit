@@ -18,6 +18,9 @@ would be a separate prompt. For example, 'Check current security PRs and merge
 them.'" Requirements 1–7 come from this request; 8 to 33 from the user's
 answers on the same day (see "Resolved questions"). Requirement 34 comes from
 the user's request on 2026-10-21: "support one-off scheduled jobs".
+Requirement 35 comes from the user's request on 2026-11-17: "When proposing a
+schedule from a session, it should inherit its model and harness settings by
+default."
 
 1. The user can set up a session that ShipIt starts by itself on a schedule the
    user chooses — for example, every day.
@@ -107,6 +110,8 @@ the user's request on 2026-10-21: "support one-off scheduled jobs".
     run's session stops the run too.
 34. A schedule can run only once, at a date and time the user sets, and not
     repeat.
+35. A new schedule that the agent proposes from a session takes that session's
+    model and harness settings by default. The proposal can name other ones.
 
 ## Open questions
 
