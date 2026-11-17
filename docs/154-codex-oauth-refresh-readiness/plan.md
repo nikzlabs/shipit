@@ -311,9 +311,24 @@ read a phrase and a code from two lines as one line. CLI 0.159.2 writes LF only.
 Four codes are a rejected
 grant: `refresh_token_reused`, `refresh_token_invalidated`,
 `refresh_token_expired` and `invalid_grant`. Another 401 from the token host
-(`invalid_client`, or no code), a 401 from the model API, a timeout, a 429 and a
+(`invalid_client`, or `error_code: None`), a 401 from the model API, a timeout, a 429 and a
 500 are not. The messages that `codex exec` prints for the first three codes
 are accepted too.
+
+Since CLI 0.166.0 the refresh line is only `Failed to refresh token
+status=<status>`, with no detail. On 0.167.0 and 0.169.0 no output names the
+code, at any `RUST_LOG` level. The CLI still judges the code: its
+`account/read` answer has `account: null` after a refusal that lasts (every
+401, and a 400 `invalid_grant`), and keeps the account after a 429, a 500 or a
+400 `invalid_request`. So a 4xx refresh line other than 429 that names no code
+is a rejected grant, `token_host_<status>`, only when the answer has no
+account (`accountCleared`). The CLI clears the account for a 401
+`invalid_client` too. That gives a needless sign-in prompt, and the
+rejected credential is remembered, so the account stays signed out until a new
+sign-in even if the `invalid_client` clears. An `invalid_client` refuses every
+account's refresh, so it is an outage either way. These codes are treated like `refresh_token_reused`: the tick waits for a
+late rotation first. Lines that carry a detail, from older CLIs, are read as
+before. The probe's (c) checks pin both 400 cases against the real binary.
 
 - `refresh_token_invalidated` and `refresh_token_expired`: the server judged the
   grant itself. The tick reports `revoked` at once.
@@ -462,13 +477,14 @@ recorder that never forwards traffic. It runs the refresher's own tick
 (`CodexOAuthRefresher`) against the binary, and checks what the refresher
 depends on: the call rotates a token at the start of the margin and one that has
 days left, with one grant and no model call; each of the three refusal codes
-ends `revoked` and leaves the file as it was; a 429 and a 500 end `rate_limited`
+ends `revoked` and leaves the file as it was; a 400 `invalid_grant` ends
+`revoked` and a 400 `invalid_request` `unknown_failure`; a 429 and a 500 end `rate_limited`
 and `unknown_failure` after one request; a credential published during the call
 is kept; a session's own CLI (`codex exec`) refreshes only inside its
 5-minute window; and `codex login --device-auth` revokes the old refresh token and
 keeps `auth.json` until the answer, then removes the file before it asks for a
 device code and keeps it removed while it waits (the recorder answers the revoke
-after 1 s and never answers the device-code request). 18 checks, about 18 s, exit 1
+after 1 s and never answers the device-code request). 20 checks, about 18 s, exit 1
 on a failure. CI runs it as the
 job `codex-refresh-probe` (`.github/workflows/ci.yml`) on a pull request that
 changes `docker/agent-cli/package.json`, its lockfile or `install-agent-clis.sh`,
