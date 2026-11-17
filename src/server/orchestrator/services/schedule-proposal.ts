@@ -5,11 +5,14 @@ import type {
   ScheduleProposalCard,
   ScheduleProposalValue,
   ScheduleTiming,
+  SessionInfo,
   SessionStartParams,
   SessionStartSpec,
   SessionStartTarget,
 } from "../../shared/types.js";
 import { normalizeCapabilities } from "../../shared/types.js";
+import { getAgentCapabilities } from "../../shared/agent-registry.js";
+import { catalogueModelLabels, selectionExists } from "../../shared/catalogue/index.js";
 import { START_PARAM_LABELS, type StartParamNames } from "../../shared/session-start-labels.js";
 import { parseSessionStartSpec } from "../../shared/session-start-spec.js";
 import { describeGrants, describeTarget, describeTiming, formatWhen } from "../../shared/schedule-describe.js";
@@ -152,7 +155,32 @@ interface BuiltProposal {
 
 const REQUIRED_FOR_CREATE = ["name", "when", "target", "prompt"] as const;
 
-function buildCreate(deps: ScheduleProposalDeps, given: ProposedSchedule): BuiltProposal {
+/** Naming any of these, or a role, opts the proposal out of the session's model selection. */
+const SELECTION_KEYS = ["role", "agent", "model", "serviceId", "billingMode"] as const;
+
+/**
+ * A new schedule runs on the proposing session's harness and model unless the YAML names its own
+ * (`null` included). A selection ShipIt no longer offers is left out rather than refused.
+ */
+function inheritedSelection(session: SessionInfo, given: Record<string, unknown> | undefined): SessionStartParams {
+  if (!session.agentId || SELECTION_KEYS.some((key) => given !== undefined && key in given)) return {};
+  const inherited: SessionStartParams = { agent: session.agentId };
+  const { model, serviceId, billingMode } = session;
+  if (model) {
+    const offered = serviceId && billingMode
+      ? selectionExists({ serviceId, billingMode, modelId: model })
+      : model in catalogueModelLabels();
+    if (offered) Object.assign(inherited, { model, ...(serviceId && billingMode ? { serviceId, billingMode } : {}) });
+  }
+  const level = session.reasoningEffort;
+  const levels = getAgentCapabilities(session.agentId)?.reasoning?.options ?? [];
+  if (level && !(given !== undefined && "reasoning" in given) && levels.some((o) => o.value === level)) {
+    inherited.reasoning = level;
+  }
+  return inherited;
+}
+
+function buildCreate(deps: ScheduleProposalDeps, session: SessionInfo, given: ProposedSchedule): BuiltProposal {
   const missing = REQUIRED_FOR_CREATE.filter((field) =>
     field === "when" ? given.timing === undefined : given[field] === undefined);
   if (missing.length > 0) {
@@ -167,7 +195,7 @@ function buildCreate(deps: ScheduleProposalDeps, given: ProposedSchedule): Built
   checkScheduleTiming(timing, timeZone ?? LATEST_TIME_ZONE);
   const spec = readScheduleSpec({
     target: withTarget(undefined, given.target!),
-    params: withParams({}, given.params),
+    params: withParams(inheritedSelection(session, given.params), given.params),
     prompt: given.prompt,
   }, deps);
   const enabled = given.enabled ?? true;
@@ -277,9 +305,10 @@ export function proposeSchedule(
   sessionId: string,
   input: { id?: string | undefined; text: string },
 ): ScheduleProposalCard {
-  if (!deps.sessionManager.get(sessionId)) throw new ServiceError(404, "Session not found");
+  const session = deps.sessionManager.get(sessionId);
+  if (!session) throw new ServiceError(404, "Session not found");
   const given = parseScheduleProposal(input.text);
-  const built = input.id ? buildUpdate(deps, input.id, given) : buildCreate(deps, given);
+  const built = input.id ? buildUpdate(deps, input.id, given) : buildCreate(deps, session, given);
 
   const runner = deps.getRunnerRegistry()?.get(sessionId);
   if (!runner) throw new ServiceError(409, "This session is not running, so a card cannot be posted to it.");

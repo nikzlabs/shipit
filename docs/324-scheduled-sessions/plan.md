@@ -156,6 +156,17 @@ proposal names no time zone, Confirm sends the browser's. A change card records 
 changed since, Confirm refuses, because the card's "before" is no longer true.
 The command needs no repository, so it works in a sandbox too.
 
+**A new schedule inherits the proposing session's selection (req 35).** When
+the YAML's `params` name none of `role`, `agent`, `model`, `serviceId` and
+`billingMode` (a `null` counts as naming), `inheritedSelection`
+(`schedule-proposal.ts`) fills in the session's harness, model, service and
+billing mode, and its reasoning level unless the YAML names one. A model
+ShipIt no longer offers, or a level the harness does not have, is left out
+rather than refused, so a proposal never fails on a value it did not name. The
+values are written into the proposal, so the card shows them and the user
+confirms them. A role is not inherited: it carries a brief, not only a model.
+A change (`--id`) inherits nothing.
+
 ## Settings → Schedules (reqs 10, 11, 19, 24, 32, 33)
 
 A **Schedules** tab beside Roles. `Settings.tsx` renders it, not
@@ -589,6 +600,7 @@ this is the limit it already has.
 | 6 | `spec.prompt`; role optional |
 | 7 | Runs are ordinary sessions |
 | 8, 9 | `shipit schedule propose`, the proposal card on the generalized claim and notice |
+| 35 | `inheritedSelection` in `schedule-proposal.ts` |
 | 10, 24 | Settings → Schedules; `result` copied into the run row |
 | 12 | No input-panel change |
 | 13 | The run's notes folder; earlier notes through `shipit schedule notes`; the `<scheduled_run>` block |

@@ -42,6 +42,7 @@ let queued: string[];
 let announced: number;
 let roles: string[];
 let runnerAttached: boolean;
+let sessions: SessionManager;
 
 function fakeRunner(): SessionRunnerInterface {
   return {
@@ -57,7 +58,7 @@ function fakeRunner(): SessionRunnerInterface {
 
 beforeEach(() => {
   db = new DatabaseManager(":memory:");
-  const sessions = new SessionManager(db);
+  sessions = new SessionManager(db);
   sessions.track(SESSION, "A session");
   sessions.track("sess-2", "Another session");
   history = new ChatHistoryManager(db);
@@ -177,6 +178,53 @@ describe("proposeSchedule — a new schedule", () => {
       .toThrow(/"permissionMode" has a value it cannot take/);
     expect(emitted).toEqual([]);
     expect(db.db.prepare("SELECT COUNT(*) AS n FROM schedule_proposals").get()).toEqual({ n: 0 });
+  });
+
+  describe("the proposing session's harness and model", () => {
+    const UNNAMED = `name: Nightly\nwhen: daily 02:30\ntarget: sandbox\nprompt: Tidy up.\n`;
+
+    beforeEach(() => {
+      sessions.setAgentId(SESSION, "claude");
+      sessions.setModelSelection(SESSION, { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" });
+      sessions.setReasoning(SESSION, "high");
+    });
+
+    it("are the default for a new schedule, shown on the card", () => {
+      const card = proposeSchedule(deps, SESSION, { text: UNNAMED });
+      const record = proposals.get(card.cardId)?.proposal;
+      expect(record?.kind === "create" && record.spec.params).toEqual({
+        agent: "claude",
+        model: "claude-opus-5",
+        serviceId: "anthropic",
+        billingMode: "sub",
+        reasoning: "high",
+      });
+      expect(card.values.map((v) => v.label)).toEqual(
+        expect.arrayContaining(["Harness", "Model", "Service", "Billing", "Reasoning"]),
+      );
+    });
+
+    it("keep the proposal's own reasoning level", () => {
+      const card = proposeSchedule(deps, SESSION, { text: `${UNNAMED}params: { reasoning: low }\n` });
+      const record = proposals.get(card.cardId)?.proposal;
+      expect(record?.kind === "create" && record.spec.params).toMatchObject({ model: "claude-opus-5", reasoning: "low" });
+    });
+
+    it("are not used when the proposal names a role, a harness or a model, or sets one to null", () => {
+      for (const params of ["{ role: triage }", "{ agent: codex }", "{ model: null }"]) {
+        const card = proposeSchedule(deps, SESSION, { text: `${UNNAMED}params: ${params}\n` });
+        const record = proposals.get(card.cardId)?.proposal;
+        const spec = record?.kind === "create" ? record.spec.params : undefined;
+        expect(spec?.model, params).toBeUndefined();
+        expect(spec?.reasoning, params).toBeUndefined();
+      }
+    });
+
+    it("are not used on a change to an existing schedule", () => {
+      const schedule = existingSchedule();
+      const card = proposeSchedule(deps, SESSION, { id: schedule.id, text: "when: weekdays 10:00\n" });
+      expect(card.values).toEqual([{ label: "When", before: "Every day at 09:00", after: "Weekdays at 10:00" }]);
+    });
   });
 
   it("cannot post a card to a session with no runner", () => {
