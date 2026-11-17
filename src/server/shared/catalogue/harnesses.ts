@@ -52,6 +52,8 @@ export const HARNESSES = [
       echoesPrompt: true,
       supportsCompaction: true,
       forksAtMessage: true,
+      // Measured on 2.1.321: killed at its init, the CLI's file already held the prompt.
+      savesPromptAtInit: true,
       // docs/297 — the CLI's own `/goal`: no pause, no resume, and a set that
       // starts work at once, so it has to ride the turn.
       supportsGoals: true,

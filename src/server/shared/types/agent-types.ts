@@ -190,6 +190,12 @@ export interface AgentCapabilities {
    * Resolve through the registry; no adapter declares it. Absent is false.
    */
   forksAtMessage?: boolean;
+  /**
+   * docs/007 — the conversation named by `agent_init` already holds the prompt, so it
+   * resumes even when the process is killed right after. Resolve through the registry.
+   * Absent is false.
+   */
+  savesPromptAtInit?: boolean;
   /** docs/154 — the CLI owns a goal ShipIt can read and change. Absent is false. */
   supportsGoals?: boolean;
   /** docs/154 — how ShipIt handles each `/goal` action for this harness: "control"

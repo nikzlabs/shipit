@@ -41,7 +41,7 @@ type BooleanCapabilityKeys = {
 }[keyof AgentCapabilities];
 type Unchecked = Exclude<
   BooleanCapabilityKeys,
-  (typeof FLAGS)[number] | "startsOwnTurns" | "echoesPrompt" | "forksAtMessage"
+  (typeof FLAGS)[number] | "startsOwnTurns" | "echoesPrompt" | "forksAtMessage" | "savesPromptAtInit"
 >;
 const _everyBooleanCapabilityIsChecked: Unchecked extends never ? true : Unchecked = true;
 

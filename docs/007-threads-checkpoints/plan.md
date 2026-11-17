@@ -116,7 +116,12 @@ init and result), and only once that conversation answered: at the model's first
 (not text the CLI or its adapter wrote itself, which the adapters mark `synthetic`) or at a
 successful result. An unanswered failure (a refusal, a Stop) may store an id only for a
 session's first conversation — no stored id and no replay waiting — so it never replaces a
-stored id, and a refused fork attempt never retires the fork's replay. A harness cannot
+stored id, and a refused fork attempt never retires the fork's replay. A Stop kills a
+resident CLI, so it reports no result; for a first conversation the id from init is then
+stored when the process exits, but only for a harness whose registry entry declares
+`savesPromptAtInit` (Claude: killed at its init, 2.1.321's conversation file already held
+the prompt, and `--resume` recalled it). Without it, the next turn started an empty
+conversation and the first prompt was lost. A harness cannot
 change within a session, so no agent switch justifies a reset either.
 
 The incident: a ~4,800-message Claude session lost its context after a Stop. The next
