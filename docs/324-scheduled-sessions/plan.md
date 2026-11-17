@@ -156,16 +156,20 @@ proposal names no time zone, Confirm sends the browser's. A change card records 
 changed since, Confirm refuses, because the card's "before" is no longer true.
 The command needs no repository, so it works in a sandbox too.
 
-**A new schedule inherits the proposing session's selection (req 35).** When
-the YAML's `params` name none of `role`, `agent`, `model`, `serviceId` and
-`billingMode` (a `null` counts as naming), `inheritedSelection`
-(`schedule-proposal.ts`) fills in the session's harness, model, service and
-billing mode, and its reasoning level unless the YAML names one. A model
-ShipIt no longer offers, or a level the harness does not have, is left out
-rather than refused, so a proposal never fails on a value it did not name. The
-values are written into the proposal, so the card shows them and the user
-confirms them. A role is not inherited: it carries a brief, not only a model.
-A change (`--id`) inherits nothing.
+**A new schedule inherits the proposing session's selection (req 35).**
+`inheritedSelection` (`schedule-proposal.ts`) fills in the session's harness,
+model, service, billing mode and reasoning level, key by key, for each key the
+YAML's `params` leave out (a `null` counts as given). It inherits nothing when
+the YAML names a role, another harness, or a model the session's harness
+cannot run. `model: null` keeps the harness. The model, service and billing
+mode come along only if the harness can run them together with the YAML's own
+values (`harnessSupportsMode` and the harness's catalogue entries),
+and the reasoning level only if that model has it, so a proposal never fails,
+and a run never drops a value, that the YAML did not name. A retired model
+moves to its successor, as the session's own next turn would. The values are
+written into the proposal, so the card shows them and the user confirms them.
+A role is not inherited: it carries a brief, not only a model. A change
+(`--id`) inherits nothing.
 
 ## Settings → Schedules (reqs 10, 11, 19, 24, 32, 33)
 

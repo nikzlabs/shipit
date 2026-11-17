@@ -11,8 +11,19 @@ import type {
   SessionStartTarget,
 } from "../../shared/types.js";
 import { normalizeCapabilities } from "../../shared/types.js";
-import { getAgentCapabilities } from "../../shared/agent-registry.js";
-import { catalogueModelLabels, selectionExists } from "../../shared/catalogue/index.js";
+import type { AgentId } from "../../shared/types/agent-types.js";
+import type { BillingMode } from "../../shared/catalogue/index.js";
+import { agentIdForModel, getAgentCapabilities } from "../../shared/agent-registry.js";
+import {
+  catalogueEntriesForHarness,
+  catalogueModelIdsForHarness,
+  harnessSupportsMode,
+  nativeServiceForHarness,
+  resolveRetiredModelId,
+  retirementSuccessor,
+  sameSelection,
+  selectionHonoursEffort,
+} from "../../shared/catalogue/index.js";
 import { START_PARAM_LABELS, type StartParamNames } from "../../shared/session-start-labels.js";
 import { parseSessionStartSpec } from "../../shared/session-start-spec.js";
 import { describeGrants, describeTarget, describeTiming, formatWhen } from "../../shared/schedule-describe.js";
@@ -155,27 +166,68 @@ interface BuiltProposal {
 
 const REQUIRED_FOR_CREATE = ["name", "when", "target", "prompt"] as const;
 
-/** Naming any of these, or a role, opts the proposal out of the session's model selection. */
-const SELECTION_KEYS = ["role", "agent", "model", "serviceId", "billingMode"] as const;
+const SELECTION_FIELDS = ["model", "serviceId", "billingMode"] as const;
+type Selection = Pick<SessionStartParams, (typeof SELECTION_FIELDS)[number]>;
+
+/** As the spec reader will read it: trimmed. */
+const text = (value: unknown) => (typeof value === "string" ? value.trim() : undefined);
+
+/** Whether the harness can run the model on that service and billing mode, credentials aside. */
+function harnessRuns(harness: AgentId, { model, serviceId, billingMode }: Selection): boolean {
+  if (!model) return false;
+  if (!serviceId || !billingMode) return catalogueModelIdsForHarness(harness).includes(model);
+  const selection = { serviceId, billingMode, modelId: model };
+  return harnessSupportsMode(harness, serviceId, billingMode)
+    && catalogueEntriesForHarness(harness).some((entry) => sameSelection(entry.selection, selection));
+}
+
+/** The session's selection with a retired model moved to its successor, as its next turn would. */
+function currentSelection(harness: AgentId, session: SessionInfo): Selection {
+  const { model, serviceId, billingMode } = session;
+  if (!model) return {};
+  const successor = serviceId && billingMode
+    ? retirementSuccessor(harness, { serviceId, billingMode, modelId: model })
+    : resolveRetiredModelId(harness, model, nativeServiceForHarness(harness));
+  if (successor) return { model: successor.modelId, serviceId: successor.serviceId, billingMode: successor.billingMode };
+  return { model, ...(serviceId ? { serviceId } : {}), ...(billingMode ? { billingMode } : {}) };
+}
 
 /**
- * A new schedule runs on the proposing session's harness and model unless the YAML names its own
- * (`null` included). A selection ShipIt no longer offers is left out rather than refused.
+ * docs/324-scheduled-sessions req 35 — a new schedule takes the proposing session's harness, model
+ * and reasoning for every key the YAML leaves out (`null` counts as given). What would not run
+ * together with the YAML's own values is left out rather than refused.
  */
-function inheritedSelection(session: SessionInfo, given: Record<string, unknown> | undefined): SessionStartParams {
-  if (!session.agentId || SELECTION_KEYS.some((key) => given !== undefined && key in given)) return {};
-  const inherited: SessionStartParams = { agent: session.agentId };
-  const { model, serviceId, billingMode } = session;
-  if (model) {
-    const offered = serviceId && billingMode
-      ? selectionExists({ serviceId, billingMode, modelId: model })
-      : model in catalogueModelLabels();
-    if (offered) Object.assign(inherited, { model, ...(serviceId && billingMode ? { serviceId, billingMode } : {}) });
+function inheritedSelection(session: SessionInfo, given: Record<string, unknown> = {}): SessionStartParams {
+  const harness = session.agentId;
+  const named = (key: keyof SessionStartParams) => key in given;
+  // A role replaces the whole selection; another harness has its own models and levels.
+  if (!harness || text(given.role) !== undefined || (named("agent") && text(given.agent) !== harness)) return {};
+  const namedModel = text(given.model);
+  const runsNamedModel = !namedModel
+    || (getAgentCapabilities(harness)?.models ?? []).includes(namedModel)
+    || agentIdForModel(namedModel) === undefined;
+  if (!runsNamedModel) return {};
+
+  const inherited: SessionStartParams = named("agent") ? {} : { agent: harness };
+  const own = currentSelection(harness, session);
+  if (!(named("model") && given.model === null)) {
+    const pick = (key: keyof Selection) => (named(key) ? text(given[key]) : own[key]);
+    const combined = { model: pick("model"), serviceId: pick("serviceId"), billingMode: pick("billingMode") } as Selection;
+    if (harnessRuns(harness, combined)) {
+      for (const key of SELECTION_FIELDS) {
+        if (!named(key) && own[key] !== undefined) Object.assign(inherited, { [key]: own[key] });
+      }
+    }
   }
+
   const level = session.reasoningEffort;
-  const levels = getAgentCapabilities(session.agentId)?.reasoning?.options ?? [];
-  if (level && !(given !== undefined && "reasoning" in given) && levels.some((o) => o.value === level)) {
-    inherited.reasoning = level;
+  if (level && !named("reasoning")) {
+    const final = (key: keyof Selection) => inherited[key] ?? text(given[key]);
+    const [model, serviceId, billingMode] = [final("model"), final("serviceId"), final("billingMode")];
+    const selection = model && serviceId && billingMode
+      ? { serviceId, billingMode: billingMode as BillingMode, modelId: model }
+      : undefined;
+    if (selectionHonoursEffort(harness, selection, level)) inherited.reasoning = level;
   }
   return inherited;
 }

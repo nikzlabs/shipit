@@ -204,20 +204,51 @@ describe("proposeSchedule — a new schedule", () => {
       );
     });
 
-    it("keep the proposal's own reasoning level", () => {
-      const card = proposeSchedule(deps, SESSION, { text: `${UNNAMED}params: { reasoning: low }\n` });
+    const paramsOf = (params: string) => {
+      const card = proposeSchedule(deps, SESSION, { text: `${UNNAMED}params: ${params}\n` });
       const record = proposals.get(card.cardId)?.proposal;
-      expect(record?.kind === "create" && record.spec.params).toMatchObject({ model: "claude-opus-5", reasoning: "low" });
+      return record?.kind === "create" ? record.spec.params : undefined;
+    };
+
+    it("fill in only the keys the proposal leaves out", () => {
+      expect(paramsOf("{ reasoning: low }")).toMatchObject({ model: "claude-opus-5", reasoning: "low" });
+      expect(paramsOf("{ model: claude-sonnet-5 }")).toEqual({
+        agent: "claude", model: "claude-sonnet-5", serviceId: "anthropic", billingMode: "sub", reasoning: "high",
+      });
+      expect(paramsOf("{ billingMode: key }")).toMatchObject({ model: "claude-opus-5", serviceId: "anthropic", billingMode: "key" });
     });
 
-    it("are not used when the proposal names a role, a harness or a model, or sets one to null", () => {
-      for (const params of ["{ role: triage }", "{ agent: codex }", "{ model: null }"]) {
-        const card = proposeSchedule(deps, SESSION, { text: `${UNNAMED}params: ${params}\n` });
-        const record = proposals.get(card.cardId)?.proposal;
-        const spec = record?.kind === "create" ? record.spec.params : undefined;
-        expect(spec?.model, params).toBeUndefined();
-        expect(spec?.reasoning, params).toBeUndefined();
-      }
+    it("keep the harness when the proposal sets the model to null", () => {
+      expect(paramsOf("{ model: null }")).toEqual({ agent: "claude", reasoning: "high" });
+    });
+
+    it("are not used with a role, another harness, or a model this harness cannot run", () => {
+      expect(paramsOf("{ role: triage }")).toEqual({ role: "triage" });
+      expect(paramsOf("{ agent: codex }")).toEqual({ agent: "codex" });
+      expect(paramsOf("{ model: gpt-6.1-sol }")).toEqual({ model: "gpt-6.1-sol" });
+      expect(paramsOf("{ role: null }")).toMatchObject({ agent: "claude", model: "claude-opus-5" });
+      expect(paramsOf("{ agent: ' claude ' }")).toMatchObject({ agent: "claude", model: "claude-opus-5" });
+    });
+
+    it("do not pair the model with a service this harness cannot use", () => {
+      expect(paramsOf("{ serviceId: opencode, billingMode: key }")).toEqual({
+        agent: "claude", serviceId: "opencode", billingMode: "key", reasoning: "high",
+      });
+    });
+
+    it("move a retired model to its successor", () => {
+      sessions.setModelSelection(SESSION, { serviceId: "anthropic", billingMode: "sub", modelId: "claude-fable-5" });
+      expect(paramsOf("{}")).toMatchObject({ model: "claude-fable-5-1", serviceId: "anthropic", billingMode: "sub" });
+    });
+
+    it("leave out a reasoning level the model does not have", () => {
+      sessions.setAgentId(SESSION, "codex");
+      sessions.setModelSelection(SESSION, { serviceId: "openai", billingMode: "sub", modelId: "gpt-6-sol" });
+      sessions.setReasoning(SESSION, "none");
+      expect(paramsOf("{}")).toMatchObject({ model: "gpt-6-sol", reasoning: "none" });
+      expect(paramsOf("{ model: gpt-6.1-sol }")).toEqual({
+        agent: "codex", model: "gpt-6.1-sol", serviceId: "openai", billingMode: "sub",
+      });
     });
 
     it("are not used on a change to an existing schedule", () => {
