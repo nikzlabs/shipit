@@ -68,7 +68,7 @@ not "Services" — that is only its internal id.
 | **Keyboard** | Rebind shortcuts |
 | **Voice** | Dictation and spoken voice notes — providers, keys, language, voice, speed, delivery |
 | **Network** | The workspace default for outbound network access, and the host allowlist |
-| **Advanced** | Updates and release channel, live steering, Code Mode per harness, PR automations — auto-create-PR, auto-fix CI, auto-resolve conflicts, reset after a merge — multi-agent sessions, letting the agent compact its own context, compacting idle sessions before the prompt cache expires, compacted turns, notifications, GPU access, the memory budget, and a full reset |
+| **Advanced** | Updates and release channel, live steering, Claude Code memory, Code Mode per harness, PR automations — auto-create-PR, auto-fix CI, auto-resolve conflicts, reset after a merge — multi-agent sessions, letting the agent compact its own context, compacting idle sessions before the prompt cache expires, compacted turns, notifications, GPU access, the memory budget, and a full reset |
 
 Several of those are covered in depth elsewhere: Skills and MCP servers in
 `/shipit-docs/skills.md` and `/shipit-docs/plugins.md`, Voice in
@@ -189,6 +189,19 @@ That read-out earns its place because **a credential alone cannot run a turn**.
 A model becomes usable only when an installed harness can carry it — which is
 why a user with a working key can still find nothing to select. The two halves
 sit on one screen for exactly that reason.
+
+### Claude Code memory
+
+Claude Code keeps its own **memory**: notes it writes about the user and the
+project and reads again in later conversations. **Settings → Advanced → Agent →
+Claude Code memory** (on by default) turns it off: Claude Code then neither
+reads nor writes those notes — in session turns, in `shipit agent run` spawns,
+and in the Claude Code runs ShipIt does for a session's own work, such as naming
+it or describing its pull request. Notes already written stay where they are,
+and turning the switch back on brings them back. Other harnesses are not
+affected. A running session picks up the change at its next turn; a spawn reads
+it when it starts. Read it with `shipit settings get advanced.claudeMemory` and
+propose a change with `shipit settings propose`.
 
 ### Code Mode
 

@@ -25,6 +25,7 @@ import { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import { FileReviewStore } from "./review-store.js";
 import { PresentStore } from "./present-store.js";
 import { CredentialStore } from "./credential-store.js";
+import { autoMemoryFor } from "./claude-memory.js";
 import { adoptEnvCredentials } from "./adopt-env-credentials.js";
 import { resolveSecretCipher, type SecretCipher } from "./secret-cipher.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
@@ -149,8 +150,9 @@ export function makeInProcessGenerateText(deps: {
   agentFactory: ((agentId: AgentId) => AgentProcess) | undefined;
   defaultAgentId: AgentId;
   usageManager: UsageManager;
+  credentialStore?: Pick<CredentialStore, "getDeclaredSetting">;
 }): GenerateText {
-  const { agentFactory, defaultAgentId, usageManager } = deps;
+  const { agentFactory, defaultAgentId, usageManager, credentialStore } = deps;
   return (prompt, cwd, opts) => {
     if (!agentFactory) {
       return Promise.resolve("");
@@ -201,7 +203,8 @@ export function makeInProcessGenerateText(deps: {
         }
       });
       agent.on("error", (err: Error) => reject(err));
-      agent.run({ prompt, cwd, permissionMode: "auto" });
+      const autoMemory = autoMemoryFor(defaultAgentId, credentialStore);
+      agent.run({ prompt, cwd, permissionMode: "auto", ...(autoMemory !== undefined ? { autoMemory } : {}) });
     });
   };
 }
@@ -378,7 +381,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const presentStore = new PresentStore(databaseManager);
 
   const generateText: GenerateText = deps.generateText
-    ?? makeInProcessGenerateText({ agentFactory, defaultAgentId, usageManager });
+    ?? makeInProcessGenerateText({ agentFactory, defaultAgentId, usageManager, credentialStore });
 
   return {
     defaultAgentId,

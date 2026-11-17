@@ -11,6 +11,12 @@ import { resolveAgentHome } from "../../../shared/agent-home.js";
 import { CLAUDE_TOOLS_OFF_ARGS } from "../../../shared/agent-tools-off.js";
 import { textIndicatesProviderEdgeBlock } from "../../../shared/provider-errors.js";
 
+// The CLI's own switch; it neither reads nor writes the memory directory while set.
+// Undefined leaves the inherited environment alone, so a deployment's own opt-out holds.
+function applyAutoMemory(env: Record<string, string>, autoMemory: boolean | undefined): void {
+  if (autoMemory === false) env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
+}
+
 // Environment credentials override disk login; unscoped routes still need them.
 export function scrubEnvAuthForScopedHome(env: Record<string, string>, scopedHome: string | undefined): void {
   if (!scopedHome) return;
@@ -100,6 +106,7 @@ export interface ClaudeRunOptions {
   guardDestructiveGit?: boolean;
   permissionPromptTool?: string;
   toolsOff?: boolean;
+  autoMemory?: boolean;
 }
 
 /**
@@ -283,6 +290,7 @@ export class ClaudeProcess extends EventEmitter {
     } else {
       delete spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT;
     }
+    applyAutoMemory(spawnEnv, opts.autoMemory);
 
     try {
       this.proc = spawn("claude", args, {
@@ -549,6 +557,7 @@ export class StreamingClaudeProcess extends EventEmitter {
     } else {
       delete spawnEnv.SHIPIT_GUARD_DESTRUCTIVE_GIT;
     }
+    applyAutoMemory(spawnEnv, opts.autoMemory);
 
     console.log("[streaming-claude] spawning:", "claude", args.slice(0, 8).join(" "), "| cwd:", cwd);
 

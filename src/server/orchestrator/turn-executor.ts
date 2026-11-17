@@ -1,6 +1,7 @@
 import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionInfo, SessionMessageOrigin, LastTurnOutcome } from "../shared/types.js";
 import { desiredSpawnIdentity } from "./service-routing.js";
 import { withCodeMode } from "./code-mode.js";
+import { withAutoMemory } from "./claude-memory.js";
 import { requeueUndeliveredSteers, wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { createAgentStderrTail } from "./agent-stderr-tail.js";
 import {
@@ -2130,9 +2131,12 @@ export async function executeAgentTurn(
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
       submittedPrompt = runParams.prompt;
       if (stoppedDuringSetup() || settledDuringSetup()) return;
-      const spawnIdentity = withCodeMode(
-        desiredSpawnIdentity(deps.listenerDeps.sessionManager, sessionId, agentId),
-        runParams.codeMode,
+      const spawnIdentity = withAutoMemory(
+        withCodeMode(
+          desiredSpawnIdentity(deps.listenerDeps.sessionManager, sessionId, agentId),
+          runParams.codeMode,
+        ),
+        runParams.autoMemory,
       );
       // planning#700 — the worker keeps it with the process, for an orchestrator that restarts.
       if (spawnIdentity !== undefined) agent.setSpawnIdentity?.(spawnIdentity);

@@ -4,6 +4,7 @@ import type { AgentId, AgentRequestUsage, NonTurnFailureCard } from "../../share
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { UsageManager } from "../usage.js";
 import type { CredentialStore } from "../credential-store.js";
+import { autoMemoryFor } from "../claude-memory.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import { accountCredentialHarness } from "../provider-account-manager.js";
 import type { PersistedMessage } from "../chat-history.js";
@@ -516,6 +517,7 @@ async function runNonTurnSpawn(
         : {}),
       timeoutMs: NON_TURN_SPAWN_TIMEOUT_MS,
       maxOutputChars: NON_TURN_MAX_OUTPUT_CHARS,
+      ...(autoMemoryFor(target.harnessId, deps.credentialStore) === false ? { autoMemory: false } : {}),
     });
     recordNonTurnUsage(deps, {
       sessionId,

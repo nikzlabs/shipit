@@ -38,6 +38,8 @@ export interface SubAgentRunOptions {
   /** Empty the harness's tool set for a one-shot run (docs/299). */
   toolsOff?: boolean;
   sandbox?: boolean;
+  /** Claude Code's auto memory; false turns it off. */
+  autoMemory?: boolean;
 }
 
 export type SubAgentRunStatus = "success" | "error" | "timeout" | "cancelled";
@@ -118,6 +120,7 @@ export interface SubAgentSpawnRequest {
   toolsOff?: boolean;
   /** The parent is a sandbox session, so its branch-block exemption applies to the spawn too (docs/211). */
   sandbox?: boolean;
+  autoMemory?: boolean;
 }
 
 export interface SubAgentRunHandle {
@@ -326,5 +329,6 @@ export function buildSubAgentRunParams(opts: SubAgentRunOptions): AgentRunParams
     ...(opts.homeDir !== undefined ? { homeDir: opts.homeDir } : {}),
     ...(opts.toolsOff !== undefined ? { toolsOff: opts.toolsOff } : {}),
     ...(opts.sandbox ? { sandbox: true } : {}),
+    ...(opts.autoMemory === false ? { autoMemory: false } : {}),
   };
 }

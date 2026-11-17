@@ -515,6 +515,7 @@ export class ClaudeAdapter
       guardDestructiveGit: params.guardDestructiveGit,
       permissionPromptTool: this._permissionPromptTool,
       toolsOff: params.toolsOff,
+      autoMemory: params.autoMemory,
     });
   }
 

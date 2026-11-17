@@ -407,6 +407,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
           ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
           ...(req.sandbox ? { sandbox: true } : {}),
+          ...(req.autoMemory === false ? { autoMemory: false } : {}),
           ...modelListField(),
         },
         { timeoutMs: SUB_AGENT_TRANSPORT_TIMEOUT_MS, signal: controller.signal },

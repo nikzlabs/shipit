@@ -40,6 +40,7 @@ function setup(
     serviceMcp?: SessionServiceMcp;
     agentSessionId?: string;
     compact?: boolean;
+    claudeMemory?: boolean;
   } = {},
 ) {
   const captured: PrepareRunParamsInput[] = [];
@@ -53,6 +54,7 @@ function setup(
       getAllMcpServers: () => opts.accountMcp ?? {},
       getAutoCreatePr: () => true,
       getSessionStatusCard: () => opts.sessionStatusCard === true,
+      getDeclaredSetting: (key: string) => (key === "advanced.claudeMemory" ? opts.claudeMemory ?? true : undefined),
     },
     githubAuthManager: { authenticated: true },
     sessionManager: {
@@ -155,6 +157,13 @@ describe("buildAgentRunParams — the reasoning level comes from the session row
 
 const promptSection = (name: string): string =>
   fs.readFileSync(new URL(`./prompts/${name}`, import.meta.url), "utf8").trim();
+
+describe("buildAgentRunParams — Claude Code memory", () => {
+  it("turns memory off for a Claude spawn only while the setting is off", async () => {
+    expect((await setup(makeSession(), undefined, undefined, { claudeMemory: false }).run()).autoMemory).toBe(false);
+    expect("autoMemory" in (await setup(makeSession()).run())).toBe(false);
+  });
+});
 
 describe("buildAgentRunParams — docs/303 session status card", () => {
   it("records the value this spawn carries, for the resident-reuse check", async () => {
