@@ -1346,6 +1346,39 @@ describe("wireAgentListeners", () => {
       runner.dispose({ force: true });
     });
 
+    it("stores a Claude first conversation that a Stop killed before any result", () => {
+      const { agent, runner, d } = wire({});
+
+      agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "killed-id", tools: [] } as AgentEvent);
+      noteUserStop(runner);
+      agent.emit("done", 143);
+
+      expect(d.sessionManager.setAgentSessionId).toHaveBeenCalledWith("session-1", "killed-id");
+      runner.dispose({ force: true });
+    });
+
+    it("stores nothing at an exit without a Stop, at a Stop with a stored id, or for another agent", () => {
+      const crashed = wire({});
+      crashed.agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "crashed-id", tools: [] } as AgentEvent);
+      crashed.agent.emit("done", 1);
+      expect(crashed.d.sessionManager.setAgentSessionId).not.toHaveBeenCalled();
+      crashed.runner.dispose({ force: true });
+
+      const stored = wire({ agentSessionId: "stored-id" });
+      stored.agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "other-id", tools: [] } as AgentEvent);
+      noteUserStop(stored.runner);
+      stored.agent.emit("done", 143);
+      expect(stored.d.sessionManager.setAgentSessionId).not.toHaveBeenCalled();
+      stored.runner.dispose({ force: true });
+
+      const codex = wire({});
+      codex.agent.emit("event", { type: "agent_init", agentId: "codex", sessionId: "thread-id", tools: [] } as AgentEvent);
+      noteUserStop(codex.runner);
+      codex.agent.emit("done", 143);
+      expect(codex.d.sessionManager.setAgentSessionId).not.toHaveBeenCalled();
+      codex.runner.dispose({ force: true });
+    });
+
     it("stores it at the first answer, and on a successful result", () => {
       const answered = wire({ conversationReplay: "User: the parent's transcript" });
       answered.agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "new-id", tools: [] } as AgentEvent);

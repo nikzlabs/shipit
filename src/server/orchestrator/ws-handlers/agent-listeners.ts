@@ -14,6 +14,7 @@ import { quotaRefusalCanFailOver } from "../credential-failure-policy.js";
 import { toListRow, type SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
 import {
+  getAgentCapabilities,
   getContextWindowForModel,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
 } from "../../shared/agent-registry.js";
@@ -166,6 +167,10 @@ export function wireAgentListeners(
   }
   const ownerSessionId = opts.capturedSessionId;
   const sessionAtTurnStart = deps.sessionManager.get(opts.capturedSessionId);
+  // An unanswered failure (a refusal, a Stop) may only name a session's first
+  // conversation: never replace a stored id, nor retire a fork's replay unread.
+  const firstConversation = !sessionAtTurnStart?.agentSessionId
+    && !sessionAtTurnStart?.conversationReplay;
   let turnModel: string | undefined = sessionAtTurnStart?.model ?? deps.getSelectedModel();
   const turnAttributionAtStart = turnAttributionFor(selectionOf(sessionAtTurnStart));
   // Local adapter errors bypass SSE stale-event filtering; compare the turn epoch too.
@@ -182,8 +187,9 @@ export function wireAgentListeners(
 
   // Init precedes resume validation, and a fork's replay is retired with the write: an id
   // is stored once its conversation answered (output or a successful result). See the
-  // result handler for the one unanswered case.
+  // result and done handlers for the unanswered cases.
   let pendingAgentSessionId: string | null = null;
+  let pendingIdHoldsPrompt = false;
   let agentSessionIdPersisted = false;
   let missingConversationDetected = false;
   let conversationAnswered = false;
@@ -599,6 +605,9 @@ export function wireAgentListeners(
         hasLoggedAgentStart = true;
         deps.broadcastLog("server", "Agent process started");
       }
+      if (pendingAgentSessionId === null) {
+        pendingIdHoldsPrompt = getAgentCapabilities(event.agentId)?.savesPromptAtInit === true;
+      }
       pendingAgentSessionId ??= event.sessionId;
       const session = deps.sessionManager.get(turnSessionId);
       if (session) {
@@ -763,10 +772,6 @@ export function wireAgentListeners(
     if (event.type === "agent_result") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId) {
-        // An unanswered failure (a refusal, a Stop) may only name a session's first
-        // conversation: never replace a stored id, nor retire a fork's replay unread.
-        const firstConversation = !sessionAtTurnStart?.agentSessionId
-          && !sessionAtTurnStart?.conversationReplay;
         const storable = event.status === "success" || conversationAnswered || firstConversation;
         if (!missingConversationDetected && storable) {
           deps.sessionManager.setAgentSessionId(turnSessionId, event.sessionId);
@@ -1002,6 +1007,14 @@ export function wireAgentListeners(
   });
 
   wireAuthRequiredHandler(agent, runner, deps, opts, emitToViewers);
+
+  // A Stop kills the CLI before any result, so the result handler's first-conversation
+  // rule never runs; a CLI that saved the prompt at init still resumes with it.
+  agent.on("done", () => {
+    if (runner && stoppedByUser(runner) && firstConversation && pendingIdHoldsPrompt) {
+      persistAgentSessionIdIfReady();
+    }
+  });
 
   agent.on("error", async (err: Error) => {
     // Check before retry: a stale error must not change the successor's route or state.
