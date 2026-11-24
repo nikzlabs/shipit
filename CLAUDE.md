@@ -242,7 +242,7 @@ Two things to get right when retargeting. **The digest decides what Docker pulls
 - Every version the PR moves is at least 7 days old, read from its own publish or build date (npm `time`, the image's `created`), not from Renovate.
 - Every image digest is the digest of the tag next to it.
 - CI is green on the PR's head, and for agent CLIs that includes the Claude and Codex CLI refresh probes.
-- The release notes of every agent CLI the PR moves are read, and no change touches how ShipIt calls the CLI: its flags, output format, sign-in, settings or permission mode. Where a vendor publishes no notes, the run says so in its summary.
+- The release notes of every agent CLI the PR moves are read, and none of the new versions changes behaviour ShipIt relies on when it runs the CLI: its flags, output format, sign-in, settings or permission mode. A CLI whose vendor publishes no notes fails this item.
 
 A failed item is a question for the user, with the reason: a hold (like Codex 0.166.0 and 0.167.0, which broke `classifyCodexRefreshOutput`), a retarget the agent cannot settle, or a release note that may change behaviour the tests do not cover.
 
