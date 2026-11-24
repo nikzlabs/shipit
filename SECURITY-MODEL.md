@@ -73,7 +73,11 @@ ShipIt locks its dependency graph down hard.
   lockfile. The session-worker image installs them via `npm ci --ignore-scripts`, so
   versions are deterministic and **lifecycle/postinstall scripts don't run** across the
   tree. Bumps are gated: Renovate proposes them with a multi-day cooldown and **no
-  auto-merge**, so a human reviews every agent-CLI change.
+  auto-merge**. Every agent-CLI change is reviewed before it merges: the weekly
+  dependency run checks it against a written checklist (version age, image digests, CI
+  including the CLI refresh probes, and the CLI release notes), merges only when every
+  item passes, and asks a human otherwise (CLAUDE.md,
+  Dependency policy, "Merging a Renovate PR").
 - **No silent drift.** Because everything is pinned and lockfile-installed, what you build
   and run is exactly what was reviewed — a dependency bump is always a deliberate,
   reviewable edit, never a side effect of re-running install.

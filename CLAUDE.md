@@ -229,13 +229,22 @@ Two rules, both enforced by `npm run check-deps` (`scripts/check-dependency-age.
 
 To bump: edit the manifest to the exact version, `npm install` to refresh the lockfile, then `npm run check-deps` before opening the PR.
 
-**Container image pins (`docker/Dockerfile.*`) are outside `check-deps`, and no cooldown enforces their age today.** Renovate's Docker datasource carries a release timestamp for Docker Hub only — ghcr.io is upstream `renovatebot/renovate#39064` — so `minimumReleaseAge` has nothing to evaluate there, and `minimumReleaseAgeBehaviour: timestamp-optional` lets the candidate through with no age delay. `timestamp-required` is worse, not stricter: while the timestamp is missing it holds every candidate pending, so no branch and no PR is raised at all and the pin rots with only the Dependency Dashboard to show it. The human on `automerge: false` is the gate.
+**Container image pins (`docker/Dockerfile.*`) are outside `check-deps`, and no cooldown enforces their age today.** Renovate's Docker datasource carries a release timestamp for Docker Hub only — ghcr.io is upstream `renovatebot/renovate#39064` — so `minimumReleaseAge` has nothing to evaluate there, and `minimumReleaseAgeBehaviour: timestamp-optional` lets the candidate through with no age delay. `timestamp-required` is worse, not stricter: while the timestamp is missing it holds every candidate pending, so no branch and no PR is raised at all and the pin rots with only the Dependency Dashboard to show it. `automerge: false` keeps the merge with the reviewer below, who checks the age by hand.
 
 So **when a bot PR proposes a container version younger than 7 days, retarget the PR at the newest release that is both past the 7-day window and newer than the current pin — do not hold it.** Holding can rotate the candidate instead of converging on one (#2926: the proposal moved on twice while it was held). If no aged release is newer than the pin, defer; never retarget at the pinned version or below.
 
 **The other direction — a pin that is too OLD — is `npm run check-image-vulns`** (CI job "Image Vulnerability Scan", on every PR). It Grype-scans each digest-pinned image in `docker/Dockerfile.*` and fails on a HIGH/CRITICAL whose fix has been available for 30+ days; newer fixes are only listed. When it fails, bump that image's digest under the rules above — for `node`, by hand, with its `BASE_IMAGE_DIGEST` (Renovate does not manage it).
 
 Two things to get right when retargeting. **The digest decides what Docker pulls** — in `image:tag@sha256:…` the tag is cosmetic, so a stale digest ships the old image under a new tag and nothing fails. Read the digest of the exact tag you are pinning, keep the image variant and platform coverage the bot's candidate had, and say in the PR where the digest came from; where ghcr.io is outside the session's egress allowlist, GitHub's package-versions page (`https://github.com/<owner>/<repo>/pkgs/container/<image>/versions`) is a usable fallback once you confirm its mapping against a digest Renovate itself pinned. **The edit makes the branch yours**: Renovate stops updating a branch that carries a non-bot commit, and asking it to rebase afterwards discards the retarget and restores the newer candidate. Append your own commit, merge `main` in by hand if it conflicts, re-run the checks, and re-read the final tag and digest before merging.
+
+**Merging a Renovate PR.** Renovate never merges by itself (`automerge: false`). The agent that reviews it (the weekly dependency run, `docs/schedules/weekly-dependency-prs.md`) merges it when all of these hold, and asks the user only when one does not:
+
+- Every version the PR moves is at least 7 days old, read from its own publish or build date (npm `time`, the image's `created`), not from Renovate.
+- Every image digest is the digest of the tag next to it.
+- CI is green on the PR's head, and for agent CLIs that includes the Claude and Codex CLI refresh probes.
+- The release notes of every agent CLI the PR moves are read, and none of the new versions changes behaviour ShipIt relies on when it runs the CLI: its flags, output format, sign-in, settings or permission mode. A CLI whose vendor publishes no notes passes this item when the other items pass; the run names it in its summary.
+
+A failed item is a question for the user, with the reason: a hold (like Codex 0.166.0 and 0.167.0, which broke `classifyCodexRefreshOutput`), a retarget the agent cannot settle, or a release note that may change behaviour the tests do not cover.
 
 A third rule is enforced separately by `npm run check-audit` (`scripts/check-audit.ts`):
 
