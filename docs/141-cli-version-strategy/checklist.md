@@ -86,7 +86,8 @@ Tracks the four-axis rollout from `plan.md`. Order follows the plan's
       check — auto-merging CLI bumps on only lint/build/unit-test green would
       ship the exact integration breakage Axis 3 is meant to catch (the plan's
       top concern). Flip to `true` in the package rule once Axis 3 lands. Until
-      then a human reviews + merges the grouped bump PR.
+      then the weekly dependency run reviews the grouped bump PR and merges it under
+      CLAUDE.md's "Merging a Renovate PR" checklist, asking a human when an item fails.
 
 ## Axis 1 / Option D — stable + latest channels
 

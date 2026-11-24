@@ -288,7 +288,7 @@ landed, half-consciously:
 A permanent CI probe service (full docs/262 shape) is **not** proposed:
 tour turns cost real model calls and real money per run, the dogfood inner
 instance can't run in CI today, and the cadence that matters (version
-bumps) is exactly when a human is already on a Renovate PR. The
+bumps) is exactly when a Renovate PR is already under review. The
 automation that *is* worth building is docs/141 Axis 3, which steps 1–3
 define the assertions for.
 
