@@ -237,7 +237,7 @@ So **when a bot PR proposes a container version younger than 7 days, retarget th
 
 Two things to get right when retargeting. **The digest decides what Docker pulls** — in `image:tag@sha256:…` the tag is cosmetic, so a stale digest ships the old image under a new tag and nothing fails. Read the digest of the exact tag you are pinning, keep the image variant and platform coverage the bot's candidate had, and say in the PR where the digest came from; where ghcr.io is outside the session's egress allowlist, GitHub's package-versions page (`https://github.com/<owner>/<repo>/pkgs/container/<image>/versions`) is a usable fallback once you confirm its mapping against a digest Renovate itself pinned. **The edit makes the branch yours**: Renovate stops updating a branch that carries a non-bot commit, and asking it to rebase afterwards discards the retarget and restores the newer candidate. Append your own commit, merge `main` in by hand if it conflicts, re-run the checks, and re-read the final tag and digest before merging.
 
-**Merging a Renovate PR.** Renovate never merges by itself (`automerge: false`). The agent that reviews it (the weekly dependency run) merges it when all of these hold, and asks the user only when one does not:
+**Merging a Renovate PR.** Renovate never merges by itself (`automerge: false`). The agent that reviews it (the weekly dependency run, `docs/schedules/weekly-dependency-prs.md`) merges it when all of these hold, and asks the user only when one does not:
 
 - Every version the PR moves is at least 7 days old, read from its own publish or build date (npm `time`, the image's `created`), not from Renovate.
 - Every image digest is the digest of the tag next to it.
