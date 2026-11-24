@@ -29,7 +29,7 @@ params:
   reasoning: medium
   permissionMode: auto
 prompt: |
-  Clone https://github.com/nikzlabs/shipit into /workspace/shipit (if an earlier run left a clone there, fetch and reset it to origin/main). Then read docs/schedules/weekly-dependency-prs.md in that clone and do the task in its "Task" section. If that file is missing, do nothing else and ask the user with your question tool.
+  Clone https://github.com/nikzlabs/shipit into /workspace/shipit (if an earlier run left a clone there, fetch and reset it to origin/main). Then read docs/schedules/weekly-dependency-prs.md in that clone and do the task in its "Task" section. If the clone or fetch fails, or that file is missing, do nothing else and ask the user with your question tool.
 ```
 
 ## Task
