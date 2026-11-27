@@ -474,11 +474,15 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/agent/spawn", request.body ?? {}, reply, { timeoutMs: 0 }),
   );
 
-  app.get<{ Querystring: { tab?: string } }>(
+  app.get<{ Querystring: { tab?: string; full?: string } }>(
     "/agent-ops/settings/list",
     async (request, reply) => {
       const tab = request.query?.tab?.trim();
-      const qs = tab ? `?${new URLSearchParams({ tab }).toString()}` : "";
+      const params = new URLSearchParams({
+        ...(tab ? { tab } : {}),
+        ...(request.query?.full === "1" ? { full: "1" } : {}),
+      }).toString();
+      const qs = params ? `?${params}` : "";
       return relay("GET", `/settings${qs}`, undefined, reply);
     },
   );

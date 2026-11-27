@@ -287,6 +287,65 @@ describe("resolveSettingsProposal — the Docker socket grant (docs/318-compose-
   });
 });
 
+// docs/299-agent-settings-access req 14: one click pins a slot's model and level.
+describe("resolveSettingsProposal — a reviewer slot pinned in one card", () => {
+  let reportDir: string;
+  let previousReport: string | undefined;
+
+  beforeEach(() => {
+    previousReport = process.env.SHIPIT_AGENTS_INSTALL_REPORT;
+    reportDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-installed-"));
+    const file = path.join(reportDir, "installed.json");
+    fs.writeFileSync(file, JSON.stringify({ harnesses: ["claude"] }));
+    process.env.SHIPIT_AGENTS_INSTALL_REPORT = file;
+    fx.credentialStore.upsertCredentialRouteWithSecret(
+      {
+        id: "anthropic-key-fixture",
+        serviceId: "anthropic",
+        billingMode: "key",
+        via: "string",
+        status: "ready",
+        priority: 0,
+        isPrimary: true,
+        label: "fixture",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      "sk-ant-fixture",
+    );
+  });
+
+  afterEach(() => {
+    if (previousReport === undefined) delete process.env.SHIPIT_AGENTS_INSTALL_REPORT;
+    else process.env.SHIPIT_AGENTS_INSTALL_REPORT = previousReport;
+    fs.rmSync(reportDir, { recursive: true, force: true });
+  });
+
+  it("stores the model and the level together, and reads back as the card said", async () => {
+    expect(fx.credentialStore.getReviewerPin("first")).toBeFalsy();
+    const card = await post({
+      key: "reviewers[].model",
+      item: "first",
+      valueText: JSON.stringify({
+        serviceId: "anthropic",
+        billingMode: "key",
+        modelId: "claude-opus-5",
+        reasoningEffort: "low",
+      }),
+    });
+
+    const { card: resolved } = await decide(card.cardId);
+
+    expect(resolved.phase).toBe("applied");
+    expect(fx.credentialStore.getReviewerPin("first")).toEqual({
+      serviceId: "anthropic",
+      billingMode: "key",
+      modelId: "claude-opus-5",
+      reasoningEffort: "low",
+    });
+  });
+});
+
 describe("resolveSettingsProposal — refused", () => {
   it("refuses a card for a repository this session no longer binds", async () => {
     fx.close();

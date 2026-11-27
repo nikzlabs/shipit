@@ -130,6 +130,31 @@ describe("Integration: agent settings access (docs/299)", () => {
     expect(body.tabs).toContain("keyboard");
   });
 
+  // docs/299-agent-settings-access req 13: one call exports every role whole.
+  it("exports each role's harness, model and prompt in one list --json", async () => {
+    credentialStore.setRole("deep-dive", {
+      name: "deep-dive",
+      prompt: "Cite every file you read.",
+      params: {
+        kind: "pinned",
+        harnessId: "claude",
+        serviceId: "anthropic",
+        billingMode: "sub",
+        modelId: "claude-opus-5",
+      },
+    });
+    const { stdout } = await runSettingsShim(["settings", "list", "--tab", "roles", "--json"]);
+    const body = JSON.parse(stdout) as {
+      settings: { key: string; items?: { address: string; value: unknown }[] }[];
+    };
+    const item = (key: string) =>
+      body.settings.find((s) => s.key === key)?.items?.find((i) => i.address === "deep-dive")?.value;
+
+    expect(item("roles[].harness")).toBe("claude");
+    expect(item("roles[].model")).toMatchObject({ modelId: "claude-opus-5" });
+    expect(item("roles[].prompt")).toBe("Cite every file you read.");
+  });
+
   it("narrows to one tab", async () => {
     const { stdout } = await runSettingsShim(["settings", "list", "--tab", "git", "--json"]);
     const body = JSON.parse(stdout) as { settings: { key: string }[] };

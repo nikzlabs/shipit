@@ -363,6 +363,11 @@ ShipIt's own settings (docs/299 — read what the user configured, propose a cha
   'get' details ONE: its whole description in the user's own words, the values
   it accepts, and what it resolves to on this install right now.
 
+  'list --json' is the export: every value in full and every item of a per-item
+  setting (each role's harness, model, effort and prompt; each reviewer slot),
+  in one call. Use it when the user asks to export or back up their settings.
+  The plain 'list' shortens long text and only counts items.
+
   Read before you claim a setting is the blocker. When one genuinely is, say
   WHICH setting, what it is set to, and what it has to become — never a bare
   "change it in Settings". Some values ShipIt will not show you (a secret is

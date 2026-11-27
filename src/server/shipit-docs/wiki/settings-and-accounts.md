@@ -9,6 +9,7 @@ and tell the user — never make them go and look:
 ```
 shipit settings list [--tab NAME]   # every setting, with its current value
 shipit settings get  <key>          # one setting in full, in the user's own words
+shipit settings list --json         # the export: every value whole, every role and slot
 shipit agent roles                  # the roles this install has
 shipit agent params                 # the harnesses, models and effort levels it has
 shipit service list                 # this project's Compose services

@@ -159,12 +159,29 @@ export async function handleSettingsList(args: string[], deps: SettingsDeps): Pr
   }
 
   const tab = parsed.values.tab;
-  const query = tab ? `?tab=${encodeURIComponent(tab)}` : "";
+  const json = parsed.booleans.has("json");
+  // `--json` is the export: every value whole and every item of a per-item
+  // setting (docs/299-agent-settings-access req 13). The text index stays short.
+  const params = [
+    ...(tab ? [`tab=${encodeURIComponent(tab)}`] : []),
+    ...(json ? ["full=1"] : []),
+  ];
+  const query = params.length > 0 ? `?${params.join("&")}` : "";
   const res = await deps.call("GET", `/agent-ops/settings/list${query}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     deps.out.fail(serverErrorLines(res, "Failed to list ShipIt settings"), 1);
   }
-  if (parsed.booleans.has("json")) {
+  if (json) {
+    // A deploy rebuilds the worker image before it restarts the orchestrator,
+    // so a new shim can reach a server that ignores `full` (deploy.sh).
+    if (res.body.full !== true) {
+      deps.out.fail([
+        renderLine("shipit settings list --json: this ShipIt server is older than this session and "
+          + "cannot export settings whole — long values would be cut and per-item values missing."),
+        renderLine("Try again after ShipIt finishes updating, or read each setting with "
+          + "`shipit settings get <key>`."),
+      ], 1);
+    }
     deps.out.json(res.body);
     return;
   }

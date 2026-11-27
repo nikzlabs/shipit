@@ -116,6 +116,9 @@ const LIST: MockResponse = {
   },
 };
 
+/** The same index as a server that honoured `full=1` returns it. */
+const FULL_LIST: MockResponse = { ...LIST, body: { ...LIST.body, full: true } };
+
 /** Every character that starts a line for some reader, wherever output is asserted. */
 const NO_BREAKS = /[\n\r\u0085\u2028\u2029]/;
 
@@ -158,6 +161,27 @@ describe("shipit settings list", () => {
     expect(res.calls[0].path).toBe("/agent-ops/settings/list?tab=network");
   });
 
+  // docs/299-agent-settings-access req 13: `--json` is the one-call export.
+  it("asks for the full export under --json, and only there", async () => {
+    const { run } = makeRunner();
+    const json = await run(["settings", "list", "--tab", "roles", "--json"], {
+      "GET /agent-ops/settings/list": FULL_LIST,
+    });
+    expect(json.calls[0].path).toBe("/agent-ops/settings/list?tab=roles&full=1");
+
+    const text = await run(["settings", "list"], { "GET /agent-ops/settings/list": LIST });
+    expect(text.calls[0].path).toBe("/agent-ops/settings/list");
+  });
+
+  it("fails rather than print a cut export from a server that ignored the flag", async () => {
+    const { run } = makeRunner();
+    const res = await run(["settings", "list", "--json"], { "GET /agent-ops/settings/list": LIST });
+
+    expect(res.exitCode).toBe(1);
+    expect(res.stdout).toBe("");
+    expect(res.stderr).toContain("older than this session");
+  });
+
   /*
     Every `--json` branch, not just `get`'s: `JSON.stringify` escapes the C0
     controls and leaves U+0085/U+2028/U+2029 as themselves, so a stored value
@@ -171,7 +195,7 @@ describe("shipit settings list", () => {
     const res = await run(["settings", "list", "--json"], {
       "GET /agent-ops/settings/list": {
         status: 200,
-        body: { tabs: ["instructions"], settings: [{ key: "k", value: SEPARATED }] },
+        body: { tabs: ["instructions"], settings: [{ key: "k", value: SEPARATED }], full: true },
       },
     });
 
@@ -194,9 +218,9 @@ describe("shipit settings list", () => {
 
   it("prints the server's JSON unchanged under --json", async () => {
     const { run } = makeRunner();
-    const res = await run(["settings", "list", "--json"], { "GET /agent-ops/settings/list": LIST });
+    const res = await run(["settings", "list", "--json"], { "GET /agent-ops/settings/list": FULL_LIST });
 
-    expect(JSON.parse(res.stdout)).toEqual(LIST.body);
+    expect(JSON.parse(res.stdout)).toEqual(FULL_LIST.body);
   });
 
   it("fails with the server's message when the read fails", async () => {

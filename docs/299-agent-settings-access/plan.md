@@ -736,8 +736,33 @@ read. `list` emits **one entry per declaration and never one per item** — its
 length is the catalogue's, whatever number of roles or MCP servers someone
 happens to have — and it names the instances that exist. `get` is where the
 items themselves are, each with the address a change to it would name and what
-it is set to. There is no `--item` selector: the read is two steps, and a third
+it is set to; `list --json` carries them too (below). There is no `--item` selector: the read is two steps, and a third
 would not be the same shape for a setting that has one value.
+
+### `list --json` is the export (req 13)
+
+The text `list` is an index an agent reads, so it stays short: prose cut to 200
+characters, items counted. `list --json` is what an agent writes to a file, so
+the shim asks for the full form (`full=1`, relayed unchanged by
+`agent-ops-routes.ts`), and `listSettingsForAgent` builds every entry as `get`
+does — prose whole, the whole description, and each item-addressed entry
+carrying its `items`. Still one entry per declaration: the items ride inside
+it, as they do in `get`. A role is then whole across its five `roles[].*`
+entries, and a reviewer slot across `reviewers[].model` and
+`reviewers[].reasoningEffort`.
+
+A full read carries `full: true`, and the shim fails `list --json` without it.
+`deploy.sh` rebuilds the worker image before it restarts the orchestrator, and
+containers are created from the image tag, so for those minutes a new shim can
+reach an orchestrator that ignores `full=1`. Without the check it would print
+the short index as if it were the export.
+
+Two things stay `get`-only. The `live` option sets — which models and levels
+this install can run — describe the install, not a stored value (the
+2026-09-13 receipt). And per-item `lastProposal`, a lookup per instance that an
+export has no use for. Nothing new leaves the projection door: an item's value
+goes through `projectSettingValue` on both paths, so a secret is still only
+`configured`.
 
 An item's **address goes through the projection door its value does**. An
 address is the user's own text for a role, an MCP server, a secret and an
@@ -1343,6 +1368,18 @@ main change. Three operations have them today, and they are the three that re-de
 `roles[].model` (harness and level), `roles[].harness` (level), and
 `reviewers[].model`, whose writer SUBSTITUTES the slot's default level rather
 than refusing one (`services/reviewer-settings.ts` → `resolveReviewerPinPatch`).
+
+**A reviewer slot's model card can also carry the level** (req 14). A level
+sits on a pin, so a slot on automatic could only be pinned in two cards — and a
+second card for the same slot goes `stale` once the first applies, so that
+could never be one click. `reviewers[].model` therefore takes an optional
+`reasoningEffort` beside the model in its value. The operation's `companion`
+hook (`settings-operations.ts`) validates the whole body, both at propose time
+and at the click; `own` strips the level, so the card's `to` and the read-back
+compare the model alone. The level reaches the card through the operation's
+existing `alsoChanges` line. A named level is checked by `reviewerLevelRefusal`
+rather than substituted, so the card never says one level and stores another. A
+field outside the four is refused, as creating a role refuses one.
 
 They are **re-derived at apply time and compared with the card**, not replayed
 from it. The derivation reads live state the baseline does not cover — which

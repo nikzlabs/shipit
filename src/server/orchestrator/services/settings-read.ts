@@ -71,6 +71,10 @@ export type { SettingsReadDeps };
  * instances of an item-addressed setting, and whatever has to be resolved live.
  * A size threshold would make the response shape depend on how many models
  * happen to be installed.
+ *
+ * `list` with `full` is the export (req 13): every value whole and every
+ * instance of an item-addressed setting, so one read carries everything stored.
+ * The option sets stay in `get` — they describe the install, not a setting.
  */
 
 /** The proposal card reports the same four answers, so the two cannot drift. */
@@ -124,8 +128,9 @@ export interface SettingProposeView {
 /**
  * What identifies one instance of a setting. `list` says a setting is per-item;
  * `get` is where the items themselves belong (req 1: the index, then the detail
- * of one). The index never grows an entry per item — its length must not depend
- * on how many roles or MCP servers someone happens to have.
+ * of one), and so is a `full` list (req 13). The index never grows an entry per
+ * item — its length must not depend on how many roles or MCP servers someone
+ * happens to have.
  */
 export interface SettingAddressView {
   kind: SettingAddress["kind"];
@@ -133,7 +138,7 @@ export interface SettingAddressView {
   noun?: Rendered;
 }
 
-/** One addressed instance of an item-addressed setting, in `get` only. */
+/** One addressed instance of an item-addressed setting, in `get` and a `full` list. */
 export interface SettingItemView {
   /** How a change names this instance, through {@link renderAddress}. */
   address: Rendered;
@@ -174,6 +179,10 @@ export interface SettingIndexEntry {
   effect: SettingEffect;
   /** What the existing views already compute, so the agent says why (req 3). */
   notes: Rendered[];
+  /** For an item-addressed setting, in `get` and a `full` list: one entry per instance. */
+  items?: SettingItemView[];
+  /** The declared description, whole, in `get` and a `full` list (req 7, req 13). */
+  description?: Rendered;
 }
 
 /**
@@ -231,8 +240,6 @@ export interface SettingDetailEntry extends SettingIndexEntry {
   proposeMaxLines?: number;
   /** Facts a declaration cannot hold, resolved at read time. */
   live?: Record<string, unknown>;
-  /** Present for an item-addressed setting: one entry per instance. */
-  items?: SettingItemView[];
   /** The last proposal about this setting, or about this repository's copy of it. */
   lastProposal?: SettingProposalSummary;
 }
@@ -241,6 +248,11 @@ export interface SettingsIndex {
   settings: SettingIndexEntry[];
   /** Every tab carrying at least one declared setting. */
   tabs: SettingTab[];
+  /**
+   * Set on a `full` read, so the shim can tell it from an older server that
+   * ignored the flag and returned the short index (req 13).
+   */
+  full?: true;
 }
 
 /**
@@ -1253,11 +1265,14 @@ async function readState(deps: SettingsReadDeps, sessionId: string): Promise<Rea
  * The index: every setting the agent may see, degrading per entry rather than
  * failing the call. With no bound repository the project entries read
  * unavailable and every global setting is still returned.
+ *
+ * `full` reads every entry as `get` does — prose whole, items included — so one
+ * call exports what is stored (req 13).
  */
 export async function listSettingsForAgent(
   deps: SettingsReadDeps,
   sessionId: string,
-  opts: { tab?: string } = {},
+  opts: { tab?: string; full?: boolean } = {},
 ): Promise<SettingsIndex> {
   const declarations = allDeclarations();
   const tabs = [...new Set(declarations.map((d) => d.tab))].sort();
@@ -1269,10 +1284,20 @@ export async function listSettingsForAgent(
   }
   const state = await readState(deps, sessionId);
   const wanted = opts.tab ? declarations.filter((d) => d.tab === opts.tab) : declarations;
+  const full = opts.full === true;
   const built = await Promise.all(
-    wanted.map((declaration) => buildEntry(declaration, deps, state, false)),
+    wanted.map((declaration) => buildEntry(declaration, deps, state, full)),
   );
-  return { settings: built.map((b) => b.entry), tabs };
+  if (!full) return { settings: built.map((b) => b.entry), tabs };
+  return {
+    settings: built.map((b, i) => ({
+      ...b.entry,
+      description: renderOwn(wanted[i].description),
+      ...(b.items ? { items: b.items } : {}),
+    })),
+    tabs,
+    full: true,
+  };
 }
 
 /**

@@ -283,7 +283,14 @@ async function runApply(
   }
   const refusal = operation.preflight?.(deps.operations, row.target, row.proposed);
   if (refusal) return { phase: "refused", outcome: refusal };
-  if (row.operation === "set") {
+  if (row.operation === "set" && operation.companion) {
+    try {
+      operation.companion.read(row.proposed);
+    } catch (err) {
+      if (err instanceof ServiceError) return { phase: "refused", outcome: err.message };
+      throw err;
+    }
+  } else if (row.operation === "set") {
     const checked = declaration.type.validate(row.proposed, declaration.label);
     if (!checked.ok) return { phase: "refused", outcome: checked.message };
   }
