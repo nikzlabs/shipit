@@ -201,6 +201,18 @@ export interface SettingsOperation {
    * Throws a `ServiceError` naming what is wrong; absent, an `add` carries none.
    */
   entry?(raw: unknown): unknown;
+  /**
+   * A `set` whose body may carry a neighbouring field beside the setting's own
+   * value — a reviewer slot's level beside its model, so one card pins both
+   * (docs/299-agent-settings-access req 14). `read` validates the whole body and
+   * throws a `ServiceError` naming what is wrong; `own` is the setting's value
+   * alone, which is what the card shows as `to` and the read-back compares. The
+   * neighbouring field reaches the card as a side change.
+   */
+  companion?: {
+    read(raw: unknown): unknown;
+    own(value: unknown): unknown;
+  };
   /** ShipIt's own account of what the click did, for the resolved card. */
   applied(
     target: SettingsOperationTarget,
@@ -1151,29 +1163,72 @@ function reviewerOperation(
   );
 }
 
+/** The level a `reviewers[].model` body asks for, beside the model (req 14). */
+function requestedReviewerLevel(value: unknown): string | undefined {
+  const level = (value as { reasoningEffort?: unknown } | null)?.reasoningEffort;
+  return typeof level === "string" ? level : undefined;
+}
+
+/**
+ * A `reviewers[].model` body: the model, and optionally the level to pin with
+ * it. Without the level, a slot on automatic could only be pinned in two cards —
+ * the model, then the level once that card was applied — because a level needs
+ * a pin to sit on (req 14).
+ */
+const REVIEWER_MODEL_FIELDS = new Set(["serviceId", "billingMode", "modelId", "reasoningEffort"]);
+
+const reviewerModelCompanion: NonNullable<SettingsOperation["companion"]> = {
+  read(raw) {
+    // A misspelt level would otherwise be dropped, and the slot pinned without it.
+    const unknown = raw && typeof raw === "object"
+      ? Object.keys(raw).find((field) => !REVIEWER_MODEL_FIELDS.has(field))
+      : undefined;
+    if (unknown !== undefined) {
+      throw new ServiceError(400, renderLine(`A reviewer slot's model has no field "${echoSupplied(unknown)}". `
+        + "It takes serviceId, billingMode, modelId and, optionally, reasoningEffort."));
+    }
+    const model = findSetting("reviewers[].model")!;
+    const checked = model.type.validate(raw, model.label);
+    if (!checked.ok) throw new ServiceError(400, checked.message);
+    if (checked.value === null || !Object.hasOwn(raw as object, "reasoningEffort")) return checked.value;
+    const level = (raw as { reasoningEffort?: unknown }).reasoningEffort;
+    // Named, it is a level: an empty or non-text one would be dropped unseen.
+    if (typeof level !== "string" || level.trim() === "") {
+      throw new ServiceError(400, renderOwn("reasoningEffort names a level, such as \"high\". Leave it out "
+        + "to keep the slot's level, or the model's default."));
+    }
+    const declaration = findSetting("reviewers[].reasoningEffort")!;
+    const levelChecked = declaration.type.validate(level, declaration.label);
+    if (!levelChecked.ok) throw new ServiceError(400, levelChecked.message);
+    return { ...(checked.value as ModelSelection), reasoningEffort: levelChecked.value };
+  },
+  own(value) {
+    return value === null ? null : requireSelection(value);
+  },
+};
+
 /**
  * A slot's model, and the level that rides on it. `resolveReviewerPinPatch`
  * SUBSTITUTES the slot's default for a level the new model does not offer, which
- * is right — the dialog's picker does the same — and has to be on the card.
+ * is right — the dialog's picker does the same — and has to be on the card. A
+ * level the body names is the exception: it is checked rather than substituted,
+ * so the card never says one level and stores another.
  */
 function reviewerModelOperation(): SettingsOperation {
+  const pinPatch = (pin: Record<string, unknown> | null, value: unknown): Record<string, unknown> => {
+    const level = requestedReviewerLevel(value) ?? pin?.reasoningEffort;
+    return { ...requireSelection(value), ...(level ? { reasoningEffort: level } : {}) };
+  };
   const resolvedEffort = (
     deps: SettingsOperationDeps,
     pin: Record<string, unknown> | null,
     value: unknown,
-  ): string | undefined => {
-    const selection = requireSelection(value);
-    const patch = { ...selection, ...(pin?.reasoningEffort ? { reasoningEffort: pin.reasoningEffort } : {}) };
-    return resolveReviewerPinPatch(patch as unknown as ReviewerPinPatch, requireCredentialStore(deps))
+  ): string | undefined =>
+    resolveReviewerPinPatch(pinPatch(pin, value) as unknown as ReviewerPinPatch, requireCredentialStore(deps))
       .reasoningEffort;
-  };
   return {
     ...reviewerOperation(
-      (pin, value) => {
-        if (value === null) return null;
-        const selection = requireSelection(value);
-        return { ...selection, ...(pin?.reasoningEffort ? { reasoningEffort: pin.reasoningEffort } : {}) };
-      },
+      (pin, value) => (value === null ? null : pinPatch(pin, value)),
       (deps, target, value) => {
         if (value === null) return null;
         const pin = reviewerPin(deps, target.item ?? "");
@@ -1182,16 +1237,13 @@ function reviewerModelOperation(): SettingsOperation {
           return renderOwn("A model names a serviceId, a billingMode and a modelId.");
         }
         // The selection has to be one this install can run a reviewer on — that
-        // is what the writer refuses. The level the pin carries is NOT compared:
-        // it is re-derived exactly as the dialog's own picker re-derives it, and
-        // `alsoChanges` is what puts the result on the card.
-        return reviewerLevelRefusal(
-          deps,
-          { ...selection, ...(pin?.reasoningEffort ? { reasoningEffort: pin.reasoningEffort } : {}) },
-          undefined,
-        );
+        // is what the writer refuses. A level the pin already carries is NOT
+        // compared: it is re-derived exactly as the dialog's own picker
+        // re-derives it, and `alsoChanges` is what puts the result on the card.
+        return reviewerLevelRefusal(deps, pinPatch(pin, value), requestedReviewerLevel(value));
       },
     ),
+    companion: reviewerModelCompanion,
     alsoChanges: (deps, target, value) => {
       const pin = reviewerPin(deps, target.item ?? "");
       const before = pin?.reasoningEffort;
@@ -1409,8 +1461,11 @@ const OPERATIONS: Record<string, SettingsOperation> = {
     (deps, target, value) => {
       const pin = reviewerPin(deps, target.item ?? "");
       if (!pin) {
-        return renderLine(`The "${echoSupplied(target.item ?? "")}" reviewer slot pins no model, so it has no `
-          + "level of its own. Pin a model on the slot first.");
+        const slot = echoSupplied(target.item ?? "");
+        return renderLine(`The "${slot}" reviewer slot pins no model, so it has no level of its own. `
+          + "Pin the model and the level in one card: propose reviewers[].model with the level in the "
+          + `value — reviewers[].model={"serviceId":…,"billingMode":…,"modelId":…,"reasoningEffort":"${echoSupplied(asText(value))}"} `
+          + `--item ${slot}.`);
       }
       return reviewerLevelRefusal(deps, { ...pin, reasoningEffort: asText(value) }, asText(value));
     },

@@ -69,6 +69,22 @@ $ shipit settings get roles[].model
       ShipIt resolves this role per review from the two reviewer candidate slots, …
 ```
 
+## Exporting every setting: `list --json`
+
+When the user asks you to export, back up or copy their settings, run
+`shipit settings list --json` and write its output to the file. It is the full
+form of the index: every value whole (the plain `list` cuts long text to 200
+characters), and each per-item setting with an `items` array, one entry per
+instance with its `address` and `value`. So a role is complete across its
+`roles[].*` entries — harness, model, reasoning level, description and
+standing instructions — and a reviewer slot across `reviewers[].model` and
+`reviewers[].reasoningEffort`. No `get` per setting and no script is needed.
+
+Secrets stay out of it exactly as they do in `get`: a credential reads
+`configured` or `not configured`. The options a setting accepts on this install
+(which models it can run, for example) are not in the export; `get` carries
+those.
+
 ## What the read will and will not show you
 
 Settings from both the global **Settings** dialog and the per-repository
@@ -234,6 +250,24 @@ shipit settings propose "network.egress.hosts[].host" --add registry.npmjs.org \
 
 A per-repository setting is always **this session's own repository**; there is no
 way to name another one.
+
+### Pinning a reviewer slot: model and level in one card
+
+A reviewer slot's level sits on its model, so a slot on automatic has no level
+to set: `reviewers[].reasoningEffort` alone is refused until a model is pinned.
+Put the level in the model's value instead, and one card pins both:
+
+```
+shipit settings propose 'reviewers[].model={"serviceId":"anthropic","billingMode":"sub","modelId":"claude-opus-5-5","reasoningEffort":"xhigh"}' \
+  --item first --reason "The user asked for Opus at extra high as the first reviewer."
+```
+
+The card shows the model, and the level under it as its own change. The level
+must be one the model offers; one it does not offer is refused, not swapped for
+a default. Leave `reasoningEffort` out and the slot keeps its level, or takes the
+default for that model. Do the same on a slot that is already pinned when both
+change: two separate cards for one slot conflict, so applying the first makes
+the second `stale`.
 
 ### Creating a role
 

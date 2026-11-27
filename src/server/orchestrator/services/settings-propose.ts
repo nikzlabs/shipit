@@ -503,17 +503,27 @@ function entryValueOf(operation: SettingsOperation, input: SettingsProposeInput)
  * on the answer: renaming a role writes the stored object under the NEW name as
  * well as the old one's, and the lock has to hold both before either is read.
  */
-function proposedValueOf(declaration: AnySettingDeclaration, input: SettingsProposeInput): unknown {
+function proposedValueOf(
+  declaration: AnySettingDeclaration,
+  operation: SettingsOperation,
+  input: SettingsProposeInput,
+): unknown {
   const raw = input.value !== undefined
     ? input.value
     : readProposedValue(declaration, input.valueText ?? "");
+  if (operation.companion) return operation.companion.read(raw);
   const checked = declaration.type.validate(raw, declaration.label);
   if (!checked.ok) refuse(checked.message);
   return checked.value;
 }
 
+function refuseUnchanged(declaration: AnySettingDeclaration, to: Rendered): never {
+  refuse(renderLine(`${declaration.key} is already ${to}, so there is nothing to change.`));
+}
+
 function valueChange(
   declaration: AnySettingDeclaration,
+  operation: SettingsOperation,
   proposedValue: unknown,
   current: CurrentValue,
   target: SettingsProposalTarget,
@@ -524,12 +534,16 @@ function valueChange(
         + `${knownAddresses(current.entry)}.`,
     ));
   }
-  requireEmittable(declaration, proposedValue);
+  // A companion field is a side change, so `to` is the setting's own value alone.
+  const own = operation.companion ? operation.companion.own(proposedValue) : proposedValue;
+  requireEmittable(declaration, own);
   // Through the catalogue's own door, exactly as the read's value was: the card
   // must show `from` and `to` in one another's terms.
-  const to = formatSetting(declaration, projectSetting(declaration, proposedValue));
-  if (to === current.display) {
-    refuse(renderLine(`${declaration.key} is already ${to}, so there is nothing to change.`));
+  const to = formatSetting(declaration, projectSetting(declaration, own));
+  // A body carrying a companion may change only that field; whether anything
+  // changes is then decided once its side change is known.
+  if (to === current.display && JSON.stringify(own) === JSON.stringify(proposedValue)) {
+    refuseUnchanged(declaration, to);
   }
   return { from: current.display, fromValue: current.value, to, proposedValue };
 }
@@ -572,14 +586,14 @@ export async function proposeSettingChange(
   // approves what the card shows, and the apply compares against something else
   // and overwrites it (plan.md → Proposing: "the server takes the snapshot").
   const proposedValue = kind === "set"
-    ? proposedValueOf(declaration, input)
+    ? proposedValueOf(declaration, operation, input)
     : kind === "add" ? entryValueOf(operation, input) : false;
   const { change, shown, alsoChanges, baseline } = await withConflictDomains(
     operation.domains(target, deps.operations, proposedValue),
     async () => {
       const current = await readCurrent(deps, sessionId, resolved);
       const computed = kind === "set"
-        ? valueChange(declaration, proposedValue, current, target)
+        ? valueChange(declaration, operation, proposedValue, current, target)
         : membershipChange(operation, kind, current, target, proposedValue);
       // After the read, so a setting whose instance does not exist is refused by
       // the read — which can name the instances that DO — rather than by the
@@ -593,6 +607,9 @@ export async function proposeSettingChange(
       // the level, and the card names both rather than leaving the user to
       // approve what it does not display.
       const alsoChanges = operation.alsoChanges?.(deps.operations, target, computed.proposedValue) ?? [];
+      if (kind === "set" && computed.to === computed.from && alsoChanges.length === 0) {
+        refuseUnchanged(declaration, computed.to);
+      }
       for (const side of alsoChanges) {
         if (side.textChange) {
           const text = textChangeSides(side.textChange);

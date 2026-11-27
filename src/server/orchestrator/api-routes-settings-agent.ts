@@ -35,17 +35,17 @@ export async function registerAgentSettingsRoutes(
     proposals: deps.settingsProposals,
   });
 
-  app.get<{ Params: { id: string }; Querystring: { tab?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { tab?: string; full?: string } }>(
     "/api/sessions/:id/settings",
     { config: { containerAccessible: true } },
     async (request, reply) => {
       try {
         const tab = request.query.tab?.trim();
-        return await listSettingsForAgent(
-          readDeps(),
-          request.params.id,
-          tab ? { tab } : {},
-        );
+        return await listSettingsForAgent(readDeps(), request.params.id, {
+          ...(tab ? { tab } : {}),
+          // The export form (docs/299-agent-settings-access req 13).
+          ...(request.query.full === "1" ? { full: true } : {}),
+        });
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

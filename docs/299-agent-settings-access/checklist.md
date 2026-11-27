@@ -967,3 +967,35 @@ Two findings, both the same class one layer down, both reproduced at the code.
 - [x] The unused change to the `mcp.servers[]` baseline is reverted
 - [x] Recorded, not changed: an npm package installs in the container's whole
       environment, as the panel's do (plan.md → known gap)
+
+## Req 13 — `list --json` is the one-call export
+
+- [x] `listSettingsForAgent` takes `full`: prose whole, item-addressed entries
+      carry their `items`, and the "get is where the items are" note drops out
+- [x] The orchestrator route reads `full=1`, and the agent-ops relay forwards it
+- [x] `shipit settings list --json` asks for `full`; the text `list` is unchanged
+- [x] Tests: full index returns prose whole and every role field; no line break
+      anywhere in the full index; relay and shim forward the flag; the real
+      route exports a role through the shim
+- [x] `settings.md`, the wiki and the shim's help say to export with `list --json`
+
+## Req 14 — a reviewer slot pinned in one card
+
+- [x] `SettingsOperation.companion`: a `set` body may carry a neighbouring field;
+      propose and the click validate the whole body, the card's `to` is `own`
+- [x] `reviewers[].model` takes an optional `reasoningEffort`, checked rather
+      than substituted, shown as the existing level side change
+- [x] An unknown field in that body is refused, so a misspelt level is not dropped
+- [x] `reviewers[].reasoningEffort` on a slot with no model names the one-card form
+- [x] Tests: the card shows the model alone and the level as its side change; a
+      level the model does not offer and an unknown field are refused; the
+      refusal names the way out; one click stores both and reads back `applied`
+- [x] `settings.md` documents the form and why two cards for one slot conflict
+
+### The independent review of reqs 13 and 14
+
+- [x] A full read carries the whole description of each setting
+- [x] A full read is marked `full: true`, and `list --json` fails without the
+      mark rather than print a cut export from an orchestrator mid-deploy
+- [x] A body that keeps the model but changes the level is a card, not "already set"
+- [x] A `reasoningEffort` that is named but empty, null or not text is refused

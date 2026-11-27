@@ -1022,6 +1022,11 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toBe("/settings?tab=network");
   });
 
+  it("GET /agent-ops/settings/list forwards the full export flag", async () => {
+    await app.inject({ method: "GET", url: "/agent-ops/settings/list?tab=roles&full=1" });
+    expect(client.calls[0].path).toBe("/settings?tab=roles&full=1");
+  });
+
   it("GET /agent-ops/settings/get forwards the key, encoded", async () => {
     await app.inject({ method: "GET", url: "/agent-ops/settings/get?key=advanced.enableSubAgents" });
     expect(client.calls[0]).toMatchObject({

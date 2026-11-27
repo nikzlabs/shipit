@@ -744,6 +744,116 @@ describe("a card shows every field its one operation writes", () => {
 });
 
 /**
+ * docs/299-agent-settings-access req 14 — a reviewer slot on automatic is pinned
+ * whole, model and level, by one card.
+ */
+describe("pinning a reviewer slot in one card", () => {
+  const OPUS_KEY = { serviceId: "anthropic", billingMode: "key", modelId: "claude-opus-5" } as const;
+  let report: { restore: () => void };
+
+  beforeEach(() => {
+    report = installReport(["claude"]);
+    fx.credentialStore.upsertCredentialRouteWithSecret(
+      {
+        id: "anthropic-key-fixture",
+        serviceId: "anthropic",
+        billingMode: "key",
+        via: "string",
+        status: "ready",
+        priority: 0,
+        isPrimary: true,
+        label: "fixture",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      "sk-ant-fixture",
+    );
+  });
+
+  afterEach(() => {
+    report.restore();
+  });
+
+  it("carries the level beside the model, and shows it as the level's own change", async () => {
+    const card = await propose({
+      key: "reviewers[].model",
+      item: "first",
+      valueText: JSON.stringify({ ...OPUS_KEY, reasoningEffort: "low" }),
+      reason: "why",
+    });
+
+    // The model line is the model alone, so the read-back compares like with like.
+    expect(card.to).toBe(JSON.stringify(OPUS_KEY));
+    expect(card.alsoChanges).toEqual([
+      expect.objectContaining({ label: findSetting("reviewers[].reasoningEffort")!.label, to: '"low"' }),
+    ]);
+  });
+
+  it("refuses a level the model does not offer, rather than substituting one", async () => {
+    await expect(propose({
+      key: "reviewers[].model",
+      item: "first",
+      valueText: JSON.stringify({ ...OPUS_KEY, reasoningEffort: "banana" }),
+      reason: "why",
+    })).rejects.toThrow(/not a reasoning level this model offers/);
+  });
+
+  it("changes only the level when the model is already the slot's", async () => {
+    fx.credentialStore.setReviewerPin("first", { ...OPUS_KEY, reasoningEffort: "low" });
+
+    const card = await propose({
+      key: "reviewers[].model",
+      item: "first",
+      valueText: JSON.stringify({ ...OPUS_KEY, reasoningEffort: "high" }),
+      reason: "why",
+    });
+
+    expect(card.to).toBe(card.from);
+    expect(card.alsoChanges).toEqual([expect.objectContaining({ from: '"low"', to: '"high"' })]);
+  });
+
+  it("still refuses a body that changes nothing at all", async () => {
+    fx.credentialStore.setReviewerPin("first", { ...OPUS_KEY, reasoningEffort: "low" });
+
+    await expect(propose({
+      key: "reviewers[].model",
+      item: "first",
+      valueText: JSON.stringify({ ...OPUS_KEY, reasoningEffort: "low" }),
+      reason: "why",
+    })).rejects.toThrow(/nothing to change/);
+  });
+
+  it("refuses a level that is named but empty, rather than dropping it", async () => {
+    for (const reasoningEffort of ["", null, 3]) {
+      await expect(propose({
+        key: "reviewers[].model",
+        item: "first",
+        valueText: JSON.stringify({ ...OPUS_KEY, reasoningEffort }),
+        reason: "why",
+      }), String(reasoningEffort)).rejects.toThrow(/names a level/);
+    }
+  });
+
+  it("refuses a field it does not know, so a misspelt level is not dropped", async () => {
+    await expect(propose({
+      key: "reviewers[].model",
+      item: "first",
+      valueText: JSON.stringify({ ...OPUS_KEY, reasoningeffort: "low" }),
+      reason: "why",
+    })).rejects.toThrow(/no field "reasoningeffort"/);
+  });
+
+  it("names the one-card form when a level is proposed for a slot with no model", async () => {
+    await expect(propose({
+      key: "reviewers[].reasoningEffort",
+      item: "first",
+      valueText: "low",
+      reason: "why",
+    })).rejects.toThrow(/reviewers\[\]\.model=.*"reasoningEffort":"low".*--item first/);
+  });
+});
+
+/**
  * docs/299-agent-settings-access req 10 — a card can create a role. It shows
  * the whole of it, because the user approves what the card displays.
  */

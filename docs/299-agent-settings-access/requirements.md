@@ -101,6 +101,15 @@ agent is the actor.
     package or the URL, and the names of the environment variables or headers it
     needs. A secret value is never on a card. The user types those values in the
     MCP panel after Apply, and the server cannot work until they do.
+13. One command exports everything the agent may read about ShipIt's settings:
+    every value in full, and every instance of a per-item setting — each role's
+    harness, model, reasoning level, description and standing instructions, and
+    each reviewer slot. The agent does not need a script or one read per setting
+    to produce the export. Secret values stay out of it (req 2).
+14. A reviewer slot's model and its reasoning level can be proposed together,
+    so pinning a slot fully — including one on automatic — takes one card and
+    one click. When a level is proposed for a slot that pins no model, the
+    refusal names the way out.
 
 ## Open questions
 
@@ -146,6 +155,28 @@ agent is the actor.
 
 ## Resolved questions
 
+- 2026-11-27 — *Can a reviewer slot's model and level be proposed in one go?*
+  They could not. With both slots on automatic, an agent proposed a model for
+  each, then a level for each while those cards were pending; the level cards
+  were refused ("pins no model … Pin a model on the slot first"). So pinning a
+  slot fully took two rounds, and importing an export file hit it every time,
+  while a role takes its model and level in one card. The user attached the
+  write-up, which offered two fixes — one proposal carrying both fields, or a
+  level card that accepts a pending model card — and asked: **"also fix
+  this"**. → requirement 14. The one-card form was chosen: a pending model card
+  and a level card change the same stored slot, so applying the first makes
+  the second `stale`, and the second option could never be one click.
+- 2026-11-27 — *Should one command export the settings whole?* Exporting the
+  settings to a file took a script: `list --json` cut the user's instructions to
+  200 characters and gave each per-item setting only a count, so every role's
+  model, harness and prompt needed a `get` per field. The user: **"make list
+  --json always return full values, and also make it include the full roles
+  information. Essentially a single command should export all relevant
+  information, so the agent doesn't need to run any scripts"**. →
+  requirement 13. The plain `list` keeps the short index requirement 1
+  describes. The option sets (which models this install can run) stay in
+  `get`, as the 2026-09-13 receipt below decided: they describe the install,
+  not a stored setting.
 - 2026-10-08 — *Do the collection writes requirement 10 left refused stay refused?*
   Requirement 10 named roles, so deleting a role and creating or deleting an MCP
   server kept their refusal, and the session offered to file them as a follow-up.

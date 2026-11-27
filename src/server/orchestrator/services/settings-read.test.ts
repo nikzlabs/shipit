@@ -62,7 +62,7 @@ import {
  * fourth name added here needs the same argument made at the renderer.
  *
  * `key` stays plain as a declared catalogue constant, and the address a caller
- * passes back. `items` is exempt on the detail entry only because it carries
+ * passes back. `items` is exempt on both entries only because it carries
  * `value` at one remove — `SettingItemView` has an assertion of its own below,
  * which is what actually covers an item's fields.
  */
@@ -99,7 +99,7 @@ type PlainStringFields<T> = {
 
 type AssertPlainFields<T, Allowed> = PlainStringFields<T> extends Allowed ? true : never;
 
-const _indexFieldsAreRendered: AssertPlainFields<SettingIndexEntry, "key" | "value"> = true;
+const _indexFieldsAreRendered: AssertPlainFields<SettingIndexEntry, "key" | "value" | "items"> = true;
 const _detailFieldsAreRendered: AssertPlainFields<
   SettingDetailEntry,
   "key" | "value" | "shape" | "live" | "items"
@@ -358,6 +358,55 @@ describe("listSettingsForAgent", () => {
     const entry = settings.find((s) => s.key === "instructions.userInstructions");
     expect(String(entry?.value)).toHaveLength(201);
     expect(entry?.notes.join(" ")).toContain("500 characters");
+  });
+
+  // docs/299-agent-settings-access req 13: one read exports everything stored.
+  it("returns prose whole in the full index, with no shortening note", async () => {
+    const long = "x".repeat(500);
+    await writeGlobalSystemPrompt(tmpDir, long);
+    const index = await listSettingsForAgent(deps(), "s1", { full: true });
+    // The mark the shim checks, so an older server's short index is not taken for it.
+    expect(index.full).toBe(true);
+    const entry = index.settings.find((s) => s.key === "instructions.userInstructions");
+    expect(entry?.value).toBe(long);
+    expect(entry?.notes.join(" ")).not.toContain("Shortened");
+    // The whole description too, not only the summary's first sentence.
+    expect(entry?.description).toBe(findSetting("instructions.userInstructions")!.description);
+  });
+
+  it("carries every role's fields in the full index, and only there", async () => {
+    credentialStore.setRole("deep-dive", {
+      name: "deep-dive",
+      description: "Slow, careful research.",
+      prompt: "Cite every file you read.",
+      params: {
+        kind: "pinned",
+        harnessId: "claude",
+        serviceId: "anthropic",
+        billingMode: "sub",
+        modelId: "claude-opus-5",
+        reasoningEffort: "high",
+      },
+    });
+
+    const { settings } = await listSettingsForAgent(deps(), "s1", { full: true });
+    const itemsOf = (key: string) =>
+      settings.find((s) => s.key === key)?.items?.find((i) => i.address === "deep-dive");
+    expect(itemsOf("roles[].harness")?.value).toBe("claude");
+    expect(itemsOf("roles[].model")?.value).toEqual({
+      serviceId: "anthropic",
+      billingMode: "sub",
+      modelId: "claude-opus-5",
+    });
+    expect(itemsOf("roles[].reasoningEffort")?.value).toBe("high");
+    expect(itemsOf("roles[].description")?.value).toBe("Slow, careful research.");
+    expect(itemsOf("roles[].prompt")?.value).toBe("Cite every file you read.");
+    // The items are in the entry, so the note pointing at `get` for them is gone.
+    const prompt = settings.find((s) => s.key === "roles[].prompt");
+    expect(prompt?.notes.join(" ")).not.toContain("is where the items are");
+
+    const index = await listSettingsForAgent(deps(), "s1");
+    expect(index.settings.find((s) => s.key === "roles[].prompt")?.items).toBeUndefined();
   });
 });
 
@@ -938,7 +987,7 @@ describe("no field the read emits can start a line", () => {
    * interpolates — the text path reads `display`. Naming it rather than skipping
    * every `value` is the point: a new field carrying a value fails here.
    */
-  const RAW_JSON_FIELD = /^\$(\.settings\[\d+\]|\.items\[\d+\])?\.value$/;
+  const RAW_JSON_FIELD = /^\$(\.settings\[\d+\])?(\.items\[\d+\])?\.value$/;
 
   function expectNoBreaks(response: unknown): void {
     const found = strings(response)
@@ -969,6 +1018,10 @@ describe("no field the read emits can start a line", () => {
     // Escaped rather than dropped: the user's own words still reach the reader.
     expect(entry?.display).toContain("Be helpful.");
     expect(entry?.display).toContain("allowAgentMerge");
+  });
+
+  it("emits no line break anywhere in the full index, items included", async () => {
+    expectNoBreaks(await listSettingsForAgent(deps(), "s1", { full: true }));
   });
 
   /**
